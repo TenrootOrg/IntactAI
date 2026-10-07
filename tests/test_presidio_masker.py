@@ -73,5 +73,28 @@ class NameShapeFilter(unittest.TestCase):
         self.assertFalse(pm._plausible_name("one two three four five six"))          # 6 words
 
 
+class CaseLogHook(unittest.TestCase):
+    """Every LLM path (fuse, Regenerate, chat) must hand Presidio the case-Log
+    hook. Regenerate once built its own mask without it: Presidio ran, but the
+    names it hid never reached the case Log."""
+    def test_case_mask_carries_log_hook(self):
+        from services.fusion import store
+        logged = []
+        orig = store.log_case_event
+        store.log_case_event = lambda cid, act, lvl, msg, **kw: logged.append((cid, act, msg))
+        try:
+            m = store._case_mask("case_x", {"masking": {"enabled": True, "ner": True}})
+            m._logfn("2 name(s) hidden")
+        finally:
+            store.log_case_event = orig
+        self.assertTrue(m._ner)
+        self.assertEqual(logged, [("case_x", "Masking · Presidio (AI/NER)", "2 name(s) hidden")])
+        self.assertIsNone(store._case_mask("case_x", {"masking": {"enabled": False}}))
+
+    def test_no_path_builds_its_own_mask(self):
+        src = open(os.path.join(os.path.dirname(_HERE), "modules/backend/services/fusion/store.py")).read()
+        self.assertEqual(src.count("DataAnonymizer("), 1, "build case masks via _case_mask only")
+
+
 if __name__ == "__main__":
     unittest.main()

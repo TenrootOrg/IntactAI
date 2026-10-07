@@ -1888,6 +1888,27 @@ def _group_news(members, fmap, seen, ack) -> dict:
     return {"since": since, "new": new, "grown": grown, "reviewed": bool(acked)}
 
 
+def _case_mask(case_id, d):
+    """The case's masker, or None when masking is off. ONE builder for every LLM
+    path (fuse, report regeneration, chat): the Presidio log hook used to be set
+    on the fuse path only, so a Regenerate ran Presidio but its "name = Person1"
+    list never reached the case Log -- the operator could not see what it hid."""
+    mk = d.get("masking") or {}
+    if not mk.get("enabled"):
+        return None
+    try:
+        from services.data_anonymizer import DataAnonymizer
+        mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+    except Exception:
+        return None
+    mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
+    # Presidio lifecycle + the "name = Person1" list -> its OWN case-Log
+    # section, separate from the pattern masker's, so the operator sees
+    # which system hid what. High detail cap so the full list survives.
+    mask._logfn = lambda m, l="info": log_case_event(case_id, "Masking · Presidio (AI/NER)", l, m, detail_max=20000)
+    return mask
+
+
 def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True,
                       force_report=False, trigger=None, allow_llm=True,
                       refetch=None, _phase=None, defer_report=False) -> FusionGraph:
@@ -2186,19 +2207,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     except Exception:
         pass
     # masking (customer-facing): anonymize host/user/ip in the report + LLM payload
-    mask = None
-    mk = d.get("masking") or {}
-    if mk.get("enabled"):
-        try:
-            from services.data_anonymizer import DataAnonymizer
-            mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
-            mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
-            # Presidio lifecycle + the "name = Person1" list -> its OWN case-Log
-            # section, separate from the pattern masker's, so the operator sees
-            # which system hid what. High detail cap so the full list survives.
-            mask._logfn = lambda m, l="info": log_case_event(case_id, "Masking · Presidio (AI/NER)", l, m, detail_max=20000)
-        except Exception:
-            mask = None
+    mask = _case_mask(case_id, d)
     # host-exclusion: assemble() already removed the excluded hosts. This view filter
     # stays as a safety net for a graph built before that (it is a no-op otherwise).
     def _degrade(step, exc):
@@ -4375,15 +4384,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     # masking (customer-facing): anonymize host/user/ip in the LLM payload + narrative.
     # This is the LLM path (use_llm=True) where masking actually matters — the first-scan
     # path is deterministic. Build it here too so anonymization is applied on Rescan.
-    mask = None
-    mk = d.get("masking") or {}
-    if mk.get("enabled"):
-        try:
-            from services.data_anonymizer import DataAnonymizer
-            mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
-            mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
-        except Exception:
-            mask = None
+    mask = _case_mask(case_id, d)
     llm_ent, llm_chars = _llm_payload_budget(d)
     llm_ident = _llm_identity_budget(d)
     llm_out = _effective_output_cap(d)
@@ -5922,15 +5923,7 @@ def chat_case(case_id, question) -> str:
     # apply — chat sends the FULL graph every turn (full_context=True below),
     # so without this it bypassed masking entirely even when the case had it
     # enabled, leaking real hostnames/usernames/IPs to the LLM.
-    mask = None
-    mk = d.get("masking") or {}
-    if mk.get("enabled"):
-        try:
-            from services.data_anonymizer import DataAnonymizer
-            mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
-            mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
-        except Exception:
-            mask = None
+    mask = _case_mask(case_id, d)
     try:
         ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
                            window=view_window(d),
