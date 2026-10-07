@@ -298,8 +298,13 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
     spans = sorted(spans, key=lambda s: (s["end"] - s["start"]), reverse=True)
     seen_ranges: list[tuple[int, int]] = []
     assigned: dict[str, str] = {}
-    counters: dict[str, int] = {}
     hits = []
+    # Pseudonyms are PERSISTENT across every scrub call in one report (the payload,
+    # the synthesis, …): counters live on the mask, and a name already mapped reuses
+    # its pseudonym. So the same name is the same Person1 everywhere the model sees
+    # it, and the single revert at the end restores it correctly.
+    counters = mask.__dict__.setdefault("_ner_counters", {}) if mask is not None else {}
+    existing = getattr(mask, "mapping", {}) or {}
     for s in spans:
         start, end, etype, score = s["start"], s["end"], s["entity_type"], s["score"]
         surface = text[start:end].strip()
@@ -312,10 +317,14 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
             continue                                   # overlaps a longer span already taken
         seen_ranges.append((start, end))
         if surface not in assigned:
-            pre = _PSEUDO_PREFIX.get(etype, str(etype).title())
-            counters[pre] = counters.get(pre, 0) + 1
-            assigned[surface] = f"{pre}{counters[pre]}"
-            _register(mask, surface, assigned[surface])
+            prior = existing.get(surface)              # already masked earlier in this report?
+            if prior:
+                assigned[surface] = prior
+            else:
+                pre = _PSEUDO_PREFIX.get(etype, str(etype).title())
+                counters[pre] = counters.get(pre, 0) + 1
+                assigned[surface] = f"{pre}{counters[pre]}"
+                _register(mask, surface, assigned[surface])
         hits.append({"text": surface, "type": etype, "score": round(float(score), 2),
                      "pseudo": assigned[surface]})
 
@@ -324,7 +333,12 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
     for surface in sorted(assigned, key=len, reverse=True):
         out = re.sub(r"\b" + re.escape(surface) + r"\b", assigned[surface], out)
     if assigned:
-        _log(f"masked {len(assigned)} free-text name(s) the pattern masker missed",
+        # List WHAT was masked (name = pseudonym), like the deterministic mask's
+        # pre-LLM mapping block, so the operator can see exactly what Presidio hid.
+        # The Log is the trusted local view (the model gets only the pseudonyms).
+        pairs = sorted(assigned.items(), key=lambda kv: kv[1])
+        _log("masked %d free-text name(s) the pattern masker missed:\n  %s"
+             % (len(assigned), "\n  ".join(f"{name} = {pseudo}" for name, pseudo in pairs)),
              "info", logfn)
     return out, hits
 

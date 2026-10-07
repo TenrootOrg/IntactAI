@@ -2193,7 +2193,10 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             from services.data_anonymizer import DataAnonymizer
             mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
             mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
-            mask._logfn = log or (lambda m, l="info": log_case_event(case_id, "Report", l, m))  # Presidio lifecycle -> case Log
+            # Presidio lifecycle + the "name = Person1" list -> case Log. High
+            # detail cap so the full list survives (matches the deterministic
+            # "Masking · pre-LLM mapping" block, which also uses 20000).
+            mask._logfn = lambda m, l="info": log_case_event(case_id, "Report", l, m, detail_max=20000)
         except Exception:
             mask = None
     # host-exclusion: assemble() already removed the excluded hosts. This view filter
