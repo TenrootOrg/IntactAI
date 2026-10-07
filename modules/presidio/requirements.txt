@@ -4,3 +4,7 @@
 presidio-analyzer==2.2.364
 spacy>=3.7,<4
 flask>=3.0,<4
+
+# NOTE: these live ONLY in this sidecar image — the backend never installs presidio
+# or spaCy (it calls this container over HTTP). CI builds this image with the model
+# baked in (modules/presidio/Dockerfile); see versions.presidio in config.yaml.
