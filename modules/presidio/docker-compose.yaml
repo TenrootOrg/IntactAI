@@ -1,0 +1,40 @@
+# Intact PII NER sidecar — Presidio AnalyzerEngine behind a REST API.
+# Port 3000, internal only (joined to intact_network; no host port). The backend
+# reaches it at http://intact_presidio:3000. CI-built image, model baked in.
+
+services:
+  presidio:
+    container_name: intact_presidio
+    # No silent default — the tag always tracks versions.presidio in config.yaml,
+    # stamped into modules/presidio/.env by lib/modules/presidio.sh at deploy time.
+    image: intact-presidio:${PRESIDIO_VERSION:?must be set via modules/presidio/.env — see versions.presidio in config.yaml}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PRESIDIO_MODEL: ${PRESIDIO_MODEL:-en_core_web_lg}
+    pull_policy: build
+    restart: unless-stopped
+    environment:
+      - PRESIDIO_MODEL=${PRESIDIO_MODEL:-en_core_web_lg}
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      - intact_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/health',timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+
+networks:
+  intact_network:
+    external: true

@@ -70,9 +70,64 @@ def _plausible_name(s: str) -> bool:
 _PSEUDO_PREFIX = {"PERSON": "Person", "ORG": "Org", "LOCATION": "Loc", "GPE": "Loc", "NRP": "Group"}
 
 
+# Production runs Presidio in its OWN container (modules/presidio); the backend
+# POSTs text to it and gets back entity offsets. In dev/tests Presidio may instead
+# be importable in-process. Either path feeds the same scrub() below.
+_SIDECAR_URL = os.environ.get("PRESIDIO_URL", "http://intact_presidio:3000")
+_SIDECAR_STATE: dict = {"ok": None, "checked_at": 0.0}
+_SIDECAR_TTL = 30.0                                    # re-probe health at most this often
+
+
 def available() -> bool:
-    """True iff Presidio and a spaCy model are importable/loadable."""
-    return _analyzer() is not None
+    """True iff the NER engine can be reached — the sidecar container (production)
+    or an in-process Presidio + spaCy model (dev/tests)."""
+    return _sidecar_ok() or (_analyzer() is not None)
+
+
+def _sidecar_ok() -> bool:
+    """Is the Presidio sidecar healthy? Cached for _SIDECAR_TTL so a disabled or
+    down sidecar costs one probe per window, not one per call."""
+    import time
+    now = time.time()
+    if _SIDECAR_STATE["ok"] is not None and (now - _SIDECAR_STATE["checked_at"]) < _SIDECAR_TTL:
+        return _SIDECAR_STATE["ok"]
+    ok = False
+    try:
+        import urllib.request
+        with urllib.request.urlopen(_SIDECAR_URL.rstrip("/") + "/health", timeout=2) as r:
+            ok = (r.status == 200)
+    except Exception:                                  # noqa: BLE001 — not deployed / not reachable
+        ok = False
+    _SIDECAR_STATE.update(ok=ok, checked_at=now)
+    return ok
+
+
+def _detect_spans(text, entities, threshold):
+    """Return [{entity_type,start,end,score}, …] via the sidecar, else in-process,
+    else []. Never raises — a detection failure degrades to no masking."""
+    # Sidecar first (the production path).
+    if _sidecar_ok():
+        try:
+            import json
+            import urllib.request
+            data = json.dumps({"text": text, "entities": list(entities),
+                               "score_threshold": threshold}).encode()
+            req = urllib.request.Request(_SIDECAR_URL.rstrip("/") + "/analyze", data=data,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return (json.load(r) or {}).get("spans") or []
+        except Exception:                              # noqa: BLE001 — fall through to in-process
+            pass
+    # In-process fallback (dev/tests).
+    eng = _analyzer()
+    if eng is None:
+        return []
+    try:
+        res = eng.analyze(text=text, entities=list(entities), language="en")
+    except Exception:                                  # noqa: BLE001
+        return []
+    return [{"entity_type": r.entity_type, "start": r.start, "end": r.end, "score": r.score}
+            for r in res if r.score >= threshold]
 
 
 def enabled(cfg: dict | None = None, mask=None) -> bool:
@@ -134,39 +189,34 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
         return text, []
     if not enabled(cfg, mask):
         return text, []
-    analyzer = _analyzer()
-    if analyzer is None:
-        return text, []
-
-    try:
-        results = analyzer.analyze(text=text, entities=list(entities), language="en")
-    except Exception:                                  # noqa: BLE001 — never break the mask
+    spans = _detect_spans(text, entities, min_score)
+    if not spans:
         return text, []
 
     # Keep the highest-scoring, non-overlapping spans, longest-first so we
     # substitute whole names before any sub-span.
-    spans = sorted((r for r in results if r.score >= min_score),
-                   key=lambda r: (r.end - r.start), reverse=True)
+    spans = sorted(spans, key=lambda s: (s["end"] - s["start"]), reverse=True)
     seen_ranges: list[tuple[int, int]] = []
     assigned: dict[str, str] = {}
     counters: dict[str, int] = {}
     hits = []
-    for r in spans:
-        surface = text[r.start:r.end].strip()
+    for s in spans:
+        start, end, etype, score = s["start"], s["end"], s["entity_type"], s["score"]
+        surface = text[start:end].strip()
         low = surface.lower()
         if not surface or _OUR_PSEUDO.match(surface) or low in _KEEP:
             continue
         if not _plausible_name(surface):               # forensic string NER mis-tagged as a name
             continue
-        if any(a < r.end and r.start < b for a, b in seen_ranges):
+        if any(a < end and start < b for a, b in seen_ranges):
             continue                                   # overlaps a longer span already taken
-        seen_ranges.append((r.start, r.end))
+        seen_ranges.append((start, end))
         if surface not in assigned:
-            pre = _PSEUDO_PREFIX.get(r.entity_type, r.entity_type.title())
+            pre = _PSEUDO_PREFIX.get(etype, str(etype).title())
             counters[pre] = counters.get(pre, 0) + 1
             assigned[surface] = f"{pre}{counters[pre]}"
             _register(mask, surface, assigned[surface])
-        hits.append({"text": surface, "type": r.entity_type, "score": round(r.score, 2),
+        hits.append({"text": surface, "type": etype, "score": round(float(score), 2),
                      "pseudo": assigned[surface]})
 
     # Replace longest surfaces first so "John Smith" goes before "John".
