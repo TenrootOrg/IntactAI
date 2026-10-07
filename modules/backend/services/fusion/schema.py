@@ -82,7 +82,7 @@ def _union(dst: list, src: list) -> None:
                 dst.append(x)
 
 
-def _union_evidence(dst: list, src: list) -> None:
+def _union_evidence(dst: list, src: list, seen: set | None = None) -> None:
     """Order-preserving union of EvidenceRefs, keyed on (module, run_id, locator).
 
     Sources and flags were unioned and evidence was extend()ed unconditionally.
@@ -103,7 +103,8 @@ def _union_evidence(dst: list, src: list) -> None:
     pressing the button twice would have seen a finding gain corroboration it
     never earned.
     """
-    seen = {(e.module, e.run_id, e.locator) for e in dst}
+    if seen is None:
+        seen = {(e.module, e.run_id, e.locator) for e in dst}
     for e in src:
         k = (e.module, e.run_id, e.locator)
         if k not in seen:
@@ -291,6 +292,20 @@ class FusionGraph:
     _rel_index: dict[tuple[str, str, str], int] = field(default_factory=dict, repr=False)
     _src_index: dict[str, list] = field(default_factory=dict, repr=False)
     _dst_index: dict[str, list] = field(default_factory=dict, repr=False)
+    # entity id -> [its evidence list, that list's length, the keys in it], kept
+    # between merges. Rebuilding the key set on every merge made a fuse
+    # quadratic in the rows one entity collects: 2026-10-07, 204,353 logon
+    # events with one user in 168,094 of them sat in "building case graph" for
+    # 15+ minutes at 100% CPU. Revalidated by list identity and length, so a
+    # list replaced or trimmed elsewhere is simply re-read.
+    _ev_seen: dict[str, list] = field(default_factory=dict, repr=False)
+
+    def _evidence_keys(self, ent: "Entity") -> list:
+        c = self._ev_seen.get(ent.id)
+        if c is None or c[0] is not ent.evidence or c[1] != len(ent.evidence):
+            c = [ent.evidence, len(ent.evidence), {(x.module, x.run_id, x.locator) for x in ent.evidence}]
+            self._ev_seen[ent.id] = c
+        return c
 
     # -- entity merge (forensic-integrity preserving) ----------------------
     def upsert(self, e: Entity) -> Entity:
@@ -300,7 +315,9 @@ class FusionGraph:
             return e
         _union(cur.sources, e.sources)
         _union(cur.flags, e.flags)
-        _union_evidence(cur.evidence, e.evidence)
+        _c = self._evidence_keys(cur)
+        _union_evidence(cur.evidence, e.evidence, _c[2])
+        _c[1] = len(cur.evidence)
         cur.anomaly = max(cur.anomaly, e.anomaly)
         cur.first_seen = _wider(cur.first_seen, e.first_seen, want_min=True)
         cur.last_seen = _wider(cur.last_seen, e.last_seen, want_min=False)
