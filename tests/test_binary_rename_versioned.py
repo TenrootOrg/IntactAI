@@ -18,7 +18,8 @@ for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "modules/backend")):
 
 import _optional_deps  # noqa: F401,E402
 from services.fusion import correlate  # noqa: E402
-from services.fusion.mappers.agentic import _same_program, map_agentic  # noqa: E402
+from services.fusion.mappers.agentic import map_agentic  # noqa: E402
+from services.fusion.weighting import installer_of_same_program as _same_program  # noqa: E402  (catalogue check)
 
 ART = "DetectRaptor.Windows.Detection.BinaryRename"
 SHA = "e0a76fd8" + "0" * 56
@@ -31,10 +32,14 @@ def row(name, original, sha=SHA, host="SRV1"):
 
 
 class TheRule(unittest.TestCase):
-    def test_versioned_and_installer_names_are_the_same_program(self):
+    def test_installer_downloads_of_the_program_are_not_renames(self):
         for name in ("winrar-x64-611.exe", "winrar-x64-700b3 (1).exe", "WinRAR_7.01.exe", "putty-64bit-0.81-installer.msi"):
             orig = "WinRAR.exe" if "inrar" in name.lower() else "PuTTY.exe"
             self.assertTrue(_same_program(name, orig), name)
+
+    def test_the_tool_itself_is_not_excused(self):
+        # procdump64.exe is ProcDump's own 64-bit binary -- a dual-use tool, rated as detected
+        self.assertFalse(_same_program("procdump64.exe", "procdump"))
 
     def test_a_different_name_is_still_a_rename(self):
         self.assertFalse(_same_program("svchost.exe", "mimikatz.exe"))

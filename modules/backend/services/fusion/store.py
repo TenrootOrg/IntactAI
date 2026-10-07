@@ -2135,6 +2135,14 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     _plog("Refusion · graph built", "info",
           f"{len(g.entities):,} entities, {len(g.relationships):,} links, "
           f"{len(g.findings):,} findings", pct=80)
+    # What the weighting catalogue changed (config/fusion_weighting.yaml): said in
+    # the Log so a lowered detection is never a silent one.
+    _wt = getattr(g, "weighting", None) or {}
+    if _wt:
+        _plog("Refusion · weighting rules applied", "info",
+              f"{sum(_wt.values()):,} item(s) re-weighed by {len(_wt)} rule(s): "
+              + ", ".join(f"{k} ({v:,})" for k, v in sorted(_wt.items(), key=lambda kv: -kv[1])[:10])
+              + " — see config/fusion_weighting.yaml", pct=80)
     # An artifact can be collected, mapped and still contribute nothing, because
     # everything it produced sits below the case's severity floor (installed
     # software is "low"). Silently, that reads as "the artifact is missing".

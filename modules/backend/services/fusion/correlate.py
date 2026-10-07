@@ -22,6 +22,7 @@ from .schema import FusionGraph, Finding, EvidenceRef, fusion_tick, _PROGRESS, _
 from . import schema as _schema
 from . import severity as sev
 from . import keys
+from . import weighting as _weighting
 
 
 # Which version of the fusion ENGINE built a graph. Bump it whenever a change alters
@@ -176,6 +177,13 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _PROGRESS.set(progress)            # this thread's listener for fusion_tick (None: nobody)
     _skips: dict = {}                  # where -> (rows skipped by the mapper, first error)
     _MAP_SKIPS.set(_skips)
+    # What each detection is worth: config/fusion_weighting.yaml (+ this box's
+    # local rules). Unreadable -> everything stays as mapped, and the case says so.
+    _wcat = _weighting.load()
+    _werrs: dict = {}
+    _whits: dict = {}
+    if _wcat.get("error"):
+        _record_error(_errs, "weighting catalogue (rules not applied)", RuntimeError(_wcat["error"]))
     _below: dict = {}                  # artifact -> rows dropped by the severity floor
     pending_rels = []
     _held: dict = {}            # in the window but below the severity floor
@@ -219,7 +227,10 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
                 _clean = _schema.sanitize_entity(e)
                 if _clean is None:
                     raise ValueError(f"not an entity with a usable id ({type(e).__name__})")
-                e = _clean
+                e = _weighting.apply_entity(_clean, _wcat, _werrs)
+                _wr = (e.attrs or {}).get("weighting")
+                if _wr:
+                    _whits[_wr["rule"]] = _whits.get(_wr["rule"], 0) + 1
                 if e.type not in _STRUCTURAL_TYPES and e.first_seen:
                     eff = sev.max_level(e.severity, sev.from_anomaly(e.anomaly))
                     if not in_window(e.first_seen, window):
@@ -294,7 +305,8 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_derive_findings", lambda: _derive_findings(g, baseline=baseline, window=window))
     _guarded(_errs, "_coordinated_activity", lambda: _coordinated_activity(g, window=window, baseline=baseline))
     _guarded(_errs, "_collapse_recurring_bursts", lambda: _collapse_recurring_bursts(g))
-    _guarded(_errs, "_fold_maintenance", lambda: _fold_maintenance(g))
+    _guarded(_errs, "weighting patterns",
+             lambda: _whits.update(_weighting.apply_patterns(g, _wcat, _werrs)))
     _guarded(_errs, "_recover_mitre_from_text", lambda: _recover_mitre_from_text(g))               # after EVERY finding exists
     _guarded(_errs, "_mitre_from_rule_titles", lambda: _mitre_from_rule_titles(g))                 # titles with no id in them
     _guarded(_errs, "_corroboration", lambda: _corroboration(g))
@@ -309,6 +321,10 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
         g.findings.sort(key=lambda f: (g.before_current_name(f), -sev.rank(f.severity), f.ts or "9999"))
     except Exception as _e:                                   # noqa: BLE001
         _record_error(_errs, "sort findings", _e)
+    for _rid, _msg in sorted(_werrs.items()):
+        _record_error(_errs, f"weighting rule {_rid} (skipped)", RuntimeError(_msg))
+    # Rules that changed something, for the caller to report: {rule id: items}.
+    g.weighting = {k: v for k, v in _whits.items() if v}
     # Rows the severity floor kept out, per artifact, for the caller to report.
     g.below_floor = dict(_below)
     return g
@@ -2059,6 +2075,7 @@ def _collapse_recurring_bursts(g: FusionGraph) -> None:
 # host, many times over months, about an object that differs only by numbers
 # (versions, build ids). Folded into one LOW row that still shows count and span;
 # a one-off, a new object or a critical row is never folded.
+# Defaults; config/fusion_weighting.yaml (pattern rule recurring-maintenance) sets them.
 MAINT_MIN_EPISODES = 6
 MAINT_MIN_SPAN_DAYS = 60
 MAINT_SAME_SHARE = 0.8          # share of episodes whose object must normalise alike
@@ -2074,7 +2091,13 @@ def _maintenance_signature(g, f) -> str:
     return ""
 
 
-def _fold_maintenance(g: FusionGraph) -> None:
+@_weighting.pattern("recurring_maintenance")
+def _fold_maintenance(g: FusionGraph, params: dict | None = None) -> int:
+    p = params or {}
+    min_eps = int(p.get("min_episodes", MAINT_MIN_EPISODES))
+    min_span = int(p.get("min_span_days", MAINT_MIN_SPAN_DAYS))
+    share = float(p.get("same_share", MAINT_SAME_SHARE))
+    to_sev = str(p.get("severity", "low"))
     groups: dict = {}
     for f in g.findings:
         if f.kind == "single" and not getattr(f, "recurring", None) and f.ts \
@@ -2082,16 +2105,16 @@ def _fold_maintenance(g: FusionGraph) -> None:
             groups.setdefault((tuple(sorted(f.asset_ids or [])), _detection_name(f)), []).append(f)
     drop, new = set(), []
     for (assets, name), eps in groups.items():
-        if len(eps) < MAINT_MIN_EPISODES:
+        if len(eps) < min_eps:
             continue
         eps.sort(key=lambda f: keys.to_utc_dt(f.ts))
         first, last = eps[0], eps[-1]
         span = (keys.to_utc_dt(last.occ_latest or last.ts) - keys.to_utc_dt(first.ts)).days
-        if span < MAINT_MIN_SPAN_DAYS:
+        if span < min_span:
             continue
         sigs = [_maintenance_signature(g, f) for f in eps]
         common = max(set(sigs), key=sigs.count)
-        if not common or sigs.count(common) < MAINT_SAME_SHARE * len(eps):
+        if not common or sigs.count(common) < share * len(eps):
             continue
         same = [f for f, s in zip(eps, sigs) if s == common]
         host = first.title.rsplit(" on ", 1)[1] if " on " in first.title else ""
@@ -2104,7 +2127,7 @@ def _fold_maintenance(g: FusionGraph) -> None:
             id=same[0].id,
             title=(f"{name} (recurring maintenance, {len(same)}× over {span} days) on {host}"
                    if host else f"{name} (recurring maintenance, {len(same)}×)"),
-            severity="low",
+            severity=to_sev,
             confidence=same[0].confidence,
             summary=(f"{name} matched {len(same)} times between {same[0].ts} and {latest} "
                      f"({hits} hit(s)), each time about the same object with only numbers "
@@ -2121,6 +2144,7 @@ def _fold_maintenance(g: FusionGraph) -> None:
         drop.update(f.id for f in same)
     if new:
         g.findings = [f for f in g.findings if f.id not in drop] + new
+    return len(drop)
 
 
 def _detection_name(f) -> str:

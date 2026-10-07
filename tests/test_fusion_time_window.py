@@ -56,6 +56,9 @@ def _load_in_window(keys_mod):
     schema._MAP_SKIPS = None                           # mapper skip counts (2026-10-07)
     sys.modules["_fuse_pkg.schema"] = schema
     sys.modules["_fuse_pkg.severity"] = types.ModuleType("_fuse_pkg.severity")
+    weighting = types.ModuleType("_fuse_pkg.weighting")      # the rules catalogue (2026-10-07)
+    weighting.pattern = lambda name: (lambda fn: fn)
+    sys.modules["_fuse_pkg.weighting"] = weighting
     mod = types.ModuleType("_fuse_pkg.correlate")
     mod.__package__ = "_fuse_pkg"
     _exec(CORRELATE, mod)

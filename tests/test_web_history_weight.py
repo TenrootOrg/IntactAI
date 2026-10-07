@@ -21,38 +21,12 @@ for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "modules/backend")):
 
 import _optional_deps  # noqa: F401,E402
 from services.fusion import correlate  # noqa: E402
-from services.fusion.mappers.agentic import _web_weight, map_agentic  # noqa: E402
-from services.fusion.severity import from_anomaly  # noqa: E402
+from services.fusion.mappers.agentic import map_agentic  # noqa: E402
 
 ART = "DetectRaptor.Windows.Detection.Webhistory"
-
-
-def sev(cat, dom):
-    return from_anomaly(_web_weight(cat, dom))
-
-
-class TheCategoryDecides(unittest.TestCase):
-    def test_everyday_tools_are_informational(self):
-        self.assertEqual(sev("Archive Utilities", "www.7-zip.org"), "informational")
-
-    def test_common_context_dependent_categories_are_low(self):
-        for cat, dom in (("RMM", "www.teamviewer.com"), ("Phishing Hosting", "drive.google.com"),
-                         ("URL Shortener", "tinyurl.com"), ("TLD", "moridim.xyz"),
-                         ("Direct IP address", "84.110.121.170")):
-            self.assertEqual(sev(cat, dom), "low", cat)
-
-    def test_what_deserves_a_look_is_medium(self):
-        for cat, dom in (("Malware Hosting and Exfiltration", "pastebin.com"),
-                         ("Enumeration", "www.advanced-ip-scanner.com"),
-                         ("TLD", "ljzq.lzqmjakbblmvy.top")):          # generated-looking name
-            self.assertEqual(sev(cat, dom), "medium", dom)
-
-    def test_local_addresses_are_informational(self):
-        for ip in ("169.254.95.118", "10.1.2.3", "192.168.1.1", "127.0.0.1"):
-            self.assertEqual(sev("Direct IP address", ip), "informational", ip)
-
-    def test_an_unknown_category_is_never_silently_downgraded(self):
-        self.assertEqual(sev("Some Category Added Next Year", "x.example"), "medium")
+# The per-category weights are rules in config/fusion_weighting.yaml; their
+# examples run in test_fusion_weighting_catalogue.py. This file checks them end
+# to end: mapper -> catalogue -> cross-host grading.
 
 
 def visit(host, cat, dom):

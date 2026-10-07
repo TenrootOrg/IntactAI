@@ -185,69 +185,6 @@ def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None,
                   last_seen=first, flags=list(flags or []))
 
 
-# DetectRaptor.Webhistory flags a visit by CATEGORY, and every flagged visit used
-# to score 40 (high) whatever the category said. 2026-10-07, a real two-server
-# case: ~70 "high" rows for 7-zip.org, drive.google.com, canva.com, TeamViewer and
-# admins opening device panels by IP -- they buried the handful worth a look
-# (pastebin, mega.nz, a random .top domain) and the report read them as C2.
-# Weight is by what the category MEANS, matched on words so a new or renamed
-# category lands sensibly; first match wins. A category that matches nothing
-# stays MEDIUM: an unknown label is never silently downgraded.
-_WEB_CATEGORY_WEIGHT = (
-    (("offensive", "exploit", "c2", "command and control", "credential", "hacking",
-      "malware", "exfiltrat", "stealer", "ransom"), 12),          # medium: worth a look
-    (("enumeration", "scanner", "recon"), 10),                     # medium: recon tooling
-    (("rmm", "remote", "phishing host", "file shar", "shortener", "direct ip",
-      "cloud storage", "paste", "tld"), 1),                        # low: common, context-dependent
-    (("archive", "utilit", "download", "software", "browser"), 0),  # informational: everyday tools
-)
-_WEB_UNKNOWN_WEIGHT = 10
-_VOWELS = set("aeiou")
-
-
-def _random_label(domain) -> bool:
-    """A registrable label that reads like a generated string (lzqmjakbblmvy):
-    long and nearly vowel-free. ponytail: vowel ratio, not a DGA model."""
-    parts = [p for p in str(domain or "").lower().split(".") if p]
-    label = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
-    letters = [c for c in label if c.isalpha()]
-    return len(letters) >= 8 and sum(c in _VOWELS for c in letters) / len(letters) < 0.25
-
-
-def _web_weight(category, domain) -> int:
-    """Anomaly score for a DetectRaptor web-history hit (see _WEB_CATEGORY_WEIGHT)."""
-    import ipaddress
-    cat = str(category or "").lower()
-    if "direct ip" in cat:
-        try:
-            ip = ipaddress.ip_address(str(domain or "").split(":")[0])
-            if ip.is_private or ip.is_link_local or ip.is_loopback or ip.is_reserved:
-                return 0                    # a device or service on the local network
-        except ValueError:
-            pass
-    if "tld" in cat and _random_label(domain):
-        return 10                           # a generated-looking name on an abused TLD
-    for words, weight in _WEB_CATEGORY_WEIGHT:
-        if any(w in cat for w in words):
-            return weight
-    return _WEB_UNKNOWN_WEIGHT
-
-
-def _same_program(name, original) -> bool:
-    """True when an on-disk name is the ORIGINAL name plus a version / installer /
-    copy suffix: winrar-x64-611.exe, winrar-x64-700b3 (1).exe <- WinRAR.exe.
-    2026-10-07: every WinRAR installer on a real case was a HIGH "Renamed binary"
-    (masquerading, T1036.003). A masquerade renames to a DIFFERENT name
-    (svchost.exe <- mimikatz.exe), which this never excuses; nor a short original
-    (cmd, sc, at), which would prefix-match too much."""
-    def stem(v):
-        v = str(v or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-        v = v.rsplit(".", 1)[0] if "." in v else v
-        return "".join(c for c in v if c.isalnum())
-    n, o = stem(name), stem(original)
-    return len(o) >= 4 and n != o and n.startswith(o)
-
-
 def _artifact_base(name):
     """Normalize a collected-data key to its base artifact name: strip an 'All '
     export prefix and any '/SubSource' suffix -> lowercase base."""
@@ -1025,28 +962,28 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     web_ts = keys.norm_ts(_ad.get("Visit_Date") or _ad.get("Last_Visit_Date")) or ts
                     if web_ts and web_ts < "2000":
                         web_ts = None
-                    _w = None                       # the category's weight, when the visit is flagged
+                    dname = None
                     if detn or cat:
                         dname = (detn.get("Category") if isinstance(detn, dict) else detn) or cat or "web"
-                        _w = _web_weight(dname, dom)
                         title = f"Web: {str(dname)[:30]} — {str(dom)[:40]}" if dom else f"Web: {str(dname)[:40]}"
                         eid = keys.event_key(asset, f"webdet:{dname}:{dom}", f"{dom}")
                         ents.append(_ent(eid, "event", title, asset, run_id, loc,
-                                         anomaly=_w, first=web_ts,
-                                         artifact=artifact,
+                                         anomaly=40, first=web_ts, artifact=artifact,
                                          flags=["detection", "web"], title=title,
-                                         category=str(cat) if cat else None,
+                                         category=str(dname) if dname else None,
                                          domain=str(dom) if dom else None,
                                          browser=F.get(r, "BrowserArtifact", default=None)))
                     url = F.get(r, "Url", "URL", "Name", "Domain", "Host", default=None)
                     kind = keys.classify_indicator(url) if url else None
                     if kind:
                         iid = keys.ioc_id(kind, url)
-                        # The domain carries its visit's weight: an archive-tool site is
-                        # context (0) and never a "seen on N hosts" finding of its own.
-                        ents.append(_ent(iid, "ioc", str(url), asset, run_id, loc,
-                                         anomaly=1 if _w is None else _w,
-                                         ioc_kind=kind, first=ts, artifact=artifact))
+                        # The visit's category rides on the domain too, so the weighting
+                        # catalogue (config/fusion_weighting.yaml) weighs both alike: an
+                        # everyday site is context, never a "seen on N hosts" of its own.
+                        ents.append(_ent(iid, "ioc", str(url), asset, run_id, loc, anomaly=1,
+                                         ioc_kind=kind, first=ts, artifact=artifact,
+                                         category=str(dname) if dname else None,
+                                         domain=str(dom) if dom else None))
 
                 # ---- persistence: services / autoruns / scheduled tasks ------
                 elif any(k in an for k in ("autoruns", "services", "scheduledtask",
@@ -1277,12 +1214,9 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     _vi = r.get("VersionInformation") if isinstance(r.get("VersionInformation"), dict) else {}
                     _orig = _vi.get("OriginalFilename") or _vi.get("InternalName")
                     eid = keys.event_key(asset, f"binrename:{name or path}", f"{path}")
-                    _versioned = _same_program(name or path, _orig)
                     ents.append(_ent(eid, "event", title, asset, run_id, loc,
-                                     anomaly=0 if _versioned else 50, first=btime,
-                                     artifact=artifact,
-                                     flags=(["detection", "versioned_copy"] if _versioned
-                                            else ["detection", "masquerading"]), title=title,
+                                     anomaly=50, first=btime, artifact=artifact,
+                                     flags=["detection", "masquerading"], title=title,
                                      original_name=str(_orig) if _orig else None,
                                      name=str(name) if name else None,
                                      path=str(path) if path else None,
@@ -1408,12 +1342,13 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     _sa = {"source_name": str(_sn)} if _sn else {}
                     # execution-evidence hashes are benign context (anomaly 0, never
                     # auto cross-host); detection hashes (binaryrename) stay suspicious --
-                    # unless the "rename" is the same program's versioned/installer name.
+                    # the weighting catalogue decides exceptions, from the names below.
                     _vi2 = r.get("VersionInformation") if isinstance(r.get("VersionInformation"), dict) else {}
-                    _copy = "binaryrename" in an and _same_program(
-                        F.get(r, "Name", default=None), _vi2.get("OriginalFilename") or _vi2.get("InternalName"))
+                    if _vi2.get("OriginalFilename") or _vi2.get("InternalName"):
+                        _sa["original_name"] = str(_vi2.get("OriginalFilename") or _vi2.get("InternalName"))
+                        _sa["name"] = str(F.get(r, "Name", default="") or "")
                     ents.append(_ent(iid, "ioc", h, asset, run_id, loc,               # full hash (IOC appendix)
-                                     anomaly=0 if (is_exec or _copy) else 10, ioc_kind="hash",
+                                     anomaly=0 if is_exec else 10, ioc_kind="hash",
                                      first=ts, full_hash=h, **_hash_attrs(r), **_sa, artifact=artifact))
             except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
                 map_skip(artifact, _x)

@@ -1,0 +1,120 @@
+# Fusion weighting rules -- what a detection is WORTH.
+#
+# Read by services/fusion/weighting.py at every fuse (no restart, no DB). A box can
+# add its own rules, or switch shipped ones off, in <data>/fusion_weighting.local.yaml
+# (same format, checked FIRST; `disable: [rule-id, ...]`). See weighting.py.
+#
+# RULES OF THE ROAD
+# - Generic: match on what a thing IS or DOES (a category's words, a name pattern,
+#   a numbers-only difference), never on one vendor or one domain.
+# - Lowering is for things that are ordinary on their own; anything that stays
+#   worth a look must stay visible (low, not gone). Unknown input never goes down.
+# - Every rule says WHY (reason) and proves itself (examples). The examples run in
+#   tests/test_fusion_weighting_catalogue.py -- a rule without one fails the build.
+#
+# entity_rules: first match wins, top to bottom.
+#   when: artifact (glob, any of), type (any of), flags_any, attr_words {attr: [words]},
+#         attr_regex {attr: regex}, check (weighting.CHECKS) + args [attr, ...]
+#   then: anomaly (score; >=100 critical, >=20 high, >=10 medium, >=1 low, 0 info)
+#         or severity; add_flags; remove_flags
+# Origin of the first rules: 2026-10-07, a real two-server admin case where 133 of
+# 148 findings were HIGH and the report called an agent updater a backdoor.
+
+version: 1
+
+entity_rules:
+
+  # ---- web history (DetectRaptor.Webhistory) ---------------------------------
+  # The detection names a CATEGORY; every hit used to score high whatever it said.
+  - id: web-local-address
+    reason: "a direct-IP visit to an address on the local network (a device's own page)"
+    when: {artifact: "*webhistory*", type: [event, ioc], attr_words: {category: [direct ip]},
+           check: local_ip, args: [domain]}
+    then: {anomaly: 0}
+    examples:
+      - {artifact: DetectRaptor.Windows.Detection.Webhistory, type: event,
+         attrs: {category: Direct IP address, domain: 169.254.95.118}, expect: informational}
+      - {artifact: DetectRaptor.Windows.Detection.Webhistory, type: event,
+         attrs: {category: Direct IP address, domain: 192.168.1.1}, expect: informational}
+
+  - id: web-generated-name-on-abused-tld
+    reason: "a generated-looking name on a top-level domain often abused for malware"
+    when: {artifact: "*webhistory*", type: [event, ioc], attr_words: {category: [tld]},
+           check: random_label, args: [domain]}
+    then: {anomaly: 12}
+    examples:
+      - {artifact: DetectRaptor.Windows.Detection.Webhistory, type: event,
+         attrs: {category: TLD, domain: ljzq.lzqmjakbblmvy.top}, expect: medium}
+
+  - id: web-malicious-purpose
+    reason: "a site category used for malware hosting, exfiltration, credentials or offensive tooling"
+    when: {artifact: "*webhistory*", type: [event, ioc],
+           attr_words: {category: [offensive, exploit, c2, command and control, credential, hacking,
+                                   malware, exfiltrat, stealer, ransom]}}
+    then: {anomaly: 12}
+    examples:
+      - {artifact: DetectRaptor.Windows.Detection.Webhistory, type: event,
+         attrs: {category: Malware Hosting and Exfiltration, domain: pastebin.com}, expect: medium}
+
+  - id: web-recon-tooling
+    reason: "a network scanner or reconnaissance tool's site"
+    when: {artifact: "*webhistory*", type: [event, ioc], attr_words: {category: [enumeration, scanner, recon]}}
+    then: {anomaly: 10}
+    examples:
+      - {artifact: DetectRaptor.Windows.Detection.Webhistory, type: event,
+         attrs: {category: Enumeration, domain: www.advanced-ip-scanner.com}, expect: medium}
+
+  - id: web-common-context-dependent
+    reason: "a common site category that matters only in context (remote support, shared hosting, shorteners, direct IP, cheap TLDs)"
+    when: {artifact: "*webhistory*", type: [event, ioc],
+           attr_words: {category: [rmm, remote, phishing host, file shar, shortener, direct ip,
+                                   cloud storage, paste, tld]}}
+    then: {anomaly: 1}
+    examples:
+      - {artifact: DetectRaptor.Windows.Detection.Webhistory, type: event,
+         attrs: {category: RMM, domain: www.teamviewer.com}, expect: low}
+      - {artifact: DetectRaptor.Windows.Detection.Webhistory, type: event,
+         attrs: {category: Phishing Hosting, domain: drive.google.com}, expect: low}
+      - {artifact: DetectRaptor.Windows.Detection.Webhistory, type: ioc,
+         attrs: {category: Direct IP address, domain: 84.110.121.170}, expect: low}
+
+  - id: web-everyday-tools
+    reason: "an everyday tool's website (archivers, utilities, downloads)"
+    when: {artifact: "*webhistory*", type: [event, ioc],
+           attr_words: {category: [archive, utilit, download, software, browser]}}
+    then: {anomaly: 0}
+    examples:
+      - {artifact: DetectRaptor.Windows.Detection.Webhistory, type: ioc,
+         attrs: {category: Archive Utilities, domain: www.7-zip.org}, expect: informational}
+
+  - id: web-unknown-category
+    reason: "a web category this catalogue does not know yet -- kept at medium, never silently lowered"
+    when: {artifact: "*webhistory*", type: [event, ioc], attr_regex: {category: "."}}
+    then: {anomaly: 10}
+    examples:
+      - {artifact: DetectRaptor.Windows.Detection.Webhistory, type: event,
+         attrs: {category: Some Category Added Next Year, domain: x.example}, expect: medium}
+
+  # ---- renamed binaries (DetectRaptor.BinaryRename) --------------------------
+  - id: installer-of-same-program
+    reason: "a downloaded installer of the program (its own name plus a version or setup word), not a rename"
+    when: {artifact: "*binaryrename*", type: [event, ioc], check: installer_of_same_program,
+           args: [name, original_name]}
+    then: {anomaly: 0, add_flags: [installer_copy], remove_flags: [masquerading]}
+    examples:
+      - {artifact: DetectRaptor.Windows.Detection.BinaryRename, type: event, flags: [detection, masquerading],
+         attrs: {name: winrar-x64-611.exe, original_name: WinRAR.exe}, expect: informational}
+      - {artifact: DetectRaptor.Windows.Detection.BinaryRename, type: event, flags: [detection, masquerading],
+         attrs: {name: "putty-64bit-0.81-installer.msi", original_name: PuTTY.exe}, expect: informational}
+      # the TOOL itself under its usual name stays as rated (dual-use: credential dumping)
+      - {artifact: DetectRaptor.Windows.Detection.BinaryRename, type: event, flags: [detection, masquerading],
+         anomaly: 50, attrs: {name: procdump64.exe, original_name: procdump}, expect: high}
+      - {artifact: DetectRaptor.Windows.Detection.BinaryRename, type: event, flags: [detection, masquerading],
+         anomaly: 50, attrs: {name: svchost.exe, original_name: mimikatz.exe}, expect: high}
+
+pattern_rules:
+
+  - id: recurring-maintenance
+    pattern: recurring_maintenance
+    reason: "the same detection on the same host for months, about an object that differs only by numbers -- software updating itself"
+    params: {min_episodes: 6, min_span_days: 60, same_share: 0.8, severity: low}
