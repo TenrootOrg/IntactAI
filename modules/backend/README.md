@@ -32,6 +32,7 @@ backend/
 │   ├── velociraptor_service.py # Velociraptor gRPC operations
 │   ├── kape_service.py         # KAPE collection
 │   ├── plaso_service.py        # Plaso processing
+│   ├── presidio_masker.py      # Presidio name masking (runs the intact-presidio sidecar)
 │   └── timesketch_service.py   # Timesketch import
 └── routes/                     # API endpoints (530 lines)
     ├── client_routes.py        # Client management

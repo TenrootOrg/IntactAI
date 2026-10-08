@@ -27,6 +27,17 @@ Plaso
   Source:  https://github.com/log2timeline/plaso
   License: Apache License 2.0
 
+Presidio (presidio-analyzer)
+  Copyright (c) Microsoft Corporation
+  Source:  https://github.com/microsoft/presidio
+  License: MIT License
+
+spaCy and the en_core_web_lg model
+  Copyright (c) Explosion AI GmbH
+  Source:  https://github.com/explosion/spaCy
+           https://github.com/explosion/spacy-models
+  License: MIT License
+
 DFIR-IRIS
   Copyright (c) DFIR-IRIS team
   Source:  https://github.com/dfir-iris/iris-web

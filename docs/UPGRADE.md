@@ -4,8 +4,8 @@ Upgrades run from the shell on the appliance, as root:
 
 ```bash
 sudo bash scripts/upgrade.sh --list                    # what can I upgrade to?
-bash scripts/upgrade.sh --plan intact-20260810         # what would that change?
-sudo bash scripts/upgrade.sh intact-20260810           # online
+bash scripts/upgrade.sh --plan intact-20261008         # what would that change?
+sudo bash scripts/upgrade.sh intact-20261008           # online
 sudo bash scripts/upgrade.sh --package /media/usb/pkg.tar   # air-gapped
 ```
 
@@ -64,7 +64,7 @@ verify the package   sha256, gzip integrity, unsafe-path refusal,
                      per-file checksums, format gate
 plan                 what is installed vs what the package carries,
                      downgrade refusal, disk check
-upgrade each module  intact first, then elk, timesketch, plaso, iris,
+upgrade each module  intact first, then presidio, elk, timesketch, plaso, iris,
                      velociraptor, aws_sigma, o365rc, volweb, portainer
 refresh              Velociraptor artifacts/tools/downloads
 report               what upgraded, what was skipped, what rolled back
@@ -72,7 +72,7 @@ report               what upgraded, what was skipped, what rolled back
 
 Each module is a transaction. If a step fails, that module is rolled back to
 the version it was on and the run continues to the next one — a single broken
-module never leaves the other nine half-upgraded.
+module never leaves the other ten half-upgraded.
 
 ## Exit codes
 
@@ -173,13 +173,13 @@ printed at the end of every run.
 Build the package on a machine with internet access:
 
 ```bash
-bash scripts/prepare_package.sh intact-20260810 /media/usb
+bash scripts/prepare_package.sh intact-20261008 /media/usb
 ```
 
 Carry it across and point `--package` at the file or the directory:
 
 ```bash
-sudo bash scripts/upgrade.sh --package /media/usb/intact-20260810-package.tar
+sudo bash scripts/upgrade.sh --package /media/usb/intact-20261008-package.tar
 ```
 
 Everything comes from the package; nothing is fetched. If the package is

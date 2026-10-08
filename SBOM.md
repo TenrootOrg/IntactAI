@@ -19,7 +19,7 @@ shipped under `data/tools/` — together with their declared licenses.
 
 | Type | Where it appears | Compliance notes |
 |---|---|---|
-| **MIT** | Most Python deps, JS vendored libs, several KAPE tools | Permissive; attribution required on redistribution |
+| **MIT** | Most Python deps, JS vendored libs, several KAPE tools, Presidio, spaCy + `en_core_web_lg` | Permissive; attribution required on redistribution |
 | **Apache-2.0** | TimeSketch, OpenSearch, Plaso, gRPC, requests, OpenAI/Anthropic SDKs, EvtxHussar, WinPMEM, all Velociraptor VQL artifacts | Permissive; NOTICE file required on redistribution |
 | **BSD-2/3-Clause** | Flask, Werkzeug, Jinja2, NumPy, pandas, nginx, YARA, Eric Zimmerman tools | Permissive; attribution required |
 | **PSF-2.0** | aiohappyeyeballs, typing_extensions, parts of greenlet | Permissive; Python license family |
@@ -255,6 +255,13 @@ shipped under `data/tools/` — together with their declared licenses.
 - apt: `rsync` (GPL-3.0), `curl`, `ca-certificates`
 - Bundled Velociraptor v0.76.3 binaries (Linux, macOS, Windows): **AGPL-3.0**
 
+### `intact-presidio:2.2.364` — `modules/presidio/Dockerfile`
+- Base: `python:3.11-slim` (PSF-2.0 + Debian)
+- `presidio-analyzer` 2.2.364 — MIT (Microsoft)
+- `spacy` 3.8.16 — MIT (Explosion AI); model `en_core_web_lg` 3.8.0 — MIT, baked in at build time (no download at runtime)
+- `flask` 3.1.3 — BSD-3-Clause; `phonenumbers` 9.0.40 — Apache-2.0; `tldextract` 5.4.0 — BSD-3-Clause
+- Its own release asset (`intact-<tag>-presidio.tar.gz`); run on demand by the backend, never long-running
+
 ---
 
 ## 7. External binaries downloaded by `install.sh` / `lib/docker.sh`
@@ -326,6 +333,8 @@ shipped under `data/tools/` — together with their declared licenses.
 | IRIS postgres | 12.22 | PostgreSQL License |
 | IRIS RabbitMQ | 3.13.7 | MPL-2.0 |
 | Plaso (log2timeline) | 20260119 | Apache-2.0 |
+| Presidio (presidio-analyzer) | 2.2.364 | MIT |
+| spaCy / en_core_web_lg | 3.8.16 / 3.8.0 | MIT |
 
 ---
 

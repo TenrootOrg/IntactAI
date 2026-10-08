@@ -10,6 +10,8 @@ A comprehensive security platform integrating Velociraptor EDR, ELK Stack, TimeS
 | [Velociraptor](https://github.com/Velocidex/velociraptor) | AGPL-3.0 |
 | [Timesketch](https://github.com/google/timesketch) | Apache-2.0 |
 | [Plaso](https://github.com/log2timeline/plaso) | Apache-2.0 |
+| [Presidio](https://github.com/microsoft/presidio) | MIT |
+| [spaCy](https://github.com/explosion/spaCy) and its `en_core_web_lg` model | MIT |
 | [DFIR-IRIS](https://github.com/dfir-iris/iris-web) | LGPL-3.0 |
 | [DFIR-O365RC](https://github.com/ANSSI-FR/DFIR-O365RC) | GPL-3.0 |
 | [DetectRaptor](https://github.com/mgreen27/DetectRaptor) | Apache-2.0 |
@@ -36,7 +38,7 @@ original.
 
 ```bash
 # 1. Clone the release you want to install (see Releases for the latest tag)
-git clone --branch intact-20260915 https://github.com/TenrootOrg/IntactAI.git intact
+git clone --branch intact-20261008 https://github.com/TenrootOrg/IntactAI.git intact
 
 # Cloning without --branch gets `main`, which is for DEVELOPMENT. The installer
 # still takes its images from a published release — the one main's VERSION file
@@ -64,14 +66,14 @@ On a machine with internet:
 
 ```bash
 # download and unpack the release into the project folder "intact"
-# (to install a different release, replace intact-20260915 with its tag)
-curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260915.tar.gz" -o intact-20260915.tar.gz
-mkdir -p intact && tar -xzf intact-20260915.tar.gz --strip-components=1 -C intact
-bash intact/scripts/prepare_package.sh intact-20260915 .   # writes intact-20260915-package.tar
+# (to install a different release, replace intact-20261008 with its tag)
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20261008.tar.gz" -o intact-20261008.tar.gz
+mkdir -p intact && tar -xzf intact-20261008.tar.gz --strip-components=1 -C intact
+bash intact/scripts/prepare_package.sh intact-20261008 .   # writes intact-20261008-package.tar
 tar -czf intact.tar.gz intact                               # one file to carry across
 ```
 
-Carry **both** `intact.tar.gz` and `intact-20260915-package.tar` across —
+Carry **both** `intact.tar.gz` and `intact-20261008-package.tar` across —
 two files, whatever the transfer medium (USB, DVD, ...). Then on the air-gapped
 box:
 
@@ -79,11 +81,11 @@ box:
 tar -xzf intact.tar.gz
 cd intact
 nano config.yaml                                    # IP/domain and passwords
-sudo bash install.sh --package ../intact-20260915-package.tar
+sudo bash install.sh --package ../intact-20261008-package.tar
 ```
 
 `--package` is repeatable and also takes a directory of per-module assets. If
-Docker is not already installed, carry the release's `intact-20260915-system-bundle.tar`
+Docker is not already installed, carry the release's `intact-20261008-system-bundle.tar`
 too and put it beside the package — it provides the engine and host packages
 offline.
 
@@ -112,6 +114,7 @@ modules.
 | **Memory** | Remote acquisition (AVML / WinPmem), analysed in the VolWeb stack | in Dashboard | — |
 | **Cloud DFIR** | AWS **CloudTrail** and Microsoft 365 / Azure AD **(DFIR-O365RC)** collection + SIGMA detections | in Dashboard | in `intact_backend` |
 | **Plaso** | Super-timeline generation | via TimeSketch | image pulled per job |
+| **Presidio** | Second masking pass: hides person and company names the pattern masker misses before case data reaches an AI model. Always installed; works air-gapped | Case Analysis → Mask → Presidio | `intact_presidio`, started per report, stops when idle |
 | **Scheduler / Blueprints / Agentic** | Scheduled collections, reusable blueprints, agentic quick-wins | in Dashboard | — |
 
 > The search engines — TimeSketch's OpenSearch and ELK's Elasticsearch/Kibana —
@@ -134,7 +137,7 @@ An upgrade runs the **target release's own code** against your live `intact`
 folder — download the release, then run its own `scripts/upgrade.sh` against
 `--root ./intact`. It upgrades only the modules whose version differs, so you
 can jump straight to any newer release in one hop. Every command below is
-copy-paste; **to target a different release, replace `intact-20260915` with
+copy-paste; **to target a different release, replace `intact-20261008` with
 its tag.** Pick the ONE section below that matches your box — each is
 complete on its own, start to finish.
 
@@ -144,9 +147,9 @@ Run this on the box itself:
 
 ```bash
 cd ~
-curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260915.tar.gz" -o intact-20260915.tar.gz
-mkdir -p intact-20260915 && tar -xzf intact-20260915.tar.gz --strip-components=1 -C intact-20260915
-cd ~ && sudo bash intact-20260915/scripts/upgrade.sh intact-20260915 --root ./intact
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20261008.tar.gz" -o intact-20261008.tar.gz
+mkdir -p intact-20261008 && tar -xzf intact-20261008.tar.gz --strip-components=1 -C intact-20261008
+cd ~ && sudo bash intact-20261008/scripts/upgrade.sh intact-20261008 --root ./intact
 ```
 
 ### Air-gapped
@@ -155,23 +158,23 @@ cd ~ && sudo bash intact-20260915/scripts/upgrade.sh intact-20260915 --root ./in
 
 ```bash
 cd ~
-curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260915.tar.gz" -o intact-20260915.tar.gz
-mkdir -p intact-20260915 && tar -xzf intact-20260915.tar.gz --strip-components=1 -C intact-20260915
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20261008.tar.gz" -o intact-20261008.tar.gz
+mkdir -p intact-20261008 && tar -xzf intact-20261008.tar.gz --strip-components=1 -C intact-20261008
 # one file with the engine + every image (add module names for a subset,
 # e.g. add  portainer  as a last argument)
-bash intact-20260915/scripts/prepare_package.sh intact-20260915 .   # -> intact-20260915-package.tar
-tar -czf intact-20260915-checkout.tar.gz intact-20260915            # the release folder, as one file
+bash intact-20261008/scripts/prepare_package.sh intact-20261008 .   # -> intact-20261008-package.tar
+tar -czf intact-20261008-checkout.tar.gz intact-20261008            # the release folder, as one file
 ```
 
-Carry **both** `intact-20260915-checkout.tar.gz` and `intact-20260915-package.tar`
+Carry **both** `intact-20261008-checkout.tar.gz` and `intact-20261008-package.tar`
 to the box — two files, whatever the transfer medium (USB, DVD, ...).
 
 **Step 2 — on the AIR-GAPPED box** (a different machine, a fresh shell):
 
 ```bash
 cd ~
-tar -xzf intact-20260915-checkout.tar.gz
-cd ~ && sudo bash intact-20260915/scripts/upgrade.sh --package intact-20260915-package.tar --root ./intact
+tar -xzf intact-20261008-checkout.tar.gz
+cd ~ && sudo bash intact-20261008/scripts/upgrade.sh --package intact-20261008-package.tar --root ./intact
 ```
 
 Or push-button in the dashboard: **Settings → Online Upgrade / Prepare Package /
@@ -194,10 +197,10 @@ modules are fetched.
 cd ~/intact
 
 # just the platform itself — backend, dashboard, engine (~460 MB)
-# sudo bash scripts/upgrade.sh intact-20260915 --only intact
+# sudo bash scripts/upgrade.sh intact-20261008 --only intact
 
 # the platform plus Velociraptor (755 MB, measured)
-sudo bash scripts/upgrade.sh intact-20260915 --only intact,velociraptor
+sudo bash scripts/upgrade.sh intact-20261008 --only intact,velociraptor
 ```
 
 **Air-gapped** — the same flow as above, with the modules named as the third
@@ -207,27 +210,27 @@ argument to `prepare_package.sh`.
 
 ```bash
 cd ~
-curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260915.tar.gz" -o intact-20260915.tar.gz
-mkdir -p intact-20260915 && tar -xzf intact-20260915.tar.gz --strip-components=1 -C intact-20260915
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20261008.tar.gz" -o intact-20261008.tar.gz
+mkdir -p intact-20261008 && tar -xzf intact-20261008.tar.gz --strip-components=1 -C intact-20261008
 
 # just the platform itself
-# bash intact-20260915/scripts/prepare_package.sh intact-20260915 . intact
+# bash intact-20261008/scripts/prepare_package.sh intact-20261008 . intact
 
 # the platform plus Velociraptor
-bash intact-20260915/scripts/prepare_package.sh intact-20260915 . intact,velociraptor
+bash intact-20261008/scripts/prepare_package.sh intact-20261008 . intact,velociraptor
 
-tar -czf intact-20260915-checkout.tar.gz intact-20260915   # the release folder, as one file
+tar -czf intact-20261008-checkout.tar.gz intact-20261008   # the release folder, as one file
 ```
 
-Carry **both** `intact-20260915-checkout.tar.gz` and `intact-20260915-package.tar`
+Carry **both** `intact-20261008-checkout.tar.gz` and `intact-20261008-package.tar`
 to the box.
 
 **Step 2 — on the AIR-GAPPED box:**
 
 ```bash
 cd ~
-tar -xzf intact-20260915-checkout.tar.gz
-cd ~ && sudo bash intact-20260915/scripts/upgrade.sh --package intact-20260915-package.tar --root ./intact
+tar -xzf intact-20261008-checkout.tar.gz
+cd ~ && sudo bash intact-20261008/scripts/upgrade.sh --package intact-20261008-package.tar --root ./intact
 ```
 
 Notes:
@@ -235,11 +238,11 @@ Notes:
 - **`intact` is always included**, named or not — its asset carries the upgrade
   engine (`source/intact/scripts/upgrade.sh`) that the run hands over to. The log
   says so: `Fetching only: velociraptor intact`.
-- **Module names** are `intact`, `elk`, `timesketch`, `plaso`, `iris`,
+- **Module names** are `intact`, `presidio`, `elk`, `timesketch`, `plaso`, `iris`,
   `velociraptor`, `aws_sigma`, `o365rc`, `volweb`, `portainer`. Anything else is
   rejected with the list.
 - **`--skip <csv>`** is the inverse — upgrade everything except these.
-- **Afterwards the box calls itself `intact-20260915`** even though only some
+- **Afterwards the box calls itself `intact-20261008`** even though only some
   modules moved — `VERSION` is stamped from the tag you upgraded to, not from
   what actually changed. So a box that took `--only intact` reports the same
   version as one that took the whole release, while its Timesketch, ELK and IRIS
