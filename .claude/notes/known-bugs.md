@@ -104,25 +104,28 @@ finding in Case Analysis — not a weighting problem, a missing-detection proble
 - **DLL side-loading (T1574.002).** Stock Win11 logs no DLL loads (needs Sysmon
   EID 7), and the planted pair isn't in HijackLibs' known-abused set.
 
-**Why weighting can't fix it**
-Verified 2026-10-08: the scriptblock content does NOT survive into the stored
-fusion graph. Only ~15 of 150 event entities keep a `details` attr (one exemplar
-per rule/episode, capped at `_EV_DETAILS_CAP=2000`; per-occurrence events keep
-none, deliberately, to avoid bloating a 183k-row collection). `Add-MpPreference`
-appears in NO event's attrs after mapping, so a content-aware entity_rule
-(attr_regex on the command) has nothing to match.
+**Why it is NOT a fusion/weighting fix (proven 2026-10-08)**
+Tried a mapper re-titling heuristic (scan the generic-heuristic rows' scriptblock
+for `Add-MpPreference ... -Exclusion`) and REVERTED it, because the collected data
+cannot carry the signal reliably:
+  1. The PowerShell 4104 event logs the AUTO-GENERATED cmdletization MODULE for
+     `root\Microsoft\Windows\Defender\MSFT_MpPreference` (identical for Get-/
+     Set-/Add-/Remove-MpPreference), split across ~20 scriptblock chunks — not the
+     literal `Add-MpPreference -ExclusionPath "..."` invocation. "Add-MpPreference"
+     and "-ExclusionPath" never co-occur matchably, and the module defines Add/Set/
+     Remove/Get all, so any match that fires would also fire on a benign READ.
+  2. The RELIABLE signal, Microsoft-Windows-Windows Defender/Operational EventID
+     5007 ("configuration changed / exclusion added"), is NOT COLLECTED. The
+     collection only carries channels: PowerShell/Operational, Security, System,
+     Windows PowerShell (verified in the chain01 capture).
 
-**Where to start looking**
-- `modules/backend/services/fusion/mappers/agentic.py:1388-1416` — the detection
-  event builder; `details=raw_details[:_EV_DETAILS_CAP]` on the exemplar only.
-  A fix would preserve a BOUNDED command slice (e.g. ev_cmdline, ~200 chars) on
-  every PowerShell 4104 event, then add a weighting entity_rule that keeps a
-  "Potentially Malicious PwSh" hit at medium when its command matches a curated
-  high-signal set (Add-MpPreference -Exclusion, Set-MpPreference -Disable*, ...).
-  MEASURE graph-size impact first — this is why it was not shipped with the
-  burst/window fixes.
-- Or ship a specific SIGMA/Velociraptor detection (collection-time) for the
-  Defender-exclusion and archive-staging events.
+**The real fix (collection-time, needs a live run to validate)**
+Add the Windows Defender Operational channel (EID 5007/5001/1116...) to the
+Velociraptor collection (the agentic QuickWins blueprint / the EVTX artifact), and
+a SIGMA/Hayabusa rule mapping 5007 -> T1562.001. Same shape for archive-staging:
+needs process-command-line logging (Sysmon EID 1) or a dedicated artifact. These
+are collection/detection-content changes, NOT fusion — the fusion graph never
+receives the evidence.
 
 **Reported by** attack-sim campaign (dev-attack-simulation-rules), 2026-10-08.
 See memory [[attack-sim-campaign-state]].
