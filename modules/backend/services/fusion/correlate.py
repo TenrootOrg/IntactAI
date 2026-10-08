@@ -2367,12 +2367,28 @@ def _lone_medium_detections(g: FusionGraph, *, baseline=None, window=None) -> No
     and never reach here — the noise does not come back with the signal."""
     base_titles = _baseline_sigma_titles(baseline)
     claimed = {i for f in g.findings for i in (f.entity_ids or [])}
+    # Also skip a medium whose Windows record is ALREADY shown by another finding
+    # under a different rule name. Two SIGMA rules matching one log clear (EID 1102
+    # "Security Eventlog Cleared" + "Security Event Log Cleared", or EID 104
+    # "Important Windows Eventlog Cleared" + "Log File Cleared") make two event
+    # entities with DIFFERENT ids but the SAME event-record id (win_id) — so the
+    # exact-id `claimed` check let the medium rule surface a second finding for one
+    # event. One record is one thing that happened; the higher rule already shows it.
+    shown_wids: set = set()
+    for f in g.findings:
+        for i in f.entity_ids or []:
+            e = g.entities.get(i)
+            if e is not None:
+                shown_wids.update((e.attrs or {}).get("win_ids") or [])
     groups: dict = {}
     for e in g.by_type("event"):
         fl = e.flags or []
         if "sigma" not in fl or "context" in fl or e.severity != "medium":
             continue
         if e.id in claimed or not in_window(e.first_seen, window):
+            continue
+        _w = set((e.attrs or {}).get("win_ids") or [])
+        if _w and _w <= shown_wids:                  # every record already on another row
             continue
         title = e.attrs.get("title") or e.label
         if title in base_titles:
