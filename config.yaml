@@ -218,7 +218,7 @@ versions:
   # current regex also fails fast on a missing key —
   # services/upgrade/base.set_module_version_in_config — but this protects
   # the OLD code we can't change in an already-deployed release.)
-  backend: 'intact-20261007'
+  backend: 'intact-20261008'
 
   # Presidio PII NER image (modules/presidio). Its own module and release asset,
   # always installed (no modules.presidio flag) — built by CI as
