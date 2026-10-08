@@ -148,5 +148,24 @@ class DefenderConfigIsDetectedFromLiveState(unittest.TestCase):
         self.assertIn("T1562.001", hit[0].mitre)
 
 
+class BenignHostStaysQuiet(unittest.TestCase):
+    """The tightness guarantee: a benign host — heavy PowerShell-heuristic noise and
+    legitimate IT Defender exclusions — must produce ZERO findings. If any of the
+    noise rules or the Defender severity loosens, this catches it."""
+    def test_noise_and_legit_exclusions_produce_no_findings(self):
+        hay = [{"Timestamp": f"2026-10-07T09:{10 + i % 40:02d}:00Z", "Computer": "WS",
+                "Channel": "Microsoft-Windows-PowerShell/Operational", "EID": 4104,
+                "Level": "medium", "Title": "Potentially Malicious PwSh",
+                "RecordID": 1000 + i, "Details": "benign", "_hostname": "WS",
+                "_client_id": "C.WS"} for i in range(120)]
+        data = {"Windows.Hayabusa.Rules": hay,
+                "Custom.Windows.Detection.DefenderExclusions": [
+                    {"ExclusionType": "Path", "Value": "C:\\Program Files\\App",
+                     "Timestamp": "2026-10-07T09:00:00Z", "_hostname": "WS", "_client_id": "C.WS"}]}
+        ents, rels = map_agentic(data, run_id="r1")
+        g = correlate.assemble("c", [(ents, rels)], ["r1"], min_severity="medium")
+        self.assertEqual([], g.findings, [f.title for f in g.findings])
+
+
 if __name__ == "__main__":
     unittest.main()
