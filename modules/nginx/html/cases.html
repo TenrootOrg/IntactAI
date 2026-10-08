@@ -683,7 +683,7 @@ function render(info,md,g){
   $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
   const mk=info.masking||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
-  const tw=info.time_window||{};
+  const tw=info.effective_window||info.time_window||{};
   $('#main').innerHTML=`
     <div class="outwrap">
       <div class="row" style="justify-content:space-between">
@@ -872,7 +872,11 @@ function renderConfig(info){
   // reads a new timeframe (it becomes a scope); leaving it alone re-fuses the case
   // with whatever else changed.
   const _asc=asList(info.scopes).find(s=>s.active);
-  const tw=(_asc && _asc.id!=='full' && (_asc.window||{}).start) ? _asc.window : (info.time_window||{});
+  // No scope selected: show the window every tab actually narrows to
+  // (effective_window) — the detected-activity span for an auto window — so the
+  // rail matches the Timeline/report and an unedited Refusion stays auto (the
+  // backend treats re-posting the unchanged activity window as "leave it auto").
+  const tw=(_asc && _asc.id!=='full' && (_asc.window||{}).start) ? _asc.window : (info.effective_window||info.time_window||{});
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
   $('#tabc').innerHTML=`
     <div class="cfgwrap">

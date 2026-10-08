@@ -397,6 +397,14 @@ def get_case(case_id):
     report_stale = store.report_behind_runs(case_id, d)   # per scope, not per run
     return jsonify({"case_id": case_id, "name": d.get("name"),
                     "time_window": d.get("time_window"),
+                    # The window every tab actually narrows to: the selected scope's,
+                    # or — for a case whose window the operator never chose — the
+                    # detected-activity span, so a one-minute attack reads as a
+                    # one-minute window instead of the wide default. The bound
+                    # (time_window) stays wide so a re-fuse never drops late data.
+                    "effective_window": store.view_window(d),
+                    "activity_window": d.get("activity_window"),
+                    "time_window_auto": store._window_is_auto(d),
                     "initial_access_estimate": d.get("initial_access_estimate"),
                     "min_severity": d.get("min_severity"),
                     "member_run_ids": d.get("member_run_ids") or [],

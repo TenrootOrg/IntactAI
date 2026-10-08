@@ -637,11 +637,55 @@ def _default_window(created_dt) -> dict:
             "end": created_dt.strftime(fmt)}
 
 
+def _window_is_auto(d) -> bool:
+    """True when the case window is the engine's wide default, not one the operator
+    chose. The default is [creation-10y, creation] (see _default_window): wide so a
+    re-fuse never drops late-arriving evidence. When it is the default, the case
+    DISPLAYS the detected-activity span instead (activity_window) so a one-minute
+    attack is not shown as a ten-year window; the moment the operator edits the
+    window they take control and we show exactly what they set."""
+    if "time_window_auto" in d:
+        return bool(d["time_window_auto"])
+    # Back-compat for cases fused before the flag existed: auto only if the window
+    # still looks like the ~10-year default (end ≈ a decade after start).
+    tw = d.get("time_window") or {}
+    s, e = keys.to_utc_dt(tw.get("start")), keys.to_utc_dt(tw.get("end"))
+    if not s or not e:
+        return False
+    return abs((e - s).total_seconds() - 10 * 365.25 * 86400) < 2 * 86400
+
+
+def _activity_window_from_graph(g, *, pad_seconds=120) -> dict | None:
+    """The span the DETECTED activity occupies — first finding hit to last, padded
+    a little so a boundary row is never clipped. This is the VIEW a case with an
+    auto window narrows to (view_window), so the Timeline, report, Risk and scope
+    cards all show the attack's real timeframe. The fuse BOUND (time_window) stays
+    wide, and this is recomputed from the findings on every fuse — so it can only
+    ever CONTAIN its own findings (nothing is hidden) and it grows by itself as new
+    activity lands. None when nothing in the graph is dated."""
+    from datetime import timedelta
+    ts = []
+    for f in g.findings:
+        for t in (getattr(f, "ts", None), getattr(f, "occ_latest", None)):
+            dt = keys.to_utc_dt(t) if t else None
+            if dt:
+                ts.append(dt)
+    if not ts:
+        return None
+    fmt = "%Y-%m-%dT%H:%M:%S"
+    return {"start": (min(ts) - timedelta(seconds=pad_seconds)).strftime(fmt),
+            "end": (max(ts) + timedelta(seconds=pad_seconds)).strftime(fmt)}
+
+
 def create_case(name, *, time_window=None, initial_access=None,
                 min_severity="medium", member_run_ids=None, is_default=False,
                 is_system=False) -> str:
     from datetime import datetime, timezone
     tw = dict(time_window or {})
+    # Auto = the operator did not choose a window, so the case may display the
+    # detected-activity span instead of the wide default (see _window_is_auto /
+    # view_window). The moment they set one (set_analysis_config) this flips off.
+    _tw_auto = not (tw.get("start") or tw.get("end"))
     # Default the scope to [creation-10y, creation] for normal investigation
     # cases — wide enough to include any real evidence, but with CONCRETE bounds
     # (reproducible, timezone-safe compare). System / default catch-all cases keep
@@ -656,7 +700,7 @@ def create_case(name, *, time_window=None, initial_access=None,
     # case_id=None explicitly so the request's active case doesn't tag it.
     return _ws().create_automation_run(
         automation_type=CASE_TYPE, name=f"Case — {name}", case_id=None,
-        details={"name": name, "time_window": tw,
+        details={"name": name, "time_window": tw, "time_window_auto": _tw_auto,
                  "initial_access_estimate": initial_access, "min_severity": min_severity,
                  "member_run_ids": list(member_run_ids or []),
                  "is_default": bool(is_default), "is_system": bool(is_system),
@@ -2569,6 +2613,17 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   # True when this fuse left the report frozen (triage/
                                   # disposition re-fuse) → UI shows "report not up to date".
                                   "report_dirty": report_dirty}
+    # The detected-activity span: what a case with an auto (unchosen) window
+    # DISPLAYS, so a one-minute attack is shown as a one-minute window, not the
+    # ten-year default bound. Recomputed every fuse from the findings themselves,
+    # so it only ever contains its own findings (nothing hidden) and grows as new
+    # activity lands. The fuse BOUND (time_window) is left wide and untouched.
+    if _window_is_auto(d) and not d.get("is_default") and not d.get("is_system"):
+        try:
+            _aw = _activity_window_from_graph(g)
+            _details["activity_window"] = _aw            # None clears a stale one
+        except Exception:                                # noqa: BLE001 — display only
+            pass
     _report_keys = ("report_md", "report_config_id", "report_written_at",
                     "report_llm_calls", "report_run_ids", "report_dirty")
     # What the report was written FROM — recorded only when this fuse actually
@@ -3177,9 +3232,19 @@ def active_scope_hidden_hosts(d) -> list:
 
 def view_window(d) -> dict | None:
     """What to pass as `window=` to render.*: the scope's when one is selected,
-    otherwise the case's own fuse bound (which the stored graph already satisfies,
-    so passing it again is idempotent — every render.* re-applies it defensively)."""
-    return active_scope_window(d) or (d.get("time_window") or None)
+    otherwise — for a case whose window the operator never chose — the detected
+    activity span, so the Timeline, report, Risk and scope cards show the attack's
+    real timeframe instead of the wide ten-year default. Falls back to the case's
+    own fuse bound (which the stored graph already satisfies, so passing it again is
+    idempotent — every render.* re-applies it defensively)."""
+    sw = active_scope_window(d)
+    if sw:
+        return sw
+    if _window_is_auto(d):
+        aw = d.get("activity_window") or None
+        if aw and aw.get("start"):
+            return aw
+    return d.get("time_window") or None
 
 
 def set_scope_hidden_hosts(case_id, hosts) -> dict:
@@ -4671,7 +4736,22 @@ def set_analysis_config(case_id, cfg) -> dict:
             # window reproducible and timezone-safe. Fall back to 10 years before
             # creation. ('until' may be cleared to mean open-ended.)
             start = _default_window(_case_created_dt(case_id))["start"]
-        patch["time_window"] = {"start": start, "end": tw.get("end")}
+        posted = {"start": start, "end": tw.get("end")}
+        # Posting the activity window UNCHANGED (the rail is pre-filled with it)
+        # is not "the operator chose a window" — it is leaving it auto. Only a
+        # DIFFERENT window takes manual control, pins the bound and stops the
+        # auto-narrowing. This keeps an unedited Refusion on the wide, re-fusion-
+        # safe bound even though the rail shows the narrowed attack timeframe.
+        _cur = get_case(case_id) or {}
+        _aw = _cur.get("activity_window") or {}
+        _unchanged_auto = (_window_is_auto(_cur) and _aw
+                           and (posted.get("start") or "") == (_aw.get("start") or "")
+                           and (posted.get("end") or "") == (_aw.get("end") or ""))
+        if not _unchanged_auto:
+            patch["time_window"] = posted
+            # The operator chose a window: show exactly that from now on, not the
+            # auto-narrowed activity span. (_window_is_auto / view_window.)
+            patch["time_window_auto"] = False
     for k in ("min_severity", "audience", "language", "tlp", "customer_name",
               "customer_logo_b64", "master_prompt", "report_altitude"):
         if cfg.get(k) is not None:
