@@ -7,7 +7,7 @@
 # The order modules are upgraded in. `intact` FIRST and always: it carries the
 # new backend code, the sidecar compose files and the config.yaml merge that
 # every later module reads its pins from. Ported from __init__.py:71-74.
-UPGRADE_ORDER=(intact elk timesketch plaso iris velociraptor aws_sigma o365rc volweb portainer)
+UPGRADE_ORDER=(intact presidio elk timesketch plaso iris velociraptor aws_sigma o365rc volweb portainer)
 
 # module -> "<env file>:<KEY>". The pin that says what is actually RUNNING, as
 # opposed to config.yaml which says what the operator asked for. base.py:1473
@@ -20,6 +20,7 @@ declare -gA _PIN_SOURCE=(
     [volweb]="modules/volweb/.env:VOLWEB_BACKEND_VERSION"
     [portainer]="modules/portainer/.env:PORTAINER_VERSION"
     [plaso]="modules/backend/.env:PLASO_VERSION"
+    [presidio]="modules/backend/.env:PRESIDIO_VERSION"
     [aws_sigma]="modules/backend/.env:CLOUDTRAIL_VERSION"
     [o365rc]="modules/backend/.env:DFIR_O365RC_VERSION"
     [intact]="modules/backend/.env:BACKEND_VERSION"

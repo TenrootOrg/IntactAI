@@ -179,7 +179,7 @@ done
 for _lib in core interrupt helpers report health/core health/probes health/gate \
             plan package args refs \
             modules/shared modules/elk modules/iris modules/portainer modules/volweb \
-            modules/plaso modules/aws_sigma modules/o365rc \
+            modules/plaso modules/presidio modules/aws_sigma modules/o365rc \
             timesketch/postgres timesketch/schema timesketch/health timesketch/timesketch \
             velociraptor/snapshot velociraptor/image velociraptor/velociraptor velo_refresh \
             intact/config intact/tree intact/assets intact/image intact/intact \

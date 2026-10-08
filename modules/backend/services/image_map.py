@@ -22,6 +22,15 @@ PRIMARY_IMAGES = {
     'plaso': [
         ('log2timeline/plaso:{version}', 'plaso-{version}.tar'),
     ],
+    # Presidio PII NER -- our own BUILT image (modules/presidio, spaCy model baked
+    # in), run on demand by the backend like plaso. Its OWN module and asset, not
+    # a passenger on the intact asset: riding intact meant the upgrade never
+    # loaded it (it loads only intact-backend from that asset), and every backend
+    # release re-shipped 1.3 GB that had not changed. The packager BUILDS it
+    # rather than pulling (package.py's presidio branch).
+    'presidio': [
+        ('intact-presidio:{version}', 'intact-presidio-{version}.tar'),
+    ],
     'iris': [
         # iris-worker reuses the same iriswebapp_app image. The DB image
         # is included for air-gap support; data lives in a volume so the
@@ -128,10 +137,6 @@ def image_owner_prefixes():
     # directly by the packager (see the intact-backend / tusd blocks below).
     prefixes['intact-backend-'] = 'intact'
     prefixes['tusd-'] = 'intact'
-    # Presidio PII NER — our own BUILT image (modules/presidio), run on demand by
-    # the backend. Part of the intact asset like tusd, so it rides the backend's
-    # install/upgrade. Mapped here or it is ownerless: never pruned, never budgeted.
-    prefixes['intact-presidio-'] = 'intact'
     # Velociraptor's server image is BUILT locally rather than pulled, so it is
     # in neither table -- the packager names the tar itself. Without this it
     # resolves to no owner and would be excluded from both pruning and the disk

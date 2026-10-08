@@ -1034,39 +1034,6 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
     manifest["contents"]["images"].append(f"intact-backend-{be_tag}.tar")
     log(f"  Backend image exported ({_format_size(os.path.getsize(_out))})", "success")
 
-    # Presidio PII NER image — OUR image, BUILT here (not pulled) from
-    # modules/presidio, with the spaCy model baked in at build time. The backend
-    # runs it ON DEMAND (config.get_presidio_image), so it rides the intact asset
-    # like tusd. BEST-EFFORT: a box without it just loses the NER second pass
-    # (masking.ner falls back to the deterministic mask), so a build/save failure
-    # warns and is skipped rather than failing the whole release — unlike the
-    # backend image above, which is fatal.
-    try:
-        _pres_ver = str((_versions or {}).get('presidio') or '').strip()
-        _pres_model = str((_versions or {}).get('presidio_model') or 'en_core_web_lg').strip()
-        if _pres_ver:
-            _pres_img = f"intact-presidio:{_pres_ver}"
-            _pres_ctx = os.path.join(src_root, "modules", "presidio")
-            _pb = run_command(
-                f"docker build -t {_pres_img} --build-arg PRESIDIO_MODEL={_pres_model} "
-                f"-f {_pres_ctx}/Dockerfile {_pres_ctx}",
-                timeout=1800, logger=None, run_id=run_id)
-            if _pb.get("success"):
-                _pout = f"{package_dir}/images/intact-presidio-{_pres_ver}.tar"
-                _ps = run_command(f"docker save -o {_pout} {_pres_img}",
-                                  timeout=600, logger=None, run_id=run_id)
-                if _ps.get("success"):
-                    manifest["contents"]["images"].append(f"intact-presidio-{_pres_ver}.tar")
-                    log(f"  Presidio image exported ({_format_size(os.path.getsize(_pout))})", "success")
-                else:
-                    log(f"  Presidio image save failed — skipping (best-effort): "
-                        f"{str(_ps.get('error', ''))[:150]}", "warn")
-            else:
-                log(f"  Presidio image build failed — skipping (best-effort): "
-                    f"{str(_pb.get('error', ''))[:150]}", "warn")
-    except Exception as _pe:                              # noqa: BLE001 — never fail the release
-        log(f"  Presidio bundling skipped (best-effort): {_pe}", "warn")
-
     return {"success": True}
 
 
@@ -2384,6 +2351,41 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         f"({type(_te).__name__}: {_te}); air-gap collector "
                         f"generation may fail for tool-backed artifacts",
                         "warning")
+
+            elif module == 'presidio':
+                # Presidio PII NER -- OUR image, BUILT here (never pulled: it is in
+                # no registry) from modules/presidio with the spaCy model baked in,
+                # so the box needs no internet to run it. Its own asset, like plaso:
+                # the backend runs it on demand. Fatal on failure -- it is always
+                # installed, so a release silently without it would ship masking
+                # with no NER pass on every box that installs or upgrades from it.
+                ctx = os.path.join(package_dir, 'source', 'intact', 'modules', 'presidio')
+                if not os.path.isdir(ctx):          # CI: one module per job, no extracted intact
+                    ctx = os.path.join(WORKDIR, 'modules', 'presidio')
+                model = str(((target_versions or {}).get('presidio_model')
+                             or _read_config_yaml_versions().get('presidio_model')
+                             or 'en_core_web_lg')).strip()
+                image = f"intact-presidio:{version}"
+                log(f"  Building {image} (spaCy model {model}) from {ctx}...", "info")
+                built = run_command(
+                    f"docker build -t {image} --build-arg PRESIDIO_MODEL={model} "
+                    f"-f {ctx}/Dockerfile {ctx}",
+                    timeout=1800, logger=None, run_id=run_id)
+                if built.get("cancelled"):
+                    return {"success": False, "error": "cancelled", "cancelled": True}
+                if not built.get("success"):
+                    return {"success": False,
+                            "error": f"presidio image build failed: {str(built.get('error', ''))[:200]}"}
+                tar = f"intact-presidio-{version}.tar"
+                saved = run_command(f"docker save -o {package_dir}/images/{tar} {image}",
+                                    timeout=600, logger=None, run_id=run_id)
+                if not saved.get("success"):
+                    return {"success": False,
+                            "error": f"presidio image save failed: {str(saved.get('error', ''))[:200]}"}
+                manifest["contents"]["images"].append(tar)
+                manifest["versions"][module] = version
+                log(f"  Presidio image exported "
+                    f"({_format_size(os.path.getsize(f'{package_dir}/images/{tar}'))})", "success")
 
             elif module in PRIMARY_IMAGES or module in TRANSITIVE_IMAGES:
                 # Resolve the full image list for this module + record the

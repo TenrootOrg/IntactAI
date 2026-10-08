@@ -65,7 +65,7 @@ Options:
   --velo-refresh        Run only the Velociraptor artifact/tool refresh step.
   --help                This text.
 
-Modules: intact elk timesketch plaso iris velociraptor aws_sigma o365rc
+Modules: intact presidio elk timesketch plaso iris velociraptor aws_sigma o365rc
          volweb portainer
 
 Exit codes:

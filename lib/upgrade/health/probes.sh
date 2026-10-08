@@ -120,5 +120,6 @@ _u_probe_portainer() {
 # Modules with nothing to probe run under policy 'none' and never reach here,
 # but define them so a typo'd policy fails loudly instead of silently passing.
 _u_probe_plaso()     { echo "down plaso has no service to probe"; }
+_u_probe_presidio()  { echo "down presidio has no service to probe"; }
 _u_probe_aws_sigma() { echo "down aws_sigma has no service to probe"; }
 _u_probe_o365rc()    { echo "down o365rc has no service to probe"; }

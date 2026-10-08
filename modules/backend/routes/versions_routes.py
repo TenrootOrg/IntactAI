@@ -32,6 +32,7 @@ _PINS = {
     'volweb':       ('modules/volweb/.env',       'VOLWEB_BACKEND_VERSION', 'intact_volweb_backend'),
     'portainer':    ('modules/portainer/.env',    'PORTAINER_VERSION',      'intact_portainer'),
     'plaso':        ('modules/backend/.env',      'PLASO_VERSION',          None),
+    'presidio':     ('modules/backend/.env',      'PRESIDIO_VERSION',       None),
     'aws_sigma':    ('modules/backend/.env',      'CLOUDTRAIL_VERSION',     None),
     'o365rc':       ('modules/backend/.env',      'DFIR_O365RC_VERSION',    None),
 }

@@ -94,6 +94,7 @@ RELEASE_MODULES = {
     "portainer",
     "timesketch",
     "plaso",
+    "presidio",       # BUILT from modules/presidio, not pulled
     "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
     "volweb",
     "aws_sigma",
@@ -122,7 +123,7 @@ RELEASE_MODULES = {
 # trimmed -- see the banner in main(). Keep both lists in step when a module is
 # genuinely added to or removed from the product.
 _FULL_RELEASE_MODULES = {
-    "intact", "elk", "iris", "timesketch", "plaso",
+    "intact", "elk", "iris", "timesketch", "plaso", "presidio",
     "velociraptor", "volweb", "aws_sigma", "portainer",
 }
 

@@ -14,7 +14,7 @@
 # assume the "intact-<tag>-<module>" shape and parse the tag back out.
 declare -A INTACT_MODULE_DISPLAY=(
     [intact]="Intact.AI platform" [elk]="ELK" [iris]="IRIS"
-    [timesketch]="TimeSketch" [plaso]="Plaso" [velociraptor]="Velociraptor"
+    [timesketch]="TimeSketch" [plaso]="Plaso" [presidio]="Presidio" [velociraptor]="Velociraptor"
     [volweb]="VolWeb" [aws_sigma]="AWS SIGMA rules" [portainer]="Portainer"
 )
 
