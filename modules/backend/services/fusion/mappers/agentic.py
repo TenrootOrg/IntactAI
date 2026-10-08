@@ -153,6 +153,39 @@ def _ps_anomaly(line: str) -> int:
     return 25 if any(p in low for p in _PS_SUSPICIOUS) else 1
 
 
+_DEF_LOLBIN = ("powershell", "pwsh", "cmd.exe", "wscript", "cscript", "mshta",
+               "rundll32", "regsvr32", "certutil", "msbuild", "installutil",
+               "bitsadmin", "wmic", "msiexec")
+_DEF_SUSPECT_DIR = ("\\appdata\\", "\\temp\\", "\\tmp", "\\downloads\\", "\\public\\",
+                    "\\$recycle", "\\windows\\temp", "\\programdata\\temp", "\\perflogs")
+_DEF_EXEC_EXT = {".exe", ".dll", ".ps1", ".bat", ".cmd", ".vbs", ".js", ".jse",
+                 ".scr", ".hta", ".com", "*"}
+
+
+def _defender_exclusion_sev(ex_type, value) -> str:
+    """How suspicious ONE Defender exclusion is, by what/where it excludes — so a
+    host full of legitimate IT exclusions does not generate noise, while the
+    attacker patterns still surface. Attackers exclude their working dir
+    (temp/user-writable), an interpreter (AV blind to powershell.exe), or
+    executables broadly; IT usually excludes an installed app in Program Files.
+    'low' is below the finding floor, so it stays quiet (kept for drill-down only).
+    """
+    v = str(value or "").lower().strip().strip('"')
+    t = str(ex_type or "").lower()
+    if "process" in t:
+        return "high" if any(b in v for b in _DEF_LOLBIN) else "low"
+    if "extension" in t or (v.startswith(".") and len(v) <= 6) or v == "*":
+        return "medium" if v in _DEF_EXEC_EXT else "low"
+    # path exclusion
+    if any(s in v for s in _DEF_SUSPECT_DIR):
+        return "medium"
+    if v.startswith("c:\\program files") or v.startswith("c:\\windows\\") \
+            or "\\programdata\\" in v:
+        return "low"
+    return "medium" if any(k in v for k in ("temp", "tmp", "stage", "loot",
+                                            "dump", "exfil", "perflogs")) else "low"
+
+
 # Hayabusa / SIGMA level -> anomaly. Kept in lock-step with severity.from_anomaly
 # buckets (>=100 crit, >=20 high, >=10 medium, >=1 low) so the anomaly-derived
 # severity AGREES with the explicit SIGMA level (correlate maxes the two).
@@ -590,16 +623,25 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     _disabled = F.get(r, "RealtimeDisabled", "ProtectionDisabled", default=None)
                     if _dv:
                         _dvs = str(_dv)
-                        _did = keys.event_key(asset, f"mpexcl:{_dvs.lower()}")
-                        ents.append(_ent(
-                            _did, "event",
-                            f"Windows Defender Exclusion Configured on {host or asset.split(':')[-1]}",
-                            asset, run_id, loc, anomaly=_level_anomaly("medium"), first=ts,
-                            flags=["sigma", "detection"], title="Windows Defender Exclusion Configured",
-                            level="medium", channel="Defender",
-                            win_ids=[f"mpexcl:{_dvs.lower()}"],
-                            details=f"{(_dt or 'exclusion')}: {_dvs}",
-                            defender_exclusion=_dvs))
+                        # TIGHTEN: not every exclusion is a finding. A legitimate IT
+                        # exclusion (an app in Program Files) stays 'low' and never
+                        # reaches the medium floor, so a host full of them is silent;
+                        # the attacker patterns (temp/staging path, an interpreter
+                        # process, broad executable extensions) surface.
+                        _sv = _defender_exclusion_sev(_dt, _dvs)
+                        if _sv != "low":
+                            _did = keys.event_key(asset, f"mpexcl:{_dvs.lower()}")
+                            _lbl = ("Windows Defender Exclusion for an Interpreter"
+                                    if _sv == "high" else "Windows Defender Exclusion Configured")
+                            ents.append(_ent(
+                                _did, "event",
+                                f"{_lbl} on {host or asset.split(':')[-1]}",
+                                asset, run_id, loc, anomaly=_level_anomaly(_sv), first=ts,
+                                flags=["sigma", "detection"], title=_lbl,
+                                level=_sv, channel="Defender",
+                                win_ids=[f"mpexcl:{_dvs.lower()}"],
+                                details=f"{(_dt or 'exclusion')}: {_dvs}",
+                                defender_exclusion=_dvs))
                     elif str(_disabled).lower() in ("true", "1"):
                         _did = keys.event_key(asset, "mpdisabled")
                         ents.append(_ent(

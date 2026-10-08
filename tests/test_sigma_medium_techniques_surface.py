@@ -121,6 +121,24 @@ class DefenderConfigIsDetectedFromLiveState(unittest.TestCase):
         self.assertEqual("medium", hit[0].severity)
         self.assertIn("T1562.001", hit[0].mitre)
 
+
+    def test_a_benign_program_files_exclusion_does_not_surface(self):
+        # TIGHTEN: a legitimate IT exclusion (installed app) must NOT be a finding,
+        # or a host full of them is noise.
+        fs = self._fuse([{"ExclusionType": "Path", "Value": "C:\\Program Files\\MyApp",
+                          "Timestamp": "2026-10-07T10:03:00Z", "_hostname": HOST,
+                          "_client_id": f"C.{HOST}"}])
+        self.assertEqual([], [t for t in fs if "Defender" in t], list(fs))
+
+    def test_excluding_an_interpreter_is_high(self):
+        fs = self._fuse([{"ExclusionType": "Process", "Value": "powershell.exe",
+                          "Timestamp": "2026-10-07T10:03:00Z", "_hostname": HOST,
+                          "_client_id": f"C.{HOST}"}])
+        hit = [f for t, f in fs.items() if "Interpreter" in t]
+        self.assertEqual(1, len(hit), list(fs))
+        self.assertEqual("high", hit[0].severity)
+        self.assertIn("T1562.001", hit[0].mitre)
+
     def test_disabled_realtime_protection_surfaces_as_high_T1562(self):
         fs = self._fuse([{"RealtimeDisabled": True, "Timestamp": "2026-10-07T10:03:00Z",
                           "_hostname": HOST, "_client_id": f"C.{HOST}"}])
