@@ -84,3 +84,45 @@ and `RestartCount` not climbing) before declaring success.
 **Reported by user** 2026-06-09 session — surfaced during the
 final air-gap apply test of the 5-module transport package after
 the `--pull never` fix (commit 59d6c37).
+
+---
+
+## Detection-content gaps: high-signal actions invisible to Case Analysis
+
+**Symptom**
+Three attacker techniques, run and COLLECTED on a lab Win11 host, surface no
+finding in Case Analysis — not a weighting problem, a missing-detection problem.
+
+- **Defender exclusion via `Add-MpPreference -ExclusionPath` (T1562.001).** The
+  command IS collected (PowerShell 4104 scriptblock, in Windows.Hayabusa.Rules +
+  DetectRaptor.Windows.Detection.Evtx), but the ONLY detection it trips is the
+  generic "Potentially Malicious PwSh" heuristic — which fusion_weighting.yaml
+  correctly downweights to low as noise. So the real defense-evasion action is
+  suppressed with the noise. No specific SIGMA/Hayabusa rule names it.
+- **Archive/staging of loot (`Compress-Archive` → zip, T1560.001).** No
+  collection/detection surfaces it.
+- **DLL side-loading (T1574.002).** Stock Win11 logs no DLL loads (needs Sysmon
+  EID 7), and the planted pair isn't in HijackLibs' known-abused set.
+
+**Why weighting can't fix it**
+Verified 2026-10-08: the scriptblock content does NOT survive into the stored
+fusion graph. Only ~15 of 150 event entities keep a `details` attr (one exemplar
+per rule/episode, capped at `_EV_DETAILS_CAP=2000`; per-occurrence events keep
+none, deliberately, to avoid bloating a 183k-row collection). `Add-MpPreference`
+appears in NO event's attrs after mapping, so a content-aware entity_rule
+(attr_regex on the command) has nothing to match.
+
+**Where to start looking**
+- `modules/backend/services/fusion/mappers/agentic.py:1388-1416` — the detection
+  event builder; `details=raw_details[:_EV_DETAILS_CAP]` on the exemplar only.
+  A fix would preserve a BOUNDED command slice (e.g. ev_cmdline, ~200 chars) on
+  every PowerShell 4104 event, then add a weighting entity_rule that keeps a
+  "Potentially Malicious PwSh" hit at medium when its command matches a curated
+  high-signal set (Add-MpPreference -Exclusion, Set-MpPreference -Disable*, ...).
+  MEASURE graph-size impact first — this is why it was not shipped with the
+  burst/window fixes.
+- Or ship a specific SIGMA/Velociraptor detection (collection-time) for the
+  Defender-exclusion and archive-staging events.
+
+**Reported by** attack-sim campaign (dev-attack-simulation-rules), 2026-10-08.
+See memory [[attack-sim-campaign-state]].
