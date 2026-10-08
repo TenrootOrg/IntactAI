@@ -493,6 +493,32 @@ class CoordinatedActivityIsOneBurst(unittest.TestCase):
                            "Security Eventlog Cleared"]))
         self.assertEqual(1, len(named))
 
+    def test_a_strong_detections_technique_counts_toward_the_burst(self):
+        """A well-detected attack still forms its coordinated-activity summary.
+
+        The strong detections each get a row of their own and are excluded from
+        the burst's leftover members, so measuring technique diversity over the
+        leftovers alone made them look like one technique and the >=2-technique
+        gate dropped the burst — the denser and better-detected the incident, the
+        LESS likely its summary. Diversity is now measured over the whole burst,
+        so three leftover PowerShell mediums (one technique) amid a high LSASS
+        detection (another technique, its own row) are one coordinated burst — and
+        the high is pointed at, never counted in the name."""
+        three_ps_one_technique = ["Suspicious PowerShell Invocation",
+                                  "Powershell Encoded Command", "Malicious PowerShell Commandlets"]
+        self.assertEqual([], self._fuse_window(self._rows("2026-09-01", three_ps_one_technique)),
+                         "guard: those three alone are one technique and never a burst")
+        rows = self._rows("2026-09-01", three_ps_one_technique) + [
+            _sigma("Mimikatz Execution via PowerShell", ts="2026-09-01T07:11:30Z",
+                   level="high", record=99)]
+        coord = self._fuse_window(rows)
+        self.assertEqual(1, len(coord), [f.title for f in coord])
+        self.assertNotIn("Mimikatz", coord[0].title)                # its own row, not a burst member
+        self.assertIn("During this burst, with rows of their own: "
+                      "SIGMA: Mimikatz Execution via PowerShell", coord[0].summary)
+        self.assertIn("T1003", coord[0].mitre)                      # the high detection's technique
+        self.assertIn("T1059", coord[0].mitre)                      # the leftover mediums' technique
+
     def test_a_source_with_no_techniques_needs_more_detections(self):
         few = self._fuse_window(self._rows("2026-09-01", ["Odd Thing A", "Odd Thing B", "Odd Thing C"]))
         self.assertEqual([], few, "nothing maps to a technique — three names prove nothing")

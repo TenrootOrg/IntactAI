@@ -2472,7 +2472,22 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
                 if name and name not in during:
                     during.append(name)
         titles = {e.attrs.get("title") or e.label for e in evs}
-        techs = set().union(*[_event_techniques(e) for e in evs]) if evs else set()
+        # Technique diversity is measured over the WHOLE segment, not just the
+        # leftover events with no row of their own. The strong detections of a
+        # coordinated attack each get their own row (a reg-save SAM, a renamed
+        # lsass.exe, a base64 command) and are therefore "shown" and excluded
+        # from `evs` — so measuring diversity over `evs` alone made a
+        # well-detected attack look like ONE technique (only the unmapped
+        # mediums left), the >=2-technique gate failed, and the burst that ties
+        # the stage rows into one story never formed. The denser and better-
+        # detected the incident, the less likely its summary — backwards. The
+        # shown detections are still NEVER counted in the burst's membership,
+        # name, or count (one event, one row); they are pointed at by "During
+        # this burst, with rows of their own". 2026-10-08, an APTSimulator run:
+        # leftovers = {WMI Persistence, 2 firewall rules, insecure PS policy} =
+        # 1 technique; the whole burst spanned T1003/T1027/T1059/T1070.
+        seg_evs = [e for e, _shown in seg]
+        techs = set().union(*[_event_techniques(e) for e in seg_evs]) if seg_evs else set()
         if techs:
             if len(titles) < COORD_MIN_TITLES or len(techs) < COORD_MIN_TECHNIQUES:
                 continue
