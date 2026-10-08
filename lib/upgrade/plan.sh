@@ -9,6 +9,12 @@
 # every later module reads its pins from. Ported from __init__.py:71-74.
 # No modules.<m>.enabled flag and no operator choice: always present.
 ALWAYS_INSTALLED=(intact presidio)
+# A module that runs whenever its parent does, even when --only does not name
+# it. The dashboard of the release being upgraded FROM builds --only from its
+# own ticks, and it has never heard of a module a newer release introduces --
+# the Import screen shows it as an unticked "install". Without this, every
+# dashboard upgrade onto the first release carrying Presidio would skip it.
+declare -gA FOLLOWS=([presidio]=intact)
 UPGRADE_ORDER=(intact presidio elk timesketch plaso iris velociraptor aws_sigma o365rc volweb portainer)
 
 # module -> "<env file>:<KEY>". The pin that says what is actually RUNNING, as
@@ -204,7 +210,8 @@ plan_build() {
             PLAN_ACTION[$m]="skip:not in this package"
             continue
         fi
-        if [[ -n "$only" ]] && [[ ",${only}," != *",${m},"* ]]; then
+        if [[ -n "$only" ]] && [[ ",${only}," != *",${m},"* ]] \
+           && ! [[ -n "${FOLLOWS[$m]:-}" && ",${only}," == *",${FOLLOWS[$m]},"* ]]; then
             PLAN_ACTION[$m]="skip:excluded by --only"
             continue
         fi

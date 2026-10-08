@@ -180,6 +180,24 @@ test_an_always_installed_module_absent_from_the_box_is_an_upgrade() {
     assert_eq "${PLAN_ACTION[presidio]}" "upgrade"
 }
 
+test_presidio_follows_intact_through_only() {
+    # The old dashboard's --only never names a module it has not heard of.
+    _setup
+    UPKG_VERSIONS[intact]=intact-20261008; PLAN_CURRENT[intact]=intact-20261005
+    UPKG_VERSIONS[presidio]=2.2.364; PLAN_CURRENT[presidio]=""
+    UPGRADE_ONLY="intact,velociraptor"
+    plan_build
+    assert_eq "${PLAN_ACTION[presidio]}" "upgrade"
+}
+
+test_presidio_stays_out_of_a_run_without_intact() {
+    _setup
+    UPKG_VERSIONS[presidio]=2.2.364; PLAN_CURRENT[presidio]=""
+    UPGRADE_ONLY="velociraptor"
+    plan_build
+    assert_contains "${PLAN_ACTION[presidio]}" "excluded by --only"
+}
+
 test_a_module_absent_from_the_package_is_skipped() {
     _setup
     PLAN_CURRENT[volweb]=3.16.0
