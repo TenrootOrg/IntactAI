@@ -234,6 +234,9 @@ SUPPORTED_ARTIFACTS = frozenset({
     "detectraptor.windows.detection.loldriversmalicious",
     "detectraptor.windows.detection.bootloaders",
     "windows.analysis.suspiciouswmiconsumers",
+    # Live Defender config (MSFT_MpPreference via WMI): exclusions + disabled
+    # protection, detected from the host's actual state (see the mapper handler).
+    "custom.windows.detection.defenderexclusions",
     # Windows process listing. Its absence here was an accidental gap, not a
     # policy: the mapper has a full pslist branch, the contract docstring below
     # advertises Windows.System.Pslist, and all three offline-collector profiles
@@ -568,6 +571,45 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                         ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc,
                                          anomaly=50, first=ts, rule=rule, artifact=artifact))
                         rels.append(Relationship(yid, eid, "matched", sources=[MODULE], ts=ts))
+
+                # ---- Windows Defender exclusion / tamper (current config via WMI) ---
+                # Add-MpPreference -ExclusionPath (T1562.001) is a top ransomware
+                # precursor, but it is invisible to the event-log detectors: the 4104
+                # scriptblock logs the cmdletization MODULE (same for read and write),
+                # and the Defender Operational 5007 event is not collected. This reads
+                # the LIVE Defender config (MSFT_MpPreference via WMI), so an exclusion
+                # or a disabled protection is detected from the host's actual state,
+                # whether or not it was ever logged. Medium, not high: legitimate IT
+                # also adds exclusions, so it is a review signal, not an alarm. Dated at
+                # collection time ("present as of this collection") so it windows and
+                # correlates; a synthetic win_id dedups it across re-collections.
+                elif "defenderexclusion" in an or ab == "custom.windows.detection.defenderexclusions":
+                    _dv = F.get(r, "Value", "Exclusion", "ExclusionPath", "ExclusionProcess",
+                                "ExclusionExtension", default=None)
+                    _dt = F.get(r, "ExclusionType", "Type", default=None)
+                    _disabled = F.get(r, "RealtimeDisabled", "ProtectionDisabled", default=None)
+                    if _dv:
+                        _dvs = str(_dv)
+                        _did = keys.event_key(asset, f"mpexcl:{_dvs.lower()}")
+                        ents.append(_ent(
+                            _did, "event",
+                            f"Windows Defender Exclusion Configured on {host or asset.split(':')[-1]}",
+                            asset, run_id, loc, anomaly=_level_anomaly("medium"), first=ts,
+                            flags=["sigma", "detection"], title="Windows Defender Exclusion Configured",
+                            level="medium", channel="Defender",
+                            win_ids=[f"mpexcl:{_dvs.lower()}"],
+                            details=f"{(_dt or 'exclusion')}: {_dvs}",
+                            defender_exclusion=_dvs))
+                    elif str(_disabled).lower() in ("true", "1"):
+                        _did = keys.event_key(asset, "mpdisabled")
+                        ents.append(_ent(
+                            _did, "event",
+                            f"Windows Defender Real-Time Protection Disabled on {host or asset.split(':')[-1]}",
+                            asset, run_id, loc, anomaly=_level_anomaly("high"), first=ts,
+                            flags=["sigma", "detection"],
+                            title="Windows Defender Real-Time Protection Disabled",
+                            level="high", channel="Defender", win_ids=["mpdisabled"]))
+                    continue
 
                 # ---- Linux agentic artifacts (quick_wins_linux) -----------------
                 # Placed before the generic Windows branches so e.g. linux.sys.services

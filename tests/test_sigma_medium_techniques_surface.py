@@ -96,5 +96,39 @@ class OneEventRecordIsOneFinding(unittest.TestCase):
                         f"a medium on its own record must still surface: {list(fs)}")
 
 
+
+
+class DefenderConfigIsDetectedFromLiveState(unittest.TestCase):
+    """Add-MpPreference -ExclusionPath (T1562.001) is invisible to the event-log
+    detectors (the 4104 scriptblock logs the cmdletization module; Defender 5007 is
+    not collected). The Custom.Windows.Detection.DefenderExclusions artifact reads
+    the LIVE Defender config via WMI, so an exclusion or a disabled protection is
+    detected from the host's actual state. Medium for an exclusion (IT adds them
+    too), high for disabled real-time protection."""
+    ART = "Custom.Windows.Detection.DefenderExclusions"
+
+    def _fuse(self, rows):
+        ents, rels = map_agentic({self.ART: rows}, run_id="r1")
+        g = correlate.assemble("c", [(ents, rels)], ["r1"], min_severity="medium")
+        return {f.title: f for f in g.findings}
+
+    def test_an_exclusion_surfaces_as_a_medium_T1562(self):
+        fs = self._fuse([{"ExclusionType": "Path", "Value": "C:\\stage",
+                          "Timestamp": "2026-10-07T10:03:00Z", "_hostname": HOST,
+                          "_client_id": f"C.{HOST}"}])
+        hit = [f for t, f in fs.items() if "Defender Exclusion Configured" in t]
+        self.assertEqual(1, len(hit), list(fs))
+        self.assertEqual("medium", hit[0].severity)
+        self.assertIn("T1562.001", hit[0].mitre)
+
+    def test_disabled_realtime_protection_surfaces_as_high_T1562(self):
+        fs = self._fuse([{"RealtimeDisabled": True, "Timestamp": "2026-10-07T10:03:00Z",
+                          "_hostname": HOST, "_client_id": f"C.{HOST}"}])
+        hit = [f for t, f in fs.items() if "Real-Time Protection Disabled" in t]
+        self.assertEqual(1, len(hit), list(fs))
+        self.assertEqual("high", hit[0].severity)
+        self.assertIn("T1562.001", hit[0].mitre)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,54 @@
+name: Custom.Windows.Detection.DefenderExclusions
+author: Intact.AI (attack-sim campaign)
+
+description: |
+  Reports the host's CURRENT Microsoft Defender configuration that matters for
+  defense evasion (ATT&CK **T1562.001 — Impair Defenses: Disable or Modify
+  Tools**): every antivirus exclusion (path / process / extension) and whether
+  real-time protection is turned off.
+
+  Read from the LIVE config via WMI (`MSFT_MpPreference`), so it is detected from
+  the host's actual state — `Add-MpPreference -ExclusionPath` and
+  `Set-MpPreference -DisableRealtimeMonitoring` leave this state even when the
+  command itself is never logged (the PowerShell 4104 event logs only the
+  cmdletization module, and the Defender Operational 5007 event is rarely
+  collected). One row per exclusion; a legitimate IT exclusion looks the same as
+  an attacker's, so Case Analysis rates an exclusion MEDIUM (a review signal) and
+  a disabled real-time protection HIGH.
+
+reference:
+  - https://attack.mitre.org/techniques/T1562/001/
+  - https://learn.microsoft.com/en-us/previous-versions/windows/desktop/defender/add-msft-mppreference
+
+type: CLIENT
+
+precondition: SELECT OS From info() where OS = "windows"
+
+sources:
+  - query: |
+      LET Mp <= SELECT * FROM wmi(
+          query='SELECT * FROM MSFT_MpPreference',
+          namespace='root/microsoft/windows/defender')
+
+      LET Now <= timestamp(epoch=now())
+
+      SELECT * FROM chain(
+        paths={
+          SELECT "Path" AS ExclusionType, _value AS Value, Now AS Timestamp
+          FROM foreach(row=Mp[0].ExclusionPath)
+        },
+        procs={
+          SELECT "Process" AS ExclusionType, _value AS Value, Now AS Timestamp
+          FROM foreach(row=Mp[0].ExclusionProcess)
+        },
+        exts={
+          SELECT "Extension" AS ExclusionType, _value AS Value, Now AS Timestamp
+          FROM foreach(row=Mp[0].ExclusionExtension)
+        },
+        rtp={
+          SELECT "RealtimeDisabled" AS ExclusionType,
+                 Mp[0].DisableRealtimeMonitoring AS RealtimeDisabled,
+                 Now AS Timestamp
+          FROM scope()
+          WHERE Mp[0].DisableRealtimeMonitoring
+        })

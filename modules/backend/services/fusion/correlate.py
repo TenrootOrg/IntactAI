@@ -372,7 +372,8 @@ def _recover_mitre_from_text(g: FusionGraph) -> None:
 # a title that matches nothing stays without a technique rather than a guess.
 _TITLE_TECHNIQUES = (
     ("T1070.001", (("log", "cleared"),)),
-    ("T1562.001", (("defender", "disabl"), ("real-time protection", "disabl"))),
+    ("T1562.001", (("defender", "disabl"), ("defender", "exclusion"),
+                   ("real-time protection", "disabl"))),
     ("T1003.001", (("lsass",), ("mimikatz",), ("credential dump",))),
     ("T1219", (("anydesk",), ("remote access tool",))),
     ("T1027", (("base64",), ("obfuscat",))),

@@ -214,6 +214,9 @@ velociraptor:
       - DetectRaptor.Windows.Detection.Bootloaders
       # Persistence
       - Windows.Analysis.SuspiciousWMIConsumers
+      # Defense evasion — live Defender config (exclusions + disabled protection,
+      # T1562.001). Invisible to the event-log detectors; read from WMI state.
+      - Custom.Windows.Detection.DefenderExclusions
       # Context
       - Windows.Forensics.SAM
       # Authentication / lateral movement (domain hosts) + Kerberos abuse
