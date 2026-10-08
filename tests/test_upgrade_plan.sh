@@ -171,6 +171,15 @@ test_a_module_absent_from_the_box_is_an_install() {
     assert_eq "${PLAN_ACTION[elk]}" "install"
 }
 
+test_an_always_installed_module_absent_from_the_box_is_an_upgrade() {
+    # An "install" row is optional and unticked in the dashboard of the release
+    # being upgraded from, so a box predating Presidio would skip it.
+    _setup
+    UPKG_VERSIONS[presidio]=2.2.364; PLAN_CURRENT[presidio]=""
+    plan_build
+    assert_eq "${PLAN_ACTION[presidio]}" "upgrade"
+}
+
 test_a_module_absent_from_the_package_is_skipped() {
     _setup
     PLAN_CURRENT[volweb]=3.16.0

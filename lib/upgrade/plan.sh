@@ -7,6 +7,8 @@
 # The order modules are upgraded in. `intact` FIRST and always: it carries the
 # new backend code, the sidecar compose files and the config.yaml merge that
 # every later module reads its pins from. Ported from __init__.py:71-74.
+# No modules.<m>.enabled flag and no operator choice: always present.
+ALWAYS_INSTALLED=(intact presidio)
 UPGRADE_ORDER=(intact presidio elk timesketch plaso iris velociraptor aws_sigma o365rc volweb portainer)
 
 # module -> "<env file>:<KEY>". The pin that says what is actually RUNNING, as
@@ -215,7 +217,16 @@ plan_build() {
             continue
         fi
         if [[ -z "$current" ]]; then
-            PLAN_ACTION[$m]="install"
+            # An always-installed module the box lacks (it predates the module)
+            # is an UPGRADE, not an install. The dashboard of the release being
+            # upgraded FROM files every "install" row under optional, unticked
+            # by default (upgrade_routes._fetch_plan) -- so Presidio arriving as
+            # an install would be skipped unless the operator spotted the row.
+            if [[ " ${ALWAYS_INSTALLED[*]} " == *" ${m} "* ]]; then
+                PLAN_ACTION[$m]="upgrade"
+            else
+                PLAN_ACTION[$m]="install"
+            fi
             continue
         fi
         if [[ "$current" == "$target" ]]; then
