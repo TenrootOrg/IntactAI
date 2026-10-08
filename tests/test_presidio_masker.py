@@ -96,5 +96,22 @@ class CaseLogHook(unittest.TestCase):
         self.assertEqual(src.count("DataAnonymizer("), 1, "build case masks via _case_mask only")
 
 
+class SecurityTermsAreNotMasked(unittest.TestCase):
+    """NER tagged DFIR tooling, techniques and report words as PERSON/ORG on a lab
+    run (Procdump, Kerberoasting, Inveigh, Critical, SAM, Endpoints, Detections),
+    so the model read "Person5" where the evidence said "Critical". Those pass
+    through _KEEP now; masking them strips the context the report exists to give."""
+    def test_confirmed_false_positives_are_kept(self):
+        for t in ("procdump", "kerberoasting", "inveigh", "critical", "sam",
+                  "endpoints", "detections", "lsass", "dcsync", "rubeus",
+                  "ransomware", "severity", "exclusion"):
+            self.assertIn(t, pm._KEEP, t)
+
+    def test_a_span_of_all_kept_words_is_kept(self):
+        # the inline guard in _detect_spans: every token a kept term -> not masked
+        for span in ("Critical Detection", "SAM Exclusion"):
+            self.assertTrue(all(w in pm._KEEP for w in span.lower().split()), span)
+
+
 if __name__ == "__main__":
     unittest.main()

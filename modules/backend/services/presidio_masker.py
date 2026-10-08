@@ -38,6 +38,27 @@ _KEEP = {
     "velociraptor", "sysmon", "hayabusa", "sigma", "mitre", "att&ck",
     "cobalt strike", "mimikatz", "chrome", "edge", "firefox", "linux", "system",
     "administrator", "administrators", "users", "guest", "nt authority",
+    # DFIR vocabulary NER keeps tagging as a PERSON/ORG in forensic text. These
+    # are techniques, tooling, Windows internals and report words — never PII, and
+    # masking them ("the model saw Person5 where the evidence said Critical")
+    # degrades the narrative. Extended from REAL false positives on a lab run
+    # (Procdump, Kerberoasting, Inveigh, Critical, SAM, Endpoints, Detections…).
+    # Tools:
+    "procdump", "inveigh", "bloodhound", "sharphound", "rubeus", "impacket",
+    "psexec", "metasploit", "sliver", "winpeas", "seatbelt", "rclone", "adfind",
+    "nltest", "procmon", "autoruns", "sysinternals", "nmap", "netcat", "ngrok",
+    "anydesk", "teamviewer", "certutil", "bitsadmin", "lolbin", "lolbas",
+    # Techniques / Windows internals:
+    "kerberoasting", "kerberos", "dcsync", "lsass", "ntlm", "smb", "rdp", "winrm",
+    "wmi", "wmiprvse", "srum", "amcache", "prefetch", "shimcache", "mft", "usn",
+    "evtx", "sam", "ntds", "lsa", "asr", "mark-of-the-web", "named pipe",
+    "hive", "hives", "registry", "hash", "hashes", "token", "ticket", "secret",
+    "secrets", "credential", "credentials",
+    # Report / severity words:
+    "critical", "high", "medium", "low", "informational", "severity", "detection",
+    "detections", "finding", "findings", "alert", "alerts", "exclusion",
+    "exclusions", "antivirus", "malware", "ransomware", "exploit", "payload",
+    "beacon", "implant", "endpoint", "endpoints", "persistence", "exfiltration",
 }
 
 # Default entity set: the two the deterministic masker genuinely cannot catch.
@@ -309,7 +330,8 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
         start, end, etype, score = s["start"], s["end"], s["entity_type"], s["score"]
         surface = text[start:end].strip()
         low = surface.lower()
-        if not surface or _OUR_PSEUDO.match(surface) or low in _KEEP:
+        if not surface or _OUR_PSEUDO.match(surface) or low in _KEEP \
+                or all(w in _KEEP for w in low.split()):   # e.g. "Critical Detection"
             continue
         if not _plausible_name(surface):               # forensic string NER mis-tagged as a name
             continue
