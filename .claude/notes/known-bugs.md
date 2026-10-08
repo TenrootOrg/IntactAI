@@ -90,17 +90,15 @@ the `--pull never` fix (commit 59d6c37).
 ## Detection-content gaps: high-signal actions invisible to Case Analysis
 
 **Symptom**
-Three attacker techniques, run and COLLECTED on a lab Win11 host, surface no
-finding in Case Analysis — not a weighting problem, a missing-detection problem.
+Attacker techniques, run and COLLECTED on a lab Win11 host, surface no finding in
+Case Analysis — not a weighting problem, a missing-detection problem.
 
-- **Defender exclusion via `Add-MpPreference -ExclusionPath` (T1562.001).** The
-  command IS collected (PowerShell 4104 scriptblock, in Windows.Hayabusa.Rules +
-  DetectRaptor.Windows.Detection.Evtx), but the ONLY detection it trips is the
-  generic "Potentially Malicious PwSh" heuristic — which fusion_weighting.yaml
-  correctly downweights to low as noise. So the real defense-evasion action is
-  suppressed with the noise. No specific SIGMA/Hayabusa rule names it.
-- **Archive/staging of loot (`Compress-Archive` → zip, T1560.001).** No
-  collection/detection surfaces it.
+- **Defender exclusion / disable (T1562.001).** FIXED (commit 55770240): new
+  artifact Custom.Windows.Detection.DefenderExclusions reads the live Defender
+  config via WMI; the mapper surfaces an exclusion (medium) / disabled RTP (high).
+  Validated end-to-end on the live VM. The notes below are kept for the record.
+- **Archive/staging of loot (`Compress-Archive` → zip, T1560.001).** Still open:
+  no collection/detection surfaces it.
 - **DLL side-loading (T1574.002).** Stock Win11 logs no DLL loads (needs Sysmon
   EID 7), and the planted pair isn't in HijackLibs' known-abused set.
 
