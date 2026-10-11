@@ -177,6 +177,56 @@ class SilentCut(unittest.TestCase):
         self.assertEqual(dm.unavailable(c), "")                 # not an outage
 
 
+class Conformance(unittest.TestCase):
+    """Conformance pass over every catalog model (2026-10-11): Tev1 refuses more than
+    32 questions a call; both Upstage models got obvious cases wrong."""
+
+    def setUp(self):
+        dm._down.update(until=0.0, fp=None, why="")
+
+    def test_batches_respect_the_models_question_limit(self):
+        c = cfg(api_key="k", model="togethercomputer/tev1-4b-experimental")
+        self.assertEqual(dm.max_questions(c), 32)
+        self.assertEqual(dm.max_questions(cfg(api_key="k")), dm.MAX_QUESTIONS)
+        sizes = []
+
+        def post(url, **kw):
+            sizes.append(len(kw["json"]["questions"]))
+            return _Resp({"answers": {k: {"noul": 0.2} for k in kw["json"]["questions"]}})
+        with mock.patch.object(dm.requests, "post", side_effect=post):
+            out = dm.ask_each(["x"] * 70, str, lambda k: NOUL, cfg=c)
+        self.assertEqual(sizes, [32, 32, 6])
+        self.assertEqual(len(out), 70)
+
+    def test_an_unknown_models_question_limit_is_split_not_an_outage(self):
+        c = cfg(api_key="k", model="some/new-model")
+        refused = 'Tev1 accepts at most 32 questions per request; this request has 40'
+
+        def post(url, **kw):
+            n = len(kw["json"]["questions"])
+            if n > 20:
+                return _Resp({"error": {"message": refused}}, status=400, text=refused)
+            return _Resp({"answers": {k: {"noul": 0.2} for k in kw["json"]["questions"]}})
+        with mock.patch.object(dm.requests, "post", side_effect=post):
+            out = dm.ask_each(["x"] * 40, str, lambda k: NOUL, cfg=c)
+        self.assertEqual(out, [{"noul": 0.2}] * 40)
+        self.assertEqual(dm.unavailable(c), "")
+
+    def test_models_that_failed_are_not_suggested(self):
+        avoid = {m["model"] for m in dm.catalog() if m.get("avoid")}
+        self.assertEqual(avoid, {"upstage/solar-decide", "upstage/solar-decide-flash"})
+        try:
+            import flask
+            from routes import config_routes as cr
+        except ImportError as e:
+            self.skipTest(f"no flask here: {e}")
+        app = flask.Flask(__name__)
+        app.register_blueprint(cr.config_bp)
+        got = {m["model"] for m in app.test_client().get("/api/config/decision_model/models").get_json()["models"]}
+        self.assertFalse(got & avoid)
+        self.assertIn("togethercomputer/tev1-4b-experimental", got)
+
+
 class CachesFollowTheModel(unittest.TestCase):
     def test_another_models_answers_are_not_shown(self):
         d = {"decision_suggestions": {"f1": {"label": "known"}}}       # unstamped = Jev on OpenRouter

@@ -99,6 +99,30 @@ the AI model block. **Test** sends one made-up yes/no question to what is on scr
   context is the vendor's word — Clef lists 64k and cuts at 16k). Budget for a listed model = 3/8 of its
   window, at most 24k. Any id can still be typed.
 
+### Conformance — is each model exactly Jev-like? (2026-10-11)
+
+Per model, synthetic data only: (1) yes/no answer = `{type:"noul", noul∈[0,1]}`; (2) the product's own
+verdict question → `choice` is an option, `probabilities` cover exactly the options and sum to 1,
+`choice` is the most likely, `confidence∈[0,1]`; (3) 40 mixed questions + context in one call — all
+answered, none extra; (4) right on 40 obvious items; (5) a request at OUR budget for that model with a
+marker in the LAST item — does it read the end (no silent cut)? Envelope `{answers, usage{input_tokens,
+cost}}` checked on every call.
+
+| Model | Shapes | 40 in one call | Right | Reads the end at our budget |
+|---|---|---|---|---|
+| `jev-latest`, `typesafe/jev-1.13` | exact | yes | 40/40 | yes (22.7k tokens) |
+| `cloudflare/clef`, `clef-flash` | exact | yes | 40/40 | yes (10.6k, budget 12k) |
+| `microsoft/microsoft-decision-1` | exact | yes | 40/40 | yes |
+| `nace-ai/drex-v1.5`, `perplexity/pplx-decider-v1.1-27b`, `openai/gpt-6-luna-decisions`, `liquid/d1` | exact | yes | 40/40 | yes (21–23k) |
+| `inception/mercury-decide` | exact | yes | 39/40 | yes |
+| `togethercomputer/tev1-4b-experimental` | exact | **no — "at most 32 questions per request"** → `max_questions: 32` | — | yes |
+| `upstage/solar-decide-flash`, `upstage/solar-decide` | exact | yes (14 s for 40) | **21/40, 27/40** → `avoid`: not suggested | yes |
+| `cloudflare/clef-omni`, `mercury-decide:free`, `respan/*` | — excluded by the account's OpenRouter privacy guardrail | | | |
+| `jaredpalmer/kev-4b` | — times out | | | |
+
+A model never checked that refuses the question count ("questions per request") is split and re-asked,
+not treated as an outage.
+
 ### All OpenRouter decision models, one pass (2026-10-11)
 
 Six made-up events with obvious answers (3 attacks, 3 routine), one call each. A sanity

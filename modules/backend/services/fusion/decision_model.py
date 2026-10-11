@@ -55,7 +55,18 @@ MODELS = [
      "note": "Cloudflare Clef Flash — cheapest, ~1.2 s a call"},
     {"provider": "openai", "model": "gpt-6-luna", "budget": 24000,
      "note": "OpenAI Decisions API (beta) — needs an OpenAI API key; not yet tested live"},
+    # Conformance pass 2026-10-11 (docs/DECISION_MODEL.md): same wire, but limits or
+    # answers that differ. `max_questions`: refused 40 questions in one call.
+    # `avoid`: wrong too often on obvious cases -- left out of the suggestions
+    # (it can still be typed).
+    {"provider": "openrouter", "model": "togethercomputer/tev1-4b-experimental", "budget": 12288,
+     "max_questions": 32, "note": "Together Tev1 4B (experimental) — at most 32 questions a call"},
+    {"provider": "openrouter", "model": "upstage/solar-decide-flash", "budget": 24000,
+     "avoid": "21 of 40 obvious cases right", "note": "Upstage Solar Decide Flash"},
+    {"provider": "openrouter", "model": "upstage/solar-decide", "budget": 24000,
+     "avoid": "27 of 40 obvious cases right, 14 s for 40 questions", "note": "Upstage Solar Decide"},
 ]
+MAX_QUESTIONS = 50             # per call, unless the model says fewer
 # OpenRouter lists every decision model it serves under this filter (found
 # 2026-10-11: plain /models lists chat models only). "Update catalog" stores it;
 # the hand-checked MODELS above win where both name a model (Clef's listed 64k
@@ -168,6 +179,11 @@ def model_name(cfg) -> str:
 def _known(cfg):
     p, m = provider(cfg), model_name(cfg)
     return next((r for r in catalog() if r["provider"] == p and r["model"] == m), {})
+
+
+def max_questions(cfg=None) -> int:
+    cfg = _cfg() if cfg is None else cfg
+    return int(_known(cfg).get("max_questions") or MAX_QUESTIONS)
 
 
 def context_tokens(cfg=None) -> int:
@@ -390,7 +406,8 @@ def _call(state, questions, *, run_id=None, cfg=None):
             # The model's own token count is the only exact one; ours is chars/4. A
             # request it calls too large is split and retried by _ask_chunk.
             too_big = r.status_code in (400, 413) and any(
-                w in r.text for w in ("max_tokens", "context_length", "too long", "too large"))
+                w in r.text for w in ("max_tokens", "context_length", "too long", "too large",
+                                      "questions per request"))   # Tev1: "at most 32 questions per request"
             log.warning("decision model: HTTP %s: %s", r.status_code, r.text[:200])
             if not too_big:                          # too big is ours to split, not an outage
                 _trip(f"HTTP {r.status_code}")
@@ -421,10 +438,11 @@ def _call(state, questions, *, run_id=None, cfg=None):
 RETRY_SECONDS = 2              # the pause before the one retry of a 5xx answer
 
 
-def pack(items, render, max_tokens=None, max_items=50, per_item=0):
+def pack(items, render, max_tokens=None, max_items=None, per_item=0):
     """Greedy chunks of `items` whose rendered size — plus `per_item` tokens for
     the question each item brings — stays under max_tokens."""
     max_tokens = context_tokens() if max_tokens is None else max_tokens
+    max_items = max_questions() if max_items is None else max_items
     chunk, size = [], 0
     for it in items:
         t = approx_tokens(render(it)) + per_item
@@ -445,7 +463,7 @@ def ask_each(items, render, question, *, context=None, run_id=None, cfg=None):
     Stops at the first failed call — the rest come back None.
     """
     out, base = [], approx_tokens(context) if context is not None else 0
-    for chunk in pack(items, render, max_tokens=context_tokens(cfg) - base,
+    for chunk in pack(items, render, max_tokens=context_tokens(cfg) - base, max_items=max_questions(cfg),
                       per_item=_question_tokens(question)):
         ans = _ask_chunk(chunk, render, question, context, run_id=run_id, cfg=cfg)
         if ans is None:

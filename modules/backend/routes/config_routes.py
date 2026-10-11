@@ -618,7 +618,8 @@ def decision_models():
     from services.fusion import decision_model as dm
     return jsonify({"providers": {k: {"label": v["label"], "model": v["model"], "cloud": v["cloud"]}
                                   for k, v in dm.PROVIDERS.items()},
-                    "models": dm.catalog()})
+                    # a model that failed the conformance check is not suggested (it can be typed)
+                    "models": [m for m in dm.catalog() if not m.get("avoid")]})
 
 
 @config_bp.route('/api/config/decision_model/refresh', methods=['POST'])
