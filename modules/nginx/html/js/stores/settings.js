@@ -15,7 +15,7 @@ document.addEventListener('alpine:init', () => {
                 ollama_context_size: 65536,
                 ollama_timeout: 600,
                 // The decision model — must match DEFAULTS in services/fusion/decision_model.py
-                decision_model: { enabled: false, model: 'jev-latest', min_confidence: 0.8, api_key: '', uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true, injection: true, chat_confidence: true, scopes: true, compromise: true, report: true } }
+                decision_model: { enabled: false, mode: '', provider: 'openrouter', model: 'jev-latest', url: '', context_tokens: 0, min_confidence: 0.8, api_key: '', uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true, injection: true, chat_confidence: true, scopes: true, compromise: true, report: true } }
             },
             timesketch: {
                 llm_mode: 'google',
@@ -56,6 +56,9 @@ document.addEventListener('alpine:init', () => {
         offlineModelsError: '',
         llmTesting: false,
         llmTestResult: null,
+        decisionTesting: false,
+        decisionTestResult: null,
+        decisionCatalog: { providers: {}, models: [] },
         updatingCatalog: false,
         message: '',
         messageType: '',
@@ -82,6 +85,11 @@ document.addEventListener('alpine:init', () => {
                         decision_model: { ...this.config.agentic.decision_model, ...data.agentic?.decision_model,
                                uses: { ...this.config.agentic.decision_model.uses, ...data.agentic?.decision_model?.uses } }
                     };
+                    // Saved before the decision model had its own mode: it followed the
+                    // AI model's. Show that, so a Save keeps the box where it was.
+                    const dmc = this.config.agentic.decision_model;
+                    if (!dmc.mode) dmc.mode = this.config.agentic.llm_mode === 'online' ? 'online' : 'offline';
+                    this.loadDecisionCatalog();
                 }
 
                 // Load Timesketch LLM config from dedicated endpoint
@@ -181,6 +189,52 @@ document.addEventListener('alpine:init', () => {
                 this.llmTestResult = { success: false, error: e.message };
             }
             this.llmTesting = false;
+        },
+
+        async loadDecisionCatalog() {
+            try {
+                const r = await fetch('/api/config/decision_model/models');
+                if (r.ok) this.decisionCatalog = await r.json();
+            } catch (e) { /* suggestions only: typing a model still works */ }
+        },
+
+        // Mirrors why_inactive() in services/fusion/decision_model.py.
+        decisionWhyInactive() {
+            const a = this.config.agentic, d = a.decision_model;
+            const shared = (p) => a.llm_mode === 'online' && a.online_llm.provider === p && a.online_llm.api_key;
+            if (d.mode !== 'online') return d.url ? '' : 'Offline mode needs the URL of a decision-model server on your network.';
+            if (d.provider === 'custom') return d.url ? '' : 'Custom needs the endpoint URL.';
+            const label = d.provider === 'openai' ? 'OpenAI' : 'OpenRouter';
+            return d.api_key || shared(d.provider) ? '' : `Needs an ${label} API key here (or ${label} as the AI model's provider, in Online mode).`;
+        },
+
+        // Where masked case data goes -- said plainly, per provider.
+        decisionDisclosure() {
+            const d = this.config.agentic.decision_model;
+            if (d.mode !== 'online') return 'Masked case data stays on your network (the server above).';
+            if (d.provider === 'openai') return 'Masked case data is sent to OpenAI.';
+            if (d.provider === 'custom') {
+                let host = ''; try { host = new URL(d.url).host; } catch (e) { /* not typed yet */ }
+                return 'Masked case data is sent to ' + (host || 'the endpoint above') + '.';
+            }
+            return 'Masked case data is sent to OpenRouter and the model\'s vendor (TypeSafe for Jev, Cloudflare for Clef).';
+        },
+
+        // One made-up question to what is ON SCREEN (saved or not) -- no case data.
+        async testDecisionModel() {
+            if (this.decisionTesting) return;
+            this.decisionTesting = true;
+            this.decisionTestResult = null;
+            try {
+                const r = await fetch('/api/config/decision_model/test', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agentic: this.config.agentic }),
+                });
+                this.decisionTestResult = await r.json();
+            } catch (e) {
+                this.decisionTestResult = { success: false, error: e.message };
+            }
+            this.decisionTesting = false;
         },
 
         async saveAgentic() {

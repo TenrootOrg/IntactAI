@@ -169,9 +169,9 @@ class TooBig(unittest.TestCase):
         def fake_ask(state, questions, **kw):
             calls.append(len(questions))
             if len(questions) > 2:                          # the model: too large
-                dm._last["too_big"] = True
+                dm._last.too_big = True
                 return None
-            dm._last["too_big"] = False
+            dm._last.too_big = False
             return {k: {"noul": 0.5} for k in questions}
         with mock.patch.object(dm, "ask", fake_ask):
             out = dm.ask_each(list("abcdefgh"), str, lambda k: {"type": "noul"})
@@ -184,7 +184,7 @@ class TooBig(unittest.TestCase):
 
         def fake_ask(state, questions, **kw):
             calls.append(len(questions))
-            dm._last["too_big"] = False
+            dm._last.too_big = False
             return None
         with mock.patch.object(dm, "ask", fake_ask):
             out = dm.ask_each(list("abcdefgh"), str, lambda k: {"type": "noul"})
@@ -196,10 +196,10 @@ class TooBig(unittest.TestCase):
         r = _Resp(400); r.text = body
         with mock.patch.object(dm.requests, "post", return_value=r):
             self.assertIsNone(dm.ask({}, {"q0": {}}, cfg=ON))
-        self.assertTrue(dm._last["too_big"])
+        self.assertTrue(dm._last.too_big)
         with mock.patch.object(dm.requests, "post", return_value=_Resp(429)):
             dm.ask({}, {"q0": {}}, cfg=ON)
-        self.assertFalse(dm._last["too_big"])
+        self.assertFalse(dm._last.too_big)
 
     def test_questions_count_toward_the_batch_size(self):
         chunks = list(dm.pack(range(50), lambda i: "x" * 40, max_tokens=1000, per_item=100))

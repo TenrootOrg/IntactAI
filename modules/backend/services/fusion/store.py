@@ -5276,7 +5276,7 @@ def identity_view(case_id, d=None) -> dict:
     # The decision model's "same person?" probability for the pair, when it was asked (a hint
     # beside Merge/Dismiss — never a merge).
     from . import decision_model as _dm
-    dm_p = (d.get("decision_identity") or {}) if _dm.enabled("identity") else {}
+    dm_p = _dm.cached(d, "identity") if _dm.enabled("identity") else {}
     for e in pairs.values():
         ca, cb = e["cards"]
         ps = [dm_p[m["id"]] for m in e["members"] if m["id"] in dm_p]
@@ -5805,7 +5805,7 @@ def get_timeline(case_id) -> list:
     vrec = {v.get("finding_id"): v for v in (d.get("timeline_validations") or [])}
     fwm = {f.id: f.watermark() for f in g.findings}     # current occurrence watermark
     from . import decision_model as dm
-    dm_on, dm_s = dm.enabled("disposition"), d.get("decision_suggestions") or {}
+    dm_on, dm_s = dm.enabled("disposition"), dm.cached(d, "suggestions")
     rows = render.timeline(g, window=view_window(d))
     fmap = {f.id: f for f in g.findings}
     try:

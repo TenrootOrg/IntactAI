@@ -52,18 +52,48 @@ These apply to every feature below and to any new one.
 
 ## Configuration
 
+Settings → Agentic → **Decision model**: Mode, then provider / model / key, laid out like
+the AI model block. **Test** sends one made-up yes/no question to what is on screen.
+
 | Setting (`frontend_config.agentic.decision_model`, was `agentic.jev`) | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Master switch |
-| `api_key` | `""` | Jev's own OpenRouter key. If empty, Jev uses the main key, but only while OpenRouter is the chat provider |
-| `model` | `jev-latest` | |
+| `mode` | `""` | `online` / `offline`. `""` (every box saved before 2026-10-11) follows the AI model's `llm_mode`, so an offline box never starts calling a cloud |
+| `provider` | `openrouter` | Online only: `openrouter`, `openai` or `custom`. Offline is always the `local` provider |
+| `model` | `jev-latest` | Empty or a model of another provider = this provider's default |
+| `url` | `""` | `custom` / `local`: the full endpoint (Jev request format) |
+| `context_tokens` | `0` | Tokens one call may carry. 0 = the known model's budget, else 6,000 |
+| `api_key` | `""` | The provider's key. Empty = the AI model's key while that runs on the same provider (OpenRouter, or OpenAI *API* — not the Codex subscription). Optional for custom / local |
 | `min_confidence` | `0.8` | Minimum confidence for a suggestion to be shown (chips, notice, chat verdicts) |
 | `uses.<name>` | `true` | Per-feature switch (names in the table below) |
 
 - The key is masked on `GET /api/config`, kept when the masked value is saved
-  back, redacted from the `.db` download and the JSON export, and cannot be
-  set by `/api/db/import`.
-- Offline mode always disables Jev, whatever keys are stored.
+  back **only while provider + URL are unchanged** (a switch to another vendor
+  must not carry the old key there), redacted from the `.db` download and the
+  JSON export, and cannot be set by `/api/db/import`.
+- **Local** must resolve only to loopback / private / link-local addresses (a public
+  one is refused before anything is sent) and never falls back to a cloud provider.
+- No provider follows redirects.
+- Each case cache is stamped with the provider/model that wrote it
+  (`decision_by`); another model's answers are not shown, and are re-asked on the
+  next fuse. Unstamped caches count as `openrouter/jev-latest`.
+
+### Provider contracts (verified 2026-10-11, from the appliance)
+
+| Provider / model | Endpoint | Result | Speed | Cost per small call | Too big |
+|---|---|---|---|---|---|
+| OpenRouter `jev-latest` (served as `typesafe/jev-1.13-20260917`) | `POST openrouter.ai/api/v1/systemone` (also `/api/alpha/decisions`) | works; 60 questions in one call fine | p50 0.4 s | $0.000018 | HTTP 400 `max_tokens_exceeded` |
+| OpenRouter `cloudflare/clef`, `cloudflare/clef-flash` | same | works, same wire (served by PrimeIntellect) | 0.4–1.5 s | $0.00005 / $0.000008 | **silently reads the first 16,384 tokens and answers** — treated as too big (`cut_at`) |
+| OpenRouter `jaredpalmer/kev-4b` | same | listed, but hung 60 s / HTTP 500 after 120 s | — | — | — |
+| OpenAI `gpt-6-luna` | `POST api.openai.com/v1/decisions` | endpoint exists (401 without a key); **not called — no API key on the box** | — | $0.10 / M input tokens | unknown |
+
+- Jev wire: `{model, state, questions:{qid:{type, instructions, criteria}}}` → `{answers:{qid:…}, usage:{input_tokens, output_tokens, cost}}`.
+  `state` may be a string, object or array; a `score` question needs `criteria` as an array (no caller uses `score`).
+  A model id without a vendor prefix gets `typesafe/` added. 401 bodies: `User not found.` / `No cookie auth credentials found`.
+- OpenAI wire (from its docs): `{model, input, questions:[{type: predicate|choice|score, name, instructions, choices|levels}]}` →
+  `answers` array by `name`; usage in tokens only. Translated in `_openai_body` / `_openai_answers`.
+- **No discovery API**: OpenRouter's `/api/v1/models` lists chat models only; decision models are kept by hand in
+  `decision_model.MODELS` (suggested in Settings; any id can be typed).
 
 ## Features
 

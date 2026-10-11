@@ -595,6 +595,71 @@ def test_llm_connection():
     })
 
 
+def _stored_decision_key(incoming, incoming_agentic=None):
+    """The saved decision-model key for a masked one -- but only while it would go to
+    the same place. Switching OpenRouter -> OpenAI (or to another URL) with the old
+    key still masked on screen must not send the OpenRouter key to OpenAI.
+    Compared by DESTINATION (provider + URL), not by field: a box saved before the
+    mode existed has mode "" and the page sends "online" -- the same place."""
+    from services.fusion import decision_model as dm
+    stored_ag = _load_config().get('agentic') or {}
+    stored = stored_ag.get('decision_model') or {}
+
+    def dest(ag, d):
+        c = {**ag, 'decision_model': d}
+        return dm.provider(c), dm._url(c)
+    same = dest(stored_ag, stored) == dest({**stored_ag, **(incoming_agentic or {})}, incoming)
+    return stored.get('api_key', '') if same else ''
+
+
+@config_bp.route('/api/config/decision_model/models', methods=['GET'])
+def decision_models():
+    """Providers and known models, for the Settings suggestions (any name can be typed)."""
+    from services.fusion import decision_model as dm
+    return jsonify({"providers": {k: {"label": v["label"], "model": v["model"], "cloud": v["cloud"]}
+                                  for k, v in dm.PROVIDERS.items()},
+                    "models": dm.MODELS})
+
+
+@config_bp.route('/api/config/decision_model/test', methods=['POST'])
+def test_decision_model():
+    """One tiny made-up yes/no question to the decision model on screen (unsaved
+    values overlay the saved ones, as /api/config/llm/test does). No case data."""
+    import time as _time
+    from services.fusion import decision_model as dm
+
+    overlay = (request.get_json(silent=True) or {}).get('agentic') or {}
+    agentic = copy.deepcopy(_load_config().get('agentic') or {})
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(agentic.get(k), dict):
+            agentic[k] = {**agentic[k], **v}
+        else:
+            agentic[k] = v
+    dmc = agentic.setdefault('decision_model', {})
+    if str(dmc.get('api_key') or '').startswith(_API_KEY_MASK_PREFIX):
+        dmc['api_key'] = _stored_decision_key(dmc, agentic)
+    if isinstance((agentic.get('online_llm') or {}).get('api_key'), str) and \
+            agentic['online_llm']['api_key'].startswith(_API_KEY_MASK_PREFIX):
+        agentic['online_llm'] = {**agentic['online_llm'],
+                                 'api_key': ((_load_config().get('agentic') or {}).get('online_llm') or {}).get('api_key', '')}
+    p = dm.provider(agentic)
+    info = {"provider": p, "model": dm.model_name(agentic), "cloud": dm.PROVIDERS[p]["cloud"]}
+    why = dm.why_inactive(agentic)
+    if why:
+        return jsonify({**info, "success": False, "error": why})
+    dm._down["until"] = 0.0                  # the operator asked for a live answer now
+    started = _time.time()
+    ans, _ = dm._call({"text": "Mimikatz dumped credentials from LSASS on WS1."},
+                      {"q0": {"type": "noul", "instructions": "Is state.text attacker activity?",
+                              "criteria": {"true": "Attacker activity.", "false": "Benign."}}}, cfg=agentic)
+    ms = int((_time.time() - started) * 1000)
+    a = (ans or {}).get("q0") or {}
+    if not isinstance(a.get("noul"), (int, float)):
+        return jsonify({**info, "success": False, "elapsed_ms": ms,
+                        "error": dm.unavailable(agentic) or "no usable answer (see the backend log)"})
+    return jsonify({**info, "success": True, "elapsed_ms": ms, "p": round(float(a["noul"]), 2)})
+
+
 @config_bp.route('/api/config/llm/reachability', methods=['GET'])
 def llm_reachability():
     """Cheap, cached "can the configured model actually be reached RIGHT NOW".
@@ -666,7 +731,7 @@ def save_config():
                     ag['decision_model'] = stored
         dmc = config.get('agentic', {}).get('decision_model')
         if isinstance(dmc, dict) and str(dmc.get('api_key') or '').startswith('••••'):
-            dmc['api_key'] = (_load_config().get('agentic', {}).get('decision_model') or {}).get('api_key', '')
+            dmc['api_key'] = _stored_decision_key(dmc, config.get('agentic'))
 
         # Which AI settings were in force BEFORE this save, so a change can be told
         # apart from re-saving the same thing.

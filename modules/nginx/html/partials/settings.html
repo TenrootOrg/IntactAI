@@ -960,29 +960,113 @@
 
                     <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
                         <h3 class="text-lg font-semibold text-white">Decision model</h3>
-                        <p class="text-xs text-gray-500 mb-4">A separate model and key: quick suggestions with a confidence score, beside the analyst's own decisions. Works with any AI model above.</p>
-                        <!-- Decision model. Suggestions only — nothing is ever set
-                             on the model's word. Uses the OpenRouter key above, so it is inert
-                             under any other provider. -->
+                        <p class="text-xs text-gray-500 mb-4">Quick suggestions with a confidence score, beside the analyst's own decisions — never text, never a decision on its own. Configured separately from the AI model above.</p>
+                        <!-- Suggestions only — nothing is ever set on the model's word.
+                             Same layout as the AI model block: Mode, then provider / model /
+                             key. Mode "" (every box saved before this existed) follows the AI
+                             model's mode, so an offline box never starts calling a cloud. -->
                         <div>
-                            <label class="flex items-center gap-2 text-sm text-white">
+                            <label class="flex items-center gap-2 text-sm text-white mb-3">
                                 <input type="checkbox" x-model="$store.settings.config.agentic.decision_model.enabled"
                                        class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
                                 Enable the decision model
                             </label>
-                            <p class="text-xs text-gray-500 mt-1">
-                                Quick suggestions with a confidence score — the analyst still decides.
-                                Runs through <b>OpenRouter</b>, whatever model the chat uses.
-                                Masked case data is sent to OpenRouter and TypeSafe.
-                            </p>
-                            <div x-show="$store.settings.config.agentic.decision_model.enabled" class="mt-2">
-                                <label class="block text-xs text-gray-400 mb-1">OpenRouter API key for the decision model
-                                    <span class="text-gray-500">(leave empty to use the AI model's key while its provider is OpenRouter)</span></label>
-                                <input type="password" autocomplete="off" x-model="$store.settings.config.agentic.decision_model.api_key" placeholder="sk-or-…"
-                                       class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                            <div class="mb-4">
+                                <label class="block text-sm text-gray-400 mb-1">Mode</label>
+                                <select x-model="$store.settings.config.agentic.decision_model.mode" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
+                                    <option value="offline">Offline (a server on your network)</option>
+                                    <option value="online">Online (Cloud API)</option>
+                                </select>
                             </div>
-                            <p x-show="$store.settings.config.agentic.decision_model.enabled && ($store.settings.config.agentic.llm_mode !== 'online' || (!$store.settings.config.agentic.decision_model.api_key && $store.settings.config.agentic.online_llm.provider !== 'openrouter'))"
-                               class="text-xs text-yellow-400 mt-1">Inactive: needs Online mode, and an OpenRouter key here (or OpenRouter as the AI model's provider).</p>
+
+                            <!-- Offline: a decision-model server on the network. Untested: no
+                                 runtime exists yet that we could install. -->
+                            <div x-show="$store.settings.config.agentic.decision_model.mode === 'offline'" x-transition>
+                                <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Self-Hosted Decision Model <span class="text-yellow-500">— experimental, untested</span></div>
+                                <div class="grid grid-cols-3 gap-3">
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">Server URL</label>
+                                        <input type="text" x-model="$store.settings.config.agentic.decision_model.url" placeholder="http://decision-host:8080/v1/systemone"
+                                               title="The full endpoint, as the INTACT BACKEND sees it. It must speak the Jev request format and resolve to a private address — a public one is refused."
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                        <input type="text" x-model="$store.settings.config.agentic.decision_model.model" placeholder="e.g. kev-4b"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1" title="How many tokens one call may carry. 0 = 6,000, a safe size for a model nobody measured.">Context (tokens)</label>
+                                        <input type="number" x-model.number="$store.settings.config.agentic.decision_model.context_tokens" min="0" max="1000000" step="1000"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Online -->
+                            <div x-show="$store.settings.config.agentic.decision_model.mode === 'online'" x-transition>
+                                <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Cloud API Configuration</div>
+                                <div class="grid grid-cols-3 gap-3">
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">Provider</label>
+                                        <select x-model="$store.settings.config.agentic.decision_model.provider" @change="$store.settings.config.agentic.decision_model.model = ''"
+                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                            <option value="openrouter">OpenRouter (API)</option>
+                                            <option value="openai">OpenAI (API)</option>
+                                            <option value="custom">Custom endpoint (Jev-compatible)</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <!-- Free text with the known models as suggestions: any model
+                                             the provider serves can be typed. -->
+                                        <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                        <input type="text" x-model="$store.settings.config.agentic.decision_model.model" list="decision-models"
+                                               :placeholder="($store.settings.decisionCatalog.providers[$store.settings.config.agentic.decision_model.provider] || {}).model || 'model id'"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <datalist id="decision-models">
+                                            <template x-for="m in $store.settings.decisionCatalog.models.filter(m => m.provider === $store.settings.config.agentic.decision_model.provider)" :key="m.model">
+                                                <option :value="m.model" x-text="m.note"></option>
+                                            </template>
+                                        </datalist>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">API key <span class="text-gray-500" x-show="$store.settings.config.agentic.decision_model.provider !== 'custom'">(empty = the AI model's key, same provider)</span></label>
+                                        <input type="password" autocomplete="off" x-model="$store.settings.config.agentic.decision_model.api_key"
+                                               :placeholder="{openrouter: 'sk-or-…', openai: 'sk-…', custom: 'optional'}[$store.settings.config.agentic.decision_model.provider]"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    </div>
+                                </div>
+                                <div x-show="$store.settings.config.agentic.decision_model.provider === 'custom'" class="grid grid-cols-3 gap-3 mt-3">
+                                    <div class="col-span-2">
+                                        <label class="block text-xs text-gray-400 mb-1">Endpoint URL</label>
+                                        <input type="text" x-model="$store.settings.config.agentic.decision_model.url" placeholder="https://…/v1/systemone"
+                                               title="The full endpoint (TypeSafe direct, Cloudflare, Portkey…). It must accept Jev's request format: model, state, questions."
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1" title="How many tokens one call may carry. 0 = 6,000, a safe size for a model nobody measured.">Context (tokens)</label>
+                                        <input type="number" x-model.number="$store.settings.config.agentic.decision_model.context_tokens" min="0" max="1000000" step="1000"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <p class="text-xs text-gray-500 mt-2" x-text="$store.settings.decisionDisclosure()"></p>
+                            <p x-show="$store.settings.config.agentic.decision_model.enabled && $store.settings.decisionWhyInactive()"
+                               class="text-xs text-yellow-400 mt-1">Inactive: <span x-text="$store.settings.decisionWhyInactive()"></span></p>
+                            <div class="mt-2 flex items-center gap-3 text-xs">
+                                <button type="button" @click="$store.settings.testDecisionModel()" :disabled="$store.settings.decisionTesting"
+                                        class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1.5 rounded text-white">
+                                    <span x-text="$store.settings.decisionTesting ? 'Testing…' : 'Test'"></span>
+                                </button>
+                                <template x-if="$store.settings.decisionTestResult">
+                                    <span :class="$store.settings.decisionTestResult.success ? 'text-green-400' : 'text-red-400'"
+                                          x-text="$store.settings.decisionTestResult.success
+                                            ? ('OK — ' + $store.settings.decisionTestResult.model + ' answered in ' + $store.settings.decisionTestResult.elapsed_ms + ' ms')
+                                            : ('Failed: ' + ($store.settings.decisionTestResult.error || 'unknown'))"></span>
+                                </template>
+                                <span class="text-gray-500">one made-up question, no case data</span>
+                            </div>
                             <div x-show="$store.settings.config.agentic.decision_model.enabled" class="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-300">
                                 <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.decision_model.uses.disposition" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Suggested verdict per finding</label>
                                 <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.decision_model.uses.identity" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Identity-match hints</label>

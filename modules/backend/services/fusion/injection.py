@@ -49,7 +49,7 @@ _MIN_WORDS_FOR_MODEL = 8
 _MAX_MODEL_STRINGS = 100
 FLAG_FROM = 0.8
 
-_cache, _cache_lock = {}, threading.Lock()          # sha1(text) -> p (decision-model verdicts)
+_cache, _cache_lock = {}, threading.Lock()          # model|sha1(text) -> p (decision-model verdicts)
 _hits, _hits_lock = {}, threading.Lock()             # run_id -> [str] seen this run
 
 
@@ -70,7 +70,8 @@ def _model_hits(cands, run_id):
     from . import decision_model as dm
     if not cands or not dm.enabled("injection"):
         return []
-    key = lambda s: hashlib.sha1(s.encode("utf-8", "replace")).hexdigest()
+    by = dm.current_by()                     # another model's verdict is not this one's
+    key = lambda s: by + "|" + hashlib.sha1(s.encode("utf-8", "replace")).hexdigest()
     with _cache_lock:
         todo = [s for s in cands if key(s) not in _cache]
     if todo:

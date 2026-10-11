@@ -2,11 +2,12 @@
 
 A decision model does not write text. It takes a `state` (any JSON) plus named
 questions, each a yes/no ("noul"), pick-one ("choice") or ordered "score", and
-returns a typed answer with probabilities. The default is TypeSafe's Jev
-(`jev-latest`), reached through OpenRouter's Decisions endpoint with the decision
-model's own OpenRouter key when one is set in Settings, else the main key while
-OpenRouter is the chat provider — so a box whose chat runs on Claude or a Codex
-subscription can still use it. (This module was services/fusion/jev.py; the
+returns a typed answer with probabilities. The operator picks where it runs
+(Settings → Agentic → Decision model): OpenRouter (default: TypeSafe's Jev,
+`jev-latest`; also Cloudflare Clef), OpenAI's Decisions API, any Jev-compatible
+endpoint, or -- in Offline mode -- a server on the local network. Each has its own
+key; empty uses the AI model's key while that runs on the same provider, so a box
+whose chat runs on Claude or a Codex subscription can still use it. (This module was services/fusion/jev.py; the
 feature was renamed to the generic "decision model" in 2026-10, when other
 vendors began serving the same kind of model.)
 
@@ -19,6 +20,7 @@ Masked case data leaves the box when this is on — the Settings block says so.
 """
 import json
 import logging
+import threading
 
 import requests
 
@@ -26,16 +28,51 @@ from .budget import approx_tokens
 
 log = logging.getLogger(__name__)
 
-URL = "https://openrouter.ai/api/v1/systemone"
+# Where each provider is and how it is spoken to. "jev" is the wire TypeSafe defined
+# and OpenRouter, Cloudflare Clef and Kev all accept; "openai" is OpenAI's own
+# Decisions API (different field names, translated below). `cloud` providers are
+# off in Offline mode; "local" is the only one allowed there and must resolve to a
+# private address. Contracts observed 2026-10-11, see docs/DECISION_MODEL.md.
+PROVIDERS = {
+    "openrouter": {"url": "https://openrouter.ai/api/v1/systemone", "wire": "jev", "cloud": True,
+                   "model": "jev-latest", "timeout": 15, "label": "OpenRouter"},
+    "openai": {"url": "https://api.openai.com/v1/decisions", "wire": "openai", "cloud": True,
+               "model": "gpt-6-luna", "timeout": 15, "label": "OpenAI"},
+    "custom": {"url": "", "wire": "jev", "cloud": True, "model": "", "timeout": 30, "label": "Custom endpoint"},
+    "local": {"url": "", "wire": "jev", "cloud": False, "model": "", "timeout": 60, "label": "Local server"},
+}
+URL = PROVIDERS["openrouter"]["url"]
+# Known models: suggested in Settings, and how much one call may carry. `budget` is
+# what pack() fills (our chars/4 estimate); `cut_at` is where a provider silently
+# TRUNCATES instead of refusing -- Clef on OpenRouter read the first 16,384 tokens of
+# a 50k request and answered from them (2026-10-11), so an answer that used exactly
+# that many tokens is treated as "too big" and split, never trusted.
+MODELS = [
+    {"provider": "openrouter", "model": "jev-latest", "budget": 24000,
+     "note": "TypeSafe Jev — the default; ~0.4 s a call"},
+    {"provider": "openrouter", "model": "cloudflare/clef", "budget": 12000, "cut_at": 16384,
+     "note": "Cloudflare Clef (open weights) — ~1.4 s a call"},
+    {"provider": "openrouter", "model": "cloudflare/clef-flash", "budget": 12000, "cut_at": 16384,
+     "note": "Cloudflare Clef Flash — cheapest, ~1.2 s a call"},
+    {"provider": "openai", "model": "gpt-6-luna", "budget": 24000,
+     "note": "OpenAI Decisions API (beta) — needs an OpenAI API key; not yet tested live"},
+]
 USES = ("disposition", "relevance", "grounding", "identity", "chat_intent", "injection",
         "chat_confidence", "scopes", "compromise", "report")
-DEFAULTS = {"enabled": False, "model": "jev-latest", "min_confidence": 0.8,
-            # The decision model's own OpenRouter key. Empty = use the main key, which only works
-            # while OpenRouter is the selected chat provider.
+DEFAULTS = {"enabled": False,
+            # "" = follow the AI model's mode (every box saved before the provider
+            # choice existed: an offline box must not start calling a cloud).
+            "mode": "", "provider": "openrouter", "model": "jev-latest",
+            "url": "",                 # custom / local only
+            "context_tokens": 0,       # 0 = the known model's budget, else UNKNOWN_BUDGET
+            "min_confidence": 0.8,
+            # The decision model's own key. Empty = the AI model's key while that runs
+            # on the same provider (OpenRouter, or OpenAI with an API key).
             "api_key": "",
             "uses": {u: True for u in USES}}
-# Cloudflare's model card gives a 32k-token context; stay well under it.
-MAX_TOKENS = 24000
+MAX_TOKENS = 24000             # Jev's budget, the default
+UNKNOWN_BUDGET = 6000          # a custom / local model nobody measured: small and safe
+DEFAULT_BY = "openrouter/jev-latest"   # what wrote a cache saved before caches were stamped
 
 
 def _cfg():
@@ -51,24 +88,84 @@ def settings(cfg=None) -> dict:
     return out
 
 
+def provider(cfg) -> str:
+    s = settings(cfg)
+    mode = str(s.get("mode") or cfg.get("llm_mode", "online")).lower()
+    if mode != "online":
+        return "local"
+    p = s.get("provider")
+    return p if p in PROVIDERS and PROVIDERS[p]["cloud"] else "openrouter"
+
+
+def model_name(cfg) -> str:
+    s, p = settings(cfg), provider(cfg)
+    m = (s.get("model") or "").strip()
+    # The model saved for another provider means nothing here (jev-latest is not an
+    # OpenAI model): fall back to this provider's own default.
+    if m and any(r["model"] == m and r["provider"] != p for r in MODELS):
+        m = ""
+    return m or PROVIDERS[p]["model"]
+
+
+def _known(cfg):
+    p, m = provider(cfg), model_name(cfg)
+    return next((r for r in MODELS if r["provider"] == p and r["model"] == m), {})
+
+
+def context_tokens(cfg=None) -> int:
+    """How many (estimated) tokens one call may carry for the model in use."""
+    cfg = _cfg() if cfg is None else cfg
+    try:
+        own = int(settings(cfg).get("context_tokens") or 0)
+    except (TypeError, ValueError):
+        own = 0
+    return own if own > 0 else _known(cfg).get("budget") or UNKNOWN_BUDGET
+
+
+def current_by(cfg=None) -> str:
+    """The provider/model a cache was written by -- caches from another one are not shown."""
+    cfg = _cfg() if cfg is None else cfg
+    return f"{provider(cfg)}/{model_name(cfg)}"
+
+
 def _key(cfg):
-    # Offline mode is the operator saying "nothing leaves this box" — even if an
-    # OpenRouter key is still sitting in the online block.
-    if str(cfg.get("llm_mode", "online")).lower() != "online":
-        return None
-    own = (cfg.get("decision_model") or {}).get("api_key")
+    """The key to send, "" when the provider takes none, None when it cannot be used."""
+    p = provider(cfg)
+    s = settings(cfg)
+    own = s.get("api_key") or ""
+    if p in ("custom", "local"):
+        return own if (s.get("url") or "").strip() else None
     if own:
         return own
     online = cfg.get("online_llm") or {}
-    if (online.get("provider") or "").lower() != "openrouter":
-        return None
-    return online.get("api_key") or None
+    if str(cfg.get("llm_mode", "online")).lower() == "online" and (online.get("provider") or "").lower() == p:
+        return online.get("api_key") or None        # OpenAI *Subscription* is a different provider id
+    return None
+
+
+def _url(cfg) -> str:
+    p = provider(cfg)
+    return PROVIDERS[p]["url"] or (settings(cfg).get("url") or "").strip()
 
 
 def enabled(use, cfg=None) -> bool:
     cfg = _cfg() if cfg is None else cfg
     s = settings(cfg)
-    return bool(s["enabled"] and s["uses"].get(use) and _key(cfg))
+    return bool(s["enabled"] and s["uses"].get(use) and _key(cfg) is not None)
+
+
+def why_inactive(cfg=None) -> str:
+    """Why no call can be made with these settings ("" when one can), in the operator's words."""
+    cfg = _cfg() if cfg is None else cfg
+    if _key(cfg) is not None:
+        return ""
+    p = provider(cfg)
+    if p == "local":
+        return "Offline mode needs the URL of a decision-model server on your network."
+    if p == "custom":
+        return "Custom needs the endpoint URL."
+    label = PROVIDERS[p]["label"]
+    return f"Needs an {label} API key here (or {label} as the AI model's provider, in Online mode)."
 
 
 def min_confidence() -> float:
@@ -78,95 +175,200 @@ def min_confidence() -> float:
         return DEFAULTS["min_confidence"]
 
 
+def cached(d, name, cfg=None) -> dict:
+    """A case's decision_<name> cache, or {} when another provider/model wrote it: a
+    switch from Jev to Clef must not show Jev's answers as Clef's."""
+    by = (d.get("decision_by") or {}).get(name, DEFAULT_BY)
+    return (d.get(f"decision_{name}") or {}) if by == current_by(cfg) else {}
+
+
+def _save(case_id, **caches):
+    """Write decision_<name> caches and stamp each with the model that answered."""
+    from .store import get_case, _merge_case_details
+    by = dict((get_case(case_id) or {}).get("decision_by") or {})   # fresh: another pass may have stamped
+    now = current_by()
+    by.update({k: now for k in caches})
+    _merge_case_details(case_id, {**{f"decision_{k}": v for k, v in caches.items()}, "decision_by": by})
+
+
 # One failure answers for every decision-model call: the provider is skipped until DOWN_SECONDS
-# have passed or its key / model change. On an air-gapped box every feature (verdicts,
-# phases, people, report grounding, chat) asked on its own after every fuse and
+# have passed or its provider / URL / key / model change. On an air-gapped box every feature
+# (verdicts, phases, people, report grounding, chat) asked on its own after every fuse and
 # report -- 15 rejected calls in one minute -- each one waiting out a timeout or a 401
 # that the first had already answered.
 DOWN_SECONDS = 600
 _down = {"until": 0.0, "fp": None, "why": ""}
 
 
-def _fp(key, model):
+def _fp(cfg):
     import hashlib
-    return hashlib.sha1(f"{model}|{key}".encode()).hexdigest()[:12]
+    return hashlib.sha1(f"{provider(cfg)}|{_url(cfg)}|{model_name(cfg)}|{_key(cfg)}".encode()).hexdigest()[:12]
 
 
 def unavailable(cfg=None):
     """Why the decision model is being skipped right now, or "" when it may be called."""
     import time
     cfg = _cfg() if cfg is None else cfg
-    if _down["fp"] == _fp(_key(cfg), settings(cfg)["model"]) and time.monotonic() < _down["until"]:
+    if _down["fp"] == _fp(cfg) and time.monotonic() < _down["until"]:
         return _down["why"]
     return ""
 
 
+def _private_only(url):
+    """"" when every address the URL's host resolves to is loopback / private /
+    link-local, else why not. A "local" model must not quietly be a cloud one."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname
+    if not host:
+        return "the local URL has no host"
+    try:
+        addrs = {ai[4][0] for ai in socket.getaddrinfo(host, None)}
+    except OSError as e:
+        return f"the local host {host} does not resolve ({e})"
+    # ponytail: resolved here and again by requests -- a DNS-rebinding window. The
+    # operator owns this URL; pin the IP in the request if that ever matters.
+    bad = [a for a in addrs if not (lambda ip: ip.is_private or ip.is_loopback or ip.is_link_local)(
+        ipaddress.ip_address(a.split("%")[0]))]
+    return f"the local URL resolves to a public address ({bad[0]})" if bad else ""
+
+
+# --- wire formats ----------------------------------------------------------------
+def _openai_body(model, state, questions):
+    """Jev-shaped questions -> OpenAI's: predicate / choice, an ordered array by name."""
+    qs = []
+    for qid, q in questions.items():
+        crit = q.get("criteria") or {}
+        if q.get("type") == "noul":
+            text = q.get("instructions", "")
+            if crit:   # a predicate has no criteria slot: say what true / false mean
+                text += " True means: " + str(crit.get("true", "")) + " False means: " + str(crit.get("false", ""))
+            qs.append({"type": "predicate", "name": qid, "instructions": text})
+        elif q.get("type") == "choice":
+            qs.append({"type": "choice", "name": qid, "instructions": q.get("instructions", ""),
+                       "choices": [{"value": k, "description": v} for k, v in crit.items()]})
+        else:
+            raise ValueError(f"question type {q.get('type')!r} is not mapped for OpenAI")
+    return {"model": model, "input": json.dumps(state), "questions": qs}
+
+
+def _openai_answers(body):
+    """OpenAI's answers array -> Jev's {qid: answer} map."""
+    out = {}
+    for a in body.get("answers") or []:
+        name = a.get("name")
+        if a.get("type") == "predicate":
+            out[name] = {"type": "noul", "noul": a.get("probability")}
+        elif a.get("type") == "choice":
+            out[name] = {"type": "choice", "choice": a.get("choice"), "confidence": a.get("confidence"),
+                         "probabilities": {p.get("value"): p.get("probability")
+                                           for p in a.get("probabilities") or []}}
+    return out
+
+
+def _cost(body, model):
+    u = body.get("usage") or {}
+    if u.get("cost") is not None:
+        return u["cost"]
+    if model.startswith("gpt-6-luna"):          # tokens only; $0.10 per million input (beta price)
+        return (u.get("input_tokens") or 0) * 0.10 / 1e6
+    return 0.0
+
+
 def ask(state, questions, *, run_id=None, cfg=None):
-    """One Decisions call. Returns the `answers` map, or None on any failure."""
+    """One Decisions call. Returns the `answers` map, or None on any failure;
+    _last.too_big says whether it failed for being too large (per thread: the
+    after-fuse pass, a report and the relevance job can call at once)."""
+    ans, _last.too_big = _call(state, questions, run_id=run_id, cfg=cfg)
+    return ans
+
+
+_last = threading.local()
+
+
+def _call(state, questions, *, run_id=None, cfg=None):
+    """(answers or None, too_big). too_big = the model called the request too large
+    (or silently cut it): the caller splits and retries; it is not an outage."""
     import time
     cfg = _cfg() if cfg is None else cfg
     key = _key(cfg)
-    if not key or not questions:
-        return None
-    model = settings(cfg)["model"]
+    if key is None or not questions:
+        return None, False
+    p, model, url = provider(cfg), model_name(cfg), _url(cfg)
+    row = PROVIDERS[p]
     if unavailable(cfg):                     # failed moments ago: skip, offline, no call
-        _last["too_big"] = False
-        return None
+        return None, False
 
     def _trip(why):
         if not unavailable(cfg):
             log.warning("decision model: %s -- every decision-model call is skipped for %d min (offline) or until "
                         "its settings change", why, DOWN_SECONDS // 60)
-        _down.update(until=time.monotonic() + DOWN_SECONDS, fp=_fp(key, model), why=why)
+        _down.update(until=time.monotonic() + DOWN_SECONDS, fp=_fp(cfg), why=why)
+    if not row["cloud"]:
+        why = _private_only(url)
+        if why:
+            _trip(why)
+            return None, False
+    try:
+        body = (_openai_body(model, state, questions) if row["wire"] == "openai"
+                else {"model": model, "state": state, "questions": questions})
+    except ValueError as e:
+        log.warning("decision model: %s", e)
+        return None, False
     try:
         # A 5xx is the provider's own hiccup, not an outage: retried ONCE. Seen
         # live: one HTTP 520 on the verdict question left a 285-finding case with
         # no suggestions at all, silently. A connection error, a timeout or a 4xx
         # is still one call -- a dead provider must not cost a dozen.
+        # No redirects: a "local" server must not bounce case data elsewhere, and
+        # a cloud endpoint that moved should fail loudly, not follow blindly.
         for attempt in (0, 1):
-            r = requests.post(URL, timeout=15,
-                              headers={"Authorization": f"Bearer {key}"},
-                              json={"model": model, "state": state, "questions": questions})
+            r = requests.post(url, timeout=row["timeout"], allow_redirects=False,
+                              headers={"Authorization": f"Bearer {key}"} if key else {}, json=body)
             if r.status_code < 500 or attempt:
                 break
             log.warning("decision model: HTTP %s — retrying once", r.status_code)
-            import time
             time.sleep(RETRY_SECONDS)
-        _last["too_big"] = False
         if r.status_code != 200:
             # The model's own token count is the only exact one; ours is chars/4. A
             # request it calls too large is split and retried by _ask_chunk.
-            _last["too_big"] = r.status_code in (400, 413) and "max_tokens" in r.text
+            too_big = r.status_code in (400, 413) and any(
+                w in r.text for w in ("max_tokens", "context_length", "too long", "too large"))
             log.warning("decision model: HTTP %s: %s", r.status_code, r.text[:200])
-            if not _last["too_big"]:                 # too big is ours to split, not an outage
+            if not too_big:                          # too big is ours to split, not an outage
                 _trip(f"HTTP {r.status_code}")
-            return None
+            return None, too_big
         body = r.json()
     except Exception as e:  # noqa: BLE001 — every failure means "no suggestion"
-        _last["too_big"] = False
         log.warning("decision model: call failed: %s", e)
         _trip(f"unreachable ({type(e).__name__})")
-        return None
+        return None, False
     _down["until"] = 0.0                         # answered: not down
+    u = body.get("usage") or {}
+    cut = _known(cfg).get("cut_at")
+    if cut and (u.get("input_tokens") or 0) >= cut:
+        log.warning("decision model: %s read only %s tokens of the request -- split and asked again", model, cut)
+        return None, True
     if run_id:
-        u = body.get("usage") or {}
         try:
             from services.workflow_service import record_llm_metrics
             record_llm_metrics(run_id, calls=1, input_tokens=u.get("input_tokens") or 0,
                                output_tokens=u.get("output_tokens") or 0,
-                               cost_usd=u.get("cost") or 0.0, model=body.get("model") or model)
+                               cost_usd=_cost(body, model), model=body.get("model") or model)
         except Exception:  # noqa: BLE001
             pass
-    return body.get("answers") or None
+    answers = _openai_answers(body) if row["wire"] == "openai" else body.get("answers")
+    return answers or None, False
 
 
-_last = {"too_big": False}     # did the last ask() fail because the request was too large?
 RETRY_SECONDS = 2              # the pause before the one retry of a 5xx answer
 
 
-def pack(items, render, max_tokens=MAX_TOKENS, max_items=50, per_item=0):
+def pack(items, render, max_tokens=None, max_items=50, per_item=0):
     """Greedy chunks of `items` whose rendered size — plus `per_item` tokens for
     the question each item brings — stays under max_tokens."""
+    max_tokens = context_tokens() if max_tokens is None else max_tokens
     chunk, size = [], 0
     for it in items:
         t = approx_tokens(render(it)) + per_item
@@ -187,7 +389,7 @@ def ask_each(items, render, question, *, context=None, run_id=None, cfg=None):
     Stops at the first failed call — the rest come back None.
     """
     out, base = [], approx_tokens(context) if context is not None else 0
-    for chunk in pack(items, render, max_tokens=MAX_TOKENS - base,
+    for chunk in pack(items, render, max_tokens=context_tokens(cfg) - base,
                       per_item=_question_tokens(question)):
         ans = _ask_chunk(chunk, render, question, context, run_id=run_id, cfg=cfg)
         if ans is None:
@@ -217,7 +419,7 @@ def _ask_chunk(chunk, render, question, context=None, *, run_id=None, cfg=None):
     ans = ask(state, {k: question(k) for k in keys}, run_id=run_id, cfg=cfg)
     if ans is not None:
         return [ans.get(k) for k in keys]
-    if not _last["too_big"] or len(chunk) < 2:
+    if not getattr(_last, "too_big", False) or len(chunk) < 2:
         return None
     mid = len(chunk) // 2
     left = _ask_chunk(chunk[:mid], render, question, context, run_id=run_id, cfg=cfg)
@@ -311,7 +513,7 @@ NOTICE_NAMES = 5          # findings named in the Log's "not reviewed yet" line
 def suggest_dispositions(case_id, d, g) -> int:
     """Ask about every unreviewed finding whose occurrences changed since the
     last ask. Returns how many findings were asked about."""
-    have = d.get("decision_suggestions") or {}
+    have = cached(d, "suggestions")
     validated = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
     from .correlate import _part_ids
     # Reviewed = the row or any of its parts has a verdict (a row judged part by
@@ -355,9 +557,8 @@ def suggest_dispositions(case_id, d, g) -> int:
               for k, v in new.items()
               if v.get("label") == "true_positive" and v.get("confidence", 0) >= floor]
     fresh = [n for n in notice if n["id"] in {f.id for f in todo}]
-    if new != have or notice != (d.get("decision_notice") or []):
-        from .store import _merge_case_details
-        _merge_case_details(case_id, {"decision_suggestions": new, "decision_notice": notice})
+    if new != have or notice != (cached(d, "notice") or []):
+        _save(case_id, suggestions=new, notice=notice)
     if fresh:
         from .store import log_case_event
         # INFO, not a warning: nothing went wrong -- it says where to look first. As a
@@ -416,7 +617,7 @@ def suggest_identities(case_id, d, g) -> int:
     # signal this question has. Skip rather than send noise.
     if (d.get("masking") or {}).get("enabled"):
         return 0
-    have = d.get("decision_identity") or {}
+    have = cached(d, "identity")
     pairs = _pending_identity_pairs(d, g)
     todo = [c for c in pairs if c["id"] not in have]
     if not todo:
@@ -427,8 +628,7 @@ def suggest_identities(case_id, d, g) -> int:
         if isinstance(ans, dict) and isinstance(ans.get("noul"), (int, float)):
             new[c["id"]] = float(ans["noul"])
     if new != have:
-        from .store import _merge_case_details
-        _merge_case_details(case_id, {"decision_identity": new})
+        _save(case_id, identity=new)
     return len(todo)
 
 
@@ -473,7 +673,7 @@ def unsupported_claims(narrative, masked_payload, mask, *, run_id=None, log_even
         return []
     # Truncating the evidence would make every claim about the cut part look
     # unsupported — a false alarm is worse than no check.
-    if approx_tokens(masked_payload) > MAX_TOKENS * 3 // 4:
+    if approx_tokens(masked_payload) > context_tokens() * 3 // 4:
         if log_event:
             log_event("Report · decision model grounding check skipped", "info",
                       f"the evidence (~{approx_tokens(masked_payload):,} tokens) is larger "
@@ -689,10 +889,9 @@ def _cards_of_every_scope(case_id, d):
 
 
 def suggest_scopes(case_id, d) -> int:
-    from .store import _merge_case_details
     pairs, g = _cards_of_every_scope(case_id, d)
     verdicts = analyst_verdicts(d)
-    have = d.get("decision_scopes") or {}
+    have = cached(d, "scopes")
     todo = [(z, sig) for z, sig, _g in pairs if sig not in have]
     if g is not None:
         by_id = {f.id: f for f in g.findings}
@@ -714,7 +913,7 @@ def suggest_scopes(case_id, d) -> int:
     live = {sig for _z, sig, _g in pairs}
     new = {k: v for k, v in new.items() if k in live}        # windows that no longer exist IN ANY scope
     if new != have:
-        _merge_case_details(case_id, {"decision_scopes": new})
+        _save(case_id, scopes=new)
     return len(todo)
 
 
@@ -724,7 +923,7 @@ def attach_scope_estimates(cards, d, g):
         return
     by_id = {f.id: f for f in g.findings}
     verdicts = analyst_verdicts(d)
-    est = d.get("decision_scopes") or {}
+    est = cached(d, "scopes")
     for z in cards:
         p = est.get(_scope_sig(z, by_id, verdicts)) if not z.get("rollup") else None
         if p is not None:
@@ -752,7 +951,7 @@ def compromise_estimate(d, account_ids, fs):
     not asked yet, or the evidence changed since)."""
     if not enabled("compromise"):
         return None
-    return (d.get("decision_compromise") or {}).get(compromise_sig(account_ids, fs, analyst_verdicts(d)))
+    return cached(d, "compromise").get(compromise_sig(account_ids, fs, analyst_verdicts(d)))
 
 
 def _person_state(g, card, fs, verdicts=None):
@@ -781,8 +980,8 @@ def suggest_compromise(case_id, d) -> int:
     Identities tab with no figure at all (asd, 2026-10-04: 0 of 19). Each scope is
     read on a copy of the case with that scope selected; nothing is written."""
     from . import identities as idf
-    from .store import FULL_SCOPE_ID, _active_scope_id, _merge_case_details, _scopes, identity_view, view_graph
-    have = d.get("decision_compromise") or {}
+    from .store import FULL_SCOPE_ID, _active_scope_id, _scopes, identity_view, view_graph
+    have = cached(d, "compromise")
     verdicts = analyst_verdicts(d)
     todo, live, g_full = [], set(), None
     for sid in dict.fromkeys([_active_scope_id(d)] + [x["id"] for x in _scopes(d)] + [FULL_SCOPE_ID]):
@@ -812,7 +1011,7 @@ def suggest_compromise(case_id, d) -> int:
             if isinstance(a, dict) and isinstance(a.get("noul"), (int, float)):
                 new[sig] = round(float(a["noul"]), 3)
     if new != have:
-        _merge_case_details(case_id, {"decision_compromise": new})
+        _save(case_id, compromise=new)
     return len(todo)
 
 
@@ -926,7 +1125,7 @@ def report_estimates(case_id, d, g) -> dict:
         if enabled("disposition"):
             from .correlate import _part_ids
             done = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
-            sug = d.get("decision_suggestions") or {}
+            sug = cached(d, "suggestions")
             rows = []
             for f in g.findings:
                 if (set(f.ids() + _part_ids(f)) & done) or f.kind == "dispositioned":
@@ -1049,7 +1248,7 @@ def score_relevance(case_id, *, run_id, cancel):
         return best
 
     for chunk in pack(items, lambda it: it[4],
-                      max_tokens=MAX_TOKENS - approx_tokens(context),
+                      max_tokens=context_tokens() - approx_tokens(context),
                       per_item=_question_tokens(_relevant_question)):
         if cancel.is_set():
             save()
