@@ -305,6 +305,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_derive_findings", lambda: _derive_findings(g, baseline=baseline, window=window))
     _guarded(_errs, "_coordinated_activity", lambda: _coordinated_activity(g, window=window, baseline=baseline))
     _guarded(_errs, "_lone_medium_detections", lambda: _lone_medium_detections(g, baseline=baseline, window=window))
+    _guarded(_errs, "_staging_archive_findings", lambda: _staging_archive_findings(g, window=window))
     _guarded(_errs, "_collapse_recurring_bursts", lambda: _collapse_recurring_bursts(g))
     _guarded(_errs, "weighting patterns",
              lambda: _whits.update(_weighting.apply_patterns(g, _wcat, _werrs)))
@@ -2415,6 +2416,72 @@ def _lone_medium_detections(g: FusionGraph, *, baseline=None, window=None) -> No
                 entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
                 sources=top.sources, evidence=list(top.evidence), mitre=[],
                 ts=first, kind="single", occ_count=n, occ_latest=latest))
+
+
+# A world-writable staging path: anyone can drop a file here, so an archive in one
+# is ambiguous — attacker collection-staging (T1560.001) OR a benign backup,
+# installer or cloud-sync file. DetectRaptor's "Suspicious Location" MFT rule fires
+# on both, which is why the mapper keeps it a quiet 'mft_detection' timeline event
+# and never a finding: promoting every one would flood (OneDrive, installers).
+_STAGE_DIRS = ("\\users\\public\\", "\\programdata\\", "\\windows\\temp\\",
+               "\\appdata\\local\\temp\\", "\\appdata\\roaming\\", "\\perflogs\\",
+               "\\$recycle", "\\temp\\")
+_ARCHIVE_EXTS = (".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".cab", ".iso", ".arj")
+_STAGE_CORROB_SECONDS = 3600
+
+
+def _staging_archive_findings(g: FusionGraph, *, window=None) -> None:
+    """Promote an archive in a world-writable staging path to a T1560.001
+    collection-staging finding ONLY when other attack activity hit the SAME host
+    within the hour. A lone archive in such a path is a benign backup/installer and
+    stays a quiet timeline event — the surrounding attack is what makes this one
+    suspicious. So a clean host (no nearby high/coordinated finding) never promotes
+    one. Runs after the burst and lone-medium passes, so the corroborating findings
+    already exist. 2026-10: a Compress-Archive -> C:\\Users\\Public\\exfil_stage.zip
+    was detected ('Suspicious Location', high) but surfaced nowhere; the MFT row has
+    no process lineage, so only co-occurrence can separate it from a benign zip."""
+    attack: dict = {}                       # asset_id -> [utc dt of nearby attack findings]
+    for f in g.findings:
+        if not (f.kind == "derived" or sev.at_least(f.severity, "high")):
+            continue
+        t = keys.to_utc_dt(f.ts)
+        if not t:
+            continue
+        for a in f.asset_ids or []:
+            attack.setdefault(a, []).append(t)
+    if not attack:                          # no attack to corroborate against — stay quiet
+        return
+    claimed = {i for f in g.findings for i in (f.entity_ids or [])}
+    for e in list(g.by_type("event")):
+        if "mft_detection" not in (e.flags or []) or e.id in claimed:
+            continue
+        path = str((e.attrs or {}).get("path") or "").lower()
+        if not (path.endswith(_ARCHIVE_EXTS) and any(d in path for d in _STAGE_DIRS)):
+            continue
+        et = keys.to_utc_dt(e.first_seen)
+        if not et or not in_window(e.first_seen, window):
+            continue
+        for a in _assets_of(e) or []:
+            if any(abs((t - et).total_seconds()) <= _STAGE_CORROB_SECONDS
+                   for t in attack.get(a, [])):
+                host = _host_label(g, a)
+                fname = (str((e.attrs or {}).get("path") or "")).replace("/", "\\").split("\\")[-1] or "archive"
+                g.add_finding(Finding(
+                    id=_fid("stage", f"{a}:{e.id}"),
+                    title=f"Archive staged for collection: {fname} on {host}",
+                    severity=e.severity if sev.at_least(e.severity, "medium") else "medium",
+                    confidence="medium",
+                    summary=f"An archive ({fname}) was written to a world-writable staging path "
+                            f"on {host} while other attack activity was underway on the same host "
+                            f"within the hour — consistent with data collection and staging for "
+                            f"exfiltration (T1560.001). A lone archive in such a path is benign "
+                            f"(backups, installers, cloud sync); the surrounding activity is what "
+                            f"makes this one suspicious.",
+                    entity_ids=[e.id], asset_ids=[a],
+                    sources=e.sources, evidence=list(e.evidence),
+                    mitre=["T1560.001"], ts=e.first_seen, kind="single",
+                    occ_count=1, occ_latest=e.last_seen or e.first_seen))
+                break
 
 
 def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None:
