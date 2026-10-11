@@ -1285,7 +1285,12 @@ def _mask_audit_lines(mapping) -> str:
     e.g. 'identity #1: adatumlab\\almogs = USER1, almogs@adatumlab.local = UPN1'."""
     idents: dict = {}
     others = []
-    for orig, ps in (mapping or {}).items():
+    seen = set()   # collapse case-variant duplicates: Attacked-WIN11 and attacked-win11
+    for orig, ps in (mapping or {}).items():       # both map to the same pseudonym
+        key = (str(orig).lower(), str(ps))
+        if key in seen:
+            continue
+        seen.add(key)
         m = re.match(r"^(USER|UPN|SAM|SID)(\d+)$", str(ps))
         if m:
             idents.setdefault(m.group(2), []).append(f"{orig} = {ps}")
@@ -1312,8 +1317,15 @@ def _log_mask_audit(run_id, mask, text=None):
     if text is not None:                         # report only what really appears in the payload
         mapping = {k: v for k, v in mapping.items()
                    if k and _mask_pattern(k, True).search(text)}
+    # Log each masked value ONCE per report generation. The report, its checklist
+    # and any synthesis are separate model calls sharing one mask, so without this
+    # the same identity list was re-logged for every call. Track what's been shown
+    # on the mask (it resets naturally — a fresh mask is built per generation).
+    shown = mask.__dict__.setdefault("_audit_logged", set())
+    mapping = {k: v for k, v in mapping.items() if k not in shown}
     if not mapping:
         return
+    shown.update(mapping.keys())
     try:
         from .store import log_case_event
         # Override the default 500-char log-detail cap so the whole list survives

@@ -59,6 +59,11 @@ _KEEP = {
     "detections", "finding", "findings", "alert", "alerts", "exclusion",
     "exclusions", "antivirus", "malware", "ransomware", "exploit", "payload",
     "beacon", "implant", "endpoint", "endpoints", "persistence", "exfiltration",
+    # More report/forensic vocabulary NER tagged as PERSON/ORG on a live lab run
+    # (Bypass, Trojan, Firewall, Value, Creation ...). camelCase tokens like
+    # LogonId / MethodPara are rejected by _plausible_name, not listed here.
+    "bypass", "trojan", "firewall", "value", "values", "creation",
+    "infrastructure", "parameter", "parameters", "method", "logon", "logoff",
 }
 
 # Default entity set: the two the deterministic masker genuinely cannot catch.
@@ -83,6 +88,17 @@ def _plausible_name(s: str) -> bool:
     if len(words) == 1 and len(s) > 20:               # a single 20+ char token is a blob, not a name
         return False
     for w in words:
+        if w.startswith("-"):                   # a PowerShell flag (-eq, -NoProfile), not a name
+            return False
+        # camelCase / internal capitals = a technical identifier (LogonId,
+        # MethodPara, NoProfile, PSScriptPolicyTest), not a person's name. A real
+        # name is Title-case or ALLCAPS; a lowercase letter immediately followed by
+        # an uppercase one never occurs inside one. Checked on the ORIGINAL word so
+        # a hyphen keeps the two sides apart ("Jean-Luc" stays a name). The rare
+        # camelCase surname (McDonald) is the accepted cost -- the deterministic
+        # masker still masks real account/host names; NER is only the free-text pass.
+        if re.search(r"[a-z][A-Z]", w):
+            return False
         core = w.strip("'-.").replace("'", "").replace("-", "")
         if not core or not core.isalpha():
             return False
@@ -359,10 +375,19 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
         # pre-LLM mapping block, so the operator can see exactly what Presidio hid.
         # The Log is the trusted local view (the model gets only the pseudonyms).
         pairs = sorted(assigned.items(), key=lambda kv: kv[1])
-        _log("%d leftover name(s) Presidio caught — person & company names the "
-             "custom-identity masker can't catch (restored in the report):\n  %s"
-             % (len(assigned), "\n  ".join(f"{name} = {pseudo}" for name, pseudo in pairs)),
-             "info", logfn)
+        # Log each hidden name ONCE per report: scrub() runs on many text chunks
+        # (payload, facts, synthesis) sharing one mask, so without this the same
+        # name was re-logged on every chunk. New names first seen in a later chunk
+        # still log. Masking itself is unchanged — only the audit line is deduped.
+        if mask is not None:
+            done = mask.__dict__.setdefault("_ner_logged", set())
+            pairs = [(n, p) for n, p in pairs if n not in done]
+            done.update(n for n, _ in pairs)
+        if pairs:
+            _log("%d leftover name(s) Presidio caught — person & company names the "
+                 "custom-identity masker can't catch (restored in the report):\n  %s"
+                 % (len(pairs), "\n  ".join(f"{name} = {pseudo}" for name, pseudo in pairs)),
+                 "info", logfn)
     return out, hits
 
 

@@ -72,6 +72,20 @@ class NameShapeFilter(unittest.TestCase):
         self.assertFalse(pm._plausible_name("Supercalifragilisticexpialidocious1"))  # digit
         self.assertFalse(pm._plausible_name("one two three four five six"))          # 6 words
 
+    def test_rejects_flags_and_camelcase_identifiers(self):
+        # PowerShell flags and camelCase/Pascal technical identifiers are NOT names;
+        # NER tagged all of these PERSON/ORG on a live report.
+        for s in ("-eq", "-NoProfile", "-NoProfile -NonInteractive -ExecutionPolicy",
+                  "LogonId", "MethodPara", "NoProfile", "PSScriptPolicyTest"):
+            self.assertFalse(pm._plausible_name(s), s)
+        # hyphenated / apostrophe real names must survive the camelCase check
+        for n in ("Jean-Luc Picard", "O'Brien"):
+            self.assertTrue(pm._plausible_name(n), n)
+
+    def test_threat_vocabulary_is_kept(self):
+        for w in ("bypass", "trojan", "firewall", "value", "creation"):
+            self.assertIn(w, pm._KEEP, w)
+
 
 class CaseLogHook(unittest.TestCase):
     """Every LLM path (fuse, Regenerate, chat) must hand Presidio the case-Log
