@@ -1,4 +1,4 @@
-"""Jev's OpenRouter key never leaves the box through a backup, and an import
+"""The decision model's OpenRouter key never leaves the box through a backup, and an import
 cannot replace it.
 
 Every path that already hid the main LLM key had to learn the new one: the
@@ -21,25 +21,25 @@ for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "modules/backend")):
 import _optional_deps  # noqa: F401,E402
 from services.storage import export_import  # noqa: E402
 
-KEY = "sk-or-v1-jevsecret0000"
-CFG = {"agentic": {"online_llm": {"api_key": "sk-main"}, "jev": {"enabled": True, "api_key": KEY}}}
+KEY = "sk-or-v1-dmsecret00000"
+CFG = {"agentic": {"online_llm": {"api_key": "sk-main"}, "decision_model": {"enabled": True, "api_key": KEY}}}
 
 
 class Export(unittest.TestCase):
     def test_export_redacts(self):
         out = export_import._redact_frontend_config_secrets(CFG)
         self.assertNotIn(KEY, json.dumps(out))
-        self.assertEqual(out["agentic"]["jev"]["api_key"], "[REDACTED]")
-        self.assertEqual(CFG["agentic"]["jev"]["api_key"], KEY)      # a copy, not the live dict
+        self.assertEqual(out["agentic"]["decision_model"]["api_key"], "[REDACTED]")
+        self.assertEqual(CFG["agentic"]["decision_model"]["api_key"], KEY)      # a copy, not the live dict
 
     def test_import_cannot_set_it(self):
-        incoming = {"agentic": {"jev": {"enabled": True, "api_key": "sk-or-attacker"}}}
+        incoming = {"agentic": {"decision_model": {"enabled": True, "api_key": "sk-or-attacker"}}}
         with mock.patch.object(export_import, "load_frontend_config", return_value=CFG):
             out = export_import._protect_frontend_config_credentials(incoming)
-        self.assertEqual(out["agentic"]["jev"]["api_key"], KEY)
+        self.assertEqual(out["agentic"]["decision_model"]["api_key"], KEY)
         with mock.patch.object(export_import, "load_frontend_config", return_value={}):
             out = export_import._protect_frontend_config_credentials(incoming)
-        self.assertEqual(out["agentic"]["jev"]["api_key"], "")
+        self.assertEqual(out["agentic"]["decision_model"]["api_key"], "")
 
 
 class DbDownload(unittest.TestCase):

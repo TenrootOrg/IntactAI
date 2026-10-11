@@ -109,7 +109,7 @@ def detect_disposition(graph, question: str, verdict_hint=None):
     entity, return a disposition dict; else None (caller falls back to normal chat). Grounding
     is mandatory — the same anti-hallucination discipline as the analyst pass.
 
-    `verdict_hint` ('malicious' | 'benign' | 'none') is Jev's confident reading of the
+    `verdict_hint` ('malicious' | 'benign' | 'none') is the decision model's confident reading of the
     message, when the operator enabled it; it replaces the keyword guess, which cannot
     read Hebrew or "the backup server was compromised". Grounding, attribution and the
     confirm-to-apply step are unchanged either way."""
@@ -1730,7 +1730,7 @@ def _hedge_seconds() -> float:
         return HEDGE_SECONDS_DEFAULT
 
 
-# How the report model uses Jev's estimates (the `automated_estimates` key). In the
+# How the report model uses the decision model's estimates (the `automated_estimates` key). In the
 # SYSTEM prompt, never in the data: instructions inside the case data are what the
 # prompt-injection guard exists to withhold, and it withheld these.
 # Asked for by name -- "when a statement relies on one, say 'automated estimate'"
@@ -2038,7 +2038,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             # give the model the analyst's triage so the narrative reflects it
             _analyst = analyst_context(dispositions, validations, manual_events, graph, checklist)
             if estimates:
-                # Jev's estimates (jev.report_estimates): a second model's opinion,
+                # The decision model's estimates (decision_model.report_estimates): a second model's opinion,
                 # carried with its own note saying so, into every call of this
                 # report -- the focused one, each phase and the synthesis.
                 _analyst = {**_analyst, "automated_estimates": estimates}
@@ -2212,14 +2212,14 @@ def generate_report(graph, *, window=None, min_severity="informational",
                      if _bad_h else "")
             # Injection-looking evidence withheld from the model during this report.
             gnote += _revert_mask(_inj_mod.note(_inj_mod.take_hits(run_id)), mask)
-            # Jev (when enabled): statements the evidence does not support. Same rule
+            # The decision model (when enabled): statements the evidence does not support. Same rule
             # as the hashes — flag beside the report, never cut the prose.
-            from . import jev as _jev
-            _bad_c = _jev.unsupported_claims(
+            from . import decision_model as _dm
+            _bad_c = _dm.unsupported_claims(
                 narrative, payload_str, mask, run_id=run_id,
                 log_event=lambda t, lvl, msg: _case_event(run_id, t, lvl, msg))
             if _bad_c:
-                gnote += ("\n\n> ⚠️ **Grounding check (Jev):** these statements could not be "
+                gnote += ("\n\n> ⚠️ **Grounding check (decision model):** these statements could not be "
                           "matched to the case evidence — verify before relying on them:\n"
                           + "".join(f"> - {c}\n" for c in _bad_c))
             # In a segmented report the phases carry their own timelines, so the

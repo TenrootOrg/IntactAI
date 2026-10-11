@@ -97,13 +97,13 @@ def captured_model_input(cid, question=None):
     import subprocess
     code = f"""
 import sys, json; sys.path.insert(0, "/app")
-from services.fusion import llm_sim, store, jev
+from services.fusion import llm_sim, store, decision_model as dm
 sent = []
 def fake(system, user, **kw):
     sent.append(str(system) + "\\n" + str(user)); return "## Executive Summary\\nstub.\\n**Risk: HIGH** — stub."
 llm_sim._real_llm = fake
 llm_sim._llm_available = lambda: True
-jev.enabled = lambda *a, **k: False
+dm.enabled = lambda *a, **k: False
 q = {question!r}
 try:
     if q: store.chat_case({cid!r}, q)
@@ -210,26 +210,26 @@ def main():
         check("Risk ↔ Identities: the compromised person is on the hosts they were seen on",
               any(h in [r["host"] for r in risk(cid)] for h in pp.get("seen_on") or []))
 
-        section("3b. Jev reacts to your verdicts (when Jev is on)")
-        from services.fusion import jev as _jev
-        if _jev.enabled("compromise"):
+        section("3b. The decision model reacts to your verdicts (when it is on)")
+        from services.fusion import decision_model as _dm
+        if _dm.enabled("compromise"):
             tgt_p = next((p for p in people(cid) if p.get("findings") and p["name"] not in (pp["name"], pq["name"])), None)
             if tgt_p:
-                k0 = set((store.get_case(cid) or {}).get("jev_compromise") or {})
+                k0 = set((store.get_case(cid) or {}).get("decision_compromise") or {})
                 fid = tgt_p["findings"][0]["id"]
                 call("POST", f"/api/cases/{cid}/timeline/validate", {"finding_id": fid, "status": "false_positive"})
                 new_key = False
-                for _ in range(36):                      # the post-fuse Jev pass is asynchronous
+                for _ in range(36):                      # the post-fuse decision-model pass is asynchronous
                     time.sleep(5)
-                    if set((store.get_case(cid) or {}).get("jev_compromise") or {}) - k0:
+                    if set((store.get_case(cid) or {}).get("decision_compromise") or {}) - k0:
                         new_key = True
                         break
-                check(f"a False Positive on {tgt_p['name']}'s finding makes Jev re-estimate them", new_key)
+                check(f"a False Positive on {tgt_p['name']}'s finding makes the decision model re-estimate them", new_key)
                 cur = next((p for p in people(cid) if p["name"] == tgt_p["name"]), {})
                 check("… and the card shows the new estimate", isinstance(cur.get("jev_compromise"), (int, float)),
                       str(cur.get("jev_compromise")))
         else:
-            print("  (skipped: Jev's compromise estimate is off)")
+            print("  (skipped: the decision model's compromise estimate is off)")
 
         section("4. The deterministic (no-LLM) report")
         md = report_md(cid)

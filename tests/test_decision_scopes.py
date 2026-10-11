@@ -1,11 +1,11 @@
-"""Jev's estimate on the scope cards: asked after the fuse, cached per exact set
+"""The decision model's estimate on the scope cards: asked after the fuse, cached per exact set
 of findings, shown only when current — and the cards stay deterministic.
 
 The cards load on every visit to the Analysis tab, so they must never wait on
 a network call: the estimate is computed by the post-fuse pass and only read
 here. A window whose findings changed (new occurrence, finding added) must
-show no number until Jev is asked again — a stale percentage on a changed
-window is worse than none. With Jev off the cards are exactly as before.
+show no number until the model is asked again — a stale percentage on a changed
+window is worse than none. With the model off the cards are exactly as before.
 """
 import json
 import os
@@ -25,7 +25,7 @@ for _p in (_HERE, os.path.join(_ROOT, "modules/backend")):
         sys.path.insert(0, _p)
 
 import _optional_deps  # noqa: F401,E402
-from services.fusion import jev, store  # noqa: E402
+from services.fusion import decision_model as dm, store  # noqa: E402
 from services.fusion.schema import Finding  # noqa: E402
 
 
@@ -48,11 +48,11 @@ class Suggest(unittest.TestCase):
             asked.extend(tuple(z["finding_ids"]) for z, _ in items)
             return [answers.get(tuple(z["finding_ids"])) for z, _ in items]
         with mock.patch.object(store, "scope_cards", return_value=("macro", "", cards, g)), \
-             mock.patch.object(jev, "ask_each", fake_ask_each), \
-             mock.patch.object(jev, "_scope_state", lambda z, by, g: {}), \
+             mock.patch.object(dm, "ask_each", fake_ask_each), \
+             mock.patch.object(dm, "_scope_state", lambda z, by, g: {}), \
              mock.patch.object(store, "_merge_case_details") as merge:
-            jev.suggest_scopes("c1", d)
-        return asked, (merge.call_args.args[1]["jev_scopes"] if merge.called else None)
+            dm.suggest_scopes("c1", d)
+        return asked, (merge.call_args.args[1]["decision_scopes"] if merge.called else None)
 
     def test_every_scopes_cards_are_scored_whichever_scope_is_active(self):
         # asd, 2026-10-04: a fuse inside the 2025-09-21 scope scored only that scope's
@@ -66,15 +66,15 @@ class Suggest(unittest.TestCase):
             asked.extend(tuple(z["finding_ids"]) for z, _ in items)
             return [{"noul": 0.5} for _ in items]
         d = {"active_scope": "narrow", "scopes": [{"id": "narrow"}, {"id": "full"}],
-             "jev_scopes": {}}
+             "decision_scopes": {}}
         with mock.patch.object(store, "scope_cards",
                                side_effect=lambda cid, dd: ("macro", "", per_scope[dd["active_scope"]], g)), \
-             mock.patch.object(jev, "ask_each", fake_ask_each), \
-             mock.patch.object(jev, "_scope_state", lambda z, by, g, v=None: {}), \
+             mock.patch.object(dm, "ask_each", fake_ask_each), \
+             mock.patch.object(dm, "_scope_state", lambda z, by, g, v=None: {}), \
              mock.patch.object(store, "_merge_case_details") as merge:
-            jev.suggest_scopes("c1", d)
+            dm.suggest_scopes("c1", d)
         self.assertEqual(sorted(asked), [("a",), ("b",), ("c",)])   # the broad cards too, "a" once
-        self.assertEqual(len(merge.call_args.args[1]["jev_scopes"]), 3)  # none dropped
+        self.assertEqual(len(merge.call_args.args[1]["decision_scopes"]), 3)  # none dropped
 
     def test_asks_each_new_window_once_never_the_rollup(self):
         a, b = _f("a"), _f("b")
@@ -82,13 +82,13 @@ class Suggest(unittest.TestCase):
                                      {("a",): {"noul": 0.82}, ("b",): {"noul": 0.1}})
         self.assertEqual(asked, [("a",), ("b",)])
         self.assertEqual(sorted(saved.values()), [0.1, 0.82])
-        asked, saved2 = self.run_pass({"jev_scopes": saved}, [a, b], _cards(["a"], ["b"]), {})
+        asked, saved2 = self.run_pass({"decision_scopes": saved}, [a, b], _cards(["a"], ["b"]), {})
         self.assertEqual((asked, saved2), ([], None))              # cached, nothing written
 
     def test_a_verdict_in_the_window_asks_again(self):
         a = _f("a")
         _, saved = self.run_pass({}, [a], _cards(["a"]), {("a",): {"noul": 0.9}})
-        asked, saved2 = self.run_pass({"jev_scopes": saved,
+        asked, saved2 = self.run_pass({"decision_scopes": saved,
                                        "timeline_validations": [{"finding_id": "a", "status": "known"}]},
                                       [a], _cards(["a"]), {("a",): {"noul": 0.1}})
         self.assertEqual(asked, [("a",)])
@@ -98,7 +98,7 @@ class Suggest(unittest.TestCase):
         a = _f("a")
         _, saved = self.run_pass({}, [a], _cards(["a"]), {("a",): {"noul": 0.9}})
         a2 = _f("a", occ=2)                                        # a new occurrence
-        asked, saved2 = self.run_pass({"jev_scopes": saved}, [a2], _cards(["a"]),
+        asked, saved2 = self.run_pass({"decision_scopes": saved}, [a2], _cards(["a"]),
                                       {("a",): {"noul": 0.4}})
         self.assertEqual(asked, [("a",)])
         self.assertEqual(list(saved2.values()), [0.4])
@@ -110,13 +110,13 @@ class Attach(unittest.TestCase):
         g = types.SimpleNamespace(findings=[a, b])
         by_id = {f.id: f for f in g.findings}
         cards = _cards(["a"], ["b"])
-        d = {"jev_scopes": {jev._scope_sig(cards[0], by_id): 0.82}}
-        with mock.patch.object(jev, "enabled", return_value=True):
-            jev.attach_scope_estimates(cards, d, g)
+        d = {"decision_scopes": {dm._scope_sig(cards[0], by_id): 0.82}}
+        with mock.patch.object(dm, "enabled", return_value=True):
+            dm.attach_scope_estimates(cards, d, g)
         self.assertEqual([c.get("jev_p") for c in cards], [0.82, None, None])
         cards = _cards(["a"], ["b"])
-        with mock.patch.object(jev, "enabled", return_value=False):
-            jev.attach_scope_estimates(cards, d, g)
+        with mock.patch.object(dm, "enabled", return_value=False):
+            dm.attach_scope_estimates(cards, d, g)
         self.assertEqual([c.get("jev_p") for c in cards], [None, None, None])
 
 

@@ -145,7 +145,7 @@ class Store(unittest.TestCase):
 
     def test_timeline_rows_carry_parts_and_read_as_them(self):
         from unittest import mock
-        from services.fusion import jev, store
+        from services.fusion import decision_model as dm, store
         g = correlate.FusionGraph(case_id="c")
         g.findings.append(self._row())
         vals = [{"finding_id": "p1", "status": "true_positive"}, {"finding_id": "p2", "status": "known",
@@ -153,7 +153,7 @@ class Store(unittest.TestCase):
         with mock.patch.object(store, "get_case", return_value={"timeline_validations": vals}), \
              mock.patch.object(store, "view_graph", return_value=g), \
              mock.patch.object(store, "view_window", return_value=None), \
-             mock.patch.object(jev, "enabled", return_value=False):
+             mock.patch.object(dm, "enabled", return_value=False):
             row = store.get_timeline("c1")[0]
         self.assertEqual({p["finding_id"]: p["validation"] for p in row["parts"]},
                          {"p1": "true_positive", "p2": "known"})
@@ -163,7 +163,7 @@ class Store(unittest.TestCase):
         with mock.patch.object(store, "get_case", return_value={"timeline_validations": vals}), \
              mock.patch.object(store, "view_graph", return_value=g), \
              mock.patch.object(store, "view_window", return_value=None), \
-             mock.patch.object(jev, "enabled", return_value=False):
+             mock.patch.object(dm, "enabled", return_value=False):
             self.assertEqual(store.get_timeline("c1")[0]["validation"], "known")
 
     def test_the_report_names_a_judged_part(self):

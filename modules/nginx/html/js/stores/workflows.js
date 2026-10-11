@@ -415,7 +415,9 @@ document.addEventListener('alpine:init', () => {
                 upgrade: 'bg-red-700',
                 support_bundle: 'bg-red-700',
                 maintenance: 'bg-red-700',
-                // Jev relevance scoring (reads data, changes nothing) — not red.
+                // Decision-model relevance scoring (reads data, changes nothing) — not red.
+                // jev_relevance: the same runs, stored before the 2026-10 rename.
+                decision_relevance: 'bg-indigo-600',
                 jev_relevance: 'bg-indigo-600',
                 // a symbol table / pack added to the memory module's library
                 memory_symbols_upload: 'bg-indigo-600',

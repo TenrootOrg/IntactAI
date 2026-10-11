@@ -60,12 +60,12 @@ class Many(unittest.TestCase):
         self.assertEqual(sorted(d["target"] for d in state["dispositions"]), ["a", "b", "c"])
 
     def test_true_positive_with_nothing_to_clear_does_not_refuse(self):
-        from services.fusion import jev
-        with mock.patch.object(jev, "after_fuse") as ask_jev:
+        from services.fusion import decision_model as dm
+        with mock.patch.object(dm, "after_fuse") as ask_model:
             state, fuses = self.run_it(["a", "b"], "true_positive")
         self.assertEqual(fuses, 0)
         self.assertEqual(len(state["timeline_validations"]), 2)
-        ask_jev.assert_called_once_with("c1")     # its compromise estimate is keyed on verdicts
+        ask_model.assert_called_once_with("c1")     # its compromise estimate is keyed on verdicts
 
     def test_true_positive_clears_suppression_with_one_refuse(self):
         state, fuses = self.run_it(["a", "b"], "true_positive",
@@ -86,7 +86,7 @@ class NewHostIsNeverAutoJudged(unittest.TestCase):
 
     def test_group_marked_true_positive_then_a_new_host_arrives_pending(self):
         import test_timeline_episodes as T
-        from services.fusion import jev
+        from services.fusion import decision_model as dm
         a = [T._row("HOSTA", "2026-06-01T10:30:00Z", rec=1)]
         b = [T._row("HOSTB", "2026-06-01T10:40:00Z", rec=2)]
         c = [T._row("HOSTC", "2026-06-01T10:50:00Z", rec=3)]
@@ -98,7 +98,7 @@ class NewHostIsNeverAutoJudged(unittest.TestCase):
         with mock.patch.object(store, "get_case", return_value=case), \
              mock.patch.object(store, "view_graph", return_value=g2), \
              mock.patch.object(store, "view_window", return_value=None), \
-             mock.patch.object(jev, "enabled", return_value=False):
+             mock.patch.object(dm, "enabled", return_value=False):
             rows = [r for r in store.get_timeline("c1") if "Encoded PowerShell" in r["title"]]
         status = {r["host"]: r["validation"] for r in rows}
         self.assertEqual(status, {"HOSTA": "true_positive", "HOSTB": "true_positive",

@@ -18,7 +18,7 @@ for _p in (os.path.dirname(os.path.abspath(__file__)),
         sys.path.insert(0, _p)
 
 import _optional_deps  # noqa: F401,E402
-from services.fusion import jev, store  # noqa: E402
+from services.fusion import decision_model as dm, store  # noqa: E402
 
 
 class Owed(unittest.TestCase):
@@ -34,7 +34,7 @@ class Owed(unittest.TestCase):
             return mock.Mock()
         for target, attr, value in ((store, "_fuse_case_locked", body), (store, "log_case_event", mock.Mock()),
                                     (store, "_report_behind", mock.Mock()), (store, "_track_rows", mock.Mock()),
-                                    (jev, "after_fuse", mock.Mock())):
+                                    (dm, "after_fuse", mock.Mock())):
             p = mock.patch.object(target, attr, value)
             p.start()
             self.addCleanup(p.stop)

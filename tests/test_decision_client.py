@@ -1,6 +1,6 @@
-"""Jev client: off unless every condition holds, and silent on failure.
+"""Decision-model client: off unless every condition holds, and silent on failure.
 
-Jev is reached through OpenRouter's Decisions endpoint with the operator's
+The decision model is reached through OpenRouter's Decisions endpoint with the operator's
 OpenRouter key. So it must stay inert when the feature is off, when the one use
 is unticked, when the provider is anything but OpenRouter, or when there is no
 key — and any failed call must come back None, which every caller treats as
@@ -28,10 +28,10 @@ if "requests" not in sys.modules:
     sys.modules["requests"] = types.ModuleType("requests")
     sys.modules["requests"].post = None
 
-from services.fusion import jev  # noqa: E402
+from services.fusion import decision_model as dm  # noqa: E402
 
 ON = {"online_llm": {"provider": "openrouter", "api_key": "sk-or-x"},
-      "jev": {"enabled": True}}
+      "decision_model": {"enabled": True}}
 
 
 class _Resp:
@@ -44,47 +44,47 @@ class _Resp:
 
 class Enabled(unittest.TestCase):
     def setUp(self):
-        jev._down.update(until=0.0, fp=None, why='')
+        dm._down.update(until=0.0, fp=None, why='')
 
     def test_every_condition_is_required(self):
-        self.assertTrue(jev.enabled("disposition", ON))
-        self.assertFalse(jev.enabled("disposition", {**ON, "jev": {}}))
-        self.assertFalse(jev.enabled("disposition",
-                                     {**ON, "jev": {"enabled": True, "uses": {"disposition": False}}}))
-        self.assertTrue(jev.enabled("identity",
-                                    {**ON, "jev": {"enabled": True, "uses": {"disposition": False}}}))
-        self.assertFalse(jev.enabled("disposition",
+        self.assertTrue(dm.enabled("disposition", ON))
+        self.assertFalse(dm.enabled("disposition", {**ON, "decision_model": {}}))
+        self.assertFalse(dm.enabled("disposition",
+                                     {**ON, "decision_model": {"enabled": True, "uses": {"disposition": False}}}))
+        self.assertTrue(dm.enabled("identity",
+                                    {**ON, "decision_model": {"enabled": True, "uses": {"disposition": False}}}))
+        self.assertFalse(dm.enabled("disposition",
                                      {**ON, "online_llm": {"provider": "claude", "api_key": "k"}}))
-        self.assertFalse(jev.enabled("disposition",
+        self.assertFalse(dm.enabled("disposition",
                                      {**ON, "online_llm": {"provider": "openrouter", "api_key": ""}}))
         # offline mode means nothing leaves the box, key or no key
-        self.assertFalse(jev.enabled("disposition", {**ON, "llm_mode": "offline"}))
+        self.assertFalse(dm.enabled("disposition", {**ON, "llm_mode": "offline"}))
 
     def test_own_key_works_under_any_chat_provider(self):
         codex = {"online_llm": {"provider": "codex-subscription", "api_key": "sk-or-old"},
-                 "jev": {"enabled": True, "api_key": "sk-or-jev"}}
-        self.assertTrue(jev.enabled("disposition", codex))
-        self.assertEqual(jev._key(codex), "sk-or-jev")
+                 "decision_model": {"enabled": True, "api_key": "sk-or-jev"}}
+        self.assertTrue(dm.enabled("disposition", codex))
+        self.assertEqual(dm._key(codex), "sk-or-jev")
         # without its own key, a non-OpenRouter provider's leftover key is NOT used
-        self.assertFalse(jev.enabled("disposition", {**codex, "jev": {"enabled": True}}))
+        self.assertFalse(dm.enabled("disposition", {**codex, "decision_model": {"enabled": True}}))
         # and its own key wins over the main one
-        self.assertEqual(jev._key({**ON, "jev": {"enabled": True, "api_key": "sk-or-jev"}}), "sk-or-jev")
-        self.assertIsNone(jev._key({**codex, "llm_mode": "offline"}))
+        self.assertEqual(dm._key({**ON, "decision_model": {"enabled": True, "api_key": "sk-or-jev"}}), "sk-or-jev")
+        self.assertIsNone(dm._key({**codex, "llm_mode": "offline"}))
 
     def test_defaults_are_not_mutated_by_settings(self):
-        jev.settings({"jev": {"uses": {"grounding": False}}})
-        self.assertTrue(jev.DEFAULTS["uses"]["grounding"])
+        dm.settings({"decision_model": {"uses": {"grounding": False}}})
+        self.assertTrue(dm.DEFAULTS["uses"]["grounding"])
 
 
 class Ask(unittest.TestCase):
     def setUp(self):
-        jev._down.update(until=0.0, fp=None, why='')
+        dm._down.update(until=0.0, fp=None, why='')
 
     def test_request_shape_and_answers(self):
         body = {"model": "jev-1.13.0", "answers": {"q0": {"noul": 0.9}},
                 "usage": {"input_tokens": 10, "output_tokens": 1, "cost": 0.001}}
-        with mock.patch.object(jev.requests, "post", return_value=_Resp(200, body)) as post:
-            out = jev.ask({"x": 1}, {"q0": {"type": "noul", "instructions": "?"}}, cfg=ON)
+        with mock.patch.object(dm.requests, "post", return_value=_Resp(200, body)) as post:
+            out = dm.ask({"x": 1}, {"q0": {"type": "noul", "instructions": "?"}}, cfg=ON)
         self.assertEqual(out, {"q0": {"noul": 0.9}})
         args, kw = post.call_args
         self.assertEqual(args[0], "https://openrouter.ai/api/v1/systemone")
@@ -94,29 +94,29 @@ class Ask(unittest.TestCase):
 
     def test_failures_return_none(self):
         q = {"q0": {"type": "noul", "instructions": "?"}}
-        with mock.patch.object(jev.requests, "post", return_value=_Resp(429)):
-            self.assertIsNone(jev.ask({}, q, cfg=ON))
-        with mock.patch.object(jev.requests, "post", side_effect=OSError("no route")):
-            self.assertIsNone(jev.ask({}, q, cfg=ON))
-        with mock.patch.object(jev.requests, "post") as post:
-            self.assertIsNone(jev.ask({}, q, cfg={**ON, "online_llm": {"provider": "claude"}}))
+        with mock.patch.object(dm.requests, "post", return_value=_Resp(429)):
+            self.assertIsNone(dm.ask({}, q, cfg=ON))
+        with mock.patch.object(dm.requests, "post", side_effect=OSError("no route")):
+            self.assertIsNone(dm.ask({}, q, cfg=ON))
+        with mock.patch.object(dm.requests, "post") as post:
+            self.assertIsNone(dm.ask({}, q, cfg={**ON, "online_llm": {"provider": "claude"}}))
             post.assert_not_called()
 
     def test_a_provider_hiccup_is_retried_once_an_outage_is_not(self):
         # Live: one HTTP 520 left a 285-finding case with no suggestions, silently.
         q = {"q0": {"type": "noul", "instructions": "?"}}
         ok = _Resp(200, {"answers": {"q0": {"noul": 0.9}}})
-        with mock.patch.object(jev, "RETRY_SECONDS", 0):
-            with mock.patch.object(jev.requests, "post", side_effect=[_Resp(520), ok]) as post:
-                self.assertEqual(jev.ask({}, q, cfg=ON), {"q0": {"noul": 0.9}})
+        with mock.patch.object(dm, "RETRY_SECONDS", 0):
+            with mock.patch.object(dm.requests, "post", side_effect=[_Resp(520), ok]) as post:
+                self.assertEqual(dm.ask({}, q, cfg=ON), {"q0": {"noul": 0.9}})
                 self.assertEqual(post.call_count, 2)
-            with mock.patch.object(jev.requests, "post", side_effect=[_Resp(520), _Resp(502)]) as post:
-                self.assertIsNone(jev.ask({}, q, cfg=ON))
+            with mock.patch.object(dm.requests, "post", side_effect=[_Resp(520), _Resp(502)]) as post:
+                self.assertIsNone(dm.ask({}, q, cfg=ON))
                 self.assertEqual(post.call_count, 2)                 # once, not for ever
             for dead in (dict(return_value=_Resp(429)), dict(side_effect=OSError("no route"))):
-                jev._down.update(until=0.0)                          # each case on its own (see Breaker)
-                with mock.patch.object(jev.requests, "post", **dead) as post:
-                    self.assertIsNone(jev.ask({}, q, cfg=ON))
+                dm._down.update(until=0.0)                          # each case on its own (see Breaker)
+                with mock.patch.object(dm.requests, "post", **dead) as post:
+                    self.assertIsNone(dm.ask({}, q, cfg=ON))
                     self.assertEqual(post.call_count, 1)             # a dead provider costs one call
 
     def test_usage_lands_on_the_run(self):
@@ -125,8 +125,8 @@ class Ask(unittest.TestCase):
         ws = types.ModuleType("services.workflow_service")
         ws.record_llm_metrics = rec
         with mock.patch.dict(sys.modules, {"services.workflow_service": ws}), \
-             mock.patch.object(jev.requests, "post", return_value=_Resp(200, body)):
-            jev.ask({}, {"q0": {}}, run_id="R1", cfg=ON)
+             mock.patch.object(dm.requests, "post", return_value=_Resp(200, body)):
+            dm.ask({}, {"q0": {}}, run_id="R1", cfg=ON)
         rec.assert_called_once()
         self.assertEqual(rec.call_args.kwargs["input_tokens"], 7)
         self.assertEqual(rec.call_args.kwargs["cost_usd"], 0.5)
@@ -134,15 +134,15 @@ class Ask(unittest.TestCase):
 
 class Pack(unittest.TestCase):
     def setUp(self):
-        jev._down.update(until=0.0, fp=None, why='')
+        dm._down.update(until=0.0, fp=None, why='')
 
     def test_limits(self):
-        chunks = list(jev.pack(range(120), lambda i: "x" * 40, max_tokens=10**6, max_items=50))
+        chunks = list(dm.pack(range(120), lambda i: "x" * 40, max_tokens=10**6, max_items=50))
         self.assertEqual([len(c) for c in chunks], [50, 50, 20])
-        chunks = list(jev.pack(range(10), lambda i: "x" * 400, max_tokens=250))  # 100 tokens each
+        chunks = list(dm.pack(range(10), lambda i: "x" * 400, max_tokens=250))  # 100 tokens each
         self.assertEqual([len(c) for c in chunks], [2, 2, 2, 2, 2])
         # an item bigger than the budget still goes out, alone
-        self.assertEqual([len(c) for c in jev.pack([1, 2], lambda i: "x" * 4000, max_tokens=10)], [1, 1])
+        self.assertEqual([len(c) for c in dm.pack([1, 2], lambda i: "x" * 4000, max_tokens=10)], [1, 1])
 
     def test_ask_each_keys_and_stops_on_failure(self):
         replies = iter([{"q0": "a", "q1": "b"}, None])
@@ -150,15 +150,15 @@ class Pack(unittest.TestCase):
         def fake_ask(state, questions, **kw):
             self.assertEqual(set(state["items"]), set(questions))
             return next(replies)
-        with mock.patch.object(jev, "pack", lambda items, r, max_tokens, **kw: iter([items[:2], items[2:]])), \
-             mock.patch.object(jev, "ask", fake_ask):
-            out = jev.ask_each(["i", "j", "k"], str, lambda k: {"type": "noul"})
+        with mock.patch.object(dm, "pack", lambda items, r, max_tokens, **kw: iter([items[:2], items[2:]])), \
+             mock.patch.object(dm, "ask", fake_ask):
+            out = dm.ask_each(["i", "j", "k"], str, lambda k: {"type": "noul"})
         self.assertEqual(out, ["a", "b", None])
 
 
 class TooBig(unittest.TestCase):
     def setUp(self):
-        jev._down.update(until=0.0, fp=None, why='')
+        dm._down.update(until=0.0, fp=None, why='')
 
     """Found live: Jev refused batches our estimate thought fit
     (max_tokens_exceeded) and 108 of 323 rows went unanswered."""
@@ -168,13 +168,13 @@ class TooBig(unittest.TestCase):
 
         def fake_ask(state, questions, **kw):
             calls.append(len(questions))
-            if len(questions) > 2:                          # Jev: too large
-                jev._last["too_big"] = True
+            if len(questions) > 2:                          # the model: too large
+                dm._last["too_big"] = True
                 return None
-            jev._last["too_big"] = False
+            dm._last["too_big"] = False
             return {k: {"noul": 0.5} for k in questions}
-        with mock.patch.object(jev, "ask", fake_ask):
-            out = jev.ask_each(list("abcdefgh"), str, lambda k: {"type": "noul"})
+        with mock.patch.object(dm, "ask", fake_ask):
+            out = dm.ask_each(list("abcdefgh"), str, lambda k: {"type": "noul"})
         self.assertEqual(out, [{"noul": 0.5}] * 8)
         self.assertEqual(calls[0], 8)
         self.assertTrue(all(n <= 8 for n in calls))
@@ -184,67 +184,67 @@ class TooBig(unittest.TestCase):
 
         def fake_ask(state, questions, **kw):
             calls.append(len(questions))
-            jev._last["too_big"] = False
+            dm._last["too_big"] = False
             return None
-        with mock.patch.object(jev, "ask", fake_ask):
-            out = jev.ask_each(list("abcdefgh"), str, lambda k: {"type": "noul"})
+        with mock.patch.object(dm, "ask", fake_ask):
+            out = dm.ask_each(list("abcdefgh"), str, lambda k: {"type": "noul"})
         self.assertEqual(out, [None] * 8)
         self.assertEqual(calls, [8])                        # one call, not a dozen
 
     def test_ask_records_why_it_failed(self):
         body = '{"error":{"message":"HTTP 400: {\\"detail\\":{\\"error_type\\":\\"max_tokens_exceeded\\"}}"}}'
         r = _Resp(400); r.text = body
-        with mock.patch.object(jev.requests, "post", return_value=r):
-            self.assertIsNone(jev.ask({}, {"q0": {}}, cfg=ON))
-        self.assertTrue(jev._last["too_big"])
-        with mock.patch.object(jev.requests, "post", return_value=_Resp(429)):
-            jev.ask({}, {"q0": {}}, cfg=ON)
-        self.assertFalse(jev._last["too_big"])
+        with mock.patch.object(dm.requests, "post", return_value=r):
+            self.assertIsNone(dm.ask({}, {"q0": {}}, cfg=ON))
+        self.assertTrue(dm._last["too_big"])
+        with mock.patch.object(dm.requests, "post", return_value=_Resp(429)):
+            dm.ask({}, {"q0": {}}, cfg=ON)
+        self.assertFalse(dm._last["too_big"])
 
     def test_questions_count_toward_the_batch_size(self):
-        chunks = list(jev.pack(range(50), lambda i: "x" * 40, max_tokens=1000, per_item=100))
+        chunks = list(dm.pack(range(50), lambda i: "x" * 40, max_tokens=1000, per_item=100))
         self.assertTrue(all(len(c) <= 10 for c in chunks))
 
 
 class Masking(unittest.TestCase):
     def setUp(self):
-        jev._down.update(until=0.0, fp=None, why='')
+        dm._down.update(until=0.0, fp=None, why='')
 
     def test_off_is_none_and_broken_refuses_to_send(self):
-        self.assertIsNone(jev.mask_for({}, None))
+        self.assertIsNone(dm.mask_for({}, None))
         with self.assertRaises(RuntimeError):
-            jev.masked("host-1", False)
-        self.assertEqual(jev.masked("host-1", None), "host-1")
+            dm.masked("host-1", False)
+        self.assertEqual(dm.masked("host-1", None), "host-1")
 
 
 class Breaker(unittest.TestCase):
-    """One failure answers for every Jev call: 15 rejected calls in a minute on an
+    """One failure answers for every decision-model call: 15 rejected calls in a minute on an
     air-gapped box. Skipped for DOWN_SECONDS, or until the key / model change."""
 
     def setUp(self):
-        jev._down.update(until=0.0, fp=None, why='')
+        dm._down.update(until=0.0, fp=None, why='')
 
     def test_one_failure_skips_every_call_until_the_key_changes(self):
-        cfg = {"jev": {"enabled": True, "api_key": "k1"}}
+        cfg = {"decision_model": {"enabled": True, "api_key": "k1"}}
         bad = mock.Mock(status_code=401, text="Missing Authentication header")
-        with mock.patch.object(jev.requests, "post", return_value=bad) as post:
-            self.assertIsNone(jev.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg))
-            self.assertIsNone(jev.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg))
-            self.assertIsNone(jev.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg))
+        with mock.patch.object(dm.requests, "post", return_value=bad) as post:
+            self.assertIsNone(dm.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg))
+            self.assertIsNone(dm.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg))
+            self.assertIsNone(dm.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg))
         self.assertEqual(post.call_count, 1)                       # the first only
-        self.assertIn("401", jev.unavailable(cfg))
+        self.assertIn("401", dm.unavailable(cfg))
         good = mock.Mock(status_code=200, json=lambda: {"answers": {"q0": {"noul": 0.9}}})
-        with mock.patch.object(jev.requests, "post", return_value=good) as post:
-            cfg2 = {"jev": {"enabled": True, "api_key": "k2"}}      # a new key: asked at once
-            self.assertEqual(jev.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg2), {"q0": {"noul": 0.9}})
-        self.assertEqual(jev.unavailable(cfg2), "")
+        with mock.patch.object(dm.requests, "post", return_value=good) as post:
+            cfg2 = {"decision_model": {"enabled": True, "api_key": "k2"}}      # a new key: asked at once
+            self.assertEqual(dm.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg2), {"q0": {"noul": 0.9}})
+        self.assertEqual(dm.unavailable(cfg2), "")
 
     def test_too_big_is_not_an_outage(self):
-        cfg = {"jev": {"enabled": True, "api_key": "k1"}}
+        cfg = {"decision_model": {"enabled": True, "api_key": "k1"}}
         big = mock.Mock(status_code=400, text='{"detail":{"error_type":"max_tokens_exceeded"}}')
-        with mock.patch.object(jev.requests, "post", return_value=big):
-            jev.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg)
-        self.assertEqual(jev.unavailable(cfg), "")                 # split and retried, not skipped
+        with mock.patch.object(dm.requests, "post", return_value=big):
+            dm.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg)
+        self.assertEqual(dm.unavailable(cfg), "")                 # split and retried, not skipped
 
 
 if __name__ == "__main__":

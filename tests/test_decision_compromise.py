@@ -1,4 +1,4 @@
-"""Jev's "is this person compromised?" on each Identities card.
+"""The decision model's "is this person compromised?" on each Identities card.
 
 Asked after the fuse and cached per exact accounts + findings (+ occurrences),
 so the tab never waits on the network and a person whose evidence changed shows
@@ -18,7 +18,7 @@ for _p in (os.path.dirname(os.path.abspath(__file__)), os.path.join(_ROOT, "modu
         sys.path.insert(0, _p)
 
 import _optional_deps  # noqa: F401,E402
-from services.fusion import identities, jev, store  # noqa: E402
+from services.fusion import identities, decision_model as dm, store  # noqa: E402
 from services.fusion.schema import Finding  # noqa: E402
 
 
@@ -41,11 +41,11 @@ class Suggest(unittest.TestCase):
             return [answers.get(it[0]["name"]) for it in items]
         with mock.patch.object(store, "identity_view", return_value={"identities": cards}), \
              mock.patch.object(store, "view_graph", return_value=g), \
-             mock.patch.object(jev, "ask_each", fake_ask_each), \
-             mock.patch.object(jev, "mask_for", return_value=None), \
+             mock.patch.object(dm, "ask_each", fake_ask_each), \
+             mock.patch.object(dm, "mask_for", return_value=None), \
              mock.patch.object(store, "_merge_case_details") as merge:
-            jev.suggest_compromise("c1", d)
-        return asked, (merge.call_args.args[1]["jev_compromise"] if merge.called else None)
+            dm.suggest_compromise("c1", d)
+        return asked, (merge.call_args.args[1]["decision_compromise"] if merge.called else None)
 
     def test_people_of_every_scope_are_scored_and_kept(self):
         # asd, 2026-10-04: a fuse in one scope scored only that scope's people and
@@ -64,12 +64,12 @@ class Suggest(unittest.TestCase):
              mock.patch.object(store, "view_graph",
                                side_effect=lambda cid, dd: types.SimpleNamespace(
                                    findings=per_scope[dd["active_scope"]][1], relationships=[], entities={})), \
-             mock.patch.object(jev, "ask_each", fake_ask_each), \
-             mock.patch.object(jev, "mask_for", return_value=None), \
+             mock.patch.object(dm, "ask_each", fake_ask_each), \
+             mock.patch.object(dm, "mask_for", return_value=None), \
              mock.patch.object(store, "_merge_case_details") as merge:
-            jev.suggest_compromise("c1", d)
+            dm.suggest_compromise("c1", d)
         self.assertEqual(sorted(asked), ["giladt", "kobia"])       # the other scope's person too
-        self.assertEqual(len(merge.call_args.args[1]["jev_compromise"]), 2)
+        self.assertEqual(len(merge.call_args.args[1]["decision_compromise"]), 2)
 
     def test_asks_people_with_findings_once(self):
         a = _f("a")
@@ -77,13 +77,13 @@ class Suggest(unittest.TestCase):
         asked, saved = self.run_pass({}, [a], cards, {"kobia": {"noul": 0.83}})
         self.assertEqual(asked, ["kobia"])                         # no findings -> not asked
         self.assertEqual(list(saved.values()), [0.83])
-        asked, saved2 = self.run_pass({"jev_compromise": saved}, [a], cards, {})
+        asked, saved2 = self.run_pass({"decision_compromise": saved}, [a], cards, {})
         self.assertEqual((asked, saved2), ([], None))              # cached
 
     def test_changed_evidence_is_asked_again_and_the_old_answer_dropped(self):
         cards = [_card("kobia", "acc-a")]
         _, saved = self.run_pass({}, [_f("a")], cards, {"kobia": {"noul": 0.9}})
-        asked, saved2 = self.run_pass({"jev_compromise": saved}, [_f("a", occ=2)], cards,
+        asked, saved2 = self.run_pass({"decision_compromise": saved}, [_f("a", occ=2)], cards,
                                       {"kobia": {"noul": 0.4}})
         self.assertEqual(asked, ["kobia"])
         self.assertEqual(list(saved2.values()), [0.4])
@@ -95,20 +95,20 @@ class Suggest(unittest.TestCase):
         cards = [_card("kobia", "acc-a")]
         fa = _f("a")
         _, saved = self.run_pass({}, [fa], cards, {"kobia": {"noul": 0.9}})
-        d = {"jev_compromise": saved, "timeline_validations": [{"finding_id": "a", "status": "false_positive"}]}
+        d = {"decision_compromise": saved, "timeline_validations": [{"finding_id": "a", "status": "false_positive"}]}
         asked, saved2 = self.run_pass(d, [fa], cards, {"kobia": {"noul": 0.2}})
         self.assertEqual(asked, ["kobia"])                          # the verdict changed the key
         self.assertEqual(list(saved2.values()), [0.2])
         with mock.patch("services.fusion.render._finding_evidence", return_value=[]):
-            st = jev._person_state(types.SimpleNamespace(entities={}), cards[0], [fa], jev.analyst_verdicts(d))
+            st = dm._person_state(types.SimpleNamespace(entities={}), cards[0], [fa], dm.analyst_verdicts(d))
         self.assertEqual(st["findings"][0]["analyst_verdict"], "false_positive")
-        self.assertIn("analyst_verdict", jev._compromised_question("q0")["instructions"])
-        with mock.patch.object(jev, "enabled", return_value=True):
-            self.assertEqual(jev.compromise_estimate({**d, "jev_compromise": saved2}, ["acc-a"], [fa]), 0.2)
-            self.assertIsNone(jev.compromise_estimate({"jev_compromise": saved2}, ["acc-a"], [fa]))
+        self.assertIn("analyst_verdict", dm._compromised_question("q0")["instructions"])
+        with mock.patch.object(dm, "enabled", return_value=True):
+            self.assertEqual(dm.compromise_estimate({**d, "decision_compromise": saved2}, ["acc-a"], [fa]), 0.2)
+            self.assertIsNone(dm.compromise_estimate({"decision_compromise": saved2}, ["acc-a"], [fa]))
 
     def test_chat_dispositions_count_as_verdicts(self):
-        v = jev.analyst_verdicts({"dispositions": [{"target": "x", "verdict": "benign", "attribution": "it_admin"},
+        v = dm.analyst_verdicts({"dispositions": [{"target": "x", "verdict": "benign", "attribution": "it_admin"},
                                                    {"target": "y", "verdict": "benign"},
                                                    {"target": "z", "verdict": "malicious"}],
                                   "timeline_validations": [{"finding_id": "y", "status": "true_positive"},
@@ -117,30 +117,30 @@ class Suggest(unittest.TestCase):
 
     def test_estimate_read_only_while_enabled_and_current(self):
         fs = [_f("a")]
-        sig = jev.compromise_sig(["acc-a"], fs)
-        d = {"jev_compromise": {sig: 0.7}}
-        with mock.patch.object(jev, "enabled", return_value=True):
-            self.assertEqual(jev.compromise_estimate(d, ["acc-a"], fs), 0.7)
-            self.assertIsNone(jev.compromise_estimate(d, ["acc-a"], [_f("a", occ=3)]))
-            self.assertIsNone(jev.compromise_estimate(d, ["acc-a"], []))
-        with mock.patch.object(jev, "enabled", return_value=False):
-            self.assertIsNone(jev.compromise_estimate(d, ["acc-a"], fs))
+        sig = dm.compromise_sig(["acc-a"], fs)
+        d = {"decision_compromise": {sig: 0.7}}
+        with mock.patch.object(dm, "enabled", return_value=True):
+            self.assertEqual(dm.compromise_estimate(d, ["acc-a"], fs), 0.7)
+            self.assertIsNone(dm.compromise_estimate(d, ["acc-a"], [_f("a", occ=3)]))
+            self.assertIsNone(dm.compromise_estimate(d, ["acc-a"], []))
+        with mock.patch.object(dm, "enabled", return_value=False):
+            self.assertIsNone(dm.compromise_estimate(d, ["acc-a"], fs))
 
     def test_the_pass_runs_only_when_ticked(self):
         with mock.patch.object(store, "get_case", return_value={"x": 1}), \
              mock.patch.object(store, "view_graph", return_value="G"), \
-             mock.patch.object(jev, "enabled", side_effect=lambda u, *a: u == "compromise"), \
-             mock.patch.object(jev, "suggest_compromise") as sc, \
-             mock.patch.object(jev, "suggest_identities") as si:
-            jev._one_pass("c1")
+             mock.patch.object(dm, "enabled", side_effect=lambda u, *a: u == "compromise"), \
+             mock.patch.object(dm, "suggest_compromise") as sc, \
+             mock.patch.object(dm, "suggest_identities") as si:
+            dm._one_pass("c1")
         si.assert_not_called()
         sc.assert_called_once_with("c1", {"x": 1})
-        self.assertIn("compromise", jev.DEFAULTS["uses"])
+        self.assertIn("compromise", dm.DEFAULTS["uses"])
 
 
 class Order(unittest.TestCase):
-    """Jev on: your verdict first (compromised, then not), then Jev's estimate
-    highest first, then A–Z. Jev off: A–Z only."""
+    """Model on: your verdict first (compromised, then not), then the model's estimate
+    highest first, then A–Z. Model off: A–Z only."""
 
     def order(self, on):
         cards = [{"key": n, "name": n, "buckets": [], "accounts": [{"id": "a-" + n, "label": n}]}
@@ -158,15 +158,15 @@ class Order(unittest.TestCase):
              mock.patch.object(identities, "compute_candidates", return_value=[]), \
              mock.patch.object(identities, "analyst_inputs", return_value={"fuzzy": [], "merges": [], "splits": set(), "host_excludes": {}}), \
              mock.patch.object(identities, "resolve_identities", return_value=cards), \
-             mock.patch.object(jev, "compromise_estimate", side_effect=lambda d, ids, fs: est.get(ids[0][2:]) if on else None), \
-             mock.patch.object(jev, "enabled", return_value=on):
+             mock.patch.object(dm, "compromise_estimate", side_effect=lambda d, ids, fs: est.get(ids[0][2:]) if on else None), \
+             mock.patch.object(dm, "enabled", return_value=on):
             v = store.identity_view("c1")
         return v["sort"], [c["name"] for c in v["identities"]]
 
-    def test_with_jev(self):
+    def test_with_model(self):
         self.assertEqual(self.order(True), ("jev", ["zed", "dan", "cat", "bob", "amy", "eve"]))
 
-    def test_without_jev_alphabet_only(self):
+    def test_without_model_alphabet_only(self):
         self.assertEqual(self.order(False), ("alpha", ["amy", "bob", "cat", "dan", "eve", "zed"]))
 
 

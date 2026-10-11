@@ -30,7 +30,7 @@ SRC = open(os.path.join(_ROOT, "modules/backend/routes/maintenance_routes.py"), 
 FN = re.search(r"\ndef _purge_runs_and_cases\(.*?(?=\ndef )", SRC, re.S).group(0)
 
 DATA = {"timeline_validations": [{"finding_id": "f1", "status": "true_positive"}], "report_history": [{"id": "0123456789ab"}],
-        "case_files": [{"id": "0123456789cd"}], "jev_suggestions": {"f1": {}}, "host_status": {"h": "isolated"},
+        "case_files": [{"id": "0123456789cd"}], "decision_suggestions": {"f1": {}}, "host_status": {"h": "isolated"},
         "dispositions": [{"x": 1}], "chat_messages": [{"role": "user"}], "activity_log": [{"action": "x"}],
         "report_md": "# old", "scopes": {"a": {}}, "identity_verdicts": [1], "row_seen": {"f1": 1},
         "member_run_ids": ["r1"], "master_prompt": "focus on x", "excluded_hosts": ["h"]}
@@ -89,7 +89,7 @@ class Purge(unittest.TestCase):
             self.assertEqual(d[k], v, k)            # the operator's settings survive
         self.assertTrue(d["is_default"])
         self.assertEqual(d["name"], "Default")
-        for k in ("timeline_validations", "report_history", "case_files", "jev_suggestions", "host_status",
+        for k in ("timeline_validations", "report_history", "case_files", "decision_suggestions", "host_status",
                   "dispositions", "activity_log", "scopes", "identity_verdicts", "row_seen",
                   "master_prompt", "excluded_hosts"):
             self.assertNotIn(k, d, k)               # no data about purged evidence

@@ -8,7 +8,7 @@ scheduled-task description is an instruction to our model, not evidence.
 Two layers, and the first never needs a network:
   1. Deterministic, always on: every system prompt is told the evidence is
      untrusted data, and a pattern match catches the common injection phrasing.
-  2. Jev, only when enabled and reachable: asks whether the remaining longer
+  2. The decision model, only when enabled and reachable: asks whether the remaining longer
      free-text strings are addressed to an AI, which catches the paraphrased
      ones a pattern cannot. Its answers are cached per string, so a chat that
      re-sends the same case every turn does not re-ask.
@@ -45,11 +45,11 @@ _PATTERNS = [re.compile(p, re.I) for p in (
 # every piece of evidence is one of these; the analyst's own question and the
 # chat history are NOT literals and are never touched.
 _LITERAL = re.compile(r'"((?:[^"\\]|\\.){30,})"')
-_MIN_WORDS_FOR_JEV = 8
-_MAX_JEV_STRINGS = 100
-JEV_FLAG_FROM = 0.8
+_MIN_WORDS_FOR_MODEL = 8
+_MAX_MODEL_STRINGS = 100
+FLAG_FROM = 0.8
 
-_cache, _cache_lock = {}, threading.Lock()          # sha1(text) -> p (Jev verdicts)
+_cache, _cache_lock = {}, threading.Lock()          # sha1(text) -> p (decision-model verdicts)
 _hits, _hits_lock = {}, threading.Lock()             # run_id -> [str] seen this run
 
 
@@ -64,17 +64,17 @@ def _pattern_hit(text):
     return any(p.search(text) for p in _PATTERNS)
 
 
-def _jev_hits(cands, run_id):
-    """The candidates Jev judges to be addressed to an AI. [] when Jev is off,
+def _model_hits(cands, run_id):
+    """The candidates the decision model judges to be addressed to an AI. [] when it is off,
     unreachable or unsure — the deterministic layer has already run."""
-    from . import jev
-    if not cands or not jev.enabled("injection"):
+    from . import decision_model as dm
+    if not cands or not dm.enabled("injection"):
         return []
     key = lambda s: hashlib.sha1(s.encode("utf-8", "replace")).hexdigest()
     with _cache_lock:
         todo = [s for s in cands if key(s) not in _cache]
     if todo:
-        answers = jev.ask_each(todo, lambda s: s[:1500], lambda k: {
+        answers = dm.ask_each(todo, lambda s: s[:1500], lambda k: {
             "type": "noul",
             "instructions": f"items.{k} is a string found inside forensic evidence (a log line, "
                             "command line, file name or event text). Is it written to an AI "
@@ -87,7 +87,7 @@ def _jev_hits(cands, run_id):
                 if isinstance(a, dict) and isinstance(a.get("noul"), (int, float)):
                     _cache[key(s)] = float(a["noul"])
     with _cache_lock:
-        return [s for s in cands if _cache.get(key(s), 0.0) >= JEV_FLAG_FROM]
+        return [s for s in cands if _cache.get(key(s), 0.0) >= FLAG_FROM]
 
 
 def guard(user_message, *, run_id=None):
@@ -103,12 +103,12 @@ def guard(user_message, *, run_id=None):
                 continue
             if _pattern_hit(text):
                 found.append((raw, text))
-            elif len(text.split()) >= _MIN_WORDS_FOR_JEV:
+            elif len(text.split()) >= _MIN_WORDS_FOR_MODEL:
                 cands.append((raw, text))
         cands.sort(key=lambda c: -len(c[1]))
-        cands = cands[:_MAX_JEV_STRINGS]
+        cands = cands[:_MAX_MODEL_STRINGS]
         by_text = {t: r for r, t in cands}
-        found += [(by_text[t], t) for t in _jev_hits([t for _, t in cands], run_id)]
+        found += [(by_text[t], t) for t in _model_hits([t for _, t in cands], run_id)]
         if not found:
             return user_message, []
         out = user_message

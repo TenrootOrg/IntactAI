@@ -14,8 +14,8 @@ document.addEventListener('alpine:init', () => {
                 online_llm: { provider: 'openrouter', api_key: '', model: '~anthropic/claude-haiku-latest' },
                 ollama_context_size: 65536,
                 ollama_timeout: 600,
-                // Fast decisions (Jev) — must match jev.DEFAULTS in services/fusion/jev.py
-                jev: { enabled: false, model: 'jev-latest', min_confidence: 0.8, api_key: '', uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true, injection: true, chat_confidence: true, scopes: true, compromise: true, report: true } }
+                // The decision model — must match DEFAULTS in services/fusion/decision_model.py
+                decision_model: { enabled: false, model: 'jev-latest', min_confidence: 0.8, api_key: '', uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true, injection: true, chat_confidence: true, scopes: true, compromise: true, report: true } }
             },
             timesketch: {
                 llm_mode: 'google',
@@ -79,8 +79,8 @@ document.addEventListener('alpine:init', () => {
                         ollama_context_size: data.agentic?.ollama_context_size || 65536,
                         ollama_timeout: data.agentic?.ollama_timeout || 600,
                         // Listed here or Save drops it: saveAgentic() PUTs this whole block.
-                        jev: { ...this.config.agentic.jev, ...data.agentic?.jev,
-                               uses: { ...this.config.agentic.jev.uses, ...data.agentic?.jev?.uses } }
+                        decision_model: { ...this.config.agentic.decision_model, ...data.agentic?.decision_model,
+                               uses: { ...this.config.agentic.decision_model.uses, ...data.agentic?.decision_model?.uses } }
                     };
                 }
 

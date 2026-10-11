@@ -30,8 +30,9 @@ def _redact_frontend_config_secrets(config: Dict[str, Any]) -> Dict[str, Any]:
     agentic = redacted.get("agentic")
     if isinstance(agentic, dict) and agentic.get("online_llm", {}).get("api_key"):
         agentic["online_llm"]["api_key"] = "[REDACTED]"
-    if isinstance(agentic, dict) and (agentic.get("jev") or {}).get("api_key"):
-        agentic["jev"]["api_key"] = "[REDACTED]"          # Jev's own OpenRouter key
+    for blk in ("decision_model", "jev"):                 # the decision model's own key
+        if isinstance(agentic, dict) and (agentic.get(blk) or {}).get("api_key"):
+            agentic[blk]["api_key"] = "[REDACTED]"
     return redacted
 
 
@@ -67,11 +68,16 @@ def _protect_frontend_config_credentials(config: Dict[str, Any]) -> Dict[str, An
         existing_agentic = existing.get("agentic") if isinstance(existing.get("agentic"), dict) else {}
         existing_llm = existing_agentic.get("online_llm", {}) if isinstance(existing_agentic.get("online_llm"), dict) else {}
         agentic["online_llm"]["api_key"] = existing_llm.get("api_key", "")
-    if isinstance(agentic, dict) and isinstance(agentic.get("jev"), dict):
-        # Jev's key is a credential too: an import must not swap in its own.
+    # An export made before the rename (2026-10) carries agentic.jev: migrate it
+    # first, so the key protection below covers it under its new name.
+    from services.storage.config_store import _legacy_agentic
+    _legacy_agentic(protected)
+    agentic = protected.get("agentic")
+    if isinstance(agentic, dict) and isinstance(agentic.get("decision_model"), dict):
+        # The decision model's key is a credential too: an import must not swap in its own.
         existing_agentic = existing.get("agentic") if isinstance(existing.get("agentic"), dict) else {}
-        existing_jev = existing_agentic.get("jev") if isinstance(existing_agentic.get("jev"), dict) else {}
-        agentic["jev"]["api_key"] = existing_jev.get("api_key", "")
+        existing_dm = existing_agentic.get("decision_model") if isinstance(existing_agentic.get("decision_model"), dict) else {}
+        agentic["decision_model"]["api_key"] = existing_dm.get("api_key", "")
 
     return protected
 

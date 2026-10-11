@@ -8,7 +8,7 @@ import json
 import time
 from flask import Blueprint, jsonify, request
 from services.file_storage_service import load_frontend_config, save_frontend_config
-from services.fusion.jev import DEFAULTS as JEV_DEFAULTS
+from services.fusion.decision_model import DEFAULTS as DECISION_DEFAULTS
 
 config_bp = Blueprint('config', __name__)
 
@@ -33,8 +33,8 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "model": "~anthropic/claude-haiku-latest"
         },
-        # Fast decisions (Jev) — off by default; see services/fusion/jev.py.
-        "jev": copy.deepcopy(JEV_DEFAULTS),
+        # The decision model — off by default; see services/fusion/decision_model.py.
+        "decision_model": copy.deepcopy(DECISION_DEFAULTS),
     }
 }
 
@@ -70,12 +70,15 @@ def _load_config():
     try:
         saved_config = load_frontend_config()
         if saved_config:
-            config = DEFAULT_CONFIG.copy()
+            # deepcopy: _deep_merge writes into nested dicts, and a shallow copy
+            # shared them with DEFAULT_CONFIG -- one load leaked saved values (an
+            # old block, a key) into the process-wide defaults.
+            config = copy.deepcopy(DEFAULT_CONFIG)
             _deep_merge(config, saved_config)
             return config
     except Exception as e:
         print(f"Error loading config: {e}")
-    return DEFAULT_CONFIG.copy()
+    return copy.deepcopy(DEFAULT_CONFIG)
 
 
 def _save_config(config):
@@ -623,11 +626,11 @@ def get_config():
             config = json.loads(json.dumps(config))  # cheap deep copy
             key = config['agentic']['online_llm']['api_key']
             config['agentic']['online_llm']['api_key'] = '••••••••' + key[-4:] if len(key) > 4 else '••••••••'
-        # Jev's own OpenRouter key: same masking.
-        if (config.get('agentic', {}).get('jev') or {}).get('api_key'):
+        # The decision model's own key: same masking.
+        if (config.get('agentic', {}).get('decision_model') or {}).get('api_key'):
             config = json.loads(json.dumps(config))
-            key = config['agentic']['jev']['api_key']
-            config['agentic']['jev']['api_key'] = '••••••••' + key[-4:] if len(key) > 4 else '••••••••'
+            key = config['agentic']['decision_model']['api_key']
+            config['agentic']['decision_model']['api_key'] = '••••••••' + key[-4:] if len(key) > 4 else '••••••••'
         return jsonify(config)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -650,9 +653,20 @@ def save_config():
             existing = _load_config()
             config['agentic']['online_llm']['api_key'] = \
                 existing.get('agentic', {}).get('online_llm', {}).get('api_key', '')
-        jv = config.get('agentic', {}).get('jev')
-        if isinstance(jv, dict) and str(jv.get('api_key') or '').startswith('••••'):
-            jv['api_key'] = (_load_config().get('agentic', {}).get('jev') or {}).get('api_key', '')
+        # A Settings page cached from before the rename (2026-10) sends a `jev`
+        # block filled with its own defaults (enabled: false): saving it would switch
+        # the decision model off. Ignore it and keep what is stored. (An export
+        # import does migrate `jev` -- it carries real values; see _legacy_agentic.)
+        ag = config.get('agentic')
+        if isinstance(ag, dict) and 'jev' in ag:
+            ag.pop('jev', None)
+            if 'decision_model' not in ag:
+                stored = _load_config().get('agentic', {}).get('decision_model')
+                if stored is not None:
+                    ag['decision_model'] = stored
+        dmc = config.get('agentic', {}).get('decision_model')
+        if isinstance(dmc, dict) and str(dmc.get('api_key') or '').startswith('••••'):
+            dmc['api_key'] = (_load_config().get('agentic', {}).get('decision_model') or {}).get('api_key', '')
 
         # Which AI settings were in force BEFORE this save, so a change can be told
         # apart from re-saving the same thing.

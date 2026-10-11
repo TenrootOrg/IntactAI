@@ -1,4 +1,4 @@
-"""Jev's estimate on a phase card reads on the app's severity scale, each band in
+"""The decision model's estimate on a phase card reads on the app's severity scale, each band in
 its own colour ("give each percentage different color and severity"): the cards
 were one blue line, so 66% looked like 86%. Runs the real _ztJev from cases.html.
 """

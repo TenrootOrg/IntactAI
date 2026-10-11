@@ -712,11 +712,23 @@ def create_case(name, *, time_window=None, initial_access=None,
                  "fusion_graph": {}, "report_md": "", "chat_messages": []})
 
 
+_DECISION_RENAMED = {f"jev_{k}": f"decision_{k}" for k in
+                     ("suggestions", "notice", "identity", "scopes", "compromise", "relevance")}
+
+
 def get_case(case_id) -> dict:
     run = _ws().get_automation_run(case_id)
     if not run or run.get("automation_type") != CASE_TYPE:
         return {}
     d = run.get("details") or {}
+    # The decision-model caches were stored as jev_* before the feature was renamed
+    # (2026-10). Read under the new name so existing cases, old case bundles and paid
+    # relevance results keep showing; writers only write decision_*. Kept: old
+    # bundles can arrive at any time.
+    for old_key, new_key in _DECISION_RENAMED.items():
+        v = d.pop(old_key, None)
+        if v is not None and d.get(new_key) is None:
+            d[new_key] = v
     # Cases saved before the verdict codes were renamed carry real / not_real /
     # known_it. Translated here, on every read, so no consumer sees the old codes.
     for key in ("timeline_validations", "manual_timeline_events"):
@@ -889,7 +901,7 @@ def _unfail_stale_idle_workspace(run: dict) -> None:
 # What a purge KEEPS on the built-in Default / System workspaces: who they are and
 # the operator's settings -- never data. A list of what to KEEP, not of what to drop:
 # the purge used to strip a named list of data keys, so every feature added after it
-# (evidence, report history, verdicts, host status, Jev) survived a purge on data
+# (evidence, report history, verdicts, host status, decision model) survived a purge on data
 # that no longer existed. A setting missing here is merely reset by a purge.
 PURGE_KEEPS = ("name", "is_default", "is_system", "time_window", "min_severity",
                "initial_access_estimate", "audience", "language", "tlp", "customer_name",
@@ -1851,10 +1863,10 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
         _track_rows(case_id, g)
     except Exception as e:                                   # noqa: BLE001 — bookkeeping only
         print(f"[FUSION] row tracking skipped for {case_id}: {e}", flush=True)
-    # Jev suggestions ride on the fused graph but must never hold the fuse lock:
+    # Decision-model suggestions ride on the fused graph but must never hold the fuse lock:
     # they are network calls, and the next fuse must not wait on them.
-    from . import jev
-    jev.after_fuse(case_id)
+    from . import decision_model as dm
+    dm.after_fuse(case_id)
     return g
 
 
@@ -2417,7 +2429,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                              kwargs={"write_off": False}, daemon=True).start()
         try:
             report = llm_sim.generate_report(
-                gr, estimates=_jev_estimates(case_id, d, gr, _narrate), window=_rwindow, min_severity=min_sev,
+                gr, estimates=_decision_estimates(case_id, d, gr, _narrate), window=_rwindow, min_severity=min_sev,
                 initial_access=d.get("initial_access_estimate"),
                 case_name=d.get("name", "Case"), run_id=case_id,
                 audience=d.get("audience", "both"), language=d.get("language", "en"),
@@ -2930,31 +2942,31 @@ def _with_evidence(case_id, report, d) -> str:
         return report
 
 
-def _jev_estimates(case_id, d, g, narrating, waited=None) -> dict:
-    """Jev's estimates for this report, and one Log line saying whether it has them.
-    {} when nothing is narrated, Jev's report use is off, or none are valid."""
+def _decision_estimates(case_id, d, g, narrating, waited=None) -> dict:
+    """The decision model's estimates for this report, and one Log line saying whether
+    it has them. {} when nothing is narrated, its report use is off, or none are valid."""
     if not narrating:
         return {}
     try:
-        from . import jev
-        if not jev.enabled("report"):
+        from . import decision_model as dm
+        if not dm.enabled("report"):
             return {}
-        est = jev.report_estimates(case_id, d, g)
+        est = dm.report_estimates(case_id, d, g)
         if est:
-            log_case_event(case_id, "Report · using Jev's estimates", "info",
+            log_case_event(case_id, "Report · using the decision model's estimates", "info",
                            f"{len(est.get('findings') or [])} finding(s), "
                            f"{len(est.get('identities') or [])} identity(ies) — given to the "
                            f"model as automated estimates, not as verdicts")
         else:
-            log_case_event(case_id, "Report · no Jev estimates", "info",
-                           ("Jev was still working after "
-                            f"{int(jev.report_wait_seconds())}s — the report is written without "
+            log_case_event(case_id, "Report · no decision-model estimates", "info",
+                           ("The decision model was still working after "
+                            f"{int(dm.report_wait_seconds())}s — the report is written without "
                             "its estimates" if waited is False else
                             "none are available for the evidence as it is now — the report is "
                             "written without them"))
         return est
     except Exception as e:                                   # noqa: BLE001 — never a failed report
-        print(f"[FUSION] Jev estimates skipped for {case_id}: {e}", flush=True)
+        print(f"[FUSION] Decision-model estimates skipped for {case_id}: {e}", flush=True)
         return {}
 
 
@@ -4424,17 +4436,17 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
         log_case_event(case_id, "Report · written from an older graph", "warning",
                        "the case was still fusing after 15 minutes — writing from the graph it has")
     _set_report_phase(case_id, gen_id, "preparing")
-    # Jev's after-fuse pass (verdict suggestions, compromise estimates) is read by
+    # The decision model's after-fuse pass (verdict suggestions, compromise estimates) is read by
     # the report: wait for it, bounded, so a report written right after a fuse is
     # not written without them. Off, slow or unreachable: written without, as before.
-    _jev_wait = None
+    _dm_wait = None
     if use_llm and not offline:
         try:
-            from . import jev as _jev
-            if _jev.enabled("report"):
-                _jev_wait = _jev.wait_idle(case_id, _jev.report_wait_seconds())
+            from . import decision_model as _dm
+            if _dm.enabled("report"):
+                _dm_wait = _dm.wait_idle(case_id, _dm.report_wait_seconds())
         except Exception:                                    # noqa: BLE001 — never a failed report
-            _jev_wait = None
+            _dm_wait = None
     d = get_case(case_id)
     g = load_graph(case_id)
     # The SELECTED scope's window: this report describes that slice of the case,
@@ -4481,7 +4493,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
         log_case_event(case_id, "Report · regenerating (deterministic)", "info",
                        "no LLM tokens spent")
     _set_report_phase(case_id, gen_id, "narrative" if will_narrate else "writing")
-    _estimates = _jev_estimates(case_id, d, gv, will_narrate, waited=_jev_wait)
+    _estimates = _decision_estimates(case_id, d, gv, will_narrate, waited=_dm_wait)
     try:
         report = llm_sim.generate_report(
             gv, estimates=_estimates, window=window, min_severity=min_sev,
@@ -5194,7 +5206,7 @@ def identity_view(case_id, d=None) -> dict:
     they operate), resolved deterministically by name. Fuzzy/uncertain cross-name links
     surface as small per-identity SUGGESTIONS to confirm — not a candidate queue, and no
     global manual-link form. Best-effort: any failure returns an empty, non-breaking view.
-    `d` lets Jev read the view of a scope that is not the one selected (a copy of
+    `d` lets the decision model read the view of a scope that is not the one selected (a copy of
     the case with another active_scope); nothing is written."""
     d = get_case(case_id) if d is None else d
     if not d:
@@ -5261,13 +5273,13 @@ def identity_view(case_id, d=None) -> dict:
                              "kind": "same_identity"})
         e["score"] = max(e["score"], c["score"])
         e["ambiguous"] = e["ambiguous"] or c.get("ambiguous", False)
-    # Jev's "same person?" probability for the pair, when it was asked (a hint
+    # The decision model's "same person?" probability for the pair, when it was asked (a hint
     # beside Merge/Dismiss — never a merge).
-    from . import jev as _jev
-    jev_p = (d.get("jev_identity") or {}) if _jev.enabled("identity") else {}
+    from . import decision_model as _dm
+    dm_p = (d.get("decision_identity") or {}) if _dm.enabled("identity") else {}
     for e in pairs.values():
         ca, cb = e["cards"]
-        ps = [jev_p[m["id"]] for m in e["members"] if m["id"] in jev_p]
+        ps = [dm_p[m["id"]] for m in e["members"] if m["id"] in dm_p]
         for src, dst in ((ca, cb), (cb, ca)):
             src["suggestions"].append({
                 "id": e["members"][0]["id"], "other": dst["name"], "reason": e["reason"],
@@ -5280,8 +5292,8 @@ def identity_view(case_id, d=None) -> dict:
     for it in idents:
         live = [a["id"] for a in it["accounts"] if not a.get("disabled")]
         fs = sorted(_idf.person_findings(g, live), key=lambda f: (-_sev.rank(f.severity), f.ts or ""))
-        # Jev's "is this person compromised?" — computed after the fuse, only read here
-        it["jev_compromise"] = _jev.compromise_estimate(d, live, fs)
+        # The decision model's "is this person compromised?" — computed after the fuse, only read here
+        it["jev_compromise"] = _dm.compromise_estimate(d, live, fs)
         v = _identity_verdict_for(d.get("identity_verdicts"), [a["id"] for a in it["accounts"]])
         it["verdict"] = v["verdict"] if v else None
         it["findings"] = [{"id": f.id, "title": f.title, "severity": f.severity} for f in fs[:12]]
@@ -5320,14 +5332,14 @@ def identity_view(case_id, d=None) -> dict:
             print(f"[IDENTITIES] {case_id}: activity for {it.get('name')!r} not computed "
                   f"({type(_e).__name__}: {_e}) — shown as active", flush=True)
         it["worst"] = fs[0].severity if fs else None
-    # With Jev on: the analyst's verdicts first (compromised, then not), then
-    # Jev's compromise estimate (highest first), then A–Z. With Jev off: A–Z only.
-    by_jev = _jev.enabled("compromise")
+    # With the decision model on: the analyst's verdicts first (compromised, then
+    # not), then its compromise estimate (highest first), then A–Z. Off: A–Z only.
+    by_dm = _dm.enabled("compromise")
     _vr = {"compromised": 0, "not_compromised": 1}
 
     def _order(it):
         az = str(it.get("name") or it["key"]).lower()
-        if not by_jev:
+        if not by_dm:
             return (az,)
         p = it.get("jev_compromise")
         return (_vr.get(it.get("verdict"), 2), -p if isinstance(p, (int, float)) else 1, az)
@@ -5344,7 +5356,7 @@ def identity_view(case_id, d=None) -> dict:
     return {"case_id": case_id, "buckets": buckets, "multi_infra": len(buckets) >= 2,
             "identities": idents, "stale": stale,
             "counts": {"identities": len(idents), "suggestions": total_sug},
-            "sort": "jev" if by_jev else "alpha"}
+            "sort": "jev" if by_dm else "alpha"}
 
 
 def decide_identity_link(case_id, link_id, decision, *, a_id=None, b_id=None,
@@ -5579,10 +5591,10 @@ def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
               if x.get("target") in set(ids) | drop]
     if status not in reasons and not before:
         # Nothing to suppress or clear, so no re-fuse — but the verdict is part of
-        # what Jev's compromise estimate is keyed on, so ask it again, or the
+        # what the decision model's compromise estimate is keyed on, so ask it again, or the
         # person's likelihood blanks until some later fuse.
-        from . import jev
-        jev.after_fuse(case_id)
+        from . import decision_model as dm
+        dm.after_fuse(case_id)
         return {"finding_ids": ids, "status": status}
 
     def _disp(details):
@@ -5708,7 +5720,7 @@ def case_hosts(case_id) -> list:
 
 def scope_cards(case_id, d=None):
     """(altitude, reason, cards, graph) — the Analysis tab's scope cards, exactly as
-    GET /zoom_targets shows them. One definition, so Jev's per-scope estimate is
+    GET /zoom_targets shows them. One definition, so the decision model's per-scope estimate is
     computed for the very windows the operator sees."""
     d = get_case(case_id) if d is None else d
     g = view_graph(case_id, d)
@@ -5792,8 +5804,8 @@ def get_timeline(case_id) -> list:
     g = view_graph(case_id, d)
     vrec = {v.get("finding_id"): v for v in (d.get("timeline_validations") or [])}
     fwm = {f.id: f.watermark() for f in g.findings}     # current occurrence watermark
-    from . import jev
-    jev_on, jev_s = jev.enabled("disposition"), d.get("jev_suggestions") or {}
+    from . import decision_model as dm
+    dm_on, dm_s = dm.enabled("disposition"), d.get("decision_suggestions") or {}
     rows = render.timeline(g, window=view_window(d))
     fmap = {f.id: f for f in g.findings}
     try:
@@ -5828,10 +5840,10 @@ def get_timeline(case_id) -> list:
                 vs = {x["validation"] for x in r["parts"]}
                 r["validation"] = vs.pop() if len(vs) == 1 else "pending"
                 v = next((x for x in r["parts"] if x["validation"] != "pending"), None)
-        # Jev's suggested verdict: only on a finding nobody has judged yet, only
+        # The decision model's suggested verdict: only on a finding nobody has judged yet, only
         # for the occurrences it was asked about, only when it is sure enough.
-        r["jev"] = (jev.suggestion_for(jev_s, fid, fwm.get(fid, ""))
-                    if jev_on and not v else None)
+        r["jev"] = (dm.suggestion_for(dm_s, fid, fwm.get(fid, ""))
+                    if dm_on and not v else None)
         r["manual"] = False
     # NEW since the group's last review (see _group_news): on the group label and
     # on each new / grown row.
@@ -5992,10 +6004,10 @@ def chat_case(case_id, question) -> str:
         # anything else: the offer simply lapses, the question is answered normally
         _set_pending_disposition(case_id, None)
 
-    from . import injection, jev
+    from . import injection, decision_model as dm
     injection.take_hits(case_id)            # this turn's injection note starts clean
     proposal = llm_sim.detect_disposition(g, question,
-                                          verdict_hint=jev.chat_verdict(question, d, g, run_id=case_id))
+                                          verdict_hint=dm.chat_verdict(question, d, g, run_id=case_id))
     model, provider, _m = _configured_fusion_model()
     log_case_event(case_id, "Chat · sending to LLM", "info",
                    f"model {model} ({provider})" if model else "no model configured")
@@ -6021,7 +6033,7 @@ def chat_case(case_id, question) -> str:
                            tool_case=case_id)      # the model may fetch explicit data itself
         log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
         ans = (ans or "") + llm_sim._revert_mask(injection.note(injection.take_hits(case_id)), mask)
-        ans += jev.entity_estimates(question, d, g, run_id=case_id)
+        ans += dm.entity_estimates(question, d, g, run_id=case_id)
         # A detected verdict rides ALONG WITH the answer as an offer. Worst case
         # for a misread is one extra sentence the operator ignores — never a
         # blocked answer, never a silent mutation.

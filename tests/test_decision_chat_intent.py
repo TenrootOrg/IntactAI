@@ -1,7 +1,7 @@
-"""Jev reads whether a chat message states a verdict — and changes nothing else.
+"""The decision model reads whether a chat message states a verdict — and changes nothing else.
 
 The keyword matcher cannot read Hebrew, and reads "the backup server was
-compromised" as benign. When enabled, Jev's confident reading replaces that
+compromised" as benign. When enabled, the model's confident reading replaces that
 guess. What must NOT change: a question is never a verdict (and costs no call),
 the verdict must still ground to a real finding, and applying it still needs
 the literal "confirm" — the chat promises that anything else, including "yes",
@@ -19,7 +19,7 @@ for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "modules/backend")):
         sys.path.insert(0, _p)
 
 import _optional_deps  # noqa: F401,E402
-from services.fusion import jev, llm_sim  # noqa: E402
+from services.fusion import decision_model as dm, llm_sim  # noqa: E402
 from services.fusion.schema import Finding  # noqa: E402
 
 G = types.SimpleNamespace(
@@ -47,10 +47,10 @@ class DetectWithHint(unittest.TestCase):
 
 class ChatVerdict(unittest.TestCase):
     def verdict(self, msg, answer, enabled=True, conf_floor=0.8):
-        with mock.patch.object(jev, "enabled", return_value=enabled), \
-             mock.patch.object(jev, "min_confidence", return_value=conf_floor), \
-             mock.patch.object(jev, "ask", return_value=answer) as ask:
-            return jev.chat_verdict(msg, {}, G), ask
+        with mock.patch.object(dm, "enabled", return_value=enabled), \
+             mock.patch.object(dm, "min_confidence", return_value=conf_floor), \
+             mock.patch.object(dm, "ask", return_value=answer) as ask:
+            return dm.chat_verdict(msg, {}, G), ask
 
     def test_confident_answer_is_used(self):
         v, ask = self.verdict("המימיקץ הוא של צוות האדום", {"v": {"choice": "benign", "confidence": 0.93}})
@@ -89,8 +89,8 @@ class Grounding(unittest.TestCase):
 
 
 class EntityEstimate(unittest.TestCase):
-    """"How likely is kobi malicious?" gets Jev's number for the account it names —
-    and nothing at all when Jev is off, the question is not about risk, the name
+    """"How likely is kobi malicious?" gets the decision model's number for the account it names —
+    and nothing at all when the model is off, the question is not about risk, the name
     resolves to nothing, or nothing involves it."""
 
     def graph(self):
@@ -104,15 +104,15 @@ class EntityEstimate(unittest.TestCase):
     def estimate(self, q, answer=({"noul": 0.34},), resolved=None, enabled=True):
         g = self.graph()
         res = {"resolved": [g.entities["acct:kobia"]] if resolved is None else resolved}
-        with mock.patch.object(jev, "enabled", return_value=enabled), \
+        with mock.patch.object(dm, "enabled", return_value=enabled), \
              mock.patch("services.fusion.resolve.resolve", return_value=res), \
-             mock.patch.object(jev, "_entity_state", lambda g, e, fs: {"entity": e.label}), \
-             mock.patch.object(jev, "ask_each", return_value=list(answer)) as ae:
-            return jev.entity_estimates(q, {}, g), ae
+             mock.patch.object(dm, "_entity_state", lambda g, e, fs: {"entity": e.label}), \
+             mock.patch.object(dm, "ask_each", return_value=list(answer)) as ae:
+            return dm.entity_estimates(q, {}, g), ae
 
     def test_names_the_account_its_basis_and_that_it_is_not_a_verdict(self):
         out, _ = self.estimate("How confident are you that kobi is malicious user?")
-        self.assertIn("**kobia** (account): **34% (Jev)** likely involved in malicious activity", out)
+        self.assertIn("**kobia** (account): **34% (decision model)** likely involved in malicious activity", out)
         self.assertIn("from 1 finding on 1 host", out)
         self.assertIn("not a verdict", out)
 
@@ -123,13 +123,13 @@ class EntityEstimate(unittest.TestCase):
         g.entities[other.id] = other
         res = {"resolved": [], "ambiguous": [{"token": "kobi",
                                               "candidates": [g.entities["acct:kobia"], other]}]}
-        with mock.patch.object(jev, "enabled", return_value=True), \
+        with mock.patch.object(dm, "enabled", return_value=True), \
              mock.patch("services.fusion.resolve.resolve", return_value=res), \
-             mock.patch.object(jev, "_entity_state", lambda g, e, fs: {"entity": e.label}), \
-             mock.patch.object(jev, "ask_each", return_value=[{"noul": 0.61}]) as ae:
-            out = jev.entity_estimates("is kobi malicious?", {}, g)
+             mock.patch.object(dm, "_entity_state", lambda g, e, fs: {"entity": e.label}), \
+             mock.patch.object(dm, "ask_each", return_value=[{"noul": 0.61}]) as ae:
+            out = dm.entity_estimates("is kobi malicious?", {}, g)
         self.assertEqual(len(ae.call_args.args[0]), 1)                          # kobitst not asked
-        self.assertIn("**kobia** (account): **61% (Jev)**", out)
+        self.assertIn("**kobia** (account): **61% (decision model)**", out)
 
     def test_silent_when_it_should_be(self):
         q = "How confident are you that kobi is malicious user?"
@@ -139,11 +139,11 @@ class EntityEstimate(unittest.TestCase):
         ae.assert_not_called()
         self.assertEqual(self.estimate("kobi is malicious")[0], "")          # a statement, not a question
         self.assertEqual(self.estimate(q, resolved=[])[0], "")               # names nothing
-        self.assertEqual(self.estimate(q, answer=(None,))[0], "")            # Jev did not answer
+        self.assertEqual(self.estimate(q, answer=(None,))[0], "")            # the model did not answer
 
 
 class ConfirmStaysLiteral(unittest.TestCase):
-    """Jev is never consulted on the reply to an offer."""
+    """The decision model is never consulted on the reply to an offer."""
 
     def test_casual_yes_does_not_confirm(self):
         self.assertFalse(llm_sim.is_affirmative("yes"))

@@ -1,16 +1,19 @@
-"""Jev — TypeSafe's "System One" model — for small, closed decisions.
+"""The decision model — small, closed decisions with probabilities, never text.
 
-Jev does not write text. It takes a `state` (any JSON) plus named questions,
-each a yes/no ("noul"), pick-one ("choice") or ordered "score", and returns a
-typed answer with probabilities. We reach it through OpenRouter's Decisions
-endpoint, with Jev's own OpenRouter key when one is set in Settings, else the
-main key while OpenRouter is the chat provider — so a box whose chat runs on
-Claude or a Codex subscription can still use it.
+A decision model does not write text. It takes a `state` (any JSON) plus named
+questions, each a yes/no ("noul"), pick-one ("choice") or ordered "score", and
+returns a typed answer with probabilities. The default is TypeSafe's Jev
+(`jev-latest`), reached through OpenRouter's Decisions endpoint with the decision
+model's own OpenRouter key when one is set in Settings, else the main key while
+OpenRouter is the chat provider — so a box whose chat runs on Claude or a Codex
+subscription can still use it. (This module was services/fusion/jev.py; the
+feature was renamed to the generic "decision model" in 2026-10, when other
+vendors began serving the same kind of model.)
 
 EVERYTHING HERE IS A SUGGESTION. Nothing in this module, or in any caller,
-sets a disposition, merges an identity or edits a report on Jev's word: the
-analyst still clicks. Any failure returns None and the caller carries on
-exactly as it does with Jev switched off (the default).
+sets a disposition, merges an identity or edits a report on the model's word:
+the analyst still clicks. Any failure returns None and the caller carries on
+exactly as it does with the decision model switched off (the default).
 
 Masked case data leaves the box when this is on — the Settings block says so.
 """
@@ -27,7 +30,7 @@ URL = "https://openrouter.ai/api/v1/systemone"
 USES = ("disposition", "relevance", "grounding", "identity", "chat_intent", "injection",
         "chat_confidence", "scopes", "compromise", "report")
 DEFAULTS = {"enabled": False, "model": "jev-latest", "min_confidence": 0.8,
-            # Jev's own OpenRouter key. Empty = use the main key, which only works
+            # The decision model's own OpenRouter key. Empty = use the main key, which only works
             # while OpenRouter is the selected chat provider.
             "api_key": "",
             "uses": {u: True for u in USES}}
@@ -42,7 +45,7 @@ def _cfg():
 
 def settings(cfg=None) -> dict:
     cfg = _cfg() if cfg is None else cfg
-    j = cfg.get("jev") or {}
+    j = cfg.get("decision_model") or {}
     out = {**DEFAULTS, **{k: v for k, v in j.items() if k != "uses"}}
     out["uses"] = {**DEFAULTS["uses"], **(j.get("uses") or {})}
     return out
@@ -53,7 +56,7 @@ def _key(cfg):
     # OpenRouter key is still sitting in the online block.
     if str(cfg.get("llm_mode", "online")).lower() != "online":
         return None
-    own = (cfg.get("jev") or {}).get("api_key")
+    own = (cfg.get("decision_model") or {}).get("api_key")
     if own:
         return own
     online = cfg.get("online_llm") or {}
@@ -75,7 +78,7 @@ def min_confidence() -> float:
         return DEFAULTS["min_confidence"]
 
 
-# One failure answers for every Jev call: the provider is skipped until DOWN_SECONDS
+# One failure answers for every decision-model call: the provider is skipped until DOWN_SECONDS
 # have passed or its key / model change. On an air-gapped box every feature (verdicts,
 # phases, people, report grounding, chat) asked on its own after every fuse and
 # report -- 15 rejected calls in one minute -- each one waiting out a timeout or a 401
@@ -90,7 +93,7 @@ def _fp(key, model):
 
 
 def unavailable(cfg=None):
-    """Why Jev is being skipped right now, or "" when it may be called."""
+    """Why the decision model is being skipped right now, or "" when it may be called."""
     import time
     cfg = _cfg() if cfg is None else cfg
     if _down["fp"] == _fp(_key(cfg), settings(cfg)["model"]) and time.monotonic() < _down["until"]:
@@ -112,7 +115,7 @@ def ask(state, questions, *, run_id=None, cfg=None):
 
     def _trip(why):
         if not unavailable(cfg):
-            log.warning("jev: %s -- every Jev call is skipped for %d min (offline) or until "
+            log.warning("decision model: %s -- every decision-model call is skipped for %d min (offline) or until "
                         "its settings change", why, DOWN_SECONDS // 60)
         _down.update(until=time.monotonic() + DOWN_SECONDS, fp=_fp(key, model), why=why)
     try:
@@ -126,22 +129,22 @@ def ask(state, questions, *, run_id=None, cfg=None):
                               json={"model": model, "state": state, "questions": questions})
             if r.status_code < 500 or attempt:
                 break
-            log.warning("jev: HTTP %s — retrying once", r.status_code)
+            log.warning("decision model: HTTP %s — retrying once", r.status_code)
             import time
             time.sleep(RETRY_SECONDS)
         _last["too_big"] = False
         if r.status_code != 200:
-            # Jev's own token count is the only exact one; ours is chars/4. A
+            # The model's own token count is the only exact one; ours is chars/4. A
             # request it calls too large is split and retried by _ask_chunk.
             _last["too_big"] = r.status_code in (400, 413) and "max_tokens" in r.text
-            log.warning("jev: HTTP %s: %s", r.status_code, r.text[:200])
+            log.warning("decision model: HTTP %s: %s", r.status_code, r.text[:200])
             if not _last["too_big"]:                 # too big is ours to split, not an outage
                 _trip(f"HTTP {r.status_code}")
             return None
         body = r.json()
     except Exception as e:  # noqa: BLE001 — every failure means "no suggestion"
         _last["too_big"] = False
-        log.warning("jev: call failed: %s", e)
+        log.warning("decision model: call failed: %s", e)
         _trip(f"unreachable ({type(e).__name__})")
         return None
     _down["until"] = 0.0                         # answered: not down
@@ -203,7 +206,7 @@ def _ask_chunk(chunk, render, question, context=None, *, run_id=None, cfg=None):
 
     Found live: batches our chars/4 estimate thought fit were refused by Jev as
     max_tokens_exceeded, and every row after them went unanswered (108 of 323).
-    A request Jev calls too large is split in half and retried, down to single
+    A request the model calls too large is split in half and retried, down to single
     items. Any other failure (outage, auth) is NOT retried — it returns None at
     once, so a dead provider costs one call, not a dozen.
     """
@@ -239,13 +242,13 @@ def mask_for(details, graph):
     except Exception as e:  # noqa: BLE001
         # Masking was asked for and cannot be done: send nothing rather than
         # the real values.
-        log.warning("jev: masking unavailable, skipping: %s", e)
+        log.warning("decision model: masking unavailable, skipping: %s", e)
         return False
 
 
 def masked(text, mask):
     if mask is False:       # masking required but broken — never fall through unmasked
-        raise RuntimeError("jev: masking required but unavailable")
+        raise RuntimeError("decision model: masking required but unavailable")
     from .llm_sim import _apply_mask
     return _apply_mask(text if isinstance(text, str) else json.dumps(text, default=str), mask)
 
@@ -255,7 +258,7 @@ def masked(text, mask):
 #
 # The options are named after the Timeline's own verdict states (TL_STATES in
 # cases.html), so the chip's click is the existing tlValidate() call — the
-# analyst makes the decision; Jev only saves them reading the evidence cold.
+# analyst makes the decision; the model only saves them reading the evidence cold.
 # ---------------------------------------------------------------------------
 VERDICTS = {
     "true_positive": "Malicious or attacker activity that needs a response.",
@@ -265,7 +268,7 @@ VERDICTS = {
 
 
 def finding_state(g, f) -> dict:
-    """What Jev sees about one finding. The offline eval uses this same function,
+    """What the decision model sees about one finding. The offline eval uses this same function,
     so it measures exactly what production sends."""
     from .render import _finding_evidence
     hosts = [getattr(g.entities.get(a), "label", None) or a for a in (f.asset_ids or [])]
@@ -308,7 +311,7 @@ NOTICE_NAMES = 5          # findings named in the Log's "not reviewed yet" line
 def suggest_dispositions(case_id, d, g) -> int:
     """Ask about every unreviewed finding whose occurrences changed since the
     last ask. Returns how many findings were asked about."""
-    have = d.get("jev_suggestions") or {}
+    have = d.get("decision_suggestions") or {}
     validated = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
     from .correlate import _part_ids
     # Reviewed = the row or any of its parts has a verdict (a row judged part by
@@ -329,15 +332,15 @@ def suggest_dispositions(case_id, d, g) -> int:
             # Said in the case Log: it used to show only in the backend log, so a
             # Timeline with no suggestion chips looked like "nothing to suggest".
             from .store import log_case_event
-            log_case_event(case_id, "Jev · no verdict suggestions this time", "info",
-                           f"Jev did not answer for {len(todo)} finding(s) (its provider "
+            log_case_event(case_id, "Decision model · no verdict suggestions this time", "info",
+                           f"The decision model did not answer for {len(todo)} finding(s) (its provider "
                            "returned an error or could not be reached) — they are asked "
                            "about again on the next fuse")
     # No early return when nothing changed: the notice below must still be built
     # (a case suggested before the notice existed, or a changed threshold).
     live = {f.id for f in g.findings}
     new = {k: v for k, v in new.items() if k in live}      # findings that vanished
-    # The notice: findings Jev is sure are malicious and nobody has reviewed.
+    # The notice: findings the model is sure are malicious and nobody has reviewed.
     # Stored with titles so the case payload can show it without the graph.
     floor = min_confidence()
     title = {f.id: f.title for f in g.findings}
@@ -352,9 +355,9 @@ def suggest_dispositions(case_id, d, g) -> int:
               for k, v in new.items()
               if v.get("label") == "true_positive" and v.get("confidence", 0) >= floor]
     fresh = [n for n in notice if n["id"] in {f.id for f in todo}]
-    if new != have or notice != (d.get("jev_notice") or []):
+    if new != have or notice != (d.get("decision_notice") or []):
         from .store import _merge_case_details
-        _merge_case_details(case_id, {"jev_suggestions": new, "jev_notice": notice})
+        _merge_case_details(case_id, {"decision_suggestions": new, "decision_notice": notice})
     if fresh:
         from .store import log_case_event
         # INFO, not a warning: nothing went wrong -- it says where to look first. As a
@@ -365,20 +368,10 @@ def suggest_dispositions(case_id, d, g) -> int:
         _names = "; ".join(n["title"] for n in fresh[:NOTICE_NAMES])
         if len(fresh) > NOTICE_NAMES:
             _names += f" … +{len(fresh) - NOTICE_NAMES} more — see the Timeline"
-        log_case_event(case_id, f"Jev · {len(fresh)} finding(s) look malicious — not reviewed yet",
+        log_case_event(case_id, f"Decision model · {len(fresh)} finding(s) look malicious — not reviewed yet",
                        "info", _names[:700],
                        finding_ids=[n["id"] for n in fresh])
     return len(todo)
-
-
-def unreviewed_notice(d):
-    """The Analysis-tab notice: Jev's confident true-positives still unreviewed.
-    [] when Jev is off — the deterministic page shows nothing extra."""
-    if not enabled("disposition"):
-        return []
-    done = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
-    return [n for n in (d.get("jev_notice") or [])
-            if not ({n.get("id"), *(n.get("aliases") or []), *(n.get("parts") or [])} & done)]
 
 
 def suggestion_for(d_suggestions, fid, wm):
@@ -387,7 +380,7 @@ def suggestion_for(d_suggestions, fid, wm):
     if not s or s.get("wm") != wm or s.get("confidence", 0) < min_confidence():
         return None
     # Show the number the chip is gated on. It showed the label's probability
-    # while gating on Jev's confidence, so a "74%" chip appeared under an 80% floor.
+    # while gating on the model's confidence, so a "74%" chip appeared under an 80% floor.
     return {"label": s["label"], "p": s.get("confidence", 0)}
 
 
@@ -423,7 +416,7 @@ def suggest_identities(case_id, d, g) -> int:
     # signal this question has. Skip rather than send noise.
     if (d.get("masking") or {}).get("enabled"):
         return 0
-    have = d.get("jev_identity") or {}
+    have = d.get("decision_identity") or {}
     pairs = _pending_identity_pairs(d, g)
     todo = [c for c in pairs if c["id"] not in have]
     if not todo:
@@ -435,7 +428,7 @@ def suggest_identities(case_id, d, g) -> int:
             new[c["id"]] = float(ans["noul"])
     if new != have:
         from .store import _merge_case_details
-        _merge_case_details(case_id, {"jev_identity": new})
+        _merge_case_details(case_id, {"decision_identity": new})
     return len(todo)
 
 
@@ -471,7 +464,7 @@ def _supported_question(k):
 
 
 def unsupported_claims(narrative, masked_payload, mask, *, run_id=None, log_event=None):
-    """Statements in `narrative` (real values) that Jev judges unsupported by the
+    """Statements in `narrative` (real values) that the decision model judges unsupported by the
     (already masked) evidence payload. [] when off, skipped or all supported."""
     if not enabled("grounding"):
         return []
@@ -482,21 +475,21 @@ def unsupported_claims(narrative, masked_payload, mask, *, run_id=None, log_even
     # unsupported — a false alarm is worse than no check.
     if approx_tokens(masked_payload) > MAX_TOKENS * 3 // 4:
         if log_event:
-            log_event("Report · Jev grounding check skipped", "info",
+            log_event("Report · decision model grounding check skipped", "info",
                       f"the evidence (~{approx_tokens(masked_payload):,} tokens) is larger "
-                      f"than one Jev call can read")
+                      f"than one decision-model call can read")
         return []
     try:
         answers = ask_each(claims, lambda c: masked(c, mask), _supported_question,
                            context=masked_payload, run_id=run_id)
     except Exception as e:  # noqa: BLE001
-        log.warning("jev: grounding check failed: %s", e)
+        log.warning("decision model: grounding check failed: %s", e)
         return []
     bad = [c for c, a in zip(claims, answers)
            if isinstance(a, dict) and isinstance(a.get("noul"), (int, float))
            and a["noul"] < UNSUPPORTED_BELOW]
     if log_event:
-        log_event("Report · Jev grounding check", "warning" if bad else "info",
+        log_event("Report · decision model grounding check", "warning" if bad else "info",
                   f"{len(bad)} of {len(claims)} statements not matched to the evidence")
     return bad
 
@@ -514,7 +507,7 @@ CHAT_VERDICTS = {
 
 
 def chat_verdict(question, d, g, run_id=None):
-    """'malicious' | 'benign' | 'none' when Jev is sure, else None (use keywords)."""
+    """'malicious' | 'benign' | 'none' when the decision model is sure, else None (use keywords)."""
     from .llm_sim import is_question
     if not enabled("chat_intent") or is_question(question):
         return None
@@ -526,7 +519,7 @@ def chat_verdict(question, d, g, run_id=None):
                                           "case chat. Does it state a verdict?"}},
                    run_id=run_id) or {}).get("v")
     except Exception as e:  # noqa: BLE001
-        log.warning("jev: chat verdict skipped: %s", e)
+        log.warning("decision model: chat verdict skipped: %s", e)
         return None
     if not isinstance(ans, dict) or ans.get("choice") not in CHAT_VERDICTS:
         return None
@@ -536,7 +529,7 @@ def chat_verdict(question, d, g, run_id=None):
 
 
 # ---------------------------------------------------------------------------
-# Chat: "how likely is kobi malicious?" — Jev's estimate for the account or host
+# Chat: "how likely is kobi malicious?" — the decision model's estimate for the account or host
 # the question names, added under the model's answer. A number with its basis,
 # labelled as a second opinion; nothing about the case changes.
 # ---------------------------------------------------------------------------
@@ -586,7 +579,7 @@ def _entity_state(g, e, fs, verdicts=None):
 
 def entity_estimates(question, d, g, run_id=None) -> str:
     """Markdown to append to a chat answer, or "" (off, not a risk question,
-    nothing named, no findings, or Jev did not answer)."""
+    nothing named, no findings, or the model did not answer)."""
     from .llm_sim import is_question
     q = (question or "").lower()
     if not enabled("chat_confidence") or not is_question(question) \
@@ -625,7 +618,7 @@ def entity_estimates(question, d, g, run_id=None) -> str:
                          "false": "Its activity is explained as normal, or it is only a bystander."}},
             run_id=run_id)
     except Exception as e:  # noqa: BLE001
-        log.warning("jev: entity estimate skipped: %s", e)
+        log.warning("decision model: entity estimate skipped: %s", e)
         return ""
     lines = []
     for (e, fs), a in zip(pairs, answers):
@@ -633,12 +626,12 @@ def entity_estimates(question, d, g, run_id=None) -> str:
         if not isinstance(p, (int, float)):
             continue
         nh = len({h for f in fs for h in (f.asset_ids or [])})
-        lines.append(f"- **{e.label}** ({kind.get(e.type, e.type)}): **{round(p * 100)}% (Jev)** likely "
+        lines.append(f"- **{e.label}** ({kind.get(e.type, e.type)}): **{round(p * 100)}% (decision model)** likely "
                      f"involved in malicious activity — from {len(fs)} finding"
                      f"{'s' if len(fs) != 1 else ''} on {nh} host{'s' if nh != 1 else ''}")
     if not lines:
         return ""
-    return ("\n\n---\n_Jev estimate — a fast second opinion from the findings, not a verdict:_\n"
+    return ("\n\n---\n_Decision-model estimate — a fast second opinion from the findings, not a verdict:_\n"
             + "\n".join(lines))
 
 
@@ -679,7 +672,7 @@ def _cards_of_every_scope(case_id, d):
         try:
             _alt, _r, cards, g = scope_cards(case_id, dict(d, active_scope=sid))
         except Exception as e:                            # noqa: BLE001 — one scope, never the rest
-            print(f"[JEV] scope cards for {case_id}/{sid} not built: {e}", flush=True)
+            print(f"[DECISION] scope cards for {case_id}/{sid} not built: {e}", flush=True)
             continue
         g0 = g0 or g
         if sid == FULL_SCOPE_ID:
@@ -690,7 +683,7 @@ def _cards_of_every_scope(case_id, d):
             if sig and sig not in seen:
                 seen.add(sig)
                 out.append((z, sig, g))
-    # Jev is told about every card from the whole case's graph: a narrow scope's
+    # The model is told about every card from the whole case's graph: a narrow scope's
     # graph lacks the findings of the broader scopes' cards.
     return out, (g_full or g0)
 
@@ -699,7 +692,7 @@ def suggest_scopes(case_id, d) -> int:
     from .store import _merge_case_details
     pairs, g = _cards_of_every_scope(case_id, d)
     verdicts = analyst_verdicts(d)
-    have = d.get("jev_scopes") or {}
+    have = d.get("decision_scopes") or {}
     todo = [(z, sig) for z, sig, _g in pairs if sig not in have]
     if g is not None:
         by_id = {f.id: f for f in g.findings}
@@ -721,7 +714,7 @@ def suggest_scopes(case_id, d) -> int:
     live = {sig for _z, sig, _g in pairs}
     new = {k: v for k, v in new.items() if k in live}        # windows that no longer exist IN ANY scope
     if new != have:
-        _merge_case_details(case_id, {"jev_scopes": new})
+        _merge_case_details(case_id, {"decision_scopes": new})
     return len(todo)
 
 
@@ -731,7 +724,7 @@ def attach_scope_estimates(cards, d, g):
         return
     by_id = {f.id: f for f in g.findings}
     verdicts = analyst_verdicts(d)
-    est = d.get("jev_scopes") or {}
+    est = d.get("decision_scopes") or {}
     for z in cards:
         p = est.get(_scope_sig(z, by_id, verdicts)) if not z.get("rollup") else None
         if p is not None:
@@ -755,11 +748,11 @@ def compromise_sig(account_ids, fs, verdicts=None):
 
 
 def compromise_estimate(d, account_ids, fs):
-    """Jev's probability that the person is compromised, or None (off, no findings,
+    """The decision model's probability that the person is compromised, or None (off, no findings,
     not asked yet, or the evidence changed since)."""
     if not enabled("compromise"):
         return None
-    return (d.get("jev_compromise") or {}).get(compromise_sig(account_ids, fs, analyst_verdicts(d)))
+    return (d.get("decision_compromise") or {}).get(compromise_sig(account_ids, fs, analyst_verdicts(d)))
 
 
 def _person_state(g, card, fs, verdicts=None):
@@ -789,7 +782,7 @@ def suggest_compromise(case_id, d) -> int:
     read on a copy of the case with that scope selected; nothing is written."""
     from . import identities as idf
     from .store import FULL_SCOPE_ID, _active_scope_id, _merge_case_details, _scopes, identity_view, view_graph
-    have = d.get("jev_compromise") or {}
+    have = d.get("decision_compromise") or {}
     verdicts = analyst_verdicts(d)
     todo, live, g_full = [], set(), None
     for sid in dict.fromkeys([_active_scope_id(d)] + [x["id"] for x in _scopes(d)] + [FULL_SCOPE_ID]):
@@ -798,7 +791,7 @@ def suggest_compromise(case_id, d) -> int:
             cards = (identity_view(case_id, dd) or {}).get("identities") or []
             g = view_graph(case_id, dd)                  # the graph the tab reads in that scope
         except Exception as e:                            # noqa: BLE001 — one scope, never the rest
-            print(f"[JEV] identities for {case_id}/{sid} not read: {e}", flush=True)
+            print(f"[DECISION] identities for {case_id}/{sid} not read: {e}", flush=True)
             continue
         if sid == FULL_SCOPE_ID:
             g_full = g
@@ -819,7 +812,7 @@ def suggest_compromise(case_id, d) -> int:
             if isinstance(a, dict) and isinstance(a.get("noul"), (int, float)):
                 new[sig] = round(float(a["noul"]), 3)
     if new != have:
-        _merge_case_details(case_id, {"jev_compromise": new})
+        _merge_case_details(case_id, {"decision_compromise": new})
     return len(todo)
 
 
@@ -844,9 +837,9 @@ def after_fuse(case_id) -> None:
                 return
             _running.add(case_id)
         threading.Thread(target=_work, args=(case_id,), daemon=True,
-                         name=f"jev-{case_id}").start()
+                         name=f"decision-{case_id}").start()
     except Exception as e:  # noqa: BLE001
-        log.warning("jev: after_fuse(%s) not started: %s", case_id, e)
+        log.warning("decision model: after_fuse(%s) not started: %s", case_id, e)
 
 
 def _work(case_id):
@@ -855,7 +848,7 @@ def _work(case_id):
             try:
                 _one_pass(case_id)
             except Exception as e:  # noqa: BLE001 — a suggestion is never worth an error
-                log.warning("jev: pass for %s failed: %s", case_id, e)
+                log.warning("decision model: pass for %s failed: %s", case_id, e)
             with _workers_lock:
                 if case_id not in _again:
                     _running.discard(case_id)
@@ -884,7 +877,7 @@ def _one_pass(case_id):
 
 
 # ---------------------------------------------------------------------------
-# The report reads Jev's estimates (use "report"): the report step waits, bounded,
+# The report reads the decision model's estimates (use "report"): the report step waits, bounded,
 # for the pass above, then gives the report model the per-finding verdict
 # suggestions and per-person compromise estimates -- LABELLED as automated
 # estimates. They are never verdicts: anything the analyst judged is left out
@@ -933,7 +926,7 @@ def report_estimates(case_id, d, g) -> dict:
         if enabled("disposition"):
             from .correlate import _part_ids
             done = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
-            sug = d.get("jev_suggestions") or {}
+            sug = d.get("decision_suggestions") or {}
             rows = []
             for f in g.findings:
                 if (set(f.ids() + _part_ids(f)) & done) or f.kind == "dispositioned":
@@ -952,7 +945,7 @@ def report_estimates(case_id, d, g) -> dict:
             if people:
                 out["identities"] = sorted(people, key=lambda r: -r["compromise_probability"])[:30]
     except Exception as e:  # noqa: BLE001 — an estimate is never worth a failed report
-        log.warning("jev: report estimates for %s skipped: %s", case_id, e)
+        log.warning("decision model: report estimates for %s skipped: %s", case_id, e)
         return {}
     return out
 
@@ -1043,14 +1036,14 @@ def score_relevance(case_id, *, run_id, cancel):
         items.append((*it, masked(it[3], mask)))       # masked once, sent as-is
     if not items:
         raise RuntimeError("this case has no collected rows to score")
-    say(f"Scoring {len(items):,} collected rows with Jev.")
+    say(f"Scoring {len(items):,} collected rows with the decision model.")
 
     scored, done = [], 0
 
     def save():
         best = sorted((s for s in scored if s["p"] >= RELEVANT_FROM),
                       key=lambda s: -s["p"])[:KEEP]
-        _merge_case_details(case_id, {"jev_relevance": {
+        _merge_case_details(case_id, {"decision_relevance": {
             "scored_at": datetime.now().isoformat(timespec="seconds"),
             "rows_scored": done, "rows_total": len(items), "rows": best}})
         return best
@@ -1064,7 +1057,7 @@ def score_relevance(case_id, *, run_id, cancel):
         ans = _ask_chunk(chunk, lambda it: it[4], _relevant_question, context, run_id=run_id)
         if ans is None:
             save()
-            raise RuntimeError(f"Jev stopped answering after {done:,} of {len(items):,} "
+            raise RuntimeError(f"The decision model stopped answering after {done:,} of {len(items):,} "
                                "rows — the rows scored so far are kept")
         for a, (rid, artifact, i, text, _m) in zip(ans, chunk):
             p = (a or {}).get("noul")

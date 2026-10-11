@@ -124,7 +124,7 @@ class TestTheMapperAndTheFindingAgree(unittest.TestCase):
         # "fired" reads as "ran" (TASK-12666): no summary or report line the engine
         # writes says it -- related, recurring and burst rows included.
         import re as _re
-        for f in ("correlate.py", "render.py", "jev.py"):
+        for f in ("correlate.py", "render.py", "decision_model.py"):
             with open(os.path.join(ROOT, "modules/backend/services/fusion", f), encoding="utf-8") as fh:
                 tree = ast.parse(fh.read())
             docs = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}

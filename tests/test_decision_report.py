@@ -1,7 +1,7 @@
-"""The report reads Jev's estimates (Jev use "report").
+"""The report reads the decision model's estimates (its use "report").
 
 "Jev can provide more accuracy for the timeline and compromise possibility": the
-report step waits, bounded, for Jev's after-fuse pass and gives the report model
+report step waits, bounded, for the decision model's after-fuse pass and gives the report model
 its verdict suggestions and compromise estimates -- labelled as automated
 estimates, never as verdicts. Anything the analyst judged is left out (their own
 verdict already reaches the model and rules). Off, slow or unreachable: the report
@@ -21,7 +21,7 @@ for _p in (_HERE, os.path.join(_ROOT, "modules/backend")):
         sys.path.insert(0, _p)
 
 import _optional_deps  # noqa: F401,E402
-from services.fusion import jev, llm_sim, schema, store  # noqa: E402
+from services.fusion import decision_model as dm, llm_sim, schema, store  # noqa: E402
 
 import test_analyst_context_everywhere as ctx  # noqa: E402  (its graph segments into phases)
 
@@ -36,10 +36,10 @@ class Estimates(unittest.TestCase):
         self.g = schema.FusionGraph(case_id="c")
         self.g.findings = [_f("f1", "Eventlog Cleared"), _f("f2", "Defender disabled"),
                            _f("f3", "Judged by the analyst"), _f("f4", "Evidence changed since"),
-                           _f("f5", "Jev was unsure")]
+                           _f("f5", "The model was unsure")]
         wm = {f.id: f.watermark() for f in self.g.findings}
         self.d = {"timeline_validations": [{"finding_id": "f3", "status": "known"}],
-                  "jev_suggestions": {
+                  "decision_suggestions": {
                       "f1": {"wm": wm["f1"], "label": "true_positive", "p": 0.9, "confidence": 0.93},
                       "f2": {"wm": wm["f2"], "label": "known", "p": 0.9, "confidence": 0.85},
                       "f3": {"wm": wm["f3"], "label": "true_positive", "p": 0.9, "confidence": 0.99},
@@ -50,10 +50,10 @@ class Estimates(unittest.TestCase):
                        {"name": "adatum\\nobody", "jev_compromise": None, "verdict": None}]
 
     def run_it(self, uses=("report", "disposition", "compromise")):
-        with mock.patch.object(jev, "enabled", lambda u, cfg=None: u in uses), \
-                mock.patch.object(jev, "min_confidence", lambda: 0.8), \
+        with mock.patch.object(dm, "enabled", lambda u, cfg=None: u in uses), \
+                mock.patch.object(dm, "min_confidence", lambda: 0.8), \
                 mock.patch.object(store, "identity_view", lambda cid: {"identities": self.people}):
-            return jev.report_estimates("c", self.d, self.g)
+            return dm.report_estimates("c", self.d, self.g)
 
     def test_only_valid_confident_undecided_estimates_are_given(self):
         est = self.run_it()
@@ -68,7 +68,7 @@ class Estimates(unittest.TestCase):
         for row in est["findings"] + est["identities"]:
             for v in row.values():
                 if isinstance(v, str) and v not in ("Eventlog Cleared", "Defender disabled", "adatum\\srv"):
-                    self.assertLess(len(v.split()), injection._MIN_WORDS_FOR_JEV, v)   # too short to be "addressed to an AI"
+                    self.assertLess(len(v.split()), injection._MIN_WORDS_FOR_MODEL, v)   # too short to be "addressed to an AI"
         rule = llm_sim.ESTIMATES_RULE
         self.assertIn("NOT analyst verdicts", rule)
         self.assertIn("Never write 'confirmed'", rule)
@@ -78,25 +78,25 @@ class Estimates(unittest.TestCase):
     def test_off_means_nothing_and_a_failure_means_nothing(self):
         self.assertEqual(self.run_it(uses=("disposition", "compromise")), {})        # the report use is off
         self.assertEqual(self.run_it(uses=("report",)), {})                          # nothing to give
-        with mock.patch.object(jev, "enabled", lambda u, cfg=None: True), \
-                mock.patch.object(jev, "suggestion_for", side_effect=RuntimeError("x")):
-            self.assertEqual(jev.report_estimates("c", self.d, self.g), {})          # never a failed report
-        self.assertIn("report", jev.USES)
-        self.assertTrue(jev.DEFAULTS["uses"]["report"])
+        with mock.patch.object(dm, "enabled", lambda u, cfg=None: True), \
+                mock.patch.object(dm, "suggestion_for", side_effect=RuntimeError("x")):
+            self.assertEqual(dm.report_estimates("c", self.d, self.g), {})          # never a failed report
+        self.assertIn("report", dm.USES)
+        self.assertTrue(dm.DEFAULTS["uses"]["report"])
 
 
 class Wait(unittest.TestCase):
     def tearDown(self):
-        jev._running.discard("c")
+        dm._running.discard("c")
 
     def test_it_waits_for_the_pass_but_not_for_ever(self):
-        self.assertTrue(jev.wait_idle("c", 5))                        # nothing running: at once
-        jev._running.add("c")
+        self.assertTrue(dm.wait_idle("c", 5))                        # nothing running: at once
+        dm._running.add("c")
         t0 = time.monotonic()
-        self.assertFalse(jev.wait_idle("c", 0.4))                     # still running: gives up
+        self.assertFalse(dm.wait_idle("c", 0.4))                     # still running: gives up
         self.assertLess(time.monotonic() - t0, 2)
-        threading.Timer(0.3, lambda: jev._running.discard("c")).start()
-        self.assertTrue(jev.wait_idle("c", 5))                        # finished meanwhile
+        threading.Timer(0.3, lambda: dm._running.discard("c")).start()
+        self.assertTrue(dm.wait_idle("c", 5))                        # finished meanwhile
 
 
 class ReportModel(unittest.TestCase):
@@ -130,22 +130,22 @@ class ReportModel(unittest.TestCase):
     def test_the_report_step_waits_and_says_what_it_used(self):
         src = open(os.path.join(_ROOT, "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
         body = src.split("def regenerate_report(")[1].split("\ndef ")[0]
-        self.assertLess(body.index("_jev.wait_idle(case_id, _jev.report_wait_seconds())"),
+        self.assertLess(body.index("_dm.wait_idle(case_id, _dm.report_wait_seconds())"),
                         body.index("d = get_case(case_id)\n    g = load_graph(case_id)"))    # waits, THEN reads the case
         self.assertIn("estimates=_estimates", body)
         logs = []
         with mock.patch.object(store, "log_case_event", lambda cid, a, s, d="", **k: logs.append((a, d))), \
-                mock.patch.object(jev, "enabled", lambda u, cfg=None: True), \
-                mock.patch.object(jev, "report_estimates", lambda cid, d, g: dict(self.EST)):
-            self.assertEqual(store._jev_estimates("c", {}, None, True), self.EST)
-            self.assertEqual(store._jev_estimates("c", {}, None, False), {})                 # offline report: none
-        self.assertEqual([a for a, _ in logs], ["Report · using Jev's estimates"])
+                mock.patch.object(dm, "enabled", lambda u, cfg=None: True), \
+                mock.patch.object(dm, "report_estimates", lambda cid, d, g: dict(self.EST)):
+            self.assertEqual(store._decision_estimates("c", {}, None, True), self.EST)
+            self.assertEqual(store._decision_estimates("c", {}, None, False), {})                 # offline report: none
+        self.assertEqual([a for a, _ in logs], ["Report · using the decision model's estimates"])
         self.assertIn("not as verdicts", logs[0][1])
         logs.clear()
         with mock.patch.object(store, "log_case_event", lambda cid, a, s, d="", **k: logs.append((a, d))), \
-                mock.patch.object(jev, "enabled", lambda u, cfg=None: True), \
-                mock.patch.object(jev, "report_estimates", lambda cid, d, g: {}):
-            store._jev_estimates("c", {}, None, True, waited=False)
+                mock.patch.object(dm, "enabled", lambda u, cfg=None: True), \
+                mock.patch.object(dm, "report_estimates", lambda cid, d, g: {}):
+            store._decision_estimates("c", {}, None, True, waited=False)
         self.assertIn("still working", logs[0][1])                        # says it did not wait any longer
 
 

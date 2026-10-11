@@ -6,7 +6,7 @@ Reading the Log only shows what WAS hidden, so it can never show a leak. On
 masked (Presidio's entity is ORGANIZATION, not ORG), a name right after a JSON \\n
 was reported masked but leaked, and one person got two identity numbers.
 
-  cases   Replay each case's Regenerate EXACTLY (same budgets, Jev estimates,
+  cases   Replay each case's Regenerate EXACTLY (same budgets, decision-model estimates,
           explicit detail, checklist) with the LLM call stubbed and the case Log
           intercepted -- nothing is sent and nothing is written. Prints what the
           deterministic masker hid and every Presidio hit with the decoded value
@@ -130,7 +130,7 @@ def cases(ids):
         ent, chars = store._llm_payload_budget(d)
         try:
             llm_sim.generate_report(
-                gv, estimates=store._jev_estimates(cid, d, gv, True), window=store.view_window(d),
+                gv, estimates=store._decision_estimates(cid, d, gv, True), window=store.view_window(d),
                 min_severity=d.get("min_severity") or "informational",
                 initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
                 run_id=cid, audience=d.get("audience", "both"), language=d.get("language", "en"),

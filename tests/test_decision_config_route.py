@@ -1,9 +1,9 @@
-"""Jev's own OpenRouter key: masked on read, kept when the masked form is saved.
+"""The decision model's own OpenRouter key: masked on read, kept when the masked form is saved.
 
 The Settings page only ever holds the masked string, and Save PUTs the whole
 agentic block back. Without the restore, the first Save after entering a key
-would overwrite it with bullets — and every Jev call would fail as an auth
-error. Needs Flask (the backend image has it; a bare dev box skips).
+would overwrite it with bullets — and every decision-model call would fail as
+an auth error. Needs Flask (the backend image has it; a bare dev box skips).
 """
 import os
 import sys
@@ -19,7 +19,7 @@ import _optional_deps  # noqa: F401,E402
 
 
 class ConfigRoute(unittest.TestCase):
-    """Jev's key is masked on read and survives a Save of the masked form.
+    """The decision model's key is masked on read and survives a Save of the masked form.
     Needs Flask (the backend image has it; a bare dev box skips)."""
 
     def test_mask_and_preserve(self):
@@ -29,7 +29,7 @@ class ConfigRoute(unittest.TestCase):
         except ImportError as e:
             self.skipTest(f"no flask here: {e}")
         store = {"agentic": {"online_llm": {"provider": "codex-subscription", "api_key": ""},
-                             "jev": {"enabled": True, "api_key": "sk-or-realkey1234"}}}
+                             "decision_model": {"enabled": True, "api_key": "sk-or-realkey1234"}}}
         saved = {}
         app = flask.Flask(__name__)
         app.register_blueprint(cr.config_bp)
@@ -37,12 +37,12 @@ class ConfigRoute(unittest.TestCase):
              mock.patch.object(cr, "save_frontend_config", side_effect=lambda c: saved.update(c)):
             c = app.test_client()
             got = c.get("/api/config").get_json()
-            self.assertEqual(got["agentic"]["jev"]["api_key"], "••••••••1234")
+            self.assertEqual(got["agentic"]["decision_model"]["api_key"], "••••••••1234")
             self.assertNotIn("sk-or-realkey1234", str(got))
-            got["agentic"]["jev"]["enabled"] = False
+            got["agentic"]["decision_model"]["enabled"] = False
             self.assertEqual(c.put("/api/config", json=got).status_code, 200)
-        self.assertEqual(saved["agentic"]["jev"]["api_key"], "sk-or-realkey1234")
-        self.assertFalse(saved["agentic"]["jev"]["enabled"])
+        self.assertEqual(saved["agentic"]["decision_model"]["api_key"], "sk-or-realkey1234")
+        self.assertFalse(saved["agentic"]["decision_model"]["enabled"])
 
 
 if __name__ == "__main__":

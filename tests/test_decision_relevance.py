@@ -1,9 +1,9 @@
-"""Jev relevance scoring: a stoppable System action that keeps what it scored.
+"""Decision-model relevance scoring: a stoppable System action that keeps what it scored.
 
 It reads a case's raw collected rows — the only raw material a case has — and
 must respect what the operator already said about the case: excluded hosts
 are never read, let alone sent. It can run for minutes, so Stop must take
-effect between calls, and a stop or a Jev outage must keep the rows already
+effect between calls, and a stop or a model outage must keep the rows already
 scored rather than throw them away. The ceiling on rows is a cost bound and is
 said in the run log, never silent.
 """
@@ -27,7 +27,7 @@ for _p in (_HERE, os.path.join(_ROOT, "modules/backend")):
 
 import _optional_deps  # noqa: F401,E402
 from services import workflow_service  # noqa: E402
-from services.fusion import jev, store  # noqa: E402
+from services.fusion import decision_model as dm, store  # noqa: E402
 from services.fusion.schema import Finding  # noqa: E402
 
 RUNS = {
@@ -57,12 +57,12 @@ def _patches(case=None, members=("r1", "r2", "r3")):
 class Rows(unittest.TestCase):
     def test_excluded_hosts_are_never_read_and_rows_are_capped(self):
         with _patches()[0], _patches()[1], _patches()[2]:
-            rows = list(jev._case_rows("c1", {"excluded_hosts": ["excluded"]}, None))
+            rows = list(dm._case_rows("c1", {"excluded_hosts": ["excluded"]}, None))
         self.assertEqual([(r[0], r[1]) for r in rows],
                          [("r1", "Windows.System.Pslist")] * 5 + [("r3", "timesketch")])
         self.assertNotIn("secret", json.dumps(rows))
         self.assertTrue(rows[0][3].startswith("[HOST1] "))
-        self.assertLessEqual(len(rows[0][3]), len("[HOST1] ") + jev.ROW_CHARS)
+        self.assertLessEqual(len(rows[0][3]), len("[HOST1] ") + dm.ROW_CHARS)
 
 
 class Job(unittest.TestCase):
@@ -76,11 +76,11 @@ class Job(unittest.TestCase):
                 cancel.set()
             return answer_for_call(len(calls), list(questions))
         ps = _patches(members=members) + [
-            mock.patch.object(jev, "ask", side_effect=fake_ask),
-            mock.patch.object(jev, "pack", lambda items, r, max_tokens, **kw: iter(
+            mock.patch.object(dm, "ask", side_effect=fake_ask),
+            mock.patch.object(dm, "pack", lambda items, r, max_tokens, **kw: iter(
                 [items[i:i + 2] for i in range(0, len(items), 2)])),
             mock.patch.object(store, "_merge_case_details",
-                              side_effect=lambda cid, p: saved.append(p["jev_relevance"])),
+                              side_effect=lambda cid, p: saved.append(p["decision_relevance"])),
             mock.patch.object(workflow_service, "add_log_to_run",
                               side_effect=lambda rid, m, lvl="info": logs.append((lvl, m))),
             mock.patch.object(workflow_service, "update_run_status")]
@@ -88,7 +88,7 @@ class Job(unittest.TestCase):
             p.start()
         try:
             try:
-                res = jev.score_relevance("c1", run_id="R", cancel=cancel)
+                res = dm.score_relevance("c1", run_id="R", cancel=cancel)
                 err = None
             except RuntimeError as e:
                 res, err = None, str(e)
@@ -121,7 +121,7 @@ class Job(unittest.TestCase):
         self.assertEqual(saved[-1]["rows_scored"], 2)
 
     def test_the_row_ceiling_is_logged(self):
-        with mock.patch.object(jev, "MAX_ROWS", 3):
+        with mock.patch.object(dm, "MAX_ROWS", 3):
             res, err, saved, logs, calls = self.run_job(
                 lambda n, keys: {k: {"noul": 0.1} for k in keys})
         self.assertEqual(saved[-1]["rows_total"], 3)
@@ -134,6 +134,8 @@ class Job(unittest.TestCase):
 
 class SystemType(unittest.TestCase):
     def test_runs_under_settings_actions(self):
+        self.assertIn("decision_relevance", workflow_service.SYSTEM_TYPES)
+        # the pre-rename type stays a System type: the purge keep-set is built from it
         self.assertIn("jev_relevance", workflow_service.SYSTEM_TYPES)
 
 
@@ -146,7 +148,9 @@ class NoTimelineButton(unittest.TestCase):
         for gone in ("Score collected rows", "tlRelStart", "_tlRelHtml", 'id="tlrel"'):
             self.assertNotIn(gone, src)
         with open(os.path.join(_ROOT, "modules/nginx/html/partials/settings.html"), encoding="utf-8") as fh:
-            self.assertNotIn("jev.uses.relevance", fh.read())
+            settings = fh.read()
+        self.assertIn("decision_model.uses.", settings)                 # the bindings are still there...
+        self.assertNotIn("decision_model.uses.relevance", settings)     # ...but none for relevance
 
 
 if __name__ == "__main__":

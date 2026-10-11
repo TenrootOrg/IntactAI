@@ -49,8 +49,12 @@ _TERMINAL_STATUSES = ("completed", "success")
 SYSTEM_TYPES = {"upgrade", "online_upgrade", "prepare_package", "maintenance",
                 "system_purge", "support_bundle", "settings",
                 "case_import", "case_export",
-                # Jev relevance scoring: minutes of calls, started on demand,
+                # Decision-model relevance scoring: minutes of calls, started on demand,
                 # stoppable — a System action like export.
+                "decision_relevance",
+                # The run type's name before the feature was renamed (2026-10). Kept:
+                # the purge keep-set is built from SYSTEM_TYPES, so dropping it would
+                # delete the past (paid) relevance runs still stored under it.
                 "jev_relevance",
                 # An imported upgrade PACKAGE upload is a system op, exactly like
                 # the `upgrade`/`online_upgrade` apply it feeds. Without this it

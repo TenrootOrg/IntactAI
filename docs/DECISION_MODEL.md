@@ -1,4 +1,16 @@
-# Jev in Intact.AI
+# The decision model in Intact.AI
+
+> **Renamed 2026-10.** This feature was called "Jev" (TypeSafe's brand for the model
+> it first used). It is now the generic **decision model**: the module is
+> `services/fusion/decision_model.py`, the setting `agentic.decision_model`, the case
+> caches `decision_*`, the relevance run type `decision_relevance`, the eval
+> `scripts/dev/decision_eval.py`. Old names stay readable: `agentic.jev` and the
+> `jev_*` case keys are read as the new ones (`config_store._legacy_agentic`,
+> `store.get_case`), and `jev_relevance` stays a System type so past runs survive a
+> purge. **Jev is still the default model** (`jev-latest` via OpenRouter); the
+> sections below keep the original history.
+
+## Jev — the default model
 
 Jev is TypeSafe's "System One" model. It does not write text. You give it a
 `state` (any JSON) and a set of named closed questions:
@@ -25,7 +37,7 @@ These apply to every feature below and to any new one.
    deterministic narrator) and scopes are complete on an air-gapped box. The
    LLM and Jev are layers on top and never a dependency.
 1. **Deterministic and air-gapped by default.** Every feature is off until
-   *Settings → Agentic → Fast decisions (Jev)* is enabled with an OpenRouter
+   *Settings → Agentic → Decision model* is enabled with an OpenRouter
    key and the box is in Online mode. If Jev is off, unreachable or returns an
    answer we cannot use, the feature falls back silently to exactly what
    Intact did before. No broken badge and no empty section.
@@ -40,7 +52,7 @@ These apply to every feature below and to any new one.
 
 ## Configuration
 
-| Setting (`frontend_config.agentic.jev`) | Default | Meaning |
+| Setting (`frontend_config.agentic.decision_model`, was `agentic.jev`) | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Master switch |
 | `api_key` | `""` | Jev's own OpenRouter key. If empty, Jev uses the main key, but only while OpenRouter is the chat provider |
@@ -58,7 +70,7 @@ These apply to every feature below and to any new one.
 | `uses.` key | What the analyst sees | Where it runs | When it runs |
 |---|---|---|---|
 | `disposition` | A chip on each Timeline row nobody has judged: **"Jev: likely Known · 91%"**. Clicking it calls the normal `tlValidate` | `jev.suggest_dispositions`, `store.get_timeline`, `cases.html _tlJev` | After every fuse, off the fuse lock, for findings that are new or have changed occurrences |
-| `disposition` | An Analysis-tab line: **"Jev: 2 findings look malicious and are not reviewed yet — …"**, plus one case-log entry per newly flagged finding | `jev.unreviewed_notice`, `GET /api/cases/<id>` → `jev_unreviewed`, `cases.html _jevNote` | Rebuilt on every post-fuse pass |
+| `disposition` | An Analysis-tab line: **"Jev: 2 findings look malicious and are not reviewed yet — …"**, plus one case-log entry per newly flagged finding | (the Analysis-tab line and `jev_unreviewed` were removed in the 2026-10 rename — nothing read them; the case-log entry remains) `GET /api/cases/<id>` → `jev_unreviewed`, `cases.html _jevNote` | Rebuilt on every post-fuse pass |
 | `identity` | **"Jev: 87% same"** beside each uncertain identity suggestion (Merge / Dismiss unchanged). Skipped when masking is on, because masking removes the names | `jev.suggest_identities`, `store.identity_view` | After every fuse, once per new pair |
 | `chat_intent` | Reads whether a chat message *states* a verdict (malicious / benign / none) in place of the keyword list, including Hebrew. Applying it still needs the literal word "confirm" | `jev.chat_verdict` → `llm_sim.detect_disposition(verdict_hint=)` | Each chat message that is not a question |
 | `chat_confidence` | Under a chat answer about risk: **"kobia (account): 15% likely involved in malicious activity — from 1 finding on 2 hosts"**, one line per matching account or host | `jev.entity_estimates`, `store.chat_case` | Chat questions about risk that name an account or host |
@@ -94,7 +106,7 @@ Also on the branch:
     verdict.
   - Jev is told the pattern. On jev_test, 4 of the 5 recurring rows went from
     "likely True Positive" to "Known".
-- **Offline eval** (`scripts/dev/jev_eval.py`). It scores Jev's suggested verdicts against the analysts' Timeline verdicts and prints accuracy, Brier score and a reliability table. It needs labelled findings, and today's box has none.
+- **Offline eval** (`scripts/dev/decision_eval.py`, was `jev_eval.py`). It scores Jev's suggested verdicts against the analysts' Timeline verdicts and prints accuracy, Brier score and a reliability table. It needs labelled findings, and today's box has none.
 
 ## Case data Jev writes
 
@@ -102,38 +114,38 @@ These are all case `details` keys, all additive. They are ignored when Jev is of
 
 | Key | Holds |
 |---|---|
-| `jev_suggestions` | `{finding_id: {wm, label, p, confidence}}` |
-| `jev_notice` | `[{id, title}]`: confident true positives |
-| `jev_identity` | `{candidate_id: p}` |
-| `jev_scopes` | `{window_signature: p}` |
-| `jev_compromise` | `{person_signature: p}` |
-| `jev_relevance` | `{scored_at, rows_scored, rows_total, rows: [...]}` |
+| `decision_suggestions` (was `jev_suggestions`) | `{finding_id: {wm, label, p, confidence}}` |
+| `decision_notice` (was `jev_notice`) | `[{id, title}]`: confident true positives |
+| `decision_identity` (was `jev_identity`) | `{candidate_id: p}` |
+| `decision_scopes` (was `jev_scopes`) | `{window_signature: p}` |
+| `decision_compromise` (was `jev_compromise`) | `{person_signature: p}` |
+| `decision_relevance` (was `jev_relevance`) | `{scored_at, rows_scored, rows_total, rows: [...]}` |
 
 ## Files touched (4c45ddea..jev-test)
 
 Backend:
-- `services/fusion/jev.py`: new; all Jev logic.
+- `services/fusion/decision_model.py` (was `jev.py`): all decision-model logic.
 - `services/fusion/injection.py`: new; the injection guard.
 - `services/fusion/store.py`: after-fuse hook, timeline chip, identity hint, chat hooks, `scope_cards()`.
 - `services/fusion/llm_sim.py`: `_real_llm` guard, grounding note, `is_question`, `detect_disposition` hint and grounding fix.
 - `services/fusion/render.py`: scope windows carry `finding_ids`.
-- `routes/case_routes.py`: relevance routes, `jev_unreviewed`, scope estimates on `zoom_targets`.
+- `routes/case_routes.py`: relevance routes, scope estimates on `zoom_targets`.
 - `routes/config_routes.py`: `jev` defaults, key masking.
 - `routes/db_routes.py`, `services/storage/export_import.py`: key redaction and protection.
-- `services/workflow_service.py`: `jev_relevance` is a System action.
+- `services/workflow_service.py`: `decision_relevance` (and the pre-rename `jev_relevance`) are System actions.
 
 Frontend:
 - `cases.html`: chip, notice, relevance list, scope-card line.
-- `partials/settings.html`, `js/stores/settings.js`: the Fast decisions block (with `jev` added to the `load()` whitelist).
+- `partials/settings.html`, `js/stores/settings.js`: the Decision model block (with `decision_model` in the `load()` whitelist).
 - `js/stores/workflows.js`: action colour.
 - Cache chain: `index.html`, `partial-loader.js`, `partials/case-analysis.html`, `partials/cases.html`.
 
 Tests:
-- `tests/test_jev_*.py` (client, config route, key not leaked, disposition, identity, chat intent, grounding, relevance, scopes, compromise)
+- `tests/test_decision_*.py` (was `test_jev_*.py`; client, config route, key not leaked, disposition, identity, chat intent, grounding, relevance, scopes, compromise)
 - `tests/test_injection_guard.py`
 
 Tool:
-- `scripts/dev/jev_eval.py`
+- `scripts/dev/decision_eval.py` (was `jev_eval.py`)
 
 ## Measured quality (2026-09-24, on the appliance)
 
@@ -227,7 +239,7 @@ behaviour, or a deterministic improvement. Never a regression:
 | **A1** | **Labels with time and author.** Add `at`, `by` and a feature snapshot to every Timeline verdict, identity decision and disposition. Add a per-box **Jev ledger** (a workflow row type like `fusion_baseline`) recording prediction, answer, label, use and date, which survives case export and deletion | `store.validate_timeline:4712`, `decide_identity_link`, `set_disposition`; new ledger row | Nothing new; it makes everything below measurable | S |
 | **A2** | **Case outcome.** One field on the case: *confirmed incident / false alarm / test or exercise / undetermined*. This is the strongest label, and it resolves the "test lab vs attack" disagreement seen live | case header, `set_analysis_config` | A dropdown in the case header | S |
 | **A3** | **Per-box calibration.** From the ledger, compute per-use accuracy and a reliability table. Choose each use's display threshold from data (conformal-style), not the fixed 0.8. Below about 30 labels, numbers show as *"uncalibrated"* | new `jev.calibration()`, `frontend_config.agentic.jev.calibration` | Settings: *"Suggested verdict: 87% right over 140 verdicts on this box"*. Chips say *uncalibrated* until then | M |
-| **A4** | **Eval for every use**, not only verdicts. Identity uses `identity_links`, scopes use case outcome, relevance uses analyst-pinned rows | `scripts/dev/jev_eval.py` | A report run on the box | S |
+| **A4** | **Eval for every use**, not only verdicts. Identity uses `identity_links`, scopes use case outcome, relevance uses analyst-pinned rows | `scripts/dev/decision_eval.py` | A report run on the box | S |
 
 ## B. Fusion judgments get a calibrated second opinion
 

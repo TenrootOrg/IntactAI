@@ -36,7 +36,7 @@ def _report_filename(d, ext):
 import threading
 _export_lock = threading.Lock()
 _import_lock = threading.Lock()
-_relevance_lock = threading.Lock()      # one Jev relevance run at a time
+_relevance_lock = threading.Lock()      # one decision-model relevance run at a time
 
 _BOOTSTRAP_DONE = False
 
@@ -487,9 +487,6 @@ def get_case(case_id):
                     "report_engine_behind": _report_engine_behind(d),
                     "report_findings_then": (d.get("report_counts") or {}).get("findings"),
                     "findings_now": (d.get("graph_counts") or {}).get("findings"),
-                    # Jev (when on): findings it is sure are malicious that nobody
-                    # has reviewed on the Timeline yet. A notice, never an action.
-                    "jev_unreviewed": _jev_unreviewed(d),
                     # Saved settings (window, severity, hosts, modules) the fused data
                     # was not built under: they apply at the next Refusion.
                     "refusion_needed": store.refusion_needed(d),
@@ -634,11 +631,12 @@ def get_zoom_targets(case_id):
         return jsonify({"error": "case not found"}), 404
     altitude, reason, targets, g = store.scope_cards(case_id, d)
     if targets:
-        # Jev's estimate for each window, when on and current (computed after the
-        # fuse, never here — this route must stay instant and deterministic).
+        # The decision model's estimate for each window, when on and current
+        # (computed after the fuse, never here — this route must stay instant and
+        # deterministic).
         try:
-            from services.fusion import jev
-            jev.attach_scope_estimates(targets, d, g)
+            from services.fusion import decision_model as dm
+            dm.attach_scope_estimates(targets, d, g)
         except Exception:                                 # noqa: BLE001
             pass
         # The model named each window in the report ("### Timeframe 3 — Ransomware
@@ -891,36 +889,29 @@ def _report_engine_behind(d) -> bool:
         return False
 
 
-def _jev_unreviewed(d):
-    try:
-        from services.fusion import jev
-        return jev.unreviewed_notice(d)
-    except Exception:                                     # noqa: BLE001
-        return []
-
-
 @case_bp.route("/api/cases/<case_id>/relevance", methods=["POST"])
 def start_relevance(case_id):
-    """Score the case's raw collected rows with Jev — a System action. 202 + {run_id}."""
+    """Score the case's raw collected rows with the decision model — a System action.
+    202 + {run_id}."""
     from services import workflow_service as ws
-    from services.fusion import jev
+    from services.fusion import decision_model as dm
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
-    if not jev.enabled("relevance"):
-        return jsonify({"error": "Jev relevance scoring is off — enable Fast decisions (Jev) "
+    if not dm.enabled("relevance"):
+        return jsonify({"error": "Relevance scoring is off — enable the decision model "
                                  "in Settings → Agentic, with the OpenRouter provider"}), 409
     if not _relevance_lock.acquire(blocking=False):
         return jsonify({"error": "a relevance run is already in progress; try again shortly",
                         "busy": True}), 409
     try:
         run_id = ws.create_automation_run(
-            "jev_relevance", f"Score collected rows (Jev): {d.get('name') or case_id}",
+            "decision_relevance", f"Score collected rows (decision model): {d.get('name') or case_id}",
             details={"case_id": case_id, "case_name": d.get("name")})
     except Exception as e:                                # noqa: BLE001
         _relevance_lock.release()
         return jsonify({"error": str(e)}), 500
-    _bundle_thread(jev.score_relevance, run_id, case_id, lock=_relevance_lock)
+    _bundle_thread(dm.score_relevance, run_id, case_id, lock=_relevance_lock)
     return jsonify({"run_id": run_id, "case_id": case_id}), 202
 
 
@@ -929,7 +920,7 @@ def get_relevance(case_id):
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
-    return jsonify(d.get("jev_relevance") or {})
+    return jsonify(d.get("decision_relevance") or {})
 
 
 @case_bp.route("/api/cases/export/<run_id>/download", methods=["GET"])

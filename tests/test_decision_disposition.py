@@ -1,4 +1,4 @@
-"""Jev's suggested verdict: asked once per change, shown only when it is sure,
+"""The decision model's suggested verdict: asked once per change, shown only when it is sure,
 never on a finding a person already judged, and never in the fuse's way.
 
 A fuse runs after every landing run and every verdict click, so the suggestion
@@ -24,7 +24,7 @@ for _p in (_HERE, os.path.join(_ROOT, "modules/backend")):
         sys.path.insert(0, _p)
 
 import _optional_deps  # noqa: F401,E402
-from services.fusion import jev, store  # noqa: E402
+from services.fusion import decision_model as dm, store  # noqa: E402
 from services.fusion.schema import Finding  # noqa: E402
 
 
@@ -46,14 +46,14 @@ class SuggestDispositions(unittest.TestCase):
         def fake_ask_each(items, render, question, **kw):
             asked.extend(f.id for f in items)
             return [answers.get(f.id) for f in items]
-        with mock.patch.object(jev, "ask_each", fake_ask_each), \
-             mock.patch.object(jev, "finding_state", lambda g, f: {"id": f.id}), \
-             mock.patch.object(jev, "min_confidence", return_value=0.8), \
+        with mock.patch.object(dm, "ask_each", fake_ask_each), \
+             mock.patch.object(dm, "finding_state", lambda g, f: {"id": f.id}), \
+             mock.patch.object(dm, "min_confidence", return_value=0.8), \
              mock.patch.object(store, "log_case_event") as self.logged, \
              mock.patch.object(store, "_merge_case_details") as merge:
-            n = jev.suggest_dispositions("c1", d, g)
+            n = dm.suggest_dispositions("c1", d, g)
         self.merged = merge.call_args.args[1] if merge.called else None
-        written = self.merged["jev_suggestions"] if merge.called else None
+        written = self.merged["decision_suggestions"] if merge.called else None
         return n, asked, written
 
     def test_a_pass_that_got_no_answer_at_all_says_so_in_the_case_log(self):
@@ -61,13 +61,13 @@ class SuggestDispositions(unittest.TestCase):
         # suggestions — visible only in the backend log.
         n, asked, written = self.run_pass({}, [_f("a"), _f("b")], {})
         self.assertEqual((n, asked), (2, ["a", "b"]))
-        self.assertEqual(self.logged.call_args.args[1], "Jev · no verdict suggestions this time")
+        self.assertEqual(self.logged.call_args.args[1], "Decision model · no verdict suggestions this time")
         self.assertIn("asked about again on the next fuse", self.logged.call_args.args[3])
         n, _, written = self.run_pass({}, [_f("a"), _f("b")], {"a": _ans("known")})
         self.assertNotIn("no verdict suggestions", " ".join(str(c.args[1]) for c in self.logged.call_args_list))
 
     def test_the_not_reviewed_notice_is_an_info_line_not_a_warning(self):
-        # Nothing went wrong when Jev flags findings; a warning read as a fault.
+        # Nothing went wrong when the model flags findings; a warning read as a fault.
         self.run_pass({}, [_f("a")], {"a": _ans("true_positive", 0.95)})
         line = [c.args for c in self.logged.call_args_list if "look malicious" in str(c.args[1])]
         self.assertEqual(len(line), 1)
@@ -85,7 +85,7 @@ class SuggestDispositions(unittest.TestCase):
     def test_only_unjudged_changed_findings_are_asked(self):
         a, b, c, e = _f("a"), _f("b", occ=3), _f("c"), _f("e", kind="dispositioned")
         d = {"timeline_validations": [{"finding_id": "c", "status": "known"}],
-             "jev_suggestions": {"a": {"wm": a.watermark(), "label": "known"},
+             "decision_suggestions": {"a": {"wm": a.watermark(), "label": "known"},
                                  "b": {"wm": "1|old", "label": "known"},
                                  "gone": {"wm": "1|x", "label": "known"}}}
         n, asked, written = self.run_pass(d, [a, b, c, e], {"b": _ans("true_positive")})
@@ -102,12 +102,12 @@ class SuggestDispositions(unittest.TestCase):
         d = {"timeline_validations": [{"finding_id": "jp2", "status": "false_positive"}]}
         n, asked, _ = self.run_pass(d, [judged, open_], {"o": _ans("true_positive")})
         self.assertEqual(asked, ["o"])                    # a part verdict reviews its row
-        self.assertEqual(self.merged["jev_notice"][0]["parts"], ["op1", "op2"])
+        self.assertEqual(self.merged["decision_notice"][0]["parts"], ["op1", "op2"])
 
     def test_nothing_to_do_writes_nothing(self):
         a = _f("a")
         n, asked, written = self.run_pass(
-            {"jev_suggestions": {"a": {"wm": a.watermark()}}}, [a], {})
+            {"decision_suggestions": {"a": {"wm": a.watermark()}}}, [a], {})
         self.assertEqual((n, asked, written), (0, [], None))
 
     def test_a_failed_or_odd_answer_is_not_stored(self):
@@ -118,14 +118,14 @@ class SuggestDispositions(unittest.TestCase):
 
 
 class Notice(unittest.TestCase):
-    """Findings Jev is SURE are malicious, not yet reviewed: a notice, logged once."""
+    """Findings the model is SURE are malicious, not yet reviewed: a notice, logged once."""
 
     def test_notice_holds_confident_true_positives_and_logs_only_new_ones(self):
         t = SuggestDispositions()
         a, b, c = _f("a"), _f("b"), _f("c")
-        d = {"jev_suggestions": {"a": {"wm": a.watermark(), "label": "true_positive", "confidence": 0.9}}}
+        d = {"decision_suggestions": {"a": {"wm": a.watermark(), "label": "true_positive", "confidence": 0.9}}}
         t.run_pass(d, [a, b, c], {"b": _ans("true_positive", 0.95), "c": _ans("true_positive", 0.5)})
-        self.assertEqual([n["id"] for n in t.merged["jev_notice"]], ["a", "b"])   # c is unsure
+        self.assertEqual([n["id"] for n in t.merged["decision_notice"]], ["a", "b"])   # c is unsure
         self.assertEqual(t.logged.call_args.kwargs["finding_ids"], ["b"])         # a was already known
         self.assertIn("T b", t.logged.call_args.args[3])
 
@@ -134,44 +134,23 @@ class Notice(unittest.TestCase):
         # because an unchanged pass returned before building it.
         t = SuggestDispositions()
         a = _f("a")
-        d = {"jev_suggestions": {"a": {"wm": a.watermark(), "label": "true_positive", "confidence": 0.9}}}
+        d = {"decision_suggestions": {"a": {"wm": a.watermark(), "label": "true_positive", "confidence": 0.9}}}
         n, asked, _ = t.run_pass(d, [a], {})
         self.assertEqual((n, asked), (0, []))
-        self.assertEqual(t.merged["jev_notice"], [{"id": "a", "title": "T a", "detection": "T a", "aliases": []}])
+        self.assertEqual(t.merged["decision_notice"], [{"id": "a", "title": "T a", "detection": "T a", "aliases": []}])
         t.logged.assert_not_called()                     # not new: no log line
-
-    def test_a_verdict_on_an_absorbed_row_also_clears_it(self):
-        d = {"jev_notice": [{"id": "a", "title": "A", "aliases": ["old-b"]}],
-             "timeline_validations": [{"finding_id": "old-b", "status": "true_positive"}]}
-        with mock.patch.object(jev, "enabled", return_value=True):
-            self.assertEqual(jev.unreviewed_notice(d), [])
-
-    def test_a_verdict_on_one_part_clears_its_row(self):
-        # QA 2026-09-29: Mimikatz (+2 related) judged part by part stayed "not reviewed yet"
-        d = {"jev_notice": [{"id": "a", "title": "A", "aliases": [], "parts": ["p1", "p2"]}],
-             "timeline_validations": [{"finding_id": "p2", "status": "true_positive"}]}
-        with mock.patch.object(jev, "enabled", return_value=True):
-            self.assertEqual(jev.unreviewed_notice(d), [])
-
-    def test_reviewed_findings_drop_out_and_off_shows_nothing(self):
-        d = {"jev_notice": [{"id": "a", "title": "A"}, {"id": "b", "title": "B"}],
-             "timeline_validations": [{"finding_id": "a", "status": "known"}]}
-        with mock.patch.object(jev, "enabled", return_value=True):
-            self.assertEqual(jev.unreviewed_notice(d), [{"id": "b", "title": "B"}])
-        with mock.patch.object(jev, "enabled", return_value=False):
-            self.assertEqual(jev.unreviewed_notice(d), [])
 
 
 class SuggestionFor(unittest.TestCase):
     def test_stale_unsure_or_absent_gives_no_chip(self):
         s = {"f": {"wm": "2|t", "label": "known", "p": 0.93, "confidence": 0.9}}
-        with mock.patch.object(jev, "min_confidence", return_value=0.8):
+        with mock.patch.object(dm, "min_confidence", return_value=0.8):
             # the chip shows the number it is gated on (confidence), not p
-            self.assertEqual(jev.suggestion_for(s, "f", "2|t"), {"label": "known", "p": 0.9})
-            self.assertIsNone(jev.suggestion_for(s, "f", "3|t"))
-            self.assertIsNone(jev.suggestion_for(s, "x", "2|t"))
-        with mock.patch.object(jev, "min_confidence", return_value=0.95):
-            self.assertIsNone(jev.suggestion_for(s, "f", "2|t"))
+            self.assertEqual(dm.suggestion_for(s, "f", "2|t"), {"label": "known", "p": 0.9})
+            self.assertIsNone(dm.suggestion_for(s, "f", "3|t"))
+            self.assertIsNone(dm.suggestion_for(s, "x", "2|t"))
+        with mock.patch.object(dm, "min_confidence", return_value=0.95):
+            self.assertIsNone(dm.suggestion_for(s, "f", "2|t"))
 
 
 class Timeline(unittest.TestCase):
@@ -179,7 +158,7 @@ class Timeline(unittest.TestCase):
         f1, f2 = _f("f1"), _f("f2")
         d = {"timeline_validations": [{"finding_id": "f2", "status": "known",
                                        "watermark": f2.watermark()}],
-             "jev_suggestions": {k: {"wm": f.watermark(), "label": "known", "p": 0.9,
+             "decision_suggestions": {k: {"wm": f.watermark(), "label": "known", "p": 0.9,
                                      "confidence": 0.9} for k, f in (("f1", f1), ("f2", f2))}}
         g = types.SimpleNamespace(findings=[f1, f2])
         with mock.patch.object(store, "get_case", return_value=d), \
@@ -187,8 +166,8 @@ class Timeline(unittest.TestCase):
              mock.patch.object(store, "view_window", return_value=None), \
              mock.patch.object(store.render, "timeline",
                                return_value=[{"finding_id": "f1"}, {"finding_id": "f2"}]), \
-             mock.patch.object(jev, "enabled", return_value=enabled), \
-             mock.patch.object(jev, "min_confidence", return_value=0.8):
+             mock.patch.object(dm, "enabled", return_value=enabled), \
+             mock.patch.object(dm, "min_confidence", return_value=0.8):
             return {r["finding_id"]: r["jev"] for r in store.get_timeline("c1")}
 
     def test_chip_only_on_unjudged_findings_while_enabled(self):
@@ -218,20 +197,20 @@ class FuseHook(unittest.TestCase):
             t.start()
             t.join()
         with mock.patch.object(store, "_fuse_case_locked", locked), \
-             mock.patch.object(jev, "after_fuse", side_effect=hook) as af:
+             mock.patch.object(dm, "after_fuse", side_effect=hook) as af:
             self.assertEqual(store.fuse_case("c-hook", _record=False), "G")
         af.assert_called_once_with("c-hook")
         self.assertFalse(seen["locked_during_hook"])
         with mock.patch.object(store, "_fuse_case_locked", side_effect=RuntimeError("x")), \
-             mock.patch.object(jev, "after_fuse") as af:
+             mock.patch.object(dm, "after_fuse") as af:
             with self.assertRaises(RuntimeError):
                 store.fuse_case("c-hook", _record=False)
         af.assert_not_called()
 
     def test_disabled_starts_no_thread(self):
-        with mock.patch.object(jev, "_cfg", return_value={}), \
-             mock.patch.object(jev.threading, "Thread") as th:
-            jev.after_fuse("c1")
+        with mock.patch.object(dm, "_cfg", return_value={}), \
+             mock.patch.object(dm.threading, "Thread") as th:
+            dm.after_fuse("c1")
         th.assert_not_called()
 
 

@@ -1,4 +1,4 @@
-"""Jev's grounding check: flag report statements the evidence does not support,
+"""The decision model's grounding check: flag report statements the evidence does not support,
 beside the report — never cut them, and never cry wolf.
 
 Two ways it could mislead: truncating an evidence payload too big for one call
@@ -17,7 +17,7 @@ for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "modules/backend")):
         sys.path.insert(0, _p)
 
 import _optional_deps  # noqa: F401,E402
-from services.fusion import jev, llm_sim  # noqa: E402
+from services.fusion import decision_model as dm, llm_sim  # noqa: E402
 
 NARR = """## Summary
 **Host HOST1** ran mimikatz at 02:14 and dumped credentials from lsass memory.
@@ -30,7 +30,7 @@ Short one.
 
 class Claims(unittest.TestCase):
     def test_prose_sentences_only(self):
-        c = jev._claims(NARR)
+        c = dm._claims(NARR)
         self.assertEqual(c, ["Host HOST1 ran mimikatz at 02:14 and dumped credentials from lsass memory.",
                              "The attacker then moved laterally to HOST2 using PsExec with the stolen admin hash."])
 
@@ -43,9 +43,9 @@ class Unsupported(unittest.TestCase):
             sent["items"] = [render(i) for i in items]
             sent["context"] = context
             return answers
-        with mock.patch.object(jev, "enabled", return_value=enabled), \
-             mock.patch.object(jev, "ask_each", side_effect=fake_ask_each) as ae:
-            bad = jev.unsupported_claims(NARR, payload, mask,
+        with mock.patch.object(dm, "enabled", return_value=enabled), \
+             mock.patch.object(dm, "ask_each", side_effect=fake_ask_each) as ae:
+            bad = dm.unsupported_claims(NARR, payload, mask,
                                          log_event=lambda *a: events.append(a))
         return bad, events, sent, ae
 
@@ -64,13 +64,13 @@ class Unsupported(unittest.TestCase):
         ae.assert_not_called()
 
     def test_oversized_evidence_is_skipped_not_truncated(self):
-        bad, events, _, ae = self.check([], payload="x" * (jev.MAX_TOKENS * 4))
+        bad, events, _, ae = self.check([], payload="x" * (dm.MAX_TOKENS * 4))
         self.assertEqual(bad, [])
         ae.assert_not_called()
         self.assertIn("skipped", events[0][0])
 
     def test_statements_are_masked_before_sending(self):
-        mask = mock.Mock(mapping={"HOST1": "HOST_A", "HOST2": "HOST_B"})
+        mask = mock.Mock(mapping={"HOST1": "HOST_A", "HOST2": "HOST_B"}, _ner=False)   # no Presidio sidecar probe
         _, _, sent, _ = self.check([{"noul": 1}, {"noul": 1}], mask=mask)
         self.assertTrue(all("HOST1" not in s and "HOST2" not in s for s in sent["items"]))
         self.assertIn("HOST_A", sent["items"][0])
@@ -92,10 +92,10 @@ class InTheReport(unittest.TestCase):
              mock.patch.object(llm_sim, "_use_real", lambda: True), \
              mock.patch.object(llm_sim, "_agentic_cfg", lambda: {}), \
              mock.patch.object(llm_sim, "_case_event", lambda *a, **k: None), \
-             mock.patch.object(jev, "unsupported_claims", side_effect=fake_unsupported):
+             mock.patch.object(dm, "unsupported_claims", side_effect=fake_unsupported):
             md = llm_sim.generate_report(rpf._graph(), prefer_llm=True,
                                          altitude_mode="focused", run_id="c")
-        self.assertIn("**Grounding check (Jev):**", md)
+        self.assertIn("**Grounding check (decision model):**", md)
         self.assertIn(f"> - {claim}", md)
         self.assertEqual(md.count(claim), 2)          # in the prose AND in the note
         self.assertTrue(seen["payload"].startswith("{"))

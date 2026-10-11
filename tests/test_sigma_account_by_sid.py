@@ -115,7 +115,7 @@ class TheCardShowsThem(unittest.TestCase):
         ws.get_automation_runs_by_case.return_value = []
         with mock.patch.object(store, "get_case", return_value={"min_severity": "medium"}), \
              mock.patch.object(store, "view_graph", return_value=g), \
-             mock.patch("services.fusion.jev.enabled", return_value=False), \
+             mock.patch("services.fusion.decision_model.enabled", return_value=False), \
              mock.patch.object(store, "_ws", return_value=ws):
             return {c["name"]: c for c in store.identity_view("c1")["identities"]}["alice"]
 

@@ -31,6 +31,20 @@ def save_frontend_config(config: Dict[str, Any]) -> bool:
         return False
 
 
+def _legacy_agentic(config):
+    """The decision-model settings were stored as agentic.jev before the feature was
+    renamed (2026-10). Read them as agentic.decision_model. No write here, so a
+    rollback during an upgrade still finds the old block; the operator's next Save
+    stores only the new key. Also used on import (an old export carries `jev`).
+    Remove once no box or export can still hold agentic.jev."""
+    ag = config.get("agentic") if isinstance(config, dict) else None
+    if isinstance(ag, dict) and "jev" in ag:
+        old = ag.pop("jev")
+        if not isinstance(ag.get("decision_model"), dict) and isinstance(old, dict):
+            ag["decision_model"] = old
+    return config
+
+
 def load_frontend_config() -> Dict[str, Any]:
     """Load frontend configuration from the database"""
     try:
@@ -42,7 +56,7 @@ def load_frontend_config() -> Dict[str, Any]:
                 config[row['key']] = json.loads(row['value'])
             except (json.JSONDecodeError, TypeError):
                 config[row['key']] = row['value']
-        return config
+        return _legacy_agentic(config)
     except Exception as e:
         print(f"[STORAGE] Error loading frontend config: {e}", flush=True)
         return {}

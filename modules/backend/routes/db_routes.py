@@ -52,9 +52,12 @@ def _make_redacted_backup_copy(src_path: str) -> str:
                 if value.get('online_llm', {}).get('api_key'):
                     value['online_llm']['api_key'] = '[REDACTED]'
                     changed = True
-                if (value.get('jev') or {}).get('api_key'):      # Jev's own OpenRouter key
-                    value['jev']['api_key'] = '[REDACTED]'
-                    changed = True
+                # The decision model's own key, under its new name and the pre-2026-10
+                # one: raw rows keep `jev` until the operator's next Save.
+                for blk in ('decision_model', 'jev'):
+                    if (value.get(blk) or {}).get('api_key'):
+                        value[blk]['api_key'] = '[REDACTED]'
+                        changed = True
             if changed:
                 conn.execute(
                     "UPDATE frontend_config SET value = ? WHERE key = ?",
