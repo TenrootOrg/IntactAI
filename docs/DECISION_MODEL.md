@@ -86,6 +86,7 @@ the AI model block. **Test** sends one made-up yes/no question to what is on scr
 | OpenRouter `cloudflare/clef`, `cloudflare/clef-flash` | same | works, same wire (served by PrimeIntellect) | 0.4–1.5 s | $0.00005 / $0.000008 | **silently reads the first 16,384 tokens and answers** — treated as too big (`cut_at`) |
 | OpenRouter `jaredpalmer/kev-4b` | same | listed, but hung 60 s / HTTP 500 after 120 s | — | — | — |
 | OpenAI `gpt-6-luna` | `POST api.openai.com/v1/decisions` | endpoint exists (401 without a key); **not called — no API key on the box** | — | $0.10 / M input tokens | unknown |
+| OpenAI with the **ChatGPT / Codex subscription** login | same | **refused**: HTTP 401 `A valid API key is required.` (a valid subscription token, audience api.openai.com/v1); `chatgpt.com/backend-api/codex/decisions` → 403. Use an API key, or `openai/gpt-6-luna-decisions` via OpenRouter | — | — | — |
 
 - Jev wire: `{model, state, questions:{qid:{type, instructions, criteria}}}` → `{answers:{qid:…}, usage:{input_tokens, output_tokens, cost}}`.
   `state` may be a string, object or array; a `score` question needs `criteria` as an array (no caller uses `score`).
