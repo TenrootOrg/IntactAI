@@ -59,11 +59,11 @@ the AI model block. **Test** sends one made-up yes/no question to what is on scr
 |---|---|---|
 | `enabled` | `false` | Master switch |
 | `mode` | `""` | `online` / `offline`. `""` (every box saved before 2026-10-11) follows the AI model's `llm_mode`, so an offline box never starts calling a cloud |
-| `provider` | `openrouter` | Online only: `openrouter`, `openai` or `custom`. Offline is always the `local` provider |
+| `provider` | `openrouter` | Online only: `openrouter` or `openai` (a saved `custom`, offered for one day, reads as `openrouter`). Offline is always the `local` provider |
 | `model` | `jev-latest` | Empty or a model of another provider = this provider's default |
-| `url` | `""` | `custom` / `local`: the full endpoint (Jev request format) |
+| `url` | `""` | `local` only: the full endpoint of a Jev-compatible server on your network |
 | `context_tokens` | `0` | Tokens one call may carry. 0 = the known model's budget, else 6,000 |
-| `api_key` | `""` | The provider's key. Empty = the AI model's key while that runs on the same provider (OpenRouter, or OpenAI *API* — not the Codex subscription). Optional for custom / local |
+| `api_key` | `""` | The provider's key. Empty = the AI model's key while that runs on the same provider (OpenRouter, or OpenAI *API* — not the Codex subscription). Optional for local |
 | `min_confidence` | `0.8` | Minimum confidence for a suggestion to be shown (chips, notice, chat verdicts) |
 | `uses.<name>` | `true` | Per-feature switch (names in the table below) |
 

@@ -1013,7 +1013,6 @@
                                                 class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
                                             <option value="openrouter">OpenRouter (API)</option>
                                             <option value="openai">OpenAI (API)</option>
-                                            <option value="custom">Custom endpoint (Jev-compatible)</option>
                                         </select>
                                     </div>
                                     <div>
@@ -1030,22 +1029,9 @@
                                         </datalist>
                                     </div>
                                     <div>
-                                        <label class="block text-xs text-gray-400 mb-1">API key <span class="text-gray-500" x-show="$store.settings.config.agentic.decision_model.provider !== 'custom'">(empty = the AI model's key, same provider)</span></label>
+                                        <label class="block text-xs text-gray-400 mb-1">API key <span class="text-gray-500">(empty = the AI model's key, same provider)</span></label>
                                         <input type="password" autocomplete="off" x-model="$store.settings.config.agentic.decision_model.api_key"
-                                               :placeholder="{openrouter: 'sk-or-…', openai: 'sk-…', custom: 'optional'}[$store.settings.config.agentic.decision_model.provider]"
-                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                    </div>
-                                </div>
-                                <div x-show="$store.settings.config.agentic.decision_model.provider === 'custom'" class="grid grid-cols-3 gap-3 mt-3">
-                                    <div class="col-span-2">
-                                        <label class="block text-xs text-gray-400 mb-1">Endpoint URL</label>
-                                        <input type="text" x-model="$store.settings.config.agentic.decision_model.url" placeholder="https://…/v1/systemone"
-                                               title="The full endpoint (TypeSafe direct, Cloudflare, Portkey…). It must accept Jev's request format: model, state, questions."
-                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs text-gray-400 mb-1" title="How many tokens one call may carry. 0 = 6,000, a safe size for a model nobody measured.">Context (tokens)</label>
-                                        <input type="number" x-model.number="$store.settings.config.agentic.decision_model.context_tokens" min="0" max="1000000" step="1000"
+                                               :placeholder="{openrouter: 'sk-or-…', openai: 'sk-…'}[$store.settings.config.agentic.decision_model.provider]"
                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
                                     </div>
                                 </div>

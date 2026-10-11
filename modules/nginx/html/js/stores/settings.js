@@ -90,6 +90,8 @@ document.addEventListener('alpine:init', () => {
                     // AI model's. Show that, so a Save keeps the box where it was.
                     const dmc = this.config.agentic.decision_model;
                     if (!dmc.mode) dmc.mode = this.config.agentic.llm_mode === 'online' ? 'online' : 'offline';
+                    // 'custom' existed briefly (2026-10-11): the backend reads it as OpenRouter.
+                    if (!['openrouter', 'openai'].includes(dmc.provider)) dmc.provider = 'openrouter';
                     this.loadDecisionCatalog();
                 }
 
@@ -218,7 +220,6 @@ document.addEventListener('alpine:init', () => {
             const a = this.config.agentic, d = a.decision_model;
             const shared = (p) => a.llm_mode === 'online' && a.online_llm.provider === p && a.online_llm.api_key;
             if (d.mode !== 'online') return d.url ? '' : 'Offline mode needs the URL of a decision-model server on your network.';
-            if (d.provider === 'custom') return d.url ? '' : 'Custom needs the endpoint URL.';
             const label = d.provider === 'openai' ? 'OpenAI' : 'OpenRouter';
             return d.api_key || shared(d.provider) ? '' : `Needs an ${label} API key here (or ${label} as the AI model's provider, in Online mode).`;
         },
@@ -228,10 +229,6 @@ document.addEventListener('alpine:init', () => {
             const d = this.config.agentic.decision_model;
             if (d.mode !== 'online') return 'Masked case data stays on your network (the server above).';
             if (d.provider === 'openai') return 'Masked case data is sent to OpenAI.';
-            if (d.provider === 'custom') {
-                let host = ''; try { host = new URL(d.url).host; } catch (e) { /* not typed yet */ }
-                return 'Masked case data is sent to ' + (host || 'the endpoint above') + '.';
-            }
             return 'Masked case data is sent to OpenRouter and the model\'s vendor (TypeSafe for Jev, Cloudflare for Clef).';
         },
 

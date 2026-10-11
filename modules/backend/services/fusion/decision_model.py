@@ -4,8 +4,8 @@ A decision model does not write text. It takes a `state` (any JSON) plus named
 questions, each a yes/no ("noul"), pick-one ("choice") or ordered "score", and
 returns a typed answer with probabilities. The operator picks where it runs
 (Settings → Agentic → Decision model): OpenRouter (default: TypeSafe's Jev,
-`jev-latest`; also Cloudflare Clef), OpenAI's Decisions API, any Jev-compatible
-endpoint, or -- in Offline mode -- a server on the local network. Each has its own
+`jev-latest`; also every other decision model it serves), OpenAI's Decisions API,
+or -- in Offline mode -- a Jev-compatible server on the local network. Each has its own
 key; empty uses the AI model's key while that runs on the same provider, so a box
 whose chat runs on Claude or a Codex subscription can still use it. (This module was services/fusion/jev.py; the
 feature was renamed to the generic "decision model" in 2026-10, when other
@@ -29,7 +29,7 @@ from .budget import approx_tokens
 log = logging.getLogger(__name__)
 
 # Where each provider is and how it is spoken to. "jev" is the wire TypeSafe defined
-# and OpenRouter, Cloudflare Clef and Kev all accept; "openai" is OpenAI's own
+# and OpenRouter (every decision model it serves) and a local server accept; "openai" is OpenAI's own
 # Decisions API (different field names, translated below). `cloud` providers are
 # off in Offline mode; "local" is the only one allowed there and must resolve to a
 # private address. Contracts observed 2026-10-11, see docs/DECISION_MODEL.md.
@@ -38,7 +38,6 @@ PROVIDERS = {
                    "model": "jev-latest", "timeout": 15, "label": "OpenRouter"},
     "openai": {"url": "https://api.openai.com/v1/decisions", "wire": "openai", "cloud": True,
                "model": "gpt-6-luna", "timeout": 15, "label": "OpenAI"},
-    "custom": {"url": "", "wire": "jev", "cloud": True, "model": "", "timeout": 30, "label": "Custom endpoint"},
     "local": {"url": "", "wire": "jev", "cloud": False, "model": "", "timeout": 60, "label": "Local server"},
 }
 URL = PROVIDERS["openrouter"]["url"]
@@ -122,7 +121,7 @@ DEFAULTS = {"enabled": False,
             # "" = follow the AI model's mode (every box saved before the provider
             # choice existed: an offline box must not start calling a cloud).
             "mode": "", "provider": "openrouter", "model": "jev-latest",
-            "url": "",                 # custom / local only
+            "url": "",                 # local only
             "context_tokens": 0,       # 0 = the known model's budget, else UNKNOWN_BUDGET
             "min_confidence": 0.8,
             # The decision model's own key. Empty = the AI model's key while that runs
@@ -130,7 +129,7 @@ DEFAULTS = {"enabled": False,
             "api_key": "",
             "uses": {u: True for u in USES}}
 MAX_TOKENS = 24000             # Jev's budget, the default
-UNKNOWN_BUDGET = 6000          # a custom / local model nobody measured: small and safe
+UNKNOWN_BUDGET = 6000          # a local model nobody measured: small and safe
 DEFAULT_BY = "openrouter/jev-latest"   # what wrote a cache saved before caches were stamped
 
 
@@ -192,7 +191,7 @@ def _key(cfg):
     p = provider(cfg)
     s = settings(cfg)
     own = s.get("api_key") or ""
-    if p in ("custom", "local"):
+    if p == "local":
         return own if (s.get("url") or "").strip() else None
     if own:
         return own
@@ -221,8 +220,6 @@ def why_inactive(cfg=None) -> str:
     p = provider(cfg)
     if p == "local":
         return "Offline mode needs the URL of a decision-model server on your network."
-    if p == "custom":
-        return "Custom needs the endpoint URL."
     label = PROVIDERS[p]["label"]
     return f"Needs an {label} API key here (or {label} as the AI model's provider, in Online mode)."
 

@@ -1,8 +1,7 @@
 """The decision model runs on the provider the operator picks -- and only there.
 
-Settings → Agentic → Decision model: Online via OpenRouter (Jev, Clef), OpenAI's
-Decisions API or any Jev-compatible endpoint; Offline via a server on the local
-network. These pin what each choice sends where, and the four ways it could go
+Settings → Agentic → Decision model: Online via OpenRouter (Jev, Clef…) or OpenAI's
+Decisions API; Offline via a Jev-compatible server on the local network. These pin what each choice sends where, and the four ways it could go
 wrong: a box saved before the choice existed starting to call a cloud, a key
 following a provider switch to another vendor, a "local" model that is really a
 public one, and a provider that silently cuts the request and answers anyway.
@@ -64,8 +63,8 @@ class Choice(unittest.TestCase):
         self.assertEqual(dm._key(shared), "sk-oa")
         sub = {**cfg(provider="openai"), "online_llm": {"provider": "codex-subscription", "api_key": "x"}}
         self.assertIsNone(dm._key(sub))                         # a subscription is not an API key
-        self.assertIsNone(dm._key(cfg(provider="custom")))      # no URL
-        self.assertEqual(dm._key(cfg(provider="custom", url="https://d.example/v1")), "")   # key optional
+        self.assertIsNone(dm._key(cfg(mode="offline")))                       # local: no URL
+        self.assertEqual(dm._key(cfg(mode="offline", url="http://10.0.0.5/v1")), "")    # key optional
 
     def test_a_model_saved_for_another_provider_is_not_sent(self):
         self.assertEqual(dm.model_name(cfg(provider="openai", model="jev-latest")), "gpt-6-luna")
@@ -75,8 +74,8 @@ class Choice(unittest.TestCase):
     def test_context_follows_the_model(self):
         self.assertEqual(dm.context_tokens(cfg(api_key="k")), 24000)
         self.assertEqual(dm.context_tokens(cfg(api_key="k", model="cloudflare/clef")), 12000)
-        self.assertEqual(dm.context_tokens(cfg(provider="custom", url="https://x/v1")), dm.UNKNOWN_BUDGET)
-        self.assertEqual(dm.context_tokens(cfg(provider="custom", url="https://x/v1", context_tokens=30000)), 30000)
+        self.assertEqual(dm.context_tokens(cfg(mode="offline", url="http://10.0.0.5/v1")), dm.UNKNOWN_BUDGET)
+        self.assertEqual(dm.context_tokens(cfg(mode="offline", url="http://10.0.0.5/v1", context_tokens=30000)), 30000)
 
 
 class Wire(unittest.TestCase):
@@ -116,11 +115,14 @@ class Wire(unittest.TestCase):
         self.assertEqual(ans["c"]["probabilities"]["known"], 0.8)
         self.assertEqual(ans["c"]["choice"], "known")
 
-    def test_custom_sends_to_its_url_without_a_key(self):
+    def test_the_removed_custom_provider_reads_as_openrouter(self):
+        # "custom" (any URL) existed for one day; a box that saved it must not keep
+        # sending case data to that URL.
+        c = cfg(mode="online", provider="custom", url="https://dec.example/v1/systemone", api_key="sk-or")
+        self.assertEqual(dm.provider(c), "openrouter")
         with mock.patch.object(dm.requests, "post", return_value=_Resp({"answers": {"q1": {"noul": 0.5}}})) as post:
-            dm.ask({}, {"q1": NOUL}, cfg=cfg(provider="custom", url="https://dec.example/v1/systemone"))
-        self.assertEqual(post.call_args[0][0], "https://dec.example/v1/systemone")
-        self.assertEqual(post.call_args[1]["headers"], {})
+            dm.ask({}, {"q1": NOUL}, cfg=c)
+        self.assertEqual(post.call_args[0][0], "https://openrouter.ai/api/v1/systemone")
 
 
 class Local(unittest.TestCase):
@@ -252,7 +254,7 @@ class KeyGuard(unittest.TestCase):
         stored = {"enabled": True, "provider": "openrouter", "mode": "online", "api_key": "sk-or-real"}
         out = self.put({"agentic": {"decision_model": {**stored, "provider": "openai", "api_key": "••••••••real"}}}, stored)
         self.assertEqual(out["api_key"], "")
-        out = self.put({"agentic": {"decision_model": {**stored, "provider": "custom", "url": "https://evil.example",
+        out = self.put({"agentic": {"decision_model": {**stored, "mode": "offline", "url": "http://10.0.0.5/v1",
                                                        "api_key": "••••••••real"}}}, stored)
         self.assertEqual(out["api_key"], "")
 
