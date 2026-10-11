@@ -97,13 +97,22 @@ Case Analysis — not a weighting problem, a missing-detection problem.
   artifact Custom.Windows.Detection.DefenderExclusions reads the live Defender
   config via WMI; the mapper surfaces an exclusion (medium) / disabled RTP (high).
   Validated end-to-end on the live VM. The notes below are kept for the record.
-- **Archive/staging of loot (`Compress-Archive` → zip, T1560.001).** Still open,
-  but re-characterised by a live run (2026-10-11, see below): the evidence IS
-  collected — it is a detection-content + false-positive problem, not a
-  collection gap. A generic "archive in a staging path" rule can't be added
-  without firing on benign zips.
-- **DLL side-loading (T1574.002).** Stock Win11 logs no DLL loads (needs Sysmon
-  EID 7), and the planted pair isn't in HijackLibs' known-abused set.
+- **Archive/staging of loot (`Compress-Archive` → zip, T1560.001). RESOLVED
+  2026-10-11 (commit 60b29f22).** The evidence IS collected — DetectRaptor's
+  "Suspicious Location" MFT rule flags the archive (a high `mft_detection` event),
+  but it also fires on benign backups/installers/cloud-sync, so a standalone rule
+  floods. Fix: `correlate._staging_archive_findings` promotes a staging-path
+  archive to a T1560.001 finding ONLY when another high/coordinated finding hit
+  the same host within the hour — co-occurrence is the tight signal the lone MFT
+  row (no process lineage) lacks. Validated live: sim-E surfaces; baseline +
+  benign stress stay 0. A lone archive stays a quiet timeline event.
+- **DLL side-loading (T1574.002).** Still open. Stock Win11 logs no DLL loads
+  (needs Sysmon EID 7), and the planted pair isn't in HijackLibs' known-abused
+  set — so there is no load event to detect. A fusion rule can't synthesize one;
+  the same staging-corroboration trick only helps if the DLL lands in a
+  world-writable path (then "Suspicious Location" flags it). True side-load (DLL
+  beside a signed exe in its install dir) needs the HijackLibs pair added or
+  Sysmon module-load collection — a telemetry/signature fix, not fusion.
 
 **Why it is NOT a fusion/weighting fix (proven 2026-10-08)**
 Tried a mapper re-titling heuristic (scan the generic-heuristic rows' scriptblock
