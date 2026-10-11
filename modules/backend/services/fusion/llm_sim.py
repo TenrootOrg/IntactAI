@@ -1003,6 +1003,10 @@ _MASK_KEEP_DOMAINS = {
 _MASK_SKIP_DOMAINS = {
     "nt authority", "nt service", "nt virtual machine", "font driver host",
     "window manager", "azuread", "local", "localhost", "workgroup", "iis apppool",
+    # Built-in virtual-account authority (SID S-1-5-111): OpenSSH-for-Windows runs
+    # each session as VIRTUAL USERS\sshd_<pid>. Masking it invented an org
+    # "Domain1" and one fake identity per SSH session on a lab report.
+    "virtual users",
 }
 # Per-FORM pseudonym prefix for an identity. The NUMBER is the identity — every
 # form of the same person shares it, so USER1/UPN1/SAM1/SID1 are one identity.
@@ -1054,6 +1058,10 @@ _MASK_STOPWORDS = frozenset({
     "windows", "winnt", "appdata", "programdata", "program files",
     "program files (x86)", "programfiles", "desktop", "documents", "downloads",
     "perflogs", "inetpub", "recycler", "boot",
+    # Built-in local accounts on every Windows install (like administrator/guest
+    # above): the SAM collection lists them on every host, and a lab report masked
+    # them as SAM1/SAM2 -- hiding from the model that they are built-ins.
+    "defaultaccount", "wdagutilityaccount",
 })
 
 
@@ -1087,6 +1095,8 @@ def _build_mask_mapping(graph, mask):
     org_roots: set = set()        # known org-domain netbios roots (evidence DOMAIN\user gate)
     ident_num: dict = {}          # (user-stem, domain-root) -> identity number
     stem_nums: dict = {}          # user-stem -> {numbers} (for bare-SAM stem linking)
+    builtin_stems: set = set()    # user-stems seen under a built-in authority (sshd_<pid>)
+    host_roots: set = set()       # this case's computer names: HOST\user is a local account
     nseq = [0]
 
     def _add_org_domain(d):
@@ -1113,10 +1123,15 @@ def _build_mask_mapping(graph, mask):
         existing identity when its username uniquely matches one (so 'almogs' joins
         adatumlab\\almogs); ambiguous or unknown -> its own number."""
         form, user, dom = _parts(lbl)
+        stem = user.strip().lower()
         if _norm_domain(dom) in _MASK_SKIP_DOMAINS or \
                 any(sa in lbl.upper() for sa in SYSTEM_ACCOUNTS):
+            builtin_stems.add(stem)               # its bare form is the same built-in
             return                                # Windows built-in / system account
-        stem = user.strip().lower()
+        if form == "sam" and stem in builtin_stems:
+            return                                # bare name of a built-in seen above
+        if "%" in stem:
+            return                                # unexpanded %variable%, not a principal
         if stem in _MASK_STOPWORDS:
             return                                # generic word (user/null/root/...), not an identity
         root = _norm_domain(dom).split(".", 1)[0]
@@ -1125,8 +1140,15 @@ def _build_mask_mapping(graph, mask):
         else:
             key = (stem, root)
             if key not in ident_num:
-                nseq[0] += 1
-                ident_num[key] = nseq[0]
+                if form == "nt" and root in host_roots and (stem, "") in ident_num:
+                    # HOST\user is a LOCAL account -- the same principal as the bare
+                    # "user" already numbered. It arrives later (from evidence), so
+                    # it used to get a new number: SAM1 and USER2 for ONE person,
+                    # and the legend told the model they were two.
+                    ident_num[key] = ident_num[(stem, "")]
+                else:
+                    nseq[0] += 1
+                    ident_num[key] = nseq[0]
             n = ident_num[key]
         stem_nums.setdefault(stem, set()).add(n)
         mask.mapping[lbl] = f"{_IDENT_PREFIX[form]}{n}"
@@ -1134,11 +1156,26 @@ def _build_mask_mapping(graph, mask):
         if dom:
             _add_org_domain(dom)
 
+    # The case's own RULE names (SIGMA titles, DetectRaptor MFT detections) are
+    # vendor-authored machine text, never a person or company -- hand them to the
+    # NER pass so "Suspicious Execution of Systeminfo" or "Archive Utilities" is not
+    # masked as Person/Org. Rule names only: a web page title or an installed app's
+    # name CAN carry a real name, so those are deliberately not collected.
+    tech: set = set()
+    for e in graph.entities.values():
+        if e.type == "event":
+            fl, at = e.flags or [], e.attrs or {}
+            name = at.get("title") if "sigma" in fl else \
+                at.get("detection") if "mft_detection" in fl else None
+            if name:
+                tech.add(str(name).lower())
+    mask._tech_phrases = frozenset(tech)
     for e in graph.entities.values():
         lbl = (e.label or "").strip()
         if not lbl:
             continue
         if e.type == "asset":
+            host_roots.add(lbl.lower().split(".", 1)[0])
             if not _mask_noise(lbl):
                 rows.append({"hostname": lbl})
             if "." in lbl:                        # AD FQDN -> org domain suffix
@@ -1189,7 +1226,9 @@ def _build_mask_mapping(graph, mask):
             if _norm_domain(dom).split(".", 1)[0] in org_roots:   # gate vs benign paths
                 _assign_account(f"{dom}\\{usr}")
         for host in _UNC_RE.findall(text):
-            if not _mask_noise(host):
+            # \\127.0.0.1\ADMIN$ is an address, not a host name: it was masked as
+            # "Hostname2". IP literals go through the IP path below (loopback kept).
+            if not _mask_noise(host) and not _IPV4_RE.fullmatch(host):
                 rows.append({"hostname": host})
         for ip in _IPV4_RE.findall(text):
             rows.append({"ipaddress": ip})
