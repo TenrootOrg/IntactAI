@@ -114,6 +114,79 @@ class BuiltinAccountsAreNotIdentities(unittest.TestCase):
         llm_sim._build_mask_mapping(g, m)
         self.assertIn("CORP\\carol", m.mapping)
 
+    def test_domain_account_bare_username_is_masked_with_the_same_number(self):
+        # the identities list names "adatumlab\\noda" as just "noda" -- it leaked.
+        from services.fusion.schema import Entity, FusionGraph
+        from services.data_anonymizer import DataAnonymizer
+        g = FusionGraph(case_id="c")
+        g.upsert(Entity(id="a", type="account", label="adatumlab\\noda"))
+        m = DataAnonymizer()
+        llm_sim._build_mask_mapping(g, m)
+        self.assertEqual("USER1", m.mapping.get("adatumlab\\noda"), m.mapping)
+        self.assertEqual("SAM1", m.mapping.get("noda"), m.mapping)
+
+    def test_host_history_label_ips_and_internal_domains_are_masked(self):
+        # A 9-host lab case sent all of these in clear: former host names, an IP that
+        # only appeared in an event LABEL, and an internal .local name in script text.
+        from services.fusion.schema import Entity, FusionGraph
+        from services.data_anonymizer import DataAnonymizer
+        g = FusionGraph(case_id="c")
+        g.upsert(Entity(id="h", type="asset", label="ALClient022",
+                        attrs={"name_history": [{"name": "DESKTOP-KFB8NEG"},
+                                                {"name": "ALClient02.AdatumLab.local"}]}))
+        g.upsert(Entity(id="e1", type="event", label="Invoke-Inveigh -IP 192.168.1.56 -HTTP Y"))
+        g.upsert(Entity(id="e2", type="event", label="x",
+                        attrs={"details": "$AD_SERVER = 'ldap://dc.adatum.local:389'"}))
+        m = DataAnonymizer()
+        llm_sim._build_mask_mapping(g, m)
+        keys = {k.lower() for k in m.mapping}
+        for v in ("alclient022", "desktop-kfb8neg", "alclient02.adatumlab.local", "alclient02",
+                  "192.168.1.56", "dc.adatum.local", "adatum.local"):
+            self.assertIn(v, keys, m.mapping)
+        # former names keep their OWN pseudonym, so the restored report stays exact
+        self.assertNotEqual(m.mapping["ALClient022"], m.mapping["DESKTOP-KFB8NEG"])
+
+    def test_uncollected_host_in_process_unc_and_fqdn_is_masked_and_restored(self):
+        # ALDC01 was never collected: it appeared only as \\\\aldc01\\c$ in a PROCESS
+        # command line, as ALDC01.AdatumLab.local, and inside "PAExec-7032-ALDC01".
+        from services.fusion.schema import Entity, FusionGraph
+        from services.data_anonymizer import DataAnonymizer
+        g = FusionGraph(case_id="c")
+        g.upsert(Entity(id="p", type="process", label="notepad.exe",
+                        attrs={"cmdline": "NOTEPAD.EXE \\\\aldc01\\c$\\Windows\\x.log"}))
+        g.upsert(Entity(id="e", type="event", label="x",
+                        attrs={"details": "SrcHost: ALDC01.AdatumLab.local"}))
+        m = DataAnonymizer()
+        llm_sim._build_mask_mapping(g, m)
+        src = '{"svc": "PAExec-7032-ALDC01", "p": "%SYSTEMROOT%\\\\PAExec-7032-ALDC01.exe", "h": "aldc01"}'
+        masked = llm_sim._apply_mask(src, m)
+        self.assertNotIn("aldc01", masked.lower(), masked)
+        # round trip: every host comes back (the masker is case-insensitive and restores
+        # the spelling it collected first -- host names are case-insensitive on Windows)
+        self.assertEqual(src.lower(), llm_sim._revert_mask(masked, m).lower())
+
+    def test_host_keys_still_do_not_match_inside_a_longer_name(self):
+        from services.fusion.schema import Entity, FusionGraph
+        from services.data_anonymizer import DataAnonymizer
+        g = FusionGraph(case_id="c")
+        g.upsert(Entity(id="h", type="asset", label="WS-01"))
+        m = DataAnonymizer()
+        llm_sim._build_mask_mapping(g, m)
+        self.assertIn("WS-011", llm_sim._apply_mask("hosts WS-01 and WS-011", m))
+
+    def test_deterministic_only_pass_never_calls_ner(self):
+        from services import presidio_masker as pmk
+        orig = pmk.scrub
+        calls = []
+        pmk.scrub = lambda t, m=None, **k: (calls.append(t), (t, []))[1]
+        try:
+            m = _Mask({"host-a": "Hostname1"})
+            out = llm_sim._apply_mask("seen on host-a", m, ner=False)
+        finally:
+            pmk.scrub = orig
+        self.assertEqual("seen on Hostname1", out)
+        self.assertEqual([], calls)
+
 
 if __name__ == "__main__":
     unittest.main()

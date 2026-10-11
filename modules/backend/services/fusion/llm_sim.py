@@ -1038,6 +1038,11 @@ _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _UPN_RE = re.compile(r"\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _DOMUSER_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]+)\\([A-Za-z0-9._$-]+)")
 _UNC_RE = re.compile(r"\\\\([A-Za-z0-9][A-Za-z0-9._-]+)\\")
+# An FQDN under an internal-only suffix names the customer's own network -- it has
+# no public meaning, so it is always an identifier. A lab case's script text carried
+# "ldap://dc.adatum.local:389" in clear (a spelling the known "adatumlab" missed).
+_INTERNAL_FQDN_RE = re.compile(
+    r"\b((?:[A-Za-z0-9-]+\.)+(?:local|lan|corp|internal|intranet|home\.arpa))\b", re.I)
 
 
 # Per-event char cap for the evidence free-text scan. Real cmdlines/paths carrying
@@ -1153,8 +1158,27 @@ def _build_mask_mapping(graph, mask):
         stem_nums.setdefault(stem, set()).add(n)
         mask.mapping[lbl] = f"{_IDENT_PREFIX[form]}{n}"
         mask.reverse_mapping[mask.mapping[lbl]] = lbl
+        bare = user.strip()
+        if form != "sam" and len(bare) >= 3 and not any(k.lower() == stem for k in mask.mapping):
+            # The identities list and evidence lines name a domain account by its
+            # BARE username. With only "adatumlab\noda" in the mapping, "noda" went
+            # to the model in clear text (9-host lab case: noda, sccm_sql). Same number.
+            mask.mapping[bare] = f"SAM{n}"
+            mask.reverse_mapping.setdefault(f"SAM{n}", bare)
         if dom:
             _add_org_domain(dom)
+
+    def _host(nm):
+        """A host name, and for an FQDN also its first label -- the NetBIOS name the
+        same machine goes by elsewhere (ALDC01.AdatumLab.local -> ALDC01)."""
+        if _mask_noise(nm) or _IPV4_RE.fullmatch(nm):
+            return
+        rows.append({"hostname": nm})
+        if "." in nm:
+            short = nm.split(".", 1)[0]
+            if len(short) >= 3 and not _mask_noise(short):
+                rows.append({"hostname": short})
+            _add_org_domain(nm.split(".", 1)[1])
 
     # The case's own RULE names (SIGMA titles, DetectRaptor MFT detections) are
     # vendor-authored machine text, never a person or company -- hand them to the
@@ -1175,11 +1199,15 @@ def _build_mask_mapping(graph, mask):
         if not lbl:
             continue
         if e.type == "asset":
-            host_roots.add(lbl.lower().split(".", 1)[0])
-            if not _mask_noise(lbl):
-                rows.append({"hostname": lbl})
-            if "." in lbl:                        # AD FQDN -> org domain suffix
-                _add_org_domain(lbl.split(".", 1)[1])
+            # A host's FORMER names are the same customer machine: ALClient022 was
+            # DESKTOP-KFB8NEG, then ALClient02.AdatumLab.local, and the payload's
+            # name_history sent those in clear. Each gets its own pseudonym so the
+            # restored report still says which name it was.
+            names = [lbl] + [str(h.get("name") if isinstance(h, dict) else h or "").strip()
+                             for h in (e.attrs or {}).get("name_history") or []]
+            for nm in dict.fromkeys(n for n in names if n):
+                host_roots.add(nm.lower().split(".", 1)[0])
+                _host(nm)                         # FQDN -> also its NetBIOS name + org domain
         elif e.type == "account":
             accounts.append(lbl)
         elif e.type == "netconn":
@@ -1205,7 +1233,9 @@ def _build_mask_mapping(graph, mask):
     # recurs verbatim across thousands of same-type events.
     _ev_seen: set = set()
     for e in graph.entities.values():
-        if e.type != "event":
+        # Processes too: their command lines reach the model, and one carried
+        # "\\aldc01\c$\..." -- a host the case never collected -- in clear.
+        if e.type not in ("event", "process"):
             continue
         a = e.attrs or {}
         if a.get("ev_user"):
@@ -1213,7 +1243,10 @@ def _build_mask_mapping(graph, mask):
         tip = str(a.get("ev_tgtip") or "").strip()
         if tip and _IPV4_RE.fullmatch(tip):
             rows.append({"ipaddress": tip})
-        text = " ".join(str(a.get(k) or "") for k in ("ev_cmdline", "details"))
+        # The LABEL too: it often carries the command line -- "Invoke-Inveigh -IP
+        # 192.168.1.56 ..." went to the model in clear because only ev_cmdline and
+        # details were read.
+        text = " ".join([e.label or ""] + [str(a.get(k) or "") for k in ("ev_cmdline", "details", "cmdline")])
         if not text.strip():
             continue
         text = text[:_EVIDENCE_SCAN_CAP]
@@ -1228,10 +1261,14 @@ def _build_mask_mapping(graph, mask):
         for host in _UNC_RE.findall(text):
             # \\127.0.0.1\ADMIN$ is an address, not a host name: it was masked as
             # "Hostname2". IP literals go through the IP path below (loopback kept).
-            if not _mask_noise(host) and not _IPV4_RE.fullmatch(host):
-                rows.append({"hostname": host})
+            _host(host)
         for ip in _IPV4_RE.findall(text):
             rows.append({"ipaddress": ip})
+        for fq in _INTERNAL_FQDN_RE.findall(text):
+            if fq.count(".") >= 2:                # dc.corp.local: a host in that domain
+                _host(fq)
+            else:                                 # corp.local: the domain itself
+                _add_org_domain(fq)
     if rows:
         try:
             mask.mask_data(rows)
@@ -1274,15 +1311,19 @@ def _build_mask_mapping(graph, mask):
 _MASK_BOUNDARY = r"A-Za-z0-9_@-"
 
 
-def _mask_pattern(token: str, ignorecase: bool):
+def _mask_pattern(token: str, ignorecase: bool, host: bool = False):
     flags = re.IGNORECASE if ignorecase else 0
     # Tolerate JSON-doubled backslashes: a key 'DOMAIN\user' must match the serialized
     # payload form 'DOMAIN\\user' too (json.dumps escapes every backslash).
     esc = re.escape(token).replace("\\\\", r"\\+")
-    return re.compile(rf"(?<![{_MASK_BOUNDARY}]){esc}(?![{_MASK_BOUNDARY}])", flags)
+    # A HOST name may follow a '-': tools embed the source machine in a name --
+    # PAExec's service is "PAExec-<pid>-<HOST>", which sent "PAExec-7032-ALDC01" in
+    # clear. Left side only: the right side still binds, so WS-01 stays out of WS-011.
+    left = _MASK_BOUNDARY.replace("-", "") if host else _MASK_BOUNDARY
+    return re.compile(rf"(?<![{left}]){esc}(?![{_MASK_BOUNDARY}])", flags)
 
 
-def _apply_mask(text, mask):
+def _apply_mask(text, mask, ner=True):
     """Replace originals→pseudonyms (longest-first), CASE-INSENSITIVE and identifier-
     boundary aware (see _MASK_BOUNDARY), so lowercase/uppercase/FQDN/path variants
     are caught without matching inside a larger identifier. LLM INPUT only; no-op off."""
@@ -1291,11 +1332,14 @@ def _apply_mask(text, mask):
     mapping = getattr(mask, "mapping", {}) or {}
     for orig in sorted((k for k in mapping if k), key=len, reverse=True):
         ps = mapping[orig]
-        text = _mask_pattern(orig, True).sub(lambda _m, _p=ps: _p, text)
+        text = _mask_pattern(orig, True, host=str(ps).startswith("Hostname")).sub(
+            lambda _m, _p=ps: _p, text)
     # Optional NER second pass: scrub free-text leftovers the deterministic layer
     # cannot catch (person/company names in notes, docs, scriptblocks). No-op
     # unless the case enabled it (mask._ner) AND Presidio + a spaCy model are
     # installed; its hits register into `mask` so the existing revert restores them.
+    if not ner:
+        return text
     try:
         from services import presidio_masker
         text, _ = presidio_masker.scrub(text, mask, logfn=getattr(mask, "_logfn", None))
@@ -1313,7 +1357,10 @@ def _revert_mask(text, mask):
     rev = getattr(mask, "reverse_mapping", {}) or {}
     for ps in sorted((k for k in rev if k), key=len, reverse=True):
         orig = rev[ps]
-        text = _mask_pattern(ps, False).sub(lambda _m, _o=orig: _o, text)
+        # Same left-side rule as the mask, or "PAExec-7032-Hostname5" would come back
+        # un-restored in the operator's report.
+        text = _mask_pattern(ps, False, host=str(ps).startswith("Hostname")).sub(
+            lambda _m, _o=orig: _o, text)
     return text
 
 
@@ -1355,7 +1402,7 @@ def _log_mask_audit(run_id, mask, text=None):
     mapping = getattr(mask, "mapping", {}) or {}
     if text is not None:                         # report only what really appears in the payload
         mapping = {k: v for k, v in mapping.items()
-                   if k and _mask_pattern(k, True).search(text)}
+                   if k and _mask_pattern(k, True, host=str(v).startswith("Hostname")).search(text)}
     # Log each masked value ONCE per report generation. The report, its checklist
     # and any synthesis are separate model calls sharing one mask, so without this
     # the same identity list was re-logged for every call. Track what's been shown
@@ -2052,7 +2099,18 @@ def generate_report(graph, *, window=None, min_severity="informational",
                            **_analyst}
                 payload_str = json.dumps(payload)
                 if mask:
-                    payload_str = _apply_mask(payload_str, mask)
+                    # The phase write-ups are the MODEL's own words: it saw only
+                    # pseudonyms, and any name found earlier is already in the mapping
+                    # the deterministic pass re-applies. NER there can only misfire --
+                    # "Mark these hosts as known" came back Person1. Skip just those
+                    # values; the evidence and analyst context beside them are read.
+                    mask._ner_skip = {_apply_mask(b, mask, ner=False) for b in
+                                      ((_phase_out.get(z["n"]) or {}).get("body") for z in render.analysable(_zt))
+                                      if b}
+                    try:
+                        payload_str = _apply_mask(payload_str, mask)
+                    finally:
+                        mask._ner_skip = set()
             system = (SYNTHESIS_SYSTEM_PROMPT if altitude == "macro"
                       else REPORT_SYSTEM_PROMPT_FOCUSED) + "\n\n" + WEIGHTING_RULE
             if altitude == "macro" and _zt and any((_phase_out.get(z["n"]) or {}).get("error")
