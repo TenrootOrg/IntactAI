@@ -1114,3 +1114,24 @@ def adopt_velociraptor_collection():
         print(f"[ADOPT] ✗ {e}", flush=True)
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+# --- Settings → Velociraptor: client versions (read-only; step 1 of the client upgrade) ---
+@velociraptor_bp.route('/api/velociraptor/clients/versions', methods=['GET'])
+def velociraptor_client_versions():
+    """Server version and every client's version: current / behind / ahead / unknown."""
+    from services.velociraptor_clients import client_versions
+    try:
+        return jsonify(client_versions())
+    except Exception as e:  # noqa: BLE001 -- the tab shows the reason
+        return jsonify({"error": f"Could not read client versions: {e}"}), 502
+
+
+@velociraptor_bp.route('/api/velociraptor/clients/refresh-info', methods=['POST'])
+def velociraptor_refresh_client_info():
+    """Ask every client to re-report its version (Generic.Client.Info hunt)."""
+    from services.velociraptor_clients import refresh_client_info, REFRESH_HUNT_DAYS
+    hunt_id = refresh_client_info()
+    if not hunt_id:
+        return jsonify({"error": "Velociraptor did not create the hunt (see the backend log)"}), 502
+    return jsonify({"hunt_id": hunt_id, "open_days": REFRESH_HUNT_DAYS})

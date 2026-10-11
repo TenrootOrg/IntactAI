@@ -56,6 +56,10 @@ document.addEventListener('alpine:init', () => {
         offlineModelsError: '',
         llmTesting: false,
         llmTestResult: null,
+        velo: null,
+        veloLoading: false,
+        veloRefreshing: false,
+        veloError: '',
         decisionTesting: false,
         decisionTestResult: null,
         decisionCatalog: { providers: {}, models: [] },
@@ -192,6 +196,36 @@ document.addEventListener('alpine:init', () => {
                 this.llmTestResult = { success: false, error: e.message };
             }
             this.llmTesting = false;
+        },
+
+        // Settings → Velociraptor: client versions against the server.
+        async loadVelociraptor() {
+            this.veloLoading = true;
+            this.veloError = '';
+            try {
+                const r = await fetch('/api/velociraptor/clients/versions');
+                const d = await r.json().catch(() => ({}));
+                if (r.ok) this.velo = d;
+                else this.veloError = d.error || ('HTTP ' + r.status);
+            } catch (e) {
+                this.veloError = e.message;
+            }
+            this.veloLoading = false;
+        },
+
+        async refreshVeloClientInfo() {
+            this.veloRefreshing = true;
+            try {
+                const r = await fetch('/api/velociraptor/clients/refresh-info', { method: 'POST' });
+                const d = await r.json().catch(() => ({}));
+                if (r.ok) this.showMessage('Asked every client to report its version (hunt ' + d.hunt_id
+                                           + '). Online clients answer within minutes; offline ones when they are next seen, for '
+                                           + d.open_days + ' days. Press Reload to see them.', 'success');
+                else this.showMessage('Could not ask the clients: ' + (d.error || 'HTTP ' + r.status), 'error');
+            } catch (e) {
+                this.showMessage('Could not ask the clients: ' + e.message, 'error');
+            }
+            this.veloRefreshing = false;
         },
 
         async loadDecisionCatalog() {

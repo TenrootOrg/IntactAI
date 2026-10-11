@@ -29,6 +29,9 @@
                         <button x-show="$store.services.has('aws_sigma') || $store.services.has('o365rc')" @click="settingsTab = 'cloud'" :class="settingsTab === 'cloud' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
                             Cloud
                         </button>
+                        <button x-show="$store.services.has('velociraptor')" @click="settingsTab = 'velociraptor'; $store.settings.loadVelociraptor()" :class="settingsTab === 'velociraptor' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Velociraptor
+                        </button>
                         <button @click="settingsTab = 'actions'; $store.settings.loadActions()" :class="settingsTab === 'actions' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
                             Actions
                         </button>
@@ -1453,6 +1456,59 @@
                                 <span x-text="$store.settings.saving ? 'Saving...' : 'Save Timesketch Settings'"></span>
                             </button>
                         </div>
+                    </div>
+
+                    <!-- Velociraptor Tab — client versions against the server (client upgrade: see
+                         .claude/notes/velociraptor-client-upgrade-plan.md). Read-only for now. -->
+                    <div x-show="settingsTab === 'velociraptor' && $store.services.has('velociraptor')" x-transition
+                         class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <div class="flex items-center justify-between mb-1">
+                            <h3 class="text-lg font-semibold text-white">Velociraptor clients</h3>
+                            <div class="flex gap-2">
+                                <button @click="$store.settings.loadVelociraptor()" :disabled="$store.settings.veloLoading"
+                                        class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1.5 rounded text-sm">
+                                    <span x-text="$store.settings.veloLoading ? 'Loading…' : 'Reload'"></span>
+                                </button>
+                                <button @click="$store.settings.refreshVeloClientInfo()" :disabled="$store.settings.veloRefreshing"
+                                        title="Runs a Generic.Client.Info hunt: every client reports its version again. Offline clients answer when they are next seen (the hunt stays open 7 days)."
+                                        class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 rounded text-sm font-medium">
+                                    <span x-text="$store.settings.veloRefreshing ? 'Asking…' : 'Refresh client info'"></span>
+                                </button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-gray-500 mb-4">Which agent version each client runs, against the server. The server is upgraded with Intact; clients are upgraded from here (coming next).</p>
+
+                        <p x-show="$store.settings.veloError" class="text-sm text-red-400 mb-3" x-text="$store.settings.veloError"></p>
+                        <template x-if="$store.settings.velo">
+                            <div>
+                                <div class="grid grid-cols-5 gap-3 mb-4 text-center">
+                                    <div class="bg-gray-900 rounded p-3"><div class="text-xs text-gray-500">Server</div><div class="text-lg text-white font-semibold" x-text="$store.settings.velo.server_version || '?'"></div></div>
+                                    <div class="bg-gray-900 rounded p-3"><div class="text-xs text-gray-500">On the server's version</div><div class="text-lg text-green-400 font-semibold" x-text="$store.settings.velo.counts.current"></div></div>
+                                    <div class="bg-gray-900 rounded p-3"><div class="text-xs text-gray-500">Behind</div><div class="text-lg font-semibold" :class="$store.settings.velo.counts.behind ? 'text-yellow-400' : 'text-gray-400'" x-text="$store.settings.velo.counts.behind"></div></div>
+                                    <div class="bg-gray-900 rounded p-3" title="The client never reported its version (never interrogated). Refresh client info asks it."><div class="text-xs text-gray-500">Version unknown</div><div class="text-lg text-gray-300 font-semibold" x-text="$store.settings.velo.counts.unknown"></div></div>
+                                    <div class="bg-gray-900 rounded p-3"><div class="text-xs text-gray-500">Online now</div><div class="text-lg text-white font-semibold" x-text="$store.settings.velo.counts.online + ' / ' + $store.settings.velo.total"></div></div>
+                                </div>
+                                <table class="w-full text-sm">
+                                    <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-700">
+                                        <th class="py-1.5">Host</th><th>OS</th><th>Version</th><th>State</th><th>Last seen</th></tr></thead>
+                                    <tbody>
+                                        <template x-for="c in $store.settings.velo.clients" :key="c.client_id">
+                                            <tr class="border-b border-gray-700/50">
+                                                <td class="py-1.5 text-white" :title="c.client_id" x-text="c.hostname || c.client_id"></td>
+                                                <td class="text-gray-400" x-text="c.os || '—'"></td>
+                                                <td class="text-gray-300" x-text="c.version || '—'"></td>
+                                                <td><span class="text-xs px-2 py-0.5 rounded"
+                                                          :class="{current: 'bg-green-900 text-green-300', behind: 'bg-yellow-900 text-yellow-300', ahead: 'bg-blue-900 text-blue-300', unknown: 'bg-gray-700 text-gray-300'}[c.state]"
+                                                          x-text="{current: 'current', behind: 'behind', ahead: 'newer than server', unknown: 'unknown'}[c.state]"></span></td>
+                                                <td :class="c.online ? 'text-green-400' : 'text-gray-500'"
+                                                    x-text="c.online ? 'online' : (c.last_seen ? new Date(c.last_seen * 1000).toLocaleString() : 'never')"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                                <p x-show="!$store.settings.velo.total" class="text-sm text-gray-500 mt-3">No clients enrolled yet.</p>
+                            </div>
+                        </template>
                     </div>
 
                     <!-- Cloud Tab -->
