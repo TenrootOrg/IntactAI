@@ -85,7 +85,7 @@ class IdentityView(unittest.TestCase):
              mock.patch.object(identities, "resolve_identities", return_value=idents), \
              mock.patch.object(dm, "enabled", return_value=enabled):
             v = store.identity_view("c1")
-        return [s["jev_p"] for it in v["identities"] for s in it["suggestions"]]
+        return [s["decision_p"] for it in v["identities"] for s in it["suggestions"]]
 
     def test_hint_rides_on_the_suggestion_only_while_enabled(self):
         self.assertEqual(self.view(True), [0.87, 0.87])

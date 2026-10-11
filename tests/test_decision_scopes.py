@@ -113,11 +113,11 @@ class Attach(unittest.TestCase):
         d = {"decision_scopes": {dm._scope_sig(cards[0], by_id): 0.82}}
         with mock.patch.object(dm, "enabled", return_value=True):
             dm.attach_scope_estimates(cards, d, g)
-        self.assertEqual([c.get("jev_p") for c in cards], [0.82, None, None])
+        self.assertEqual([c.get("decision_p") for c in cards], [0.82, None, None])
         cards = _cards(["a"], ["b"])
         with mock.patch.object(dm, "enabled", return_value=False):
             dm.attach_scope_estimates(cards, d, g)
-        self.assertEqual([c.get("jev_p") for c in cards], [None, None, None])
+        self.assertEqual([c.get("decision_p") for c in cards], [None, None, None])
 
 
 class Card(unittest.TestCase):
@@ -127,11 +127,11 @@ class Card(unittest.TestCase):
             self.skipTest("no node on this host")
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
-        fn = re.search(r"function _ztJev\(t\)\{.*?\n\}", src, re.S)
-        self.assertTrue(fn, "_ztJev missing from cases.html")
-        helpers = (re.search(r"const _JEV_SEV=.*?;", src).group(0) + "\n"   # the severity bands it now uses
-                   + re.search(r"function _jevSev\(p\)\{.*?\}\n", src).group(0))
-        js = helpers + fn.group(0) + "\nconsole.log(JSON.stringify([_ztJev({jev_p:0.816}),_ztJev({}),_ztJev(null)]));"
+        fn = re.search(r"function _ztDecision\(t\)\{.*?\n\}", src, re.S)
+        self.assertTrue(fn, "_ztDecision missing from cases.html")
+        helpers = (re.search(r"const _DM_SEV=.*?;", src).group(0) + "\n"   # the severity bands it now uses
+                   + re.search(r"function _dmSev\(p\)\{.*?\}\n", src).group(0))
+        js = helpers + fn.group(0) + "\nconsole.log(JSON.stringify([_ztDecision({decision_p:0.816}),_ztDecision({}),_ztDecision(null)]));"
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
@@ -139,7 +139,7 @@ class Card(unittest.TestCase):
         finally:
             os.unlink(t.name)
         line, none1, none2 = json.loads(out)
-        self.assertIn("82%</span> likely attacker activity (Jev)", line)
+        self.assertIn("82%</span> likely attacker activity (decision model)", line)
         self.assertIn('chip c-high', line)                           # 82%: high (critical from 85%)
         self.assertEqual((none1, none2), ("", ""))
 

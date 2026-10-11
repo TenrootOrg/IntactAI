@@ -153,7 +153,8 @@ class ConfirmStaysLiteral(unittest.TestCase):
                                 "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
         start = src.index("def chat_case(")
         pending_block = src[start:src.index("# anything else: the offer simply lapses", start)]
-        self.assertNotIn("jev", pending_block)
+        self.assertNotIn("dm.", pending_block)
+        self.assertNotIn("decision_model", pending_block)
 
 
 if __name__ == "__main__":

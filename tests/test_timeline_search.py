@@ -20,7 +20,7 @@ class TimelineSearch(unittest.TestCase):
         js = """const window={}; const TL_SEV_RANK={informational:0,low:1,medium:2,high:3,critical:4};
 %s
 window._tlData=[
-  {host:'VIRUS-PC', title:'Code injection — explorer.exe (1944)', artifacts:['pslist'], severity:'high', jev:{label:'true_positive'}},
+  {host:'VIRUS-PC', title:'Code injection — explorer.exe (1944)', artifacts:['pslist'], severity:'high', decision:{label:'true_positive'}},
   {host:'ALClient022', title:'SIGMA: Suspicious Service Path (logged as ALClient02.AdatumLab.local)', artifacts:['Windows.Hayabusa.Rules'], severity:'high'},
   {host:'ALClient04, ALClient06', title:'Shared binary', severity:'medium',
    parts:[{title:'peview.exe on ALClient04', finding_id:'f9'}]}];
@@ -36,7 +36,7 @@ console.log(JSON.stringify(out));""" % fns
         self.assertEqual(out["adatumlab"], ["ALClient022"])               # the user inside a title
         self.assertEqual(out["peview"], ["ALClient04, ALClient06"])       # a grouped row's part
         self.assertEqual(out["host"], [])                                 # a key, not a value
-        self.assertEqual(out["true_positive"], [])                        # Jev's hint is not searched
+        self.assertEqual(out["true_positive"], [])                        # the decision model's hint is not searched
         self.assertEqual(out["pslist hayabusa"], [])                      # every word, same row
         self.assertEqual(len(out[""]), 3)
         self.assertEqual(len(out[" "]), 3)

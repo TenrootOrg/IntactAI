@@ -142,15 +142,15 @@ console.log(JSON.stringify([idVerdictSel("c1",{key:"k",verdict:"compromised"}), 
             self.skipTest("no node on this host")
         js = r"""
 const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
-for (const n of ["_entHosts","_hostPeople","_idJev","_riskWhy","_vchip","_hostStatusSelect","_hostStatusTags"]) eval(src.match(new RegExp("function "+n+"\\([^)]*\\)\\{[\\s\\S]*?\\n\\}"))[0]);
+for (const n of ["_entHosts","_hostPeople","_idDecision","_riskWhy","_vchip","_hostStatusSelect","_hostStatusTags"]) eval(src.match(new RegExp("function "+n+"\\([^)]*\\)\\{[\\s\\S]*?\\n\\}"))[0]);
 const esc=s=>String(s), jsa=s=>String(s);
 eval(src.match(/const HOST_STATUS_LABEL=\{.*?\};/)[0].replace("const ", "var "));   // the host-status helpers read it
-const people=[{key:"k1",name:"kobia",verdict:"compromised",seen_on:["WS1"],jev_compromise:0.9,worst:"high"},
+const people=[{key:"k1",name:"kobia",verdict:"compromised",seen_on:["WS1"],decision_compromise:0.9,worst:"high"},
               {key:"k2",name:"amy",seen_on:["WS1","WS2"]}];
 const rows=[{host:"WS1",severity:"critical",risk_score:100,by_severity:{critical:1,high:2},finding_count:3,row_count:9,
              why:"Mimikatz on WS1; Odd service on WS1",escalate:true,next_action:"Deep-dive now",modules:["velociraptor"]},
             {host:"WS2",severity:"high",risk_score:60,by_severity:{high:1},finding_count:1,row_count:1,why:"x",modules:[]}];
-var window={_idData:{sort:"jev"},_hostExpand:{WS1:true}};
+var window={_idData:{sort:"decision"},_hostExpand:{WS1:true}};
 console.log(_entHosts(rows,_hostPeople(people),{rows}));"""
         out = subprocess.run([node, "-e", js, os.path.join(_ROOT, "modules/nginx/html/cases.html")],
                              capture_output=True, text=True, check=True).stdout

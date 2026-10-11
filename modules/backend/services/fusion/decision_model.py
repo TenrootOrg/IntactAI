@@ -719,7 +719,7 @@ def suggest_scopes(case_id, d) -> int:
 
 
 def attach_scope_estimates(cards, d, g):
-    """Set card["jev_p"] where a current estimate exists. Nothing when off."""
+    """Set card["decision_p"] where a current estimate exists. Nothing when off."""
     if not enabled("scopes"):
         return
     by_id = {f.id: f for f in g.findings}
@@ -728,7 +728,7 @@ def attach_scope_estimates(cards, d, g):
     for z in cards:
         p = est.get(_scope_sig(z, by_id, verdicts)) if not z.get("rollup") else None
         if p is not None:
-            z["jev_p"] = p
+            z["decision_p"] = p
 
 
 # ---------------------------------------------------------------------------
@@ -939,9 +939,9 @@ def report_estimates(case_id, d, g) -> dict:
                 out["findings"] = sorted(rows, key=lambda r: -r["confidence"])[:60]
         if enabled("compromise"):
             from .store import identity_view
-            people = [{"identity": c.get("name"), "compromise_probability": round(float(c["jev_compromise"]), 2)}
+            people = [{"identity": c.get("name"), "compromise_probability": round(float(c["decision_compromise"]), 2)}
                       for c in ((identity_view(case_id) or {}).get("identities") or [])
-                      if isinstance(c.get("jev_compromise"), (int, float)) and not c.get("verdict")]
+                      if isinstance(c.get("decision_compromise"), (int, float)) and not c.get("verdict")]
             if people:
                 out["identities"] = sorted(people, key=lambda r: -r["compromise_probability"])[:30]
     except Exception as e:  # noqa: BLE001 — an estimate is never worth a failed report

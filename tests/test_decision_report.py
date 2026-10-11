@@ -45,9 +45,9 @@ class Estimates(unittest.TestCase):
                       "f3": {"wm": wm["f3"], "label": "true_positive", "p": 0.9, "confidence": 0.99},
                       "f4": {"wm": "an older watermark", "label": "true_positive", "p": 0.9, "confidence": 0.99},
                       "f5": {"wm": wm["f5"], "label": "true_positive", "p": 0.6, "confidence": 0.55}}}
-        self.people = [{"name": "adatum\\srv", "jev_compromise": 0.91, "verdict": None},
-                       {"name": "adatum\\dan", "jev_compromise": 0.97, "verdict": "compromised"},   # analyst decided
-                       {"name": "adatum\\nobody", "jev_compromise": None, "verdict": None}]
+        self.people = [{"name": "adatum\\srv", "decision_compromise": 0.91, "verdict": None},
+                       {"name": "adatum\\dan", "decision_compromise": 0.97, "verdict": "compromised"},   # analyst decided
+                       {"name": "adatum\\nobody", "decision_compromise": None, "verdict": None}]
 
     def run_it(self, uses=("report", "disposition", "compromise")):
         with mock.patch.object(dm, "enabled", lambda u, cfg=None: u in uses), \

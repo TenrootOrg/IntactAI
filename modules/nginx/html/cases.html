@@ -237,7 +237,7 @@
   .ent-cap{color:var(--muted);font-size:12px;margin:0 0 8px}
   /* the likelihood column fits its bar + "88% · Likely" (it was cut at 140px) */
   .pgrid{display:grid;grid-template-columns:minmax(190px,1.6fr) 84px 84px minmax(140px,1.5fr) 170px 158px;align-items:center;gap:0 14px}
-  .pgrid.nojev{grid-template-columns:minmax(190px,1.6fr) 84px 84px minmax(140px,1.5fr) 158px}
+  .pgrid.nodm{grid-template-columns:minmax(190px,1.6fr) 84px 84px minmax(140px,1.5fr) 158px}
   .phead{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:4px 13px 6px}
   .prow{border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:8px;margin:0 0 6px;background:var(--bg)}
   .prow.v-compromised{border-left-color:var(--crit)} .prow.v-not_compromised{border-left-color:var(--ok)}
@@ -265,7 +265,7 @@
   .erow{display:flex;align-items:center;gap:10px;padding:3px 0;font-size:12px}
   .hppl{display:inline-block;margin:0 6px 2px 0;cursor:pointer;color:var(--tx)} .hppl:hover{text-decoration:underline}
   .hppl.c{color:var(--crit);font-weight:600}
-  @media (max-width:760px){.pgrid,.pgrid.nojev,.hgrid{grid-template-columns:1fr 1fr}.phead{display:none}}
+  @media (max-width:760px){.pgrid,.pgrid.nodm,.hgrid{grid-template-columns:1fr 1fr}.phead{display:none}}
   .arti{font-size:10px;color:var(--info);background:rgba(88,166,255,.08);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-family:var(--mono,monospace)}
   .zoomwrap{margin:0 0 16px;padding:12px 14px;border:1px solid var(--bd);border-radius:8px;background:rgba(88,166,255,.05)}
   .zoomhdr{font-size:12px;color:var(--muted);margin-bottom:9px}
@@ -1389,19 +1389,19 @@ let _zoomTargets=[];
 // answered, so they blinked whenever the tab redrew. The last cards stay on screen
 // until a different answer arrives.
 let _zoomHtml={id:null, html:''};
-// Jev's estimate for a scope card (Settings → Agentic → Fast decisions). Present
-// only when Jev is on and answered for exactly this window's findings.
-// Jev's estimate on a phase card, on the app's own severity scale and colours, so
+// The decision model's estimate for a scope card (Settings → Agentic → Decision model). Present
+// only when it is on and answered for exactly this window's findings.
+// The decision model's estimate on a phase card, on the app's own severity scale and colours, so
 // the phases read apart at a glance (they were all one blue line: 66% looked like 86%).
-const _JEV_SEV=[[0.85,'critical'],[0.75,'high'],[0.55,'medium'],[0.35,'low']];   // stricter: Jev runs high (every window it scores has detections); 60% is medium, not high
-function _jevSev(p){ for(const [t,s] of _JEV_SEV) if(p>=t) return s; return 'informational'; }
-function _ztJev(t){
-  if(!t || typeof t.jev_p!=='number') return '';
-  const p=Math.round(t.jev_p*100), sev=_jevSev(t.jev_p);
+const _DM_SEV=[[0.85,'critical'],[0.75,'high'],[0.55,'medium'],[0.35,'low']];   // stricter: the model runs high (every window it scores has detections); 60% is medium, not high
+function _dmSev(p){ for(const [t,s] of _DM_SEV) if(p>=t) return s; return 'informational'; }
+function _ztDecision(t){
+  if(!t || typeof t.decision_p!=='number') return '';
+  const p=Math.round(t.decision_p*100), sev=_dmSev(t.decision_p);
   const col={critical:'var(--crit)',high:'var(--high)',medium:'var(--med)',low:'var(--low)'}[sev]||'var(--info)';
-  return `<div class="zt-meta" style="display:flex;gap:6px;align-items:center" title="Jev's estimate from this window's findings — a second opinion to help pick where to zoom, not a verdict. Critical ≥ 85%, high ≥ 75%, medium ≥ 55%, low ≥ 35%.">`
+  return `<div class="zt-meta" style="display:flex;gap:6px;align-items:center" title="The decision model's estimate from this window's findings — a second opinion to help pick where to zoom, not a verdict. Critical ≥ 85%, high ≥ 75%, medium ≥ 55%, low ≥ 35%.">`
     +`<span class="chip c-${sev}" style="margin:0;font-size:10px">${sev}</span>`
-    +`<span style="color:${col};font-weight:600">${p}%</span> likely attacker activity (Jev)</div>`;
+    +`<span style="color:${col};font-weight:600">${p}%</span> likely attacker activity (decision model)</div>`;
 }
 function loadZoomTargets(id){
   api('/api/cases/'+id+'/zoom_targets').then(d=>{
@@ -1414,7 +1414,7 @@ function loadZoomTargets(id){
           <div class="zt-title">${t.name ? esc('Phase '+t.n+' — '+t.name) : esc(t.title)}</div>
           <div class="zt-meta">${(t.host_labels||[]).length} host(s) · ${t.finding_count} detection(s)${t.row_count&&t.row_count!==t.finding_count?` (${t.row_count} rows)`:''}${t.cross_host?` · ${t.cross_host} cross-host`:''}${(t.mitre&&t.mitre.length)?` · ${esc(t.mitre.slice(0,3).join(', '))}`:''}</div>
           <div class="zt-win">${esc((t.window||{}).start||'')} → ${esc((t.window||{}).end||'')}</div>
-          ${_ztJev(t)}
+          ${_ztDecision(t)}
           ${t.rollup ? '<div class="zt-meta" style="margin-top:6px">Accounting row — the windows not analysed individually. Not a scope.</div>' : `<button class="dlbtn zt-go" onclick="applyZoom('${esc(id)}',${i})">Analyze this scope →</button>`}
         </div>`).join('')+`</div></div>`;
     _zoomHtml={id, html};
@@ -1946,7 +1946,7 @@ function tlBuild(){
 // its parts...), never the field names -- "host" must not match every row.
 // Kept on the row: the timeline data is replaced, not edited, on a reload.
 function _tlText(r){
-  if(r._q===undefined) r._q=JSON.stringify(r,(k,v)=>k==='jev'||k==='_q'?undefined:v).replace(/"[A-Za-z_]+":/g,' ').toLowerCase();
+  if(r._q===undefined) r._q=JSON.stringify(r,(k,v)=>k==='decision'||k==='_q'?undefined:v).replace(/"[A-Za-z_]+":/g,' ').toLowerCase();
   return r._q;
 }
 function tlVisible(){
@@ -1965,7 +1965,7 @@ function tlVisible(){
   if(f.order==='severity') rows.sort((a,b)=>(TL_SEV_RANK[b.severity]||0)-(TL_SEV_RANK[a.severity]||0));
   return rows;
 }
-// Jev's suggested verdict (Settings → Agentic → Fast decisions). A suggestion
+// The decision model's suggested verdict (Settings → Agentic → Decision model). A suggestion
 // only: the click is the same tlValidate() the verdict buttons use, so the
 // analyst still makes — and owns — the call. stopPropagation: the chip sits
 // inside the row's "open detail" click target.
@@ -1979,11 +1979,11 @@ function _tlUntil(r){
   const same=String(r.ts||'').slice(0,10)===String(r.last).slice(0,10);
   return `<br><span style="color:var(--muted)">→ ${esc(same?String(r.last).slice(11):r.last)}</span>`;
 }
-function _tlJev(r){
-  const j=r&&r.jev; if(!j) return '';
+function _tlDecision(r){
+  const j=r&&r.decision; if(!j) return '';
   const lbl=(TL_STATES.find(([k])=>k===j.label)||[])[1]; if(!lbl) return '';
   const pct=Math.round((+j.p||0)*100);
-  return `<span class="sg-hint" style="border-color:#58a6ff;color:#79c0ff;cursor:pointer" title="Jev's suggestion (${pct}% likely). Click to mark it ${esc(lbl)} — or pick any verdict yourself." onclick="event.stopPropagation();${_tlParts(r)?`tlValidateMany(${JSON.stringify(_tlParts(r).map(p=>p.finding_id)).replace(/"/g,"&quot;")},'${esc(j.label)}')`:`tlValidate('${esc(r.finding_id)}','${esc(j.label)}')`}">likely ${esc(lbl)} · ${pct}% (Jev)</span>`;
+  return `<span class="sg-hint" style="border-color:#58a6ff;color:#79c0ff;cursor:pointer" title="The decision model's suggestion (${pct}% likely). Click to mark it ${esc(lbl)} — or pick any verdict yourself." onclick="event.stopPropagation();${_tlParts(r)?`tlValidateMany(${JSON.stringify(_tlParts(r).map(p=>p.finding_id)).replace(/"/g,"&quot;")},'${esc(j.label)}')`:`tlValidate('${esc(r.finding_id)}','${esc(j.label)}')`}">likely ${esc(lbl)} · ${pct}% (decision model)</span>`;
 }
 // A row that bundles several detections (rules on one event, or a burst) opens
 // into its PARTS, each judged on its own; the row's buttons set every part. The
@@ -2037,7 +2037,7 @@ function _tlRowHtml(r, supp, seg){
       <code style="white-space:nowrap">${esc(r.ts||'—')}${_tlUntil(r)}</code>
       <div class="tlmeta" style="cursor:pointer" title="${esc(tip)}" onclick="${act}">
         <span>${r.is_new?'<span class="tlnew" title="Joined or grew since this group was last reviewed">NEW</span> ':''}<strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} ${det}</span>
-        <span class="l2">${arts}${_tlLoggedAs(r)}${_tlPartsToggle(r)}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlJev(r)}${r.evidence?`<span class="sg-hint" style="border-style:solid;cursor:pointer" title="Evidence attached to this event — click to see it" onclick="event.stopPropagation();evShowFor('${esc(r.finding_id)}')">📎 ${r.evidence}</span>`:''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
+        <span class="l2">${arts}${_tlLoggedAs(r)}${_tlPartsToggle(r)}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlDecision(r)}${r.evidence?`<span class="sg-hint" style="border-style:solid;cursor:pointer" title="Evidence attached to this event — click to see it" onclick="event.stopPropagation();evShowFor('${esc(r.finding_id)}')">📎 ${r.evidence}</span>`:''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
       ${_tlSevChip(r.severity, _tlParts(r))}
       <span class="seg">${seg}</span>
@@ -2065,17 +2065,17 @@ function _tlGroupHead(grp, members, open){
   return `<div class="tlrow tlgroup" title="${open?'Hide':'Show'} the ${ids.length} host rows" onclick="tlToggleGroup('${esc(grp.id)}')">
       <code style="white-space:nowrap">${esc(members[0].ts||'—')}${_tlUntil({ts:members[0].ts,last,hits})}</code>
       <div class="tlmeta"><span><span class="tlgtag">GROUP</span><strong>${open?'▾':'▸'} ${esc(grp.name)}</strong> — ${esc(hosts.join(', '))}</span>
-        <span class="l2"><span class="sg-hint" style="border-style:solid;color:var(--muted)">${hosts.length} hosts · ${ids.length} rows · ${hits.toLocaleString()} hits</span><span class="sg-hint" style="border-style:solid;${weak?'':'border-color:#3fb950;color:#56d364'}" title="${weak?'Same detection close together on several hosts — a correlation, not proof they are related.':'The hosts share this identifier in their evidence.'}">${weak?'linked by time only':esc(grp.link)}</span><span style="color:var(--muted);font-size:11px">${done} of ${ids.length} reviewed</span>${_tlGroupJev(members)}${_tlGroupNews(grp, members)}</span>
+        <span class="l2"><span class="sg-hint" style="border-style:solid;color:var(--muted)">${hosts.length} hosts · ${ids.length} rows · ${hits.toLocaleString()} hits</span><span class="sg-hint" style="border-style:solid;${weak?'':'border-color:#3fb950;color:#56d364'}" title="${weak?'Same detection close together on several hosts — a correlation, not proof they are related.':'The hosts share this identifier in their evidence.'}">${weak?'linked by time only':esc(grp.link)}</span><span style="color:var(--muted);font-size:11px">${done} of ${ids.length} reviewed</span>${_tlGroupDecision(members)}${_tlGroupNews(grp, members)}</span>
       </div>
       ${_tlSevChip(sev, members)}
       <span class="seg">${btn('pending','Pending')}${btn('true_positive','True Positive')}${btn('false_positive','False Positive')}${btn('known','Known')}</span>
     </div>`;
 }
-// A closed group hid its rows' Jev chips; say how many rows carry one, by verdict.
-function _tlGroupJev(members){
-  const by={}; for(const m of members){ const l=m.jev&&(TL_STATES.find(([k])=>k===m.jev.label)||[])[1]; if(l) by[l]=(by[l]||0)+1; }
+// A closed group hid its rows' decision-model chips; say how many rows carry one, by verdict.
+function _tlGroupDecision(members){
+  const by={}; for(const m of members){ const l=m.decision&&(TL_STATES.find(([k])=>k===m.decision.label)||[])[1]; if(l) by[l]=(by[l]||0)+1; }
   const t=Object.entries(by).map(([l,c])=>`${c} likely ${esc(l)}`).join(' · ');
-  return t?`<span class="sg-hint" style="border-color:#58a6ff;color:#79c0ff" title="Jev's suggestions on the rows in this group — open it to act on each">Jev: ${t}</span>`:'';
+  return t?`<span class="sg-hint" style="border-color:#58a6ff;color:#79c0ff" title="The decision model's suggestions on the rows in this group — open it to act on each">Decision model: ${t}</span>`:'';
 }
 // What joined or grew in this group since it was last reviewed (a verdict, or
 // Mark seen) — new host collected, severity lowered, more artifacts, more hits.
@@ -2288,10 +2288,10 @@ function _idRender(id){
     </div>`;
   if(d.stale && view==='people') h+=`<div class="agnote">${d.stale} run(s) not yet fused — new uploads appear after a <b>Refusion</b>.</div>`;
   if(view==='people'){
-    const jev=d.sort==='jev';
-    h+=`<p class="ent-cap">${jev?'<b>Compromise likelihood</b> is Jev’s estimate, from each person’s findings, of how likely the account is in an attacker’s hands (Likely ≥ 70%, Unlikely ≤ 30%) — a second opinion; your verdict decides. Sorted by your verdict, then likelihood, then A–Z.':'Sorted A–Z.'} Click a person for accounts, hosts, findings and link suggestions.</p>`;
-    h+=`<div class="pgrid phead${jev?'':' nojev'}"><span>Person</span><span>Severity</span><span>Detections</span><span>Seen on</span>${jev?'<span title="Jev’s estimate, from this person’s findings, that the account is in an attacker’s hands">Compromise likelihood (Jev)</span>':''}<span>Your verdict</span></div>`;
-    h+=shown.map(it=>idCard(id,it,jev)).join('') || '<p style="color:var(--muted)">no match.</p>';
+    const dm=d.sort==='decision';
+    h+=`<p class="ent-cap">${dm?'<b>Compromise likelihood</b> is the decision model’s estimate, from each person’s findings, of how likely the account is in an attacker’s hands (Likely ≥ 70%, Unlikely ≤ 30%) — a second opinion; your verdict decides. Sorted by your verdict, then likelihood, then A–Z.':'Sorted A–Z.'} Click a person for accounts, hosts, findings and link suggestions.</p>`;
+    h+=`<div class="pgrid phead${dm?'':' nodm'}"><span>Person</span><span>Severity</span><span>Detections</span><span>Seen on</span>${dm?'<span title="The decision model’s estimate, from this person’s findings, that the account is in an attacker’s hands">Compromise likelihood (decision model)</span>':''}<span>Your verdict</span></div>`;
+    h+=shown.map(it=>idCard(id,it,dm)).join('') || '<p style="color:var(--muted)">no match.</p>';
   } else {
     h+=_entHosts(shown, ppl, window._riskData||{});
   }
@@ -2349,7 +2349,7 @@ function hostSetStatus(assetId, status){
 }
 function _entHosts(rows, ppl, d){
   if(!((d.rows||[]).length)) return '<div class="empty">No fused data yet — fuse the case first.</div>';
-  const jev=(window._idData||{}).sort==='jev', open=window._hostExpand||{}, all=d.rows||[];
+  const dm=(window._idData||{}).sort==='decision', open=window._hostExpand||{}, all=d.rows||[];
   const sevc={critical:'var(--crit)',high:'var(--high)',medium:'var(--med)',low:'var(--low)'};
   const head=`<div class="hgrid phead"><span>#</span><span>Host</span><span>Severity</span><span title="0–100, relative to the other hosts in this case">Risk</span><span title="Distinct detections by severity">Detections</span><span>Lead finding</span><span>Identities</span></div>`;
   const body=rows.map(r=>{
@@ -2370,7 +2370,7 @@ function _entHosts(rows, ppl, d){
      </div>`;
     if(!open[r.host]) return `<div class="prow${comp.length?' v-compromised':''}">${row}</div>`;
     const withF=pp.filter(it=>it.worst||it.verdict), rest=pp.filter(it=>!(it.worst||it.verdict));
-    const people=withF.map(it=>`<div class="erow"><span class="elink${it.verdict==='compromised'?' hppl c':''}" style="min-width:90px" onclick="event.stopPropagation();entOpenPerson('${jsa(it.key)}')">${esc(it.name||it.key)}</span>${it.worst?`<span class="chip c-${esc(it.worst)}" style="font-size:10px">${esc(it.worst)}</span>`:''}${jev&&typeof it.jev_compromise==='number'?_idJev(it):''}${_vchip(it.verdict)}</div>`).join('');
+    const people=withF.map(it=>`<div class="erow"><span class="elink${it.verdict==='compromised'?' hppl c':''}" style="min-width:90px" onclick="event.stopPropagation();entOpenPerson('${jsa(it.key)}')">${esc(it.name||it.key)}</span>${it.worst?`<span class="chip c-${esc(it.worst)}" style="font-size:10px">${esc(it.worst)}</span>`:''}${dm&&typeof it.decision_compromise==='number'?_idDecision(it):''}${_vchip(it.verdict)}</div>`).join('');
     const also=rest.length?`<div style="font-size:12px;color:var(--muted);margin-top:4px">Also seen: ${rest.map(it=>`<span class="elink" style="color:var(--muted)" onclick="event.stopPropagation();entOpenPerson('${jsa(it.key)}')">${esc(it.name||it.key)}</span>`).join(', ')}</div>`:'';
     const bodyH=`<div class="pbody"><div class="hpanel">
         <div><div class="hsec">Why it ranks #${i+1}</div>${why.map(w=>`<div class="hwhy">${esc(w)}</div>`).join('')||'—'}</div>
@@ -2387,7 +2387,7 @@ function _entHosts(rows, ppl, d){
 function idSearch(v){ if(tab==='risk') window._hostQuery=v; else window._idQuery=v; window._idFocus=true; _idRender(window._idCase); }
 function idToggle(k){ window._idExpand[k]=!window._idExpand[k]; window._idFocus=false; _idRender(window._idCase); }
 function idExpandAll(on){ (((window._idData||{}).identities)||[]).forEach(it=>window._idExpand[it.key]=on); window._idFocus=false; _idRender(window._idCase); }
-function idCard(cid,it,jev){
+function idCard(cid,it,dm){
   const open=!!window._idExpand[it.key];
   const bdg=(t,col)=>`<span style="font-size:10px;border:1px solid ${col||'var(--bd)'};color:${col||'var(--muted)'};border-radius:8px;padding:0 6px;margin-left:6px;font-weight:400">${esc(t)}</span>`;
   // Infrastructure badges only when a person reaches beyond endpoints: "endpoint"
@@ -2398,13 +2398,13 @@ function idCard(cid,it,jev){
   const sugN=(it.suggestions||[]).length;
   const nAcc=(it.accounts||[]).filter(a=>!a.disabled).length;
   const so=it.seen_on||[];
-  const row=`<div class="pgrid${jev?'':' nojev'}" onclick="idToggle('${jsa(it.key)}')">
+  const row=`<div class="pgrid${dm?'':' nodm'}" onclick="idToggle('${jsa(it.key)}')">
      <div class="pname" style="min-width:0"><span style="color:var(--muted);display:inline-block;width:14px">${open?'▾':'▸'}</span><b>${esc(it.name||it.key)}</b>${it.local?`<span title="A local account, read from this host’s own account database (SAM) — it exists on this machine only" style="font-size:10px;border:1px solid var(--bd);color:var(--muted);border-radius:8px;padding:0 6px;margin-left:6px">local</span>`:''}${it.account_kind?bdg(it.account_kind):''}${buckets}${confb}
        <div class="psub" style="padding-left:14px">${nAcc} account${nAcc===1?'':'s'}${sugN?` · <span style="color:var(--acc)">${sugN} link suggestion${sugN===1?'':'s'}</span>`:''}${it.detections?'':it.other_detection_count?` · <span style="color:var(--med)" title="Detection rules fired on these accounts' activity, but none of them is part of a finding — open the card to see them">${it.other_detection_count} detection${it.other_detection_count===1?'':'s'}, none part of a finding</span>`:it.activity!==false?' · <span title="Active (processes, logons, commands) but no detection involves these accounts">no findings</span>':' · <span title="Seen only in account lists (e.g. the host’s SAM): the account exists, nothing collected shows it doing anything">no activity — only listed in account data</span>'}</div></div>
      <div>${it.worst?`<span class="chip c-${esc(it.worst)}">${esc(it.worst)}</span>`:'<span class="pcell">—</span>'}</div>
      <div class="pcell">${it.detections?`<b style="color:var(--tx)">${it.detections}</b>`:'—'}</div>
      <div class="pcell" title="${esc(so.join(', '))}">${so.length?esc(so.slice(0,3).join(', '))+(so.length>3?` +${so.length-3}`:''):'—'}</div>
-     ${jev?`<div>${_idJev(it)}</div>`:''}
+     ${dm?`<div>${_idDecision(it)}</div>`:''}
      <div onclick="event.stopPropagation()">${idVerdictSel(cid,it)}</div>
    </div>`;
   if(!open) return `<div class="prow v-${esc(it.verdict||'none')}">${row}</div>`;
@@ -2415,7 +2415,7 @@ function idCard(cid,it,jev){
         ? `<button class="ghost" title="Include in this person again" style="border:none;color:var(--ok);padding:0 4px;font-size:12px" onclick="event.stopPropagation();idInclude('${jsa(cid)}','${jsa(a.id)}')">↺</button>`
         : xbtn(`idSplit('${jsa(cid)}','${jsa(a.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
   const sugg=(it.suggestions||[]).map(s=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:4px 0">
-      <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · ${(typeof s.score==='number'?Math.round(s.score*100)+'% name match':s.score)}${s.ambiguous?' · <span style="color:var(--med)">ambiguous</span>':''}${typeof s.jev_p==='number'?` · <span style="color:#79c0ff" title="Jev's estimate that both accounts are the same person — a hint; Merge and Dismiss are still yours.">${Math.round(s.jev_p*100)}% same (Jev)</span>`:''}</span></span>
+      <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · ${(typeof s.score==='number'?Math.round(s.score*100)+'% name match':s.score)}${s.ambiguous?' · <span style="color:var(--med)">ambiguous</span>':''}${typeof s.decision_p==='number'?` · <span style="color:#79c0ff" title="The decision model's estimate that both accounts are the same person — a hint; Merge and Dismiss are still yours.">${Math.round(s.decision_p*100)}% same (decision model)</span>`:''}</span></span>
       <span style="white-space:nowrap"><button class="ghost" style="border-color:var(--ok)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','confirmed')">Merge</button> <button class="ghost" style="border-color:var(--med)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','declined')">Dismiss</button></span></div>`).join('');
   const mfrom=(it.merged_from||[]).map(m=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:3px 0">
       <span style="font-size:11px;color:var(--muted)">${m.auto?'⚙ auto-merged':'✓ merged'}: <b style="color:var(--tx)">${esc((m.names||[]).join(' + '))}</b> · ${esc(m.reason||'')}</span>
@@ -2440,13 +2440,13 @@ function idVerdictSel(cid,it){
   const v=it.verdict||'';
   return `<select class="vsel v-${v||'none'}" title="Your verdict on this person — kept across re-fusion, and given to the report and chat" onchange="idVerdict('${jsa(cid)}','${jsa(it.key)}',this.value)">${ID_VERDICTS.map(([k,l])=>`<option value="${k}"${v===k?' selected':''}>${l}</option>`).join('')}</select>`;
 }
-// Jev's estimate that this person is compromised — a meter beside the analyst's
+// The decision model's estimate that this person is compromised — a meter beside the analyst's
 // verdict, never a verdict. "—" when this person has no findings (not asked).
-function _idJev(it){
-  const p=it&&it.jev_compromise; if(typeof p!=='number') return '<span class="pcell" title="No findings on this person, so Jev was not asked">—</span>';
+function _idDecision(it){
+  const p=it&&it.decision_compromise; if(typeof p!=='number') return '<span class="pcell" title="No findings on this person, so the decision model was not asked">—</span>';
   const pct=Math.round(p*100), col=p>=0.7?'var(--crit)':p<=0.3?'var(--ok)':'var(--med)';
   const word=p>=0.7?'Likely':p<=0.3?'Unlikely':'Possible';
-  return `<span title="Jev's estimate, from this person's findings, that the account is in an attacker's hands: ${pct}%. A second opinion — your verdict decides." style="white-space:nowrap"><span class="meter" style="width:48px"><i style="width:${pct}%;background:${col}"></i></span><b style="color:${col};font-size:12px">${pct}%</b> <span style="color:${col};font-size:11px">· ${word}</span></span>`;
+  return `<span title="The decision model's estimate, from this person's findings, that the account is in an attacker's hands: ${pct}%. A second opinion — your verdict decides." style="white-space:nowrap"><span class="meter" style="width:48px"><i style="width:${pct}%;background:${col}"></i></span><b style="color:${col};font-size:12px">${pct}%</b> <span style="color:${col};font-size:11px">· ${word}</span></span>`;
 }
 function idVerdict(cid,key,verdict){
   const it=(((window._idData||{}).identities)||[]).find(x=>x.key===key); if(!it) return;

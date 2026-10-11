@@ -168,7 +168,7 @@ class Timeline(unittest.TestCase):
                                return_value=[{"finding_id": "f1"}, {"finding_id": "f2"}]), \
              mock.patch.object(dm, "enabled", return_value=enabled), \
              mock.patch.object(dm, "min_confidence", return_value=0.8):
-            return {r["finding_id"]: r["jev"] for r in store.get_timeline("c1")}
+            return {r["finding_id"]: r["decision"] for r in store.get_timeline("c1")}
 
     def test_chip_only_on_unjudged_findings_while_enabled(self):
         self.assertEqual(self.rows(True), {"f1": {"label": "known", "p": 0.9}, "f2": None})
@@ -215,7 +215,7 @@ class FuseHook(unittest.TestCase):
 
 
 class Chip(unittest.TestCase):
-    """The real _tlJev from cases.html, run in node (skips where node is absent)."""
+    """The real _tlDecision from cases.html, run in node (skips where node is absent)."""
 
     def test_chip_markup(self):
         node = shutil.which("node")
@@ -223,24 +223,24 @@ class Chip(unittest.TestCase):
             self.skipTest("no node on this host")
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
-        fn = re.search(r"function _tlJev\(r\)\{.*?\n\}", src, re.S)
+        fn = re.search(r"function _tlDecision\(r\)\{.*?\n\}", src, re.S)
         # The Analysis-tab banner ("Jev: N detections look malicious...") was removed
         # at the user's request; the suggestions stay on the Timeline rows.
         self.assertNotIn("_jevNote", src)
         self.assertNotIn("look malicious and", src)
-        gj = re.search(r"function _tlGroupJev\(members\)\{.*?\n\}", src, re.S)
-        self.assertTrue(gj, "_tlGroupJev missing from cases.html")
+        gj = re.search(r"function _tlGroupDecision\(members\)\{.*?\n\}", src, re.S)
+        self.assertTrue(gj, "_tlGroupDecision missing from cases.html")
         states = re.search(r"const TL_STATES=\[.*?\];", src)
-        self.assertTrue(fn and states, "_tlJev / TL_STATES missing from cases.html")
+        self.assertTrue(fn and states, "_tlDecision / TL_STATES missing from cases.html")
         parts = re.search(r"function _tlParts\(r\)\{.*?\}", src)
         js = (states.group(0) + "\nconst esc=s=>String(s).replace(/[<>&'\"]/g,'');\n"
               + parts.group(0) + "\n" + fn.group(0) + "\n" + gj.group(0) + """
 const out=[
-  _tlJev({finding_id:'f1', jev:{label:'known', p:0.914}}),
-  _tlJev({finding_id:'f1'}),
-  _tlJev({finding_id:'f1', jev:{label:'nonsense', p:0.9}}),
-  _tlGroupJev([{jev:{label:'known',p:0.9}},{jev:{label:'known',p:0.9}},{jev:{label:'true_positive',p:0.9}},{}]),
-  _tlGroupJev([{},{}]),
+  _tlDecision({finding_id:'f1', decision:{label:'known', p:0.914}}),
+  _tlDecision({finding_id:'f1'}),
+  _tlDecision({finding_id:'f1', decision:{label:'nonsense', p:0.9}}),
+  _tlGroupDecision([{decision:{label:'known',p:0.9}},{decision:{label:'known',p:0.9}},{decision:{label:'true_positive',p:0.9}},{}]),
+  _tlGroupDecision([{},{}]),
 ];
 console.log(JSON.stringify(out));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
@@ -253,7 +253,7 @@ console.log(JSON.stringify(out));""")
         chip, none, bad, gchip, gnone = json.loads(out)
         self.assertIn("2 likely Known · 1 likely True Positive", gchip)
         self.assertEqual(gnone, "")
-        self.assertIn("likely Known · 91% (Jev)", chip)
+        self.assertIn("likely Known · 91% (decision model)", chip)
         self.assertIn("event.stopPropagation();tlValidate('f1','known')", chip)
         self.assertEqual((none, bad), ("", ""))
 

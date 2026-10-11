@@ -164,7 +164,7 @@ class Order(unittest.TestCase):
         return v["sort"], [c["name"] for c in v["identities"]]
 
     def test_with_model(self):
-        self.assertEqual(self.order(True), ("jev", ["zed", "dan", "cat", "bob", "amy", "eve"]))
+        self.assertEqual(self.order(True), ("decision", ["zed", "dan", "cat", "bob", "amy", "eve"]))
 
     def test_without_model_alphabet_only(self):
         self.assertEqual(self.order(False), ("alpha", ["amy", "bob", "cat", "dan", "eve", "zed"]))
@@ -177,8 +177,8 @@ class Pill(unittest.TestCase):
             self.skipTest("no node on this host")
         js = r"""
 const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
-eval(src.match(/function _idJev\(it\)\{[\s\S]*?\n\}/)[0]);
-console.log(JSON.stringify([_idJev({jev_compromise:0.834}), _idJev({jev_compromise:0.1}), _idJev({}), _idJev({jev_compromise:null})]));"""
+eval(src.match(/function _idDecision\(it\)\{[\s\S]*?\n\}/)[0]);
+console.log(JSON.stringify([_idDecision({decision_compromise:0.834}), _idDecision({decision_compromise:0.1}), _idDecision({}), _idDecision({decision_compromise:null})]));"""
         import json
         hi, lo, none, null = json.loads(subprocess.run(
             [node, "-e", js, os.path.join(_ROOT, "modules/nginx/html/cases.html")],

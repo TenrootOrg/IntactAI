@@ -174,7 +174,7 @@ class Page(unittest.TestCase):
         self.assertEqual((by["svc_backup"]["worst"], by["svc_backup"]["detections"]), ("critical", 1))
         self.assertEqual(by["svc_backup"]["findings"][0]["id"], "f1")
         self.assertEqual(by["srv"]["account_kind"], "service")
-        # Jev off: A–Z only (the Jev order is in test_jev_compromise)
+        # decision model off: A–Z only (its order is in test_decision_compromise)
         self.assertEqual(v["sort"], "alpha")
         names = [c["name"] for c in cards]
         self.assertEqual(names, sorted(names, key=str.lower))
@@ -189,16 +189,16 @@ class Page(unittest.TestCase):
             self.skipTest("no node on this host")
         js = r"""
 const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
-eval(src.match(/function idCard\(cid,it,jev\)\{[\s\S]*?\n\}/)[0]);
-eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSel\(cid,it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _idJev\(it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _hostRow\(label\)\{[^\n]*\}/)[0]);
+eval(src.match(/function idCard\(cid,it,dm\)\{[\s\S]*?\n\}/)[0]);
+eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSel\(cid,it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _idDecision\(it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _hostRow\(label\)\{[^\n]*\}/)[0]);
 const esc=s=>String(s).replace(/[<>&"]/g,""), jsa=s=>String(s); window={_idExpand:{k:true},_riskData:{rows:[{host:"WS1",severity:"high",risk_score:70}]}};
-console.log(idCard("c1",{key:"k",jev_compromise:0.9,verdict:"compromised",name:"svc_backup",account_kind:"service",worst:"critical",detections:1,finding_rows:3,
+console.log(idCard("c1",{key:"k",decision_compromise:0.9,verdict:"compromised",name:"svc_backup",account_kind:"service",worst:"critical",detections:1,finding_rows:3,
   accounts:[{id:"a",label:"svc_backup"}],seen_on:["WS1"],findings:[{id:"f1",title:"Mimikatz on WS1",severity:"critical"}]},true));"""
         html = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "modules/nginx/html/cases.html")
         out = subprocess.run([node, "-e", js, html], capture_output=True, text=True, check=True).stdout
         for want in (">service</span>", 'class="chip c-critical"', "openFindingDetail('f1')",
                      ">1</b></div>", "worst 1 of 3", 'class="prow v-compromised"',     # detections only, no rows
-                     "90%</b> <span style=\"color:var(--crit);font-size:11px\">· Likely</span>",  # not cut: no "(Jev)"
+                     "90%</b> <span style=\"color:var(--crit);font-size:11px\">· Likely</span>",  # not cut: no "(decision model)"
                      '<option value="compromised" selected>',
                      "entOpenHost('WS1')", 'class="chip c-high"'):        # person -> host and its severity
             self.assertIn(want, out)

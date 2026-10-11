@@ -5284,7 +5284,7 @@ def identity_view(case_id, d=None) -> dict:
             src["suggestions"].append({
                 "id": e["members"][0]["id"], "other": dst["name"], "reason": e["reason"],
                 "score": e["score"], "ambiguous": e["ambiguous"], "members": e["members"],
-                "jev_p": max(ps) if ps else None})
+                "decision_p": max(ps) if ps else None})
     # Each person's findings (rows touching any of their accounts), so the page can
     # rank by risk and open them. It was sorted by suggestion count and showed none.
     from .correlate import _detection_name
@@ -5293,7 +5293,7 @@ def identity_view(case_id, d=None) -> dict:
         live = [a["id"] for a in it["accounts"] if not a.get("disabled")]
         fs = sorted(_idf.person_findings(g, live), key=lambda f: (-_sev.rank(f.severity), f.ts or ""))
         # The decision model's "is this person compromised?" — computed after the fuse, only read here
-        it["jev_compromise"] = _dm.compromise_estimate(d, live, fs)
+        it["decision_compromise"] = _dm.compromise_estimate(d, live, fs)
         v = _identity_verdict_for(d.get("identity_verdicts"), [a["id"] for a in it["accounts"]])
         it["verdict"] = v["verdict"] if v else None
         it["findings"] = [{"id": f.id, "title": f.title, "severity": f.severity} for f in fs[:12]]
@@ -5341,7 +5341,7 @@ def identity_view(case_id, d=None) -> dict:
         az = str(it.get("name") or it["key"]).lower()
         if not by_dm:
             return (az,)
-        p = it.get("jev_compromise")
+        p = it.get("decision_compromise")
         return (_vr.get(it.get("verdict"), 2), -p if isinstance(p, (int, float)) else 1, az)
     idents.sort(key=_order)
     # one pair shows on BOTH cards; count it once (it read "2 suggestions" for 1)
@@ -5356,7 +5356,7 @@ def identity_view(case_id, d=None) -> dict:
     return {"case_id": case_id, "buckets": buckets, "multi_infra": len(buckets) >= 2,
             "identities": idents, "stale": stale,
             "counts": {"identities": len(idents), "suggestions": total_sug},
-            "sort": "jev" if by_dm else "alpha"}
+            "sort": "decision" if by_dm else "alpha"}
 
 
 def decide_identity_link(case_id, link_id, decision, *, a_id=None, b_id=None,
@@ -5842,7 +5842,7 @@ def get_timeline(case_id) -> list:
                 v = next((x for x in r["parts"] if x["validation"] != "pending"), None)
         # The decision model's suggested verdict: only on a finding nobody has judged yet, only
         # for the occurrences it was asked about, only when it is sure enough.
-        r["jev"] = (dm.suggestion_for(dm_s, fid, fwm.get(fid, ""))
+        r["decision"] = (dm.suggestion_for(dm_s, fid, fwm.get(fid, ""))
                     if dm_on and not v else None)
         r["manual"] = False
     # NEW since the group's last review (see _group_news): on the group label and

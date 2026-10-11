@@ -170,9 +170,9 @@ class Header(unittest.TestCase):
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
         fns = [re.search(r"const _TL_SEVS=\[.*?\];", src).group(0)] + [re.search(rf"function {n}\(.*?\n\}}", src, re.S).group(0)
-               for n in ("_tlRow", "_tlRowHtml", "_tlParts", "_tlPartsToggle", "_tlSevChip", "_tlGroupHead", "tlPaint", "_tlUntil", "_tlGroupNews", "_tlLoggedAs", "_tlGroupJev")]
+               for n in ("_tlRow", "_tlRowHtml", "_tlParts", "_tlPartsToggle", "_tlSevChip", "_tlGroupHead", "tlPaint", "_tlUntil", "_tlGroupNews", "_tlLoggedAs", "_tlGroupDecision")]
         js = ("const esc=s=>String(s);const TL_STATES=[['pending','Pending'],['true_positive','TP'],"
-              "['false_positive','FP'],['known','Known']];const _tlJev=()=>'';"
+              "['false_positive','FP'],['known','Known']];const _tlDecision=()=>'';"
               "const _tlTitle=r=>r.title;let OUT='';const $=()=>({set innerHTML(v){OUT=v}});\n"
               + "\n".join(fns) + """
 const G={id:'g1',name:'Encoded PowerShell',hosts:2,link:'time only',news:{new:['b'],grown:[],since:'2026-09-27T08:00:00Z',reviewed:true}};

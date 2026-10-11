@@ -132,8 +132,8 @@ class TheCardShowsThem(unittest.TestCase):
             self.skipTest("no node on this host")
         js = r"""
 const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
-eval(src.match(/function idCard\(cid,it,jev\)\{[\s\S]*?\n\}/)[0]);
-eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSel\(cid,it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _idJev\(it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _hostRow\(label\)\{[^\n]*\}/)[0]);
+eval(src.match(/function idCard\(cid,it,dm\)\{[\s\S]*?\n\}/)[0]);
+eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSel\(cid,it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _idDecision\(it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _hostRow\(label\)\{[^\n]*\}/)[0]);
 const esc=s=>String(s).replace(/[<>&"]/g,""), jsa=s=>String(s); window={_idExpand:{k:true},_riskData:{rows:[]}};
 console.log(idCard("c1",{key:"k",name:"attacked-win11",detections:0,finding_rows:0,activity:true,other_detection_count:8,
   other_detections:[{title:"Potentially Malicious PwSh",severity:"medium",count:6}],

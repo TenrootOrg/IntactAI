@@ -226,8 +226,8 @@ def main():
                         break
                 check(f"a False Positive on {tgt_p['name']}'s finding makes the decision model re-estimate them", new_key)
                 cur = next((p for p in people(cid) if p["name"] == tgt_p["name"]), {})
-                check("… and the card shows the new estimate", isinstance(cur.get("jev_compromise"), (int, float)),
-                      str(cur.get("jev_compromise")))
+                check("… and the card shows the new estimate", isinstance(cur.get("decision_compromise"), (int, float)),
+                      str(cur.get("decision_compromise")))
         else:
             print("  (skipped: the decision model's compromise estimate is off)")
 
