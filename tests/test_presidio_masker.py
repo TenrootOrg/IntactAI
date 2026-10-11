@@ -148,6 +148,15 @@ class NameShapeFilter(unittest.TestCase):
         self.assertTrue(pm._plausible_name("PayPal Inc", allow_camel=True))
         self.assertFalse(pm._plausible_name("LogonId"))
 
+    def test_model_written_values_are_skipped_and_tool_publishers_kept(self):
+        import json as _j
+        doc = _j.dumps({"analysis": "Mark these hosts as known.", "notes": "Sarah Johnson called"})
+        vals = pm._prose_values(doc, skip={"Mark these hosts as known."})
+        self.assertEqual(["Sarah Johnson called"], vals)          # evidence beside it still read
+        t = "Signed by Nmap Software LLC"
+        i = t.index("Nmap")
+        self.assertTrue(pm._span_rejected(t, i, len(t), "Nmap Software LLC", "ORGANIZATION"))
+
     def test_threat_vocabulary_is_kept(self):
         for w in ("bypass", "trojan", "firewall", "value", "creation"):
             self.assertIn(w, pm._KEEP, w)
@@ -211,6 +220,50 @@ class SaysWhenItFoundNothing(unittest.TestCase):
             pm.enabled, pm._detect_spans = orig_en, orig_det
         clean = [x for x in logged if "no leftover" in x]
         self.assertEqual(1, len(clean), logged)
+
+
+class LargeTextIsReadInChunksAndFailuresAreSaid(unittest.TestCase):
+    """One request per payload (up to ~330k chars) overran the 30 s timeout and was
+    swallowed as "no names": Presidio silently checked nothing on big cases."""
+    def setUp(self):
+        self._saved = (pm.enabled, pm._detect_chunk)
+        pm.enabled = lambda *a, **k: True
+
+    def tearDown(self):
+        pm.enabled, pm._detect_chunk = self._saved
+
+    def test_chunks_cut_at_line_breaks_and_offsets_map_back(self):
+        text = ("line of text\n" * 4000)                  # 52k chars
+        parts = pm._chunks(text, 20000)
+        self.assertGreater(len(parts), 2)
+        self.assertEqual(text, "".join(p for _, p in parts))
+        self.assertTrue(all(p.endswith("\n") for _, p in parts[:-1]))
+        pm._detect_chunk = lambda t, *a, **k: [{"entity_type": "PERSON", "start": 0, "end": 4, "score": .9}]
+        spans = pm._detect_spans(text, ("PERSON",), 0.6)
+        self.assertEqual([off for off, _ in parts], [sp["start"] for sp in spans])
+
+    def test_an_unread_chunk_is_reported_never_called_clean(self):
+        pm._detect_chunk = lambda *a, **k: None             # engine did not answer
+        logged = []
+
+        class M:
+            mapping = {}
+        pm.scrub('{"a": "Sarah Johnson called"}', M(), logfn=lambda m, l="info": logged.append(m))
+        self.assertTrue(any("NOT checked" in x for x in logged), logged)
+        self.assertFalse(any("no leftover" in x for x in logged), logged)
+
+    def test_each_distinct_value_is_read_once_per_report(self):
+        calls = []
+        pm._detect_chunk = lambda t, *a, **k: (calls.append(t), [])[1]
+
+        class M:
+            mapping = {}
+        m = M()
+        payload = '{"a": "Sarah Johnson called", "b": "Sarah Johnson called", "c": "other note"}'
+        pm.scrub(payload, m, logfn=lambda *a, **k: None)
+        pm.scrub(payload, m, logfn=lambda *a, **k: None)   # second model call, same values
+        self.assertEqual(1, len(calls), calls)
+        self.assertEqual(1, calls[0].count("Sarah Johnson called"), calls)
 
 
 if __name__ == "__main__":

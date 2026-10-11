@@ -44,11 +44,7 @@ _KEEP = {
     # masking them ("the model saw Person5 where the evidence said Critical")
     # degrades the narrative. Extended from REAL false positives on a lab run
     # (Procdump, Kerberoasting, Inveigh, Critical, SAM, Endpoints, Detections…).
-    # Tools:
-    "procdump", "inveigh", "bloodhound", "sharphound", "rubeus", "impacket",
-    "psexec", "metasploit", "sliver", "winpeas", "seatbelt", "rclone", "adfind",
-    "nltest", "procmon", "autoruns", "sysinternals", "nmap", "netcat", "ngrok",
-    "anydesk", "teamviewer", "certutil", "bitsadmin", "lolbin", "lolbas",
+    # Tools (also _TOOL_WORDS below):
     # Techniques / Windows internals:
     "kerberoasting", "kerberos", "dcsync", "lsass", "ntlm", "smb", "rdp", "winrm",
     "wmi", "wmiprvse", "srum", "amcache", "prefetch", "shimcache", "mft", "usn",
@@ -77,6 +73,16 @@ _KEEP = {
     "member", "sid", "guid", "caller", "client", "session", "signature", "original",
     "description", "product", "version", "security",
 }
+
+# Security / admin tools. A "company" span naming one is the tool's publisher, a
+# public vendor ("Nmap Software LLC" came back Org1 on a lab report).
+_TOOL_WORDS = {
+    "procdump", "inveigh", "bloodhound", "sharphound", "rubeus", "impacket",
+    "psexec", "metasploit", "sliver", "winpeas", "seatbelt", "rclone", "adfind",
+    "nltest", "procmon", "autoruns", "sysinternals", "nmap", "netcat", "ngrok",
+    "anydesk", "teamviewer", "certutil", "bitsadmin", "lolbin", "lolbas", "wireshark",
+}
+_KEEP |= _TOOL_WORDS
 
 # Public software vendors: a "company" span naming one is the vendor, not the
 # customer ("Signed by Microsoft Corporation"). Kept apart from _KEEP on purpose:
@@ -138,7 +144,7 @@ def _span_rejected(det: str, start: int, end: int, surface: str, etype: str,
     if etype in ("ORGANIZATION", "ORG"):
         if not any(w in _ORG_DESIGNATORS for w in words):
             return True                                # a phrase, not a company
-        if any(w in _VENDOR_WORDS for w in words):
+        if any(w in _VENDOR_WORDS or w in _TOOL_WORDS for w in words):
             return True                                # a public vendor ("Microsoft Corporation")
     if det[end:].lstrip(" ")[:1] in (":", "`"):
         return True                                    # "Possiblecause: x" / "Domain Name `y`" -- a field label
@@ -172,22 +178,22 @@ def _is_code(v: str) -> bool:
     return n >= 3 and n / max(len(t), 1) > 0.06
 
 
-def _detection_text(text: str) -> str:
-    """What NER reads. A report payload is json.dumps output: escapes glue words
-    across fields -- "Sarah Johnson.\\nDavid" came back as ONE span, was dropped,
-    and NEITHER name was masked -- and \\u escapes hide accented names. So decode
-    it and give NER each prose string value on its own line, code skipped. Text
-    that isn't a JSON document (a chat question) is read as it is."""
+def _prose_values(text: str, skip=()) -> list:
+    """The prose string values NER should read: a JSON document is decoded and
+    its string values returned (code lines dropped, values in `skip` left out);
+    any other text is one value."""
     if text.lstrip()[:1] not in ("{", "["):
-        return text
+        return [text]
     try:
         obj = json.loads(text)
     except ValueError:
-        return text
+        return [text]
     vals: list = []
 
     def walk(o):
         if isinstance(o, str):
+            if o in skip:
+                return
             keep = [ln for ln in o.splitlines() if ln.strip() and not _is_code(ln)]
             if keep:
                 vals.append("\n".join(keep))
@@ -198,6 +204,17 @@ def _detection_text(text: str) -> str:
             for v in o:
                 walk(v)
     walk(obj)
+    return vals
+
+
+def _detection_text(text: str, seen=None) -> str:
+    """What NER reads. A report payload is json.dumps output: escapes glue words
+    across fields -- "Sarah Johnson.\\nDavid" came back as ONE span, was dropped,
+    and NEITHER name was masked -- and \\u escapes hide accented names. So decode
+    it and give NER each DISTINCT prose value once, on its own line, code skipped.
+    Values in `seen` (already read earlier in this report) are skipped. Text that
+    isn't a JSON document (a chat question) is read as it is."""
+    vals = [v for v in dict.fromkeys(_prose_values(text)) if not seen or v not in seen]
     return "\n\n".join(vals)
 
 
@@ -387,9 +404,49 @@ def _sidecar_ok() -> bool:
     return ok
 
 
-def _detect_spans(text, entities, threshold, logfn=None):
-    """Return [{entity_type,start,end,score}, …] via the sidecar, else in-process,
-    else []. Never raises — a detection failure degrades to no masking."""
+# Characters per sidecar request. One request per report payload (up to ~330k
+# chars on a 9-host case) ran past the 30 s client timeout on a loaded box; the
+# timeout was swallowed as "no names", so Presidio silently checked NOTHING, and
+# the abandoned request kept the single sidecar busy so the next ones timed out
+# too. ~20k chars is about a second of work (measured: 120k chars = 4.6 s).
+_CHUNK = 20000
+
+
+def _chunks(text: str, size: int = _CHUNK) -> list:
+    """(offset, piece) slices of at most `size` chars, cut at a line break (else a
+    space) so a name is never split across two requests."""
+    out, start, n = [], 0, len(text)
+    while start < n:
+        end = min(start + size, n)
+        if end < n:
+            cut = text.rfind("\n", start, end)
+            if cut <= start:
+                cut = text.rfind(" ", start, end)
+            if cut > start:
+                end = cut + 1
+        out.append((start, text[start:end]))
+        start = end
+    return out
+
+
+def _detect_spans(text, entities, threshold, logfn=None, errors=None):
+    """Return [{entity_type,start,end,score}, …], reading `text` in chunks. A chunk
+    nothing could read is skipped and its length appended to `errors` (when given)
+    so the caller can say so -- a failure must never look like "no names found"."""
+    spans = []
+    for off, part in _chunks(text):
+        got = _detect_chunk(part, entities, threshold, logfn)
+        if got is None:
+            if errors is not None:
+                errors.append(len(part))
+            continue
+        spans += [{**sp, "start": sp["start"] + off, "end": sp["end"] + off} for sp in got]
+    return spans
+
+
+def _detect_chunk(text, entities, threshold, logfn=None):
+    """Spans for one chunk via the sidecar, else in-process; None if neither could
+    read it. Never raises."""
     # Sidecar first (the production path) — started on demand if needed.
     if _ensure_sidecar(logfn):
         try:
@@ -406,11 +463,11 @@ def _detect_spans(text, entities, threshold, logfn=None):
     # In-process fallback (dev/tests).
     eng = _analyzer()
     if eng is None:
-        return []
+        return None
     try:
         res = eng.analyze(text=text, entities=list(entities), language="en")
     except Exception:                                  # noqa: BLE001
-        return []
+        return None
     return [{"entity_type": r.entity_type, "start": r.start, "end": r.end, "score": r.score}
             for r in res if r.score >= threshold]
 
@@ -476,8 +533,24 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
         return text, []
     if not enabled(cfg, mask):
         return text, []
-    det = _detection_text(text)          # decoded prose values; == text for plain text
-    spans = _detect_spans(det, entities, min_score, logfn) if det.strip() else []
+    # Each report makes several model calls whose payloads overlap heavily (7 calls,
+    # 20k values, 3k distinct on a 9-host case): read each distinct value once. A
+    # name found earlier is already in the mapping, so the deterministic pass hides
+    # it in every later payload before this runs.
+    seen = mask.__dict__.setdefault("_ner_seen", set()) if mask is not None else None
+    skip = getattr(mask, "_ner_skip", None) or () if mask is not None else ()
+    vals = [v for v in dict.fromkeys(_prose_values(text, skip)) if seen is None or v not in seen]
+    det = "\n\n".join(vals)
+    errors: list = []
+    spans = _detect_spans(det, entities, min_score, logfn, errors) if det.strip() else []
+    if errors:
+        if mask is not None:
+            mask.__dict__["_ner_failed"] = True
+        _log("could not read %s of %s characters — the NER engine did not answer; those "
+             "parts were NOT checked for names (the custom-identity masking still applied)"
+             % (f"{sum(errors):,}", f"{len(det):,}"), "warning", logfn)
+    elif seen is not None:
+        seen.update(vals)
     if not spans:
         _announce_clean(mask, logfn)
         return text, []
@@ -575,8 +648,8 @@ def _announce_clean(mask, logfn) -> None:
     """Say ONCE per report that Presidio read the text and found no leftover names.
     The Log only listed names it hid, so "checked -- nothing to hide" and "never
     ran" looked the same, and an operator could not tell whether it worked."""
-    if mask is None or mask.__dict__.get("_ner_announced"):
-        return
+    if mask is None or mask.__dict__.get("_ner_announced") or mask.__dict__.get("_ner_failed"):
+        return                                         # never "clean" after a part went unread
     mask.__dict__["_ner_announced"] = True
     _log("checked the text — no leftover person or company names to hide", "info", logfn)
 
