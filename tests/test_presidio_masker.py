@@ -82,6 +82,72 @@ class NameShapeFilter(unittest.TestCase):
         for n in ("Jean-Luc Picard", "O'Brien"):
             self.assertTrue(pm._plausible_name(n), n)
 
+    def test_span_glued_to_a_larger_token_is_not_a_name(self):
+        # Windows chunks a scriptblock, so labels carry cut-off identifier tails;
+        # NER tagged them PERSON. Their POSITION gives them away, not their shape.
+        def glued(text, frag):
+            i = text.index(frag)
+            return pm._glued_to_token(text, i, i + len(frag))
+        self.assertTrue(glued('text (21 of 24):\\nft.Management.Infrastr"', "Infrastr"))
+        self.assertTrue(glued("ntFirewallServiceFilter", "Firewal"))
+        self.assertTrue(glued("OmitNullValues = 64", "Valu"))
+        self.assertTrue(glued("C:\\Users\\Sarah\\x", "Sarah"))
+        # real prose names stay maskable: sentence end, quotes, JSON line break, comma
+        self.assertFalse(glued("reviewed by Sarah Johnson.", "Sarah Johnson"))
+        self.assertFalse(glued('"analyst": "Sarah Johnson"', "Sarah Johnson"))
+        self.assertFalse(glued('notes:\\nSarah Johnson escalated', "Sarah Johnson"))
+        self.assertFalse(glued("Sarah Johnson, Contoso Ltd", "Contoso Ltd"))
+
+    def test_ner_reads_decoded_prose_values_not_json_escapes(self):
+        import json as _j
+        payload = {"notes": "Escalated by Sarah Johnson.\nDavid Okoro confirmed.",
+                   "name": "Jos\u00e9 Garc\u00eda",
+                   "label": "Creating Scriptblock text (2 of 7):\n[Parameter()]@{Name = 'Remot"}
+        det = pm._detection_text(_j.dumps(payload))
+        self.assertIn("Sarah Johnson.\nDavid Okoro", det)      # real newline, not "\\n"
+        self.assertIn("Jos\u00e9 Garc\u00eda", det)            # accent decoded
+        self.assertNotIn("Remot", det)                          # code value skipped
+        self.assertEqual("plain chat question", pm._detection_text("plain chat question"))
+
+    def test_code_vs_prose(self):
+        self.assertTrue(pm._is_code("Creating Scriptblock text (2 of 7):\n[Parameter()]@{Name = 'Remot'}"))
+        self.assertTrue(pm._is_code("$x = Get-Item -Path $p; if ($x) { [void]$list.Add($x) }"))
+        self.assertFalse(pm._is_code("Call with Maria Gonzalez from Acme Corporation about the incident."))
+
+    def test_company_entity_is_requested(self):
+        self.assertIn("ORGANIZATION", pm.DEFAULT_ENTITIES)       # Presidio has no "ORG"
+
+    def test_replacement_edges_do_not_leak_after_a_json_escape(self):
+        import re as _re
+        def sub(name, text):
+            return _re.sub(pm._NAME_EDGE_L + _re.escape(name) + r"(?!\w)", "P1", text)
+        # detected right after a JSON line break: used to be reported masked and LEAK
+        self.assertEqual('Johnson.\\nP1 confirmed', sub("David Okoro", 'Johnson.\\nDavid Okoro confirmed'))
+        self.assertEqual('belongs to P1.\\nx', sub("Contoso Ltd", 'belongs to Contoso Ltd.\\nx'))
+        self.assertEqual("Davidson", sub("David", "Davidson"))          # not inside a longer word
+        self.assertEqual("xDavid", sub("David", "xDavid"))
+
+    def test_span_rules_field_labels_vendors_and_companies(self):
+        rej = pm._span_rejected
+        # a Windows field label written as prose, with a colon or a backtick value
+        t = "identifies Domain Name `HOST1` and Possiblecause: Permanent"
+        i = t.index("Domain Name"); self.assertTrue(rej(t, i, i + 11, "Domain Name", "PERSON"))
+        i = t.index("Possiblecause"); self.assertTrue(rej(t, i, i + 13, "Possiblecause", "PERSON"))
+        # ORG needs a designator; a public vendor stays; a bank with a field word is masked
+        t = "Remote Desktop Services; Microsoft Corporation; First Security Bank"
+        for frag, want in (("Remote Desktop Services", True), ("Microsoft Corporation", True),
+                           ("First Security Bank", False)):
+            i = t.index(frag)
+            self.assertEqual(want, rej(t, i, i + len(frag), frag, "ORGANIZATION"), frag)
+        # lowercase tokens and a cut-off word with its whole form elsewhere
+        t = "type ioc\n(Microso\nMicrosoft-Windows-Sysmon"
+        i = t.index("ioc"); self.assertTrue(rej(t, i, i + 3, "ioc", "ORGANIZATION"))
+        i = t.index("Microso"); self.assertTrue(rej(t, i, i + 7, "Microso", "PERSON"))
+
+    def test_camelcase_company_allowed_camelcase_person_not(self):
+        self.assertTrue(pm._plausible_name("PayPal Inc", allow_camel=True))
+        self.assertFalse(pm._plausible_name("LogonId"))
+
     def test_threat_vocabulary_is_kept(self):
         for w in ("bypass", "trojan", "firewall", "value", "creation"):
             self.assertIn(w, pm._KEEP, w)
@@ -125,6 +191,26 @@ class SecurityTermsAreNotMasked(unittest.TestCase):
         # the inline guard in _detect_spans: every token a kept term -> not masked
         for span in ("Critical Detection", "SAM Exclusion"):
             self.assertTrue(all(w in pm._KEEP for w in span.lower().split()), span)
+
+
+class SaysWhenItFoundNothing(unittest.TestCase):
+    """The Log only listed names Presidio hid, so "checked, nothing to hide" and
+    "never ran" looked identical. It now says so -- once per report, not per chunk."""
+    def test_one_clean_line_per_report(self):
+        orig_en, orig_det = pm.enabled, pm._detect_spans
+        pm.enabled = lambda *a, **k: True
+        pm._detect_spans = lambda *a, **k: []
+        logged = []
+        try:
+            class M:
+                mapping = {}
+            m = M()
+            pm.scrub('{"a": "nothing here"}', m, logfn=lambda msg, lvl="info": logged.append(msg))
+            pm.scrub('{"b": "still nothing"}', m, logfn=lambda msg, lvl="info": logged.append(msg))
+        finally:
+            pm.enabled, pm._detect_spans = orig_en, orig_det
+        clean = [x for x in logged if "no leftover" in x]
+        self.assertEqual(1, len(clean), logged)
 
 
 if __name__ == "__main__":

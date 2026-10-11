@@ -23,6 +23,7 @@ existing unmask/revert path restores it with no extra wiring.
 from __future__ import annotations
 
 import functools
+import json
 import os
 import re
 
@@ -64,10 +65,33 @@ _KEEP = {
     # LogonId / MethodPara are rejected by _plausible_name, not listed here.
     "bypass", "trojan", "firewall", "value", "values", "creation",
     "infrastructure", "parameter", "parameters", "method", "logon", "logoff",
+    # Windows / Sysmon event-FIELD words. The model writes them as labels in its own
+    # prose ("Account Name `x`, Domain Name `y`, Logon ID `z`") and NER took
+    # "Domain Name" for a person. Only a span made ENTIRELY of kept words is
+    # skipped, so a real name that contains one of these is still masked.
+    "account", "domain", "name", "names", "id", "subject", "target", "user",
+    "computer", "workstation", "process", "image", "path", "command", "line", "parent",
+    "source", "destination", "address", "port", "network", "object", "type", "key",
+    "field", "provider", "channel", "event", "record", "level", "task", "status",
+    "reason", "service", "file", "share", "package", "privilege", "privileges",
+    "member", "sid", "guid", "caller", "client", "session", "signature", "original",
+    "description", "product", "version", "security",
 }
 
+# Public software vendors: a "company" span naming one is the vendor, not the
+# customer ("Signed by Microsoft Corporation"). Kept apart from _KEEP on purpose:
+# _KEEP is broad vocabulary matched ALL-words; this is matched ANY-word, and with
+# _KEEP that would have made "First Security Bank" unmaskable.
+_VENDOR_WORDS = {"microsoft", "windows", "defender", "azure", "office", "google",
+                 "velociraptor", "sysmon", "hayabusa", "chrome", "firefox", "mozilla",
+                 "linux", "apple", "amazon"}
+
 # Default entity set: the two the deterministic masker genuinely cannot catch.
-DEFAULT_ENTITIES = ("PERSON", "ORG")
+# Presidio names the company entity ORGANIZATION (spaCy's ORG is mapped to it).
+# This said "ORG", which Presidio silently returns nothing for — so from the day
+# Presidio was added, company names were NEVER masked, though the Log line said
+# "person & company names". Measured 2026-10-11: 0 ORG spans at threshold 0.
+DEFAULT_ENTITIES = ("PERSON", "ORGANIZATION")
 DEFAULT_MIN_SCORE = 0.6
 
 # NER tags forensic strings as PERSON/ORG at the SAME score as a real name (a
@@ -79,7 +103,133 @@ DEFAULT_MIN_SCORE = 0.6
 _NON_NAME_CHARS = set("\\/=@:_|{}[]()<>$%*+#")
 
 
-def _plausible_name(s: str) -> bool:
+# A span containing one of these is a technical phrase, never a name ("Creating
+# Scriptblock", the 4104 message text, came back PERSON @0.85). Kept to words no
+# person or customer company is called -- broad ones (security, windows, defender)
+# stay in _KEEP, which only drops a span made ENTIRELY of kept words.
+_TECH_ANY = {"scriptblock", "powershell", "pwsh", "cmdlet", "commandlet", "evtx",
+             "sysmon", "hayabusa", "velociraptor", "mimikatz", "lsass", "kerberos",
+             "ntlm", "wmi", "rundll32", "svchost", "regedit"}
+
+# An ORGANIZATION span must name a company the way a company is written: with a
+# designator. Forensic text is full of Title-Case phrases NER calls companies --
+# rule titles ("Important Windows Eventlog Cleared"), providers ("SCM Event
+# Provider"), acronyms (SSH, IMPHASH): 16 of 16 ORG hits on the lab cases. None
+# carries a designator; "Contoso Ltd", "Acme Corporation", "Fabrikam Inc" do.
+# Ambiguous ones are left out on purpose: services ("Remote Desktop Services"),
+# group ("Group Policy"), authority ("Certificate Authority"), systems.
+_ORG_DESIGNATORS = {
+    "ltd", "limited", "inc", "incorporated", "llc", "llp", "lp", "corp", "corporation",
+    "co", "company", "gmbh", "ag", "sa", "sas", "sarl", "plc", "pty", "pte", "bv", "nv",
+    "oy", "oyj", "ab", "asa", "spa", "srl", "kk", "kg", "holdings", "holding", "bank",
+    "university", "college", "institute", "foundation", "association", "agency",
+    "ministry", "council", "hospital", "clinic", "partners", "associates",
+    "enterprises", "industries", "traders", "trading", "insurance", "airlines",
+}
+
+
+def _span_rejected(det: str, start: int, end: int, surface: str, etype: str,
+                   tech_phrases=()) -> bool:
+    """Position- and context-based checks that a NER span is not a name/company."""
+    if not surface[:1].isupper():                      # ioc, param, icrosoft, lter'
+        return True
+    low = surface.lower()
+    words = [w.strip(".,") for w in low.split()]
+    if etype in ("ORGANIZATION", "ORG"):
+        if not any(w in _ORG_DESIGNATORS for w in words):
+            return True                                # a phrase, not a company
+        if any(w in _VENDOR_WORDS for w in words):
+            return True                                # a public vendor ("Microsoft Corporation")
+    if det[end:].lstrip(" ")[:1] in (":", "`"):
+        return True                                    # "Possiblecause: x" / "Domain Name `y`" -- a field label
+    if any(low in p for p in tech_phrases):
+        return True                                    # part of this case's own rule names
+    if len(words) == 1:
+        rest = det[end:].split("\n", 1)[0]
+        if not rest.strip() and re.search(re.escape(surface) + r"[a-z]", det):
+            return True                                # "Microso" at a cut, "Microsoft" elsewhere
+    return False
+
+
+# Not < > @: an e-mail header ("From: Tom Becker <tbecker@corp.com>") is prose,
+# and counting them as code hid the name on it.
+_CODE_CHARS = frozenset("{}[]()=;$|`\\")
+
+
+_PS_VAR = re.compile(r"\$[A-Za-z_{(]")
+
+
+def _is_code(v: str) -> bool:
+    """A line of script / command, not prose. NER reads code identifiers and
+    Windows' cut-off scriptblock chunks ("...@{Name = 'Remot", "$false, 'Defau") as
+    names. A $variable is code; otherwise it takes several code characters at a
+    real density -- "Sarah (IT) said" keeps its parentheses and stays prose. The
+    accounts/hosts/IPs inside code are still masked by the deterministic layer."""
+    t = v.strip()
+    if _PS_VAR.search(t):
+        return True
+    n = sum(c in _CODE_CHARS for c in t)
+    return n >= 3 and n / max(len(t), 1) > 0.06
+
+
+def _detection_text(text: str) -> str:
+    """What NER reads. A report payload is json.dumps output: escapes glue words
+    across fields -- "Sarah Johnson.\\nDavid" came back as ONE span, was dropped,
+    and NEITHER name was masked -- and \\u escapes hide accented names. So decode
+    it and give NER each prose string value on its own line, code skipped. Text
+    that isn't a JSON document (a chat question) is read as it is."""
+    if text.lstrip()[:1] not in ("{", "["):
+        return text
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return text
+    vals: list = []
+
+    def walk(o):
+        if isinstance(o, str):
+            keep = [ln for ln in o.splitlines() if ln.strip() and not _is_code(ln)]
+            if keep:
+                vals.append("\n".join(keep))
+        elif isinstance(o, dict):
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, (list, tuple)):
+            for v in o:
+                walk(v)
+    walk(obj)
+    return "\n\n".join(vals)
+
+
+# Left edge of a name in the ORIGINAL text: no word char before it -- or a JSON
+# escape (\\n, \\t, \\r) whose letter would otherwise glue to it. "\\bDavid" never
+# matched "...Johnson.\\nDavid", so a name detected right after a line break was
+# reported masked and LEAKED. The right edge is (?!\w) so "Ltd." still matches.
+_NAME_EDGE_L = r"(?:(?<!\w)|(?<=\\[ntr]))"
+_GLUE_BEFORE = set("._\\/")
+_GLUE_AFTER = set("_\\/")
+
+
+def _glued_to_token(text: str, start: int, end: int) -> bool:
+    """True when the span is part of a LARGER token in the source text — a dotted
+    code identifier, a path, or a word cut mid-way — so it can't be a name. A real
+    name stands alone between spaces/punctuation. 2026-10-11, a lab report: Windows
+    splits a PowerShell scriptblock into chunks, so labels carried
+    "...Creating Scriptblock text (21 of 24):\\nft.Management.Infrastr" and NER
+    tagged the cut-off tails Infrastr / Firewal / Valu as PERSON @0.85; the surface
+    alone looks like a name, its position does not. Sentence-final '.', quotes and
+    a JSON-escaped line break (\\n) stay boundaries, so prose names are kept."""
+    raw = text[start:end]
+    start += len(raw) - len(raw.lstrip())
+    end -= len(raw) - len(raw.rstrip())
+    b = text[start - 1] if start > 0 else " "
+    if start >= 2 and text[start - 2] == "\\" and b in "ntr":
+        b = " "                                    # JSON-escaped \n/\t/\r = line break
+    a = text[end] if end < len(text) else " "
+    return b.isalnum() or b in _GLUE_BEFORE or a.isalnum() or a in _GLUE_AFTER
+
+
+def _plausible_name(s: str, allow_camel: bool = False) -> bool:
     if any(c in _NON_NAME_CHARS for c in s) or any(c.isdigit() for c in s):
         return False
     words = s.split()
@@ -97,14 +247,14 @@ def _plausible_name(s: str) -> bool:
         # a hyphen keeps the two sides apart ("Jean-Luc" stays a name). The rare
         # camelCase surname (McDonald) is the accepted cost -- the deterministic
         # masker still masks real account/host names; NER is only the free-text pass.
-        if re.search(r"[a-z][A-Z]", w):
+        if not allow_camel and re.search(r"[a-z][A-Z]", w):
             return False
         core = w.strip("'-.").replace("'", "").replace("-", "")
         if not core or not core.isalpha():
             return False
     return True
 
-_PSEUDO_PREFIX = {"PERSON": "Person", "ORG": "Org", "LOCATION": "Loc", "GPE": "Loc", "NRP": "Group"}
+_PSEUDO_PREFIX = {"PERSON": "Person", "ORG": "Org", "ORGANIZATION": "Org", "LOCATION": "Loc", "GPE": "Loc", "NRP": "Group"}
 
 
 # Production runs Presidio in its OWN container (modules/presidio), ON DEMAND like
@@ -326,10 +476,24 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
         return text, []
     if not enabled(cfg, mask):
         return text, []
-    spans = _detect_spans(text, entities, min_score, logfn)
+    det = _detection_text(text)          # decoded prose values; == text for plain text
+    spans = _detect_spans(det, entities, min_score, logfn) if det.strip() else []
     if not spans:
+        _announce_clean(mask, logfn)
         return text, []
 
+    # A name never crosses a line break. NER sometimes merges across the blank line
+    # between two values ("Woodgrove Bank\n\nRemote Desktop Services" came back as
+    # ONE ORG span): the joined surface never occurs in the original, so the real
+    # company LEAKED. Split such a span and judge each line on its own.
+    split = []
+    for sp in spans:
+        a = sp["start"]
+        for ln in det[sp["start"]:sp["end"]].split("\n"):
+            if ln.strip():
+                split.append({**sp, "start": a, "end": a + len(ln)})
+            a += len(ln) + 1
+    spans = split
     # Keep the highest-scoring, non-overlapping spans, longest-first so we
     # substitute whole names before any sub-span.
     spans = sorted(spans, key=lambda s: (s["end"] - s["start"]), reverse=True)
@@ -344,12 +508,21 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
     existing = getattr(mask, "mapping", {}) or {}
     for s in spans:
         start, end, etype, score = s["start"], s["end"], s["entity_type"], s["score"]
-        surface = text[start:end].strip()
+        surface = det[start:end].strip().rstrip(".,;:")   # "Contoso Ltd." -> "Contoso Ltd"
         low = surface.lower()
         if not surface or _OUR_PSEUDO.match(surface) or low in _KEEP \
                 or all(w in _KEEP for w in low.split()):   # e.g. "Critical Detection"
             continue
-        if not _plausible_name(surface):               # forensic string NER mis-tagged as a name
+        if any(w in _TECH_ANY for w in low.split()):  # "Creating Scriptblock"
+            continue
+        # camelCase is allowed for a company (PayPal Inc, LinkedIn Corporation): an
+        # ORG span already needs a designator, which no code identifier carries.
+        if not _plausible_name(surface, allow_camel=etype in ("ORGANIZATION", "ORG")):
+            continue                                   # forensic string NER mis-tagged as a name
+        if _glued_to_token(det, start, end):           # tail of a code identifier / cut word
+            continue
+        if _span_rejected(det, start, end, surface, etype,
+                          getattr(mask, "_tech_phrases", ()) if mask is not None else ()):
             continue
         if any(a < end and start < b for a, b in seen_ranges):
             continue                                   # overlaps a longer span already taken
@@ -369,7 +542,10 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
     # Replace longest surfaces first so "John Smith" goes before "John".
     out = text
     for surface in sorted(assigned, key=len, reverse=True):
-        out = re.sub(r"\b" + re.escape(surface) + r"\b", assigned[surface], out)
+        # Detected on DECODED text, replaced in the original: a JSON payload carries
+        # an accented name in its escaped form (Jos\u00e9), so replace both.
+        for form in {surface, json.dumps(surface)[1:-1]}:
+            out = re.sub(_NAME_EDGE_L + re.escape(form) + r"(?!\w)", assigned[surface], out)
     if assigned:
         # List WHAT was masked (name = pseudonym), like the deterministic mask's
         # pre-LLM mapping block, so the operator can see exactly what Presidio hid.
@@ -384,11 +560,25 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
             pairs = [(n, p) for n, p in pairs if n not in done]
             done.update(n for n, _ in pairs)
         if pairs:
+            if mask is not None:
+                mask.__dict__["_ner_announced"] = True
             _log("%d leftover name(s) Presidio caught — person & company names the "
                  "custom-identity masker can't catch (restored in the report):\n  %s"
                  % (len(pairs), "\n  ".join(f"{name} = {pseudo}" for name, pseudo in pairs)),
                  "info", logfn)
+    else:
+        _announce_clean(mask, logfn)
     return out, hits
+
+
+def _announce_clean(mask, logfn) -> None:
+    """Say ONCE per report that Presidio read the text and found no leftover names.
+    The Log only listed names it hid, so "checked -- nothing to hide" and "never
+    ran" looked the same, and an operator could not tell whether it worked."""
+    if mask is None or mask.__dict__.get("_ner_announced"):
+        return
+    mask.__dict__["_ner_announced"] = True
+    _log("checked the text — no leftover person or company names to hide", "info", logfn)
 
 
 if __name__ == "__main__":  # tiny smoke test (no-op without presidio installed)

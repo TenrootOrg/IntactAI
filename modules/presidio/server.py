@@ -87,7 +87,7 @@ def analyze():
     text = body.get("text")
     if not isinstance(text, str) or not text:
         return jsonify({"spans": []})
-    entities = body.get("entities") or ["PERSON", "ORG"]
+    entities = body.get("entities") or ["PERSON", "ORGANIZATION"]   # Presidio has no "ORG"
     threshold = float(body.get("score_threshold", 0.6))
     language = body.get("language", "en")
     try:
