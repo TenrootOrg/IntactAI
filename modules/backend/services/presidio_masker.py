@@ -359,8 +359,8 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
         # pre-LLM mapping block, so the operator can see exactly what Presidio hid.
         # The Log is the trusted local view (the model gets only the pseudonyms).
         pairs = sorted(assigned.items(), key=lambda kv: kv[1])
-        _log("%d name(s) hidden from the model by Presidio — person & company names the "
-             "pattern masker can't catch (restored in the report):\n  %s"
+        _log("%d leftover name(s) Presidio caught — person & company names the "
+             "custom-identity masker can't catch (restored in the report):\n  %s"
              % (len(assigned), "\n  ".join(f"{name} = {pseudo}" for name, pseudo in pairs)),
              "info", logfn)
     return out, hits

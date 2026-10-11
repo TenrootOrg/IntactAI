@@ -1949,7 +1949,7 @@ def _case_mask(case_id, d):
     # Presidio lifecycle + the "name = Person1" list -> its OWN case-Log
     # section, separate from the pattern masker's, so the operator sees
     # which system hid what. High detail cap so the full list survives.
-    mask._logfn = lambda m, l="info": log_case_event(case_id, "Masking · Presidio (AI/NER)", l, m, detail_max=20000)
+    mask._logfn = lambda m, l="info": log_case_event(case_id, "Masking · Presidio leftovers", l, m, detail_max=20000)
     return mask
 
 

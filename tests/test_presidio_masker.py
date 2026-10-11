@@ -88,7 +88,7 @@ class CaseLogHook(unittest.TestCase):
         finally:
             store.log_case_event = orig
         self.assertTrue(m._ner)
-        self.assertEqual(logged, [("case_x", "Masking · Presidio (AI/NER)", "2 name(s) hidden")])
+        self.assertEqual(logged, [("case_x", "Masking · Presidio leftovers", "2 name(s) hidden")])
         self.assertIsNone(store._case_mask("case_x", {"masking": {"enabled": False}}))
 
     def test_no_path_builds_its_own_mask(self):

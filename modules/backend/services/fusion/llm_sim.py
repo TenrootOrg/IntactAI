@@ -1320,10 +1320,10 @@ def _log_mask_audit(run_id, mask, text=None):
         # (it otherwise truncated all but the first handful). ~20k chars covers
         # hundreds of values; the "N value(s) masked" count flags any rare overflow.
         # One value per line (see _mask_audit_lines) for readability.
-        log_case_event(run_id, "Masking · pattern masker", "info",
-                       f"{len(mapping)} value(s) hidden from the model by the pattern masker "
-                       f"— host names, user names, IPs, e-mails, domains, credentials "
-                       f"(restored in the report):\n{_mask_audit_lines(mapping)}",
+        log_case_event(run_id, "Masking · custom identities", "info",
+                       f"{len(mapping)} value(s) masked as identities — host names, user "
+                       f"names, IPs, e-mails, domains, credentials (restored in the report):"
+                       f"\n{_mask_audit_lines(mapping)}",
                        detail_max=20000)
     except Exception:
         pass
