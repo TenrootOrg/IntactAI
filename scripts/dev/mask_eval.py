@@ -11,6 +11,10 @@ was reported masked but leaked, and one person got two identity numbers.
           intercepted -- nothing is sent and nothing is written. Prints what the
           deterministic masker hid and every Presidio hit with the decoded value
           it came from. Lab data has no real people in it: expect 0 Presidio hits.
+  leaks   Capture the exact masked text every model call of a case would get and
+          list what is still visible: the case's own accounts, hosts (with former
+          names) and IPs, plus anything identifier-shaped (internal FQDNs, private
+          IPs, default DESKTOP-/WIN- names). Found five gaps on a 9-host case.
   probe   Run a payload with real person/company names mixed into the exact
           forensic noise seen on lab reports (scriptblock tails, rule titles,
           field labels, flags) through the live Presidio sidecar, as JSON and as
@@ -19,6 +23,7 @@ was reported masked but leaked, and one person got two identity numbers.
     docker cp scripts/dev/mask_eval.py intact_backend:/tmp/mask_eval.py
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py probe'
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py cases <case_id>...'
+    docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py leaks <case_id>'
 """
 import json
 import sys
@@ -148,8 +153,51 @@ def cases(ids):
             print("  Presidio: no hits")
 
 
+def leaks(cid):
+    import re
+    from services.fusion import store, llm_sim
+    sent = []
+    store.log_case_event = lambda *a, **k: None
+    llm_sim._real_llm = lambda system, user, *a, **k: (sent.append(user), "stub narrative")[1]
+    d = store.get_case(cid)
+    gv = store.view_graph(cid, d)
+    mask = store._case_mask(cid, d)
+    if mask is not None:
+        mask._logfn = lambda *a, **k: None
+    ent, chars = store._llm_payload_budget(d)
+    llm_sim.generate_report(
+        gv, window=store.view_window(d), min_severity=d.get("min_severity") or "informational",
+        run_id=cid, mask=mask, prefer_llm=True, max_entities=ent, budget_chars=chars,
+        detail="explicit", max_identities=store._llm_identity_budget(d))
+    blob = NL.join(sent)
+    print(f"{len(sent)} model call(s), {len(blob):,} chars sent")
+    known = set()
+    for e in gv.entities.values():
+        if e.type == "account":
+            known.add(e.label.split("\\")[-1].split("@")[0])
+        elif e.type == "asset":
+            known.add(e.label)
+            for h in (e.attrs or {}).get("name_history") or []:
+                known.add(str(h.get("name") if isinstance(h, dict) else h))
+        elif e.type in ("netconn", "ioc") and re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", e.label or ""):
+            known.add(e.label)
+    skip = {"null", "none", "administrator", "guest", "system", "user", "defaultaccount",
+            "wdagutilityaccount", "local service", "network service"}
+    vis = sorted(v for v in known if len(v) >= 3 and v.lower() not in skip and re.search(
+        r"(?<![\w-])" + re.escape(v) + r"(?![\w-])", blob, re.I))
+    print(f"case identifiers still visible: {len(vis)} of {len(known)}", vis[:20])
+    shapes = {"internal FQDN": r"(?i)\b(?:[a-z0-9-]+\.)+(?:local|lan|corp|internal|intranet)\b",
+              "private IP": r"\b(?:10\.\d+|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d+\.\d+\b",
+              "default host name": r"\b(?:DESKTOP|WIN|LAPTOP)-[A-Z0-9]{5,}\b"}
+    for k, rx in shapes.items():
+        hits = sorted(set(re.findall(rx, blob)))
+        print(f"{k:18} still visible: {len(hits)}", hits[:10])
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "cases":
         cases(sys.argv[2:])
+    elif len(sys.argv) > 2 and sys.argv[1] == "leaks":
+        leaks(sys.argv[2])
     else:
         probe()
