@@ -97,8 +97,11 @@ Case Analysis — not a weighting problem, a missing-detection problem.
   artifact Custom.Windows.Detection.DefenderExclusions reads the live Defender
   config via WMI; the mapper surfaces an exclusion (medium) / disabled RTP (high).
   Validated end-to-end on the live VM. The notes below are kept for the record.
-- **Archive/staging of loot (`Compress-Archive` → zip, T1560.001).** Still open:
-  no collection/detection surfaces it.
+- **Archive/staging of loot (`Compress-Archive` → zip, T1560.001).** Still open,
+  but re-characterised by a live run (2026-10-11, see below): the evidence IS
+  collected — it is a detection-content + false-positive problem, not a
+  collection gap. A generic "archive in a staging path" rule can't be added
+  without firing on benign zips.
 - **DLL side-loading (T1574.002).** Stock Win11 logs no DLL loads (needs Sysmon
   EID 7), and the planted pair isn't in HijackLibs' known-abused set.
 
@@ -121,9 +124,31 @@ cannot carry the signal reliably:
 Add the Windows Defender Operational channel (EID 5007/5001/1116...) to the
 Velociraptor collection (the agentic QuickWins blueprint / the EVTX artifact), and
 a SIGMA/Hayabusa rule mapping 5007 -> T1562.001. Same shape for archive-staging:
-needs process-command-line logging (Sysmon EID 1) or a dedicated artifact. These
-are collection/detection-content changes, NOT fusion — the fusion graph never
-receives the evidence.
+needs process-command-line logging (Sysmon EID 1) or a dedicated artifact.
 
-**Reported by** attack-sim campaign (dev-attack-simulation-rules), 2026-10-08.
-See memory [[attack-sim-campaign-state]].
+**Archive-staging — live re-test (2026-10-11, VM clock 2026-10-08T15:12).**
+Ran `Compress-Archive` of a loot dir to `C:\Users\Public\exfil_stage.zip`, then
+collected agentic_quick_wins. Findings on the attack window: none for T1560.001
+(the data-collection redirect that preceded it surfaced as "Cmd Stream
+Redirection"; the archive step did not). Checked the raw rows:
+  1. The `Compress-Archive` INVOCATION is not captured in any matchable form —
+     zero PowerShell 4103/4104 rows carry the command line or the destination
+     path (same cmdletization-module problem as Defender's Add-MpPreference).
+  2. The ARCHIVE FILE itself IS collected: `DetectRaptor.Windows.Detection.MFT`
+     has a row for `\\.\C:\Users\Public\exfil_stage.zip` with its create/modify
+     timestamps and size. So the fusion graph COULD receive this evidence — the
+     gap is detection-content, not collection.
+So why still open: any generic rule that turns "a .zip/.rar/.7z in a
+world-writable staging path (Public, ProgramData, *\Temp, C:\Temp)" into a
+finding would also fire on every benign admin zip (installers, log bundles,
+backups) — it fails the `BenignHostStaysQuiet` tightness guarantee
+(tests/test_sigma_medium_techniques_surface.py). The MFT row carries NO process
+lineage, so it also can't be tied by correlation to the collection/cred-access
+activity in the same window (the fusion-side angle that would have avoided the
+FP). A tight detection needs process→file provenance (Sysmon EID 1 cmdline +
+EID 11 FileCreate, or a dedicated artifact that records the creating process),
+which the current collection does not carry. Deliberately NOT adding a loose
+content heuristic.
+
+**Reported by** attack-sim campaign (dev-attack-simulation-rules), 2026-10-08;
+archive-staging re-characterised 2026-10-11. See memory [[attack-sim-campaign-state]].
