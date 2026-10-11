@@ -92,8 +92,28 @@ the AI model block. **Test** sends one made-up yes/no question to what is on scr
   A model id without a vendor prefix gets `typesafe/` added. 401 bodies: `User not found.` / `No cookie auth credentials found`.
 - OpenAI wire (from its docs): `{model, input, questions:[{type: predicate|choice|score, name, instructions, choices|levels}]}` →
   `answers` array by `name`; usage in tokens only. Translated in `_openai_body` / `_openai_answers`.
-- **No discovery API**: OpenRouter's `/api/v1/models` lists chat models only; decision models are kept by hand in
-  `decision_model.MODELS` (suggested in Settings; any id can be typed).
+- **Discovery**: `GET openrouter.ai/api/v1/models?output_modalities=decisions` lists every decision model
+  OpenRouter serves (plain `/models` lists chat models only). Settings → **Update catalog** stores it in
+  `data/decision_models.json`; hand-checked `decision_model.MODELS` win where both name a model (listed
+  context is the vendor's word — Clef lists 64k and cuts at 16k). Budget for a listed model = 3/8 of its
+  window, at most 24k. Any id can still be typed.
+
+### All OpenRouter decision models, one pass (2026-10-11)
+
+Six made-up events with obvious answers (3 attacks, 3 routine), one call each. A sanity
+check that each model works and separates the obvious — **not** an accuracy measurement.
+
+| Model | Works | Right | Speed | $ per call |
+|---|---|---|---|---|
+| `jev-latest` / `typesafe/jev-1.13` | yes | 6/6 | 0.4–0.6 s | 0.000032 |
+| `inception/mercury-decide` | yes | 6/6 | 0.6 s | 0.000005 |
+| `openai/gpt-6-luna-decisions` | yes (Jev wire, via OpenRouter) | 6/6 | 0.4 s | 0.00012 |
+| `liquid/d1` | yes | 6/6 | 0.35 s | 0.00006 |
+| `microsoft/microsoft-decision-1`, `nace-ai/drex-v1.5`, `perplexity/pplx-decider-v1.1-27b`, `togethercomputer/tev1-4b-experimental` | yes | 6/6 | 0.5–1.4 s | 0.00002–0.00007 |
+| `cloudflare/clef`, `cloudflare/clef-flash` | yes | 6/6 | 1.4 s / 2.1 s | 0.00018 / 0.00003 |
+| `upstage/solar-decide`, `-flash` | yes | 5/6, 4/6 | 6.2 s / 1.9 s | 0.00017 |
+| `cloudflare/clef-omni`, `inception/mercury-decide:free`, `respan/*` | 404 — excluded by the account's OpenRouter privacy guardrail | | | |
+| `jaredpalmer/kev-4b` | timed out | | | |
 
 ## Features
 

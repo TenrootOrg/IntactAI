@@ -618,7 +618,18 @@ def decision_models():
     from services.fusion import decision_model as dm
     return jsonify({"providers": {k: {"label": v["label"], "model": v["model"], "cloud": v["cloud"]}
                                   for k, v in dm.PROVIDERS.items()},
-                    "models": dm.MODELS})
+                    "models": dm.catalog()})
+
+
+@config_bp.route('/api/config/decision_model/refresh', methods=['POST'])
+def refresh_decision_models():
+    """Update catalog: OpenRouter's decision models -> data/decision_models.json."""
+    from services.fusion import decision_model as dm
+    try:
+        out = dm.refresh_catalog()
+    except Exception as e:  # noqa: BLE001 -- the old catalog stays
+        return jsonify({"success": False, "error": f"{type(e).__name__}: {e}"[:300]})
+    return jsonify(out)
 
 
 @config_bp.route('/api/config/decision_model/test', methods=['POST'])

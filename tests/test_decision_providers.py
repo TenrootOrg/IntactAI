@@ -196,6 +196,40 @@ class CachesFollowTheModel(unittest.TestCase):
         self.assertEqual(written["decision_by"], {"identity": "x/y", "scopes": "openrouter/cloudflare/clef-flash"})
 
 
+class Catalog(unittest.TestCase):
+    """Update catalog stores OpenRouter's decision-model list; the hand-checked
+    entries win where both name a model (Clef's listed 64k is a silent 16k cut)."""
+
+    def test_listed_models_join_the_hand_checked_ones(self):
+        listed = [{"provider": "openrouter", "model": "cloudflare/clef", "name": "Clef", "context": 65536},
+                  {"provider": "openrouter", "model": "inception/mercury-decide", "name": "Mercury Decide",
+                   "context": 65536, "price_per_m": 0.02},
+                  {"provider": "openrouter", "model": "jaredpalmer/kev-4b", "name": "Kev 4B", "context": 8192},
+                  {"provider": "openrouter", "model": "respan/span-01", "name": "Span", "context": 0}]
+        store = mock.Mock(load=mock.Mock(return_value=listed))
+        with mock.patch.object(dm, "_catalog_store", return_value=store):
+            by = {(m["provider"], m["model"]): m for m in dm.catalog()}
+            c = cfg(api_key="k", model="jaredpalmer/kev-4b")
+            self.assertEqual(dm.context_tokens(c), 3072)                       # 3/8 of a small window
+        self.assertEqual(by[("openrouter", "cloudflare/clef")]["cut_at"], 16384)   # hand entry kept
+        self.assertEqual(by[("openrouter", "inception/mercury-decide")]["budget"], 24000)
+        self.assertEqual(by[("openrouter", "respan/span-01")]["budget"], dm.UNKNOWN_BUDGET)
+        self.assertEqual(sum(k == ("openrouter", "cloudflare/clef") for k in by), 1)
+
+    def test_refresh_skips_aliases_and_reads_the_price(self):
+        body = {"data": [{"id": "~typesafe/jev-latest", "name": "Jev Latest", "context_length": 64000},
+                         {"id": "liquid/d1", "name": "LiquidAI: d1", "context_length": 65536,
+                          "pricing": {"prompt": "0.00000004"}}]}
+        store = mock.Mock(write=mock.Mock(side_effect=lambda rows: {"success": True, "rows": rows}))
+        resp = mock.Mock(json=lambda: body, raise_for_status=lambda: None)
+        with mock.patch.object(dm, "_catalog_store", return_value=store), \
+             mock.patch.object(dm.requests, "get", return_value=resp, create=True) as get:
+            rows = dm.refresh_catalog(cfg(api_key="sk-or"))["rows"]
+        self.assertIn("output_modalities=decisions", get.call_args[0][0])
+        self.assertEqual(rows, [{"provider": "openrouter", "model": "liquid/d1", "name": "LiquidAI: d1",
+                                 "context": 65536, "price_per_m": 0.04}])
+
+
 class KeyGuard(unittest.TestCase):
     """A masked key on screen means "keep the saved one" -- only while it still goes
     to the same place. Needs Flask (the backend image has it; a bare dev box skips)."""

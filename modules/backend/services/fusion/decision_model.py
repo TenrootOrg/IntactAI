@@ -57,6 +57,65 @@ MODELS = [
     {"provider": "openai", "model": "gpt-6-luna", "budget": 24000,
      "note": "OpenAI Decisions API (beta) — needs an OpenAI API key; not yet tested live"},
 ]
+# OpenRouter lists every decision model it serves under this filter (found
+# 2026-10-11: plain /models lists chat models only). "Update catalog" stores it;
+# the hand-checked MODELS above win where both name a model (Clef's listed 64k
+# context is really a silent 16k cut on OpenRouter's provider).
+CATALOG_URL = "https://openrouter.ai/api/v1/models?output_modalities=decisions"
+CATALOG_PATH = "/app/data/decision_models.json"
+_store = []
+
+
+def _catalog_store():
+    if not _store:
+        from services.llm_catalogs.base import CatalogStore
+        _store.append(CatalogStore("decision", CATALOG_PATH, CATALOG_URL))
+    return _store[0]
+
+
+def refresh_catalog(cfg=None) -> dict:
+    """Fetch OpenRouter's decision models into CATALOG_PATH (kept if the fetch is empty)."""
+    cfg = _cfg() if cfg is None else cfg
+    key = _key({**cfg, "decision_model": {**(cfg.get("decision_model") or {}), "mode": "online",
+                                          "provider": "openrouter"}})
+    r = requests.get(CATALOG_URL, timeout=30, allow_redirects=False,
+                     headers={"Authorization": f"Bearer {key}"} if key else {})
+    r.raise_for_status()
+    rows = []
+    for m in r.json().get("data") or []:
+        mid = m.get("id") or ""
+        if not mid or mid.startswith("~"):          # "~typesafe/jev-latest" = our jev-latest alias
+            continue
+        try:
+            price = float((m.get("pricing") or {}).get("prompt") or 0) * 1e6
+        except (TypeError, ValueError):
+            price = 0.0
+        rows.append({"provider": "openrouter", "model": mid, "name": m.get("name") or mid,
+                     "context": int(m.get("context_length") or 0), "price_per_m": round(price, 4)})
+    return _catalog_store().write(rows)
+
+
+def catalog() -> list:
+    """Known models: the hand-checked MODELS, then whatever the last Update catalog listed."""
+    out = list(MODELS)
+    have = {(r["provider"], r["model"]) for r in out}
+    try:
+        listed = _catalog_store().load()
+    except Exception:  # noqa: BLE001 -- suggestions only
+        listed = []
+    for m in listed:
+        if (m.get("provider"), m.get("model")) in have:
+            continue
+        ctx = int(m.get("context") or 0)
+        # 3/8 of the listed window: Jev lists 64k and refused our chars/4-estimated
+        # batches above ~24k (2026-09). The listing is the vendor's word, not ours.
+        budget = min(24000, ctx * 3 // 8) if ctx else UNKNOWN_BUDGET
+        note = f"{m.get('name')} — {ctx // 1000}k context, ${m.get('price_per_m', 0):g}/M input" if ctx \
+            else f"{m.get('name')} — ${m.get('price_per_m', 0):g}/M input"
+        out.append({"provider": m.get("provider"), "model": m.get("model"), "budget": budget, "note": note})
+    return out
+
+
 USES = ("disposition", "relevance", "grounding", "identity", "chat_intent", "injection",
         "chat_confidence", "scopes", "compromise", "report")
 DEFAULTS = {"enabled": False,
@@ -102,14 +161,14 @@ def model_name(cfg) -> str:
     m = (s.get("model") or "").strip()
     # The model saved for another provider means nothing here (jev-latest is not an
     # OpenAI model): fall back to this provider's own default.
-    if m and any(r["model"] == m and r["provider"] != p for r in MODELS):
+    if m and any(r["model"] == m and r["provider"] != p for r in catalog()):
         m = ""
     return m or PROVIDERS[p]["model"]
 
 
 def _known(cfg):
     p, m = provider(cfg), model_name(cfg)
-    return next((r for r in MODELS if r["provider"] == p and r["model"] == m), {})
+    return next((r for r in catalog() if r["provider"] == p and r["model"] == m), {})
 
 
 def context_tokens(cfg=None) -> int:

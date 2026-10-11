@@ -59,6 +59,7 @@ document.addEventListener('alpine:init', () => {
         decisionTesting: false,
         decisionTestResult: null,
         decisionCatalog: { providers: {}, models: [] },
+        updatingDecisionCatalog: false,
         updatingCatalog: false,
         message: '',
         messageType: '',
@@ -196,6 +197,20 @@ document.addEventListener('alpine:init', () => {
                 const r = await fetch('/api/config/decision_model/models');
                 if (r.ok) this.decisionCatalog = await r.json();
             } catch (e) { /* suggestions only: typing a model still works */ }
+        },
+
+        async updateDecisionCatalog() {
+            this.updatingDecisionCatalog = true;
+            try {
+                const r = await fetch('/api/config/decision_model/refresh', { method: 'POST' });
+                const d = await r.json().catch(() => ({}));
+                if (d.success) this.showMessage('Decision-model catalog updated — ' + d.model_count + ' models from OpenRouter', 'success');
+                else this.showMessage('Decision-model catalog not updated (the previous list is kept): ' + (d.error || 'HTTP ' + r.status), 'error');
+            } catch (e) {
+                this.showMessage('Decision-model catalog not updated: ' + e.message, 'error');
+            }
+            await this.loadDecisionCatalog();
+            this.updatingDecisionCatalog = false;
         },
 
         // Mirrors why_inactive() in services/fusion/decision_model.py.

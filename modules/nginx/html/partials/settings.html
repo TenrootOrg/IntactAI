@@ -1084,6 +1084,11 @@
                         </div>
 
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button @click="$store.settings.updateDecisionCatalog()" :disabled="$store.settings.updatingDecisionCatalog"
+                                    class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-2 rounded text-sm font-medium mr-2"
+                                    title="Fetch the decision models OpenRouter serves now (names, context, price) as suggestions for Model. The existing list is kept if the fetch fails or returns nothing.">
+                                <span x-text="$store.settings.updatingDecisionCatalog ? 'Updating…' : 'Update catalog'"></span>
+                            </button>
                             <button @click="$store.settings.saveAgentic()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
                                 <span x-text="$store.settings.saving ? 'Saving...' : 'Save Decision Model Settings'"></span>
                             </button>
