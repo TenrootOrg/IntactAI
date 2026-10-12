@@ -1122,9 +1122,11 @@ def velociraptor_client_versions():
     """Summary of the whole fleet + ONE page of clients, filtered here (a fleet of
     thousands is never sent, nor rendered, whole). Filters: state, os, version,
     online (1/0), q (host or client id), reason ('eligible' or a not-upgradable
-    key), hide=unknown (collapse clients that never reported a version); page
-    (1-based), per (<= 200)."""
-    from services.velociraptor_clients import client_versions, summarize, filter_clients
+    key), hide=unknown (collapse clients that never reported a version);
+    sort (host / os / version / upgrade / last_seen) + dir=desc; page (1-based),
+    per (<= 200). Each row carries upgrade={code, text} for the table's column."""
+    from services.velociraptor_clients import (client_versions, summarize, filter_clients, sort_clients,
+                                               upgrade_status)
     a = request.args
     try:
         status = client_versions()
@@ -1134,10 +1136,13 @@ def velociraptor_client_versions():
     rows = filter_clients(status, state=a.get("state") or None, os=a.get("os") or None,
                           version=a.get("version"), online=online, q=a.get("q"), reason=a.get("reason") or None,
                           hide_unknown=a.get("hide") == "unknown")
+    rows = sort_clients(rows, a.get("sort") or "", a.get("dir") == "desc")
     per = max(1, min(200, int(a.get("per", 50) or 50)))
     pages = max(1, -(-len(rows) // per))
     page = max(1, min(pages, int(a.get("page", 1) or 1)))
-    return jsonify({"summary": summarize(status), "clients": rows[(page - 1) * per: page * per],
+    shown = [{**c, "upgrade": dict(zip(("code", "text"), upgrade_status(c)))}
+             for c in rows[(page - 1) * per: page * per]]
+    return jsonify({"summary": summarize(status), "clients": shown,
                     "filtered": len(rows), "page": page, "pages": pages, "per": per})
 
 

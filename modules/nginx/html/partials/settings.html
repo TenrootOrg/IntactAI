@@ -1538,17 +1538,23 @@
                                           x-text="$store.settings.velo.filtered ? (($store.settings.velo.page - 1) * $store.settings.velo.per + 1).toLocaleString() + '–' + Math.min($store.settings.velo.page * $store.settings.velo.per, $store.settings.velo.filtered).toLocaleString() + ' of ' + $store.settings.velo.filtered.toLocaleString() : 'no client matches'"></span>
                                 </div>
                                 <table class="w-full text-sm">
+                                    <!-- click a header to sort (on the server: it covers the whole fleet, not this page) -->
                                     <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-700">
-                                        <th class="py-1.5">Host</th><th>OS</th><th>Version</th><th>State</th><th>Last seen</th></tr></thead>
+                                        <template x-for="[k, label] in [['host','Host'],['os','OS'],['version','Version'],['upgrade','Upgrade'],['last_seen','Last seen']]" :key="k">
+                                            <th class="py-1.5 cursor-pointer hover:text-gray-300 whitespace-nowrap" @click="$store.settings.setVeloSort(k)"
+                                                :title="'Sort by ' + label.toLowerCase()">
+                                                <span x-text="label"></span><span x-show="$store.settings.veloFilter.sort === k" x-text="$store.settings.veloFilter.dir === 'desc' ? ' ▼' : ' ▲'"></span>
+                                            </th>
+                                        </template></tr></thead>
                                     <tbody>
                                         <template x-for="c in $store.settings.velo.clients" :key="c.client_id">
                                             <tr class="border-b border-gray-700/50">
                                                 <td class="py-1.5 text-white" :title="c.client_id + (c.release ? ' — ' + c.release : '')" x-text="c.hostname || c.client_id"></td>
                                                 <td class="text-gray-400" x-text="c.os || '—'"></td>
                                                 <td class="text-gray-300" x-text="c.version || '—'"></td>
-                                                <td><span class="text-xs px-2 py-0.5 rounded"
-                                                          :class="{current: 'bg-green-900 text-green-300', behind: 'bg-yellow-900 text-yellow-300', ahead: 'bg-blue-900 text-blue-300', unknown: 'bg-gray-700 text-gray-300'}[c.state]"
-                                                          x-text="{current: 'current', behind: 'behind', ahead: 'newer than server', unknown: 'unknown'}[c.state]"></span></td>
+                                                <td :title="c.upgrade.text"
+                                                    :class="{up_to_date: 'text-green-400', will_upgrade: 'text-yellow-400', cant: 'text-orange-400', no_version: 'text-gray-500', newer: 'text-gray-400'}[c.upgrade.code]"
+                                                    x-text="(c.upgrade.code === 'up_to_date' ? '✓ ' : '') + c.upgrade.text"></td>
                                                 <td :class="c.online ? 'text-green-400' : 'text-gray-500'"
                                                     x-text="c.online ? 'online' : (c.last_seen ? new Date(c.last_seen * 1000).toLocaleString() : 'never')"></td>
                                             </tr>

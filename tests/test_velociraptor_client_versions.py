@@ -16,8 +16,8 @@ for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "modules/backend")):
 
 import _optional_deps  # noqa: F401,E402
 from services.velociraptor_clients import (  # noqa: E402
-    check_embedded_config, classify, filter_clients, msi_config_text, outcomes, spread_seconds,
-    summarize, upgrade_targets, version_key)
+    check_embedded_config, classify, filter_clients, msi_config_text, outcomes, sort_clients, spread_seconds,
+    summarize, upgrade_status, upgrade_targets, version_key)
 
 NOW = 1_800_000_000
 
@@ -192,6 +192,38 @@ class Fleet(unittest.TestCase):
         self.assertTrue(all(c["os"] == "linux" and not c["online"] for c in filter_clients(st, os="linux", online=False)))
         self.assertTrue(all(c["version"] == "" for c in filter_clients(st, version="")))
         self.assertEqual(len(filter_clients(st, reason="old_windows")), 100)
+
+    def test_sort_by_column_unknowns_last(self):
+        st = self.fleet(200)
+        by_ver = sort_clients(list(st["clients"]), "version")
+        keys = [version_key(c["version"]) for c in by_ver]
+        known = [k for k in keys if k]
+        self.assertEqual(known, sorted(known))
+        self.assertTrue(all(k is None for k in keys[len(known):]))   # no version: always at the end
+        desc = sort_clients(list(st["clients"]), "version", desc=True)
+        self.assertEqual(version_key(desc[0]["version"]), (0, 77, 2))
+        self.assertIsNone(version_key(desc[-1]["version"]))
+        hosts = [c["hostname"] for c in sort_clients(list(st["clients"]), "host", desc=True)]
+        self.assertEqual(hosts, sorted(hosts, key=str.lower, reverse=True))
+        order = [upgrade_status(c)[0] for c in sort_clients(list(st["clients"]), "upgrade")]
+        self.assertEqual(order[0], "will_upgrade")
+        self.assertEqual(order[-1], "up_to_date")
+
+    def test_upgrade_column(self):
+        W11, W7 = "Microsoft Windows 11 Pro", "Microsoft Windows 7 Professional"
+        st = classify([
+            {"client_id": "C.a", "hostname": "A", "os": "windows", "release": W11, "version": "0.77.2", "last_seen_at": NOW},
+            {"client_id": "C.b", "hostname": "B", "os": "windows", "release": W11, "version": "0.77.1", "last_seen_at": NOW},
+            {"client_id": "C.c", "hostname": "C", "os": "windows", "release": W7, "version": "0.7.1", "last_seen_at": NOW},
+            {"client_id": "C.d", "hostname": "D", "os": "darwin", "version": "0.77.1", "last_seen_at": NOW},
+            {"client_id": "C.e", "hostname": "E", "os": "", "version": "", "last_seen_at": NOW},
+        ], "0.77.2", now=NOW)
+        got = {c["client_id"]: upgrade_status(c) for c in st["clients"]}
+        self.assertEqual(got["C.a"], ("up_to_date", "up to date"))
+        self.assertEqual(got["C.b"], ("will_upgrade", "will upgrade"))
+        self.assertEqual(got["C.c"], ("cant", "can't — Windows 7 Professional"))
+        self.assertEqual(got["C.d"], ("cant", "can't — darwin"))
+        self.assertEqual(got["C.e"], ("no_version", "no version"))
 
     def test_unknown_versions_can_be_collapsed(self):
         st = self.fleet(1000)

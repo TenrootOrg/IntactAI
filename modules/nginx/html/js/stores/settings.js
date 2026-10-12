@@ -65,7 +65,7 @@ document.addEventListener('alpine:init', () => {
         veloShowUnknown: false,     // clients with no version (usually offline collections) start collapsed
         veloPilotQ: '',
         veloPilotHits: [],
-        veloFilter: { state: '', os: '', version: null, online: '', q: '', reason: '', page: 1 },
+        veloFilter: { state: '', os: '', version: null, online: '', q: '', reason: '', page: 1, sort: '', dir: '' },
         decisionTesting: false,
         decisionTestResult: null,
         decisionCatalog: { providers: {}, models: [] },
@@ -211,7 +211,7 @@ document.addEventListener('alpine:init', () => {
             this.veloError = '';
             try {
                 const f = this.veloFilter, qs = new URLSearchParams({ page: f.page, per: 50 });
-                for (const k of ['state', 'os', 'online', 'q', 'reason']) if (f[k]) qs.set(k, f[k]);
+                for (const k of ['state', 'os', 'online', 'q', 'reason', 'sort', 'dir']) if (f[k]) qs.set(k, f[k]);
                 if (f.version !== null) qs.set('version', f.version);
                 if (!this.veloShowUnknown) qs.set('hide', 'unknown');
                 const r = await fetch('/api/velociraptor/clients/versions?' + qs);
@@ -229,6 +229,12 @@ document.addEventListener('alpine:init', () => {
         setVeloFilter(change) {
             this.veloFilter = { ...this.veloFilter, ...change, page: 1 };
             this.loadVelociraptor();
+        },
+
+        // click a header: sort by it; click again: reverse
+        setVeloSort(k) {
+            const f = this.veloFilter;
+            this.setVeloFilter({ sort: k, dir: f.sort === k && f.dir !== 'desc' ? 'desc' : '' });
         },
 
         toggleVeloUnknown() {

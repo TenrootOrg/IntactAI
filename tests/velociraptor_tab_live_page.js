@@ -106,6 +106,17 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   const all = $$('button').find(b => b.textContent.trim().startsWith('Upgrade all ('));
   check('one "Upgrade all (N)" button, no label/size fields', !!all && !$('input[placeholder="Label (optional)"]') && !$('input[placeholder="Max clients"]'), '');
   check('Upgrade all disabled without a passed pilot or eligible clients', all.disabled === !(st.veloUpgrade.pilot_passed && st.veloUpgrade.eligible), '');
+  // sortable headers (server-side) + the Upgrade column
+  const th = t => $$('th').find(h => h.textContent.trim().startsWith(t));
+  check('Upgrade column', !!th('Upgrade') && !th('State'), $$('th').map(h => h.textContent.trim()).join(','));
+  th('Version').click();
+  await waitFor(() => net.some(n => n.includes('sort=version')));
+  check('click a header: sorted on the server', net.some(n => n.includes('sort=version')) && th('Version').textContent.includes('▲'), th('Version').textContent);
+  th('Version').click();
+  await waitFor(() => net.some(n => n.includes('sort=version') && n.includes('dir=desc')));
+  check('click again: reversed', th('Version').textContent.includes('▼'), th('Version').textContent);
+  const vm = $$('tbody tr').find(r => r.textContent.includes('DESKTOP-2175T02'));
+  check('the VM row says its upgrade status', vm && /up to date|will upgrade/.test(vm.textContent), vm && vm.textContent);
   check('pager hidden for one page', st.velo.pages > 1 || $$('button').filter(b => /Prev/.test(b.textContent)).every(b => b.parentElement.style.display === 'none'), '');
   check('no Alpine / script errors', errors.length === 0, errors.slice(0, 3).join(' || '));
   console.log(fail ? `\n${fail} FAILED` : '\nall ok', '| requests:', net.length);

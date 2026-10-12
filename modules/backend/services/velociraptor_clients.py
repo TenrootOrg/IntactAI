@@ -420,6 +420,46 @@ def filter_clients(status, state=None, os=None, version=None, online=None, q=Non
     return out
 
 
+def upgrade_status(c):
+    """The table's "Upgrade" column: (code, text). up_to_date / will_upgrade /
+    cant (with the reason, short) / no_version / newer."""
+    key, why = eligibility(c)
+    if key is None:
+        return "will_upgrade", "will upgrade"
+    if key == "current":
+        return "up_to_date", "up to date"
+    if key == "ahead":
+        return "newer", "newer than the server"
+    if key in ("unknown_version", "unknown_release"):
+        return "no_version", "no version" if key == "unknown_version" else "Windows release unknown"
+    short = {"old_windows": (c.get("release") or "old Windows").replace("Microsoft ", ""),
+             "unsupported_os": c.get("os") or "unknown OS"}.get(key, why)
+    return "cant", f"can't — {short}"
+
+
+_SORT_ORDER = {"will_upgrade": 0, "cant": 1, "no_version": 2, "newer": 3, "up_to_date": 4}
+
+
+def sort_clients(rows, key="", desc=False):
+    """Server-side sort for the paged table (it covers the whole fleet, not the
+    page on screen). key: host, os, version, upgrade, last_seen. Unknown versions
+    and never-seen clients always sort last."""
+    if key == "host":
+        k = lambda c: c["hostname"].lower()
+    elif key == "os":
+        k = lambda c: (c["os"] or "~", c["hostname"].lower())
+    elif key == "version":
+        k = lambda c: version_key(c["version"]) or ()
+    elif key == "upgrade":
+        k = lambda c: (_SORT_ORDER.get(upgrade_status(c)[0], 9), c["hostname"].lower())
+    elif key == "last_seen":
+        k = lambda c: c["last_seen"] or 0
+    else:
+        return rows
+    last = lambda c: (key == "version" and not version_key(c["version"])) or (key == "last_seen" and not c["last_seen"])
+    return sorted((c for c in rows if not last(c)), key=k, reverse=desc) + [c for c in rows if last(c)]
+
+
 def upgrade_targets(status, stage, client_ids=None, label=None, limit=None):
     """(targets, refusals). Explicit client_ids are each checked (refusals say why);
     otherwise every eligible client -- online only for a pilot, which takes one --
