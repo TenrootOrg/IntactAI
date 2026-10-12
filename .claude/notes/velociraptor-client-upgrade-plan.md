@@ -1,6 +1,13 @@
 # Plan: Settings → Velociraptor — upgrade the Velociraptor clients
 
-Branch `dev-velociraptor-client-upgrade` (from main 5268f189). **Planned 2026-10-11, not started.**
+Branch `dev-velociraptor-client-upgrade` (from main 5268f189). Planned 2026-10-11.
+
+**Status 2026-10-12:** steps 1-3 done and live-tested for Windows AND Linux (4a5f2a3a, 91a27762, 47034514);
+the critical cases (mixed results, retry, force, Linux rollback, offline, Stop, one run at a time, restart
+resume) all run live. **Left: step 4** (banner after a server upgrade + prepare from velo_refresh), docs,
+the risx_lib artifact names. The scope grew to Linux on request: Intact.Client.Upgrade.Linux (backend
+config/) swaps the running binary; legacy, musl-only Linux and macOS are known gaps (commit 91a27762).
+The fleet stage is followed 24 h and checked once an hour; the pilot every 20 s for 15 min.
 
 ## Decided with the user
 1. **Rollout:** pilot first, then the rest. Upgrade the picked client(s) (1 by default), wait until they
