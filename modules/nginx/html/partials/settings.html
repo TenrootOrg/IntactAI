@@ -1461,29 +1461,34 @@
                     <!-- Velociraptor Tab — built for fleets of thousands: everything above the table is a
                          server-side summary; the table is one filtered page; the pilot is a search; the rest
                          goes in waves. Plan: .claude/notes/velociraptor-client-upgrade-plan.md -->
+                    <!-- Refreshes itself every 30 s while this tab is open and the page is visible (no
+                         Reload button: the operator was left wondering what Reload vs Refresh did).
+                         "Ask clients to report again" lives in the Version unknown column, the one
+                         place it matters. -->
                     <div x-show="settingsTab === 'velociraptor' && $store.services.has('velociraptor')" x-transition
+                         x-init="setInterval(() => { if (settingsTab === 'velociraptor' && !document.hidden && !$store.settings.veloLoading) $store.settings.loadVelociraptor() }, 30000)"
                          class="bg-gray-800 rounded-lg p-5 border border-gray-700">
-                        <div class="flex items-center justify-between mb-1">
-                            <h3 class="text-lg font-semibold text-white">Velociraptor clients</h3>
-                            <div class="flex gap-2">
-                                <button @click="$store.settings.loadVelociraptor()" :disabled="$store.settings.veloLoading"
-                                        class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1.5 rounded text-sm">
-                                    <span x-text="$store.settings.veloLoading ? 'Loading…' : 'Reload'"></span>
-                                </button>
-                                <button @click="$store.settings.refreshVeloClientInfo()" :disabled="$store.settings.veloRefreshing"
-                                        title="Runs a Generic.Client.Info hunt: every client reports its version again. Offline clients answer when they are next seen (the hunt stays open 7 days)."
-                                        class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 rounded text-sm font-medium">
-                                    <span x-text="$store.settings.veloRefreshing ? 'Asking…' : 'Refresh client info'"></span>
-                                </button>
-                            </div>
-                        </div>
+                        <h3 class="text-lg font-semibold text-white mb-1">Velociraptor clients</h3>
                         <p class="text-xs text-gray-500 mb-4" x-show="$store.settings.velo" x-text="$store.settings.velo ? 'Server ' + $store.settings.velo.summary.server_version + ' · ' + $store.settings.velo.summary.counts.online + ' of ' + $store.settings.velo.summary.total + ' online · clients are upgraded from here: a pilot first, then all the rest' : ''"></p>
                         <p x-show="$store.settings.veloError" class="text-sm text-red-400 mb-3" x-text="$store.settings.veloError"></p>
 
                         <template x-if="$store.settings.velo">
                             <div>
                                 <!-- After a server upgrade: who is behind and whether the packages are ready. Notify only. -->
-                                <div x-show="$store.settings.velo.summary.counts.behind" class="mb-4 rounded border border-yellow-700 bg-yellow-900/30 px-4 py-3 text-sm">
+                                <!-- An upgrade is being followed (pilot 15 min, the rest 24 h): say so at the top, so
+                                     nobody starts it again; decide about any client left once it has finished. -->
+                                <div x-show="$store.settings.veloUpgrade.running" class="mb-4 rounded border border-blue-700 bg-blue-900/30 px-4 py-3 text-sm">
+                                    <div class="text-blue-200 font-medium"
+                                         x-text="($store.settings.veloUpgrade.running||{}).total && $store.settings.veloUpgrade.running.upgraded >= $store.settings.veloUpgrade.running.total
+                                                 ? 'Client upgrade: all ' + $store.settings.veloUpgrade.running.total + ' upgraded — the run closes at its next ' + ($store.settings.veloUpgrade.running.stage === 'pilot' ? 'check' : 'hourly check')
+                                                 : 'Client upgrade in progress — ' + (($store.settings.veloUpgrade.running||{}).stage === 'pilot' ? 'pilot' : 'all clients') + ': ' + (($store.settings.veloUpgrade.running||{}).upgraded || 0) + ' of ' + (($store.settings.veloUpgrade.running||{}).total || 0) + ' upgraded so far' + (($store.settings.veloUpgrade.running||{}).failed ? ', ' + $store.settings.veloUpgrade.running.failed + ' failed' : '')"></div>
+                                    <div class="text-xs text-gray-300 mt-1">
+                                        <span x-text="'Started ' + ($store.settings.veloUpgrade.running ? new Date($store.settings.veloUpgrade.running.started).toLocaleString() : '') + ', followed until ' + ($store.settings.veloUpgrade.running && $store.settings.veloUpgrade.running.watch_until ? new Date($store.settings.veloUpgrade.running.watch_until * 1000).toLocaleString() : '') + ' (' + (($store.settings.veloUpgrade.running||{}).stage === 'pilot' ? '15 min' : '24 h, checked hourly') + ').'"></span>
+                                        No need to start it again — wait until it finishes, then decide about any client left.
+                                        <button @click="window.ActiveCase.gotoSystemWorkflows()" class="text-blue-400 hover:text-blue-300 underline">Progress in Settings → Actions</button>
+                                    </div>
+                                </div>
+                                <div x-show="$store.settings.velo.summary.counts.behind && !$store.settings.veloUpgrade.running" class="mb-4 rounded border border-yellow-700 bg-yellow-900/30 px-4 py-3 text-sm">
                                     <div class="text-yellow-300 font-medium"
                                          x-text="'Server ' + $store.settings.velo.summary.server_version + ' — ' + $store.settings.velo.summary.counts.behind.toLocaleString() + ' client(s) behind, ' + ($store.settings.veloUpgrade.eligible || 0).toLocaleString() + ' upgradable from here'"></div>
                                     <div class="text-xs text-gray-300 mt-1">
@@ -1524,6 +1529,13 @@
                                         <div class="text-xs uppercase tracking-wide text-gray-500">Version unknown</div>
                                         <div class="text-3xl font-bold leading-none mt-2 text-gray-400" x-text="$store.settings.velo.summary.counts.unknown.toLocaleString()"></div>
                                         <div class="text-xs text-gray-500 mt-1">usually offline collections</div>
+                                        <button @click="$store.settings.refreshVeloClientInfo()" :disabled="$store.settings.veloRefreshing"
+                                                title="Sends a Generic.Client.Info hunt: every client reports its version again. Offline clients answer when they are next seen (the hunt stays open 7 days). Clients also report by themselves whenever they restart."
+                                                class="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50 mt-2"
+                                                x-text="$store.settings.veloRefreshing ? 'asking…' : 'ask clients to report again'"></button>
+                                        <div x-show="$store.settings.veloRefreshMsg" class="text-xs mt-1"
+                                             :class="($store.settings.veloRefreshMsg||{}).ok ? 'text-green-400' : 'text-red-400'"
+                                             x-text="($store.settings.veloRefreshMsg||{}).text"></div>
                                     </div>
                                 </div>
 
@@ -1607,7 +1619,8 @@
                                                       x-text="($store.settings.veloPilot||{}).hostname + ' (' + ($store.settings.veloPilot||{}).os + ' ' + ($store.settings.veloPilot||{}).version + ')'"></span>
                                                 <button x-show="$store.settings.veloPilot" @click="$store.settings.veloPilot = null; $store.settings.veloPilotQ = ''" class="text-xs text-blue-400">change</button>
                                                 <button @click="$store.settings.startVeloUpgrade('pilot')" class="ml-auto bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1 rounded text-white"
-                                                        :disabled="!$store.settings.veloPilot || ($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.summary.server_version">Upgrade pilot</button>
+                                                        :disabled="!$store.settings.veloPilot || ($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.summary.server_version || $store.settings.veloUpgrade.running"
+                                                :title="$store.settings.veloUpgrade.running ? 'An upgrade is in progress — wait until it finishes.' : ''">Upgrade pilot</button>
                                             </div>
                                             <p x-show="!$store.settings.veloUpgrade.eligible_online" class="text-xs text-gray-500 mt-2">No online client can be upgraded right now.</p>
                                         </div>
@@ -1616,8 +1629,8 @@
                                             <div class="flex items-center gap-2 mt-2">
                                                 <span class="text-xs text-gray-500" x-text="$store.settings.veloWaveText()"></span>
                                                 <button @click="$store.settings.startVeloUpgrade('rest')" class="ml-auto bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1 rounded text-white"
-                                                        :disabled="!$store.settings.veloUpgrade.pilot_passed || !$store.settings.veloUpgrade.eligible"
-                                                        :title="!$store.settings.veloUpgrade.eligible ? 'No client is behind the server.' : ($store.settings.veloUpgrade.pilot_passed ? '' : 'Available once a pilot client upgraded with these packages.')"
+                                                        :disabled="!$store.settings.veloUpgrade.pilot_passed || !$store.settings.veloUpgrade.eligible || $store.settings.veloUpgrade.running"
+                                                        :title="$store.settings.veloUpgrade.running ? 'An upgrade is in progress — wait until it finishes.' : (!$store.settings.veloUpgrade.eligible ? 'No client is behind the server.' : ($store.settings.veloUpgrade.pilot_passed ? '' : 'Available once a pilot client upgraded with these packages.'))"
                                                         x-text="'Upgrade all (' + ($store.settings.veloUpgrade.eligible || 0).toLocaleString() + ')'"></button>
                                             </div>
                                         </div>

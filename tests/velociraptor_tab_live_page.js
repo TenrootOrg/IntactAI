@@ -65,7 +65,7 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   check('updated = current / clients that reported a version', cols[0].startsWith(`Updated ${sm.counts.current} / ${reported} on ${sm.server_version}`), cols[0]);
   check('the bar shows updated of reported', $('div.grid.grid-cols-3.rounded-lg div.h-2 > div').style.width === Math.round(100 * sm.counts.current / Math.max(1, reported)) + '%', '');
   check('upgradeable count', cols[1].startsWith(`Upgradeable ${sm.eligible}`), cols[1]);
-  check('version unknown count, "usually offline collections"', cols[2] === `Version unknown ${sm.counts.unknown} usually offline collections`, cols[2]);
+  check('version unknown count, "usually offline collections"', cols[2].startsWith(`Version unknown ${sm.counts.unknown} usually offline collections`), cols[2]);
   check('table shows one page, unknown versions collapsed', rows() === Math.min(50, sm.total - sm.counts.unknown)
         && $$('tbody tr').every(r => !/unknown/.test(r.textContent)), rows());
   if (sm.counts.unknown) {
@@ -79,7 +79,7 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
     check('... and hides them again', rows() === Math.min(50, sm.total - sm.counts.unknown), rows());
   }
   check('meta line under the title', text().includes(`Server ${sm.server_version} · ${sm.counts.online} of ${sm.total} online`), '');
-  check('nothing in the summary is clickable', !$('div.grid.grid-cols-3.rounded-lg').querySelector('button'), '');
+  check('nothing in the summary is clickable but "ask clients to report again"', [...$('div.grid.grid-cols-3.rounded-lg').querySelectorAll('button')].every(b => /report again|asking/.test(b.textContent)), '');
   const box0 = $('input[placeholder="Search host or client ID"]'), row = box0.parentElement;
   check('filter row = search box only', !row.querySelector('select') && !$$('button').some(b => /upgradable from here|clear filters/.test(b.textContent)), row.innerHTML.slice(0, 200));
   // search
@@ -124,6 +124,29 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   const msg = $$('p').find(p => /^Pilot not started:/.test(p.textContent.trim()));
   check('a refused pilot says why next to the buttons', !!msg && msg.style.display !== 'none' && /text-red-400/.test(msg.className), msg && msg.outerHTML.slice(0, 160));
   w.confirm = () => false; st.veloPilot = null; st.veloAction = null;
+  // no Reload / Refresh buttons in the header; "ask clients to report again" sits in the unknown column
+  check('no Reload / Refresh client info buttons', !$$('button').some(b => /^(Reload|Loading…|Refresh client info)$/.test(b.textContent.trim())), '');
+  const ask = $$('button').find(b => b.textContent.trim() === 'ask clients to report again');
+  check('"ask clients to report again" in the Version unknown column', !!ask && !!ask.closest('div[title]') && /Version unknown/.test(ask.closest('div[title]').textContent), '');
+  await st.refreshVeloClientInfo(); await sleep(100);          // the driver refuses the POST: the reason shows inline
+  const res = ask.parentElement.querySelector('div[x-show*="veloRefreshMsg"]');
+  check('... its result shows right under it', !!res && res.style.display !== 'none' && /^Could not ask/.test(res.textContent.trim()), res && res.outerHTML.slice(0, 160));
+  st.veloRefreshMsg = null;
+  // the page refreshes itself every 30 s while the tab is open
+  const before = net.filter(n => n.includes('/clients/versions')).length;
+  await waitFor(() => net.filter(n => n.includes('/clients/versions')).length > before, 40000);
+  check('refreshes itself within 30 s', net.filter(n => n.includes('/clients/versions')).length > before, before);
+  // while an upgrade is followed: a notice at the top, and Pilot / Upgrade all greyed (from the page's own state)
+  const realRunning = st.veloUpgrade.running;
+  st.veloUpgrade = { ...st.veloUpgrade, running: { stage: 'rest', started: '2026-10-12T10:00:00', watch_until: 1791900000, total: 4, upgraded: 3, failed: 0 } };
+  await waitFor(() => text().includes('Client upgrade in progress'));
+  check('in-progress notice: "3 of 4 upgraded so far", "no need to start it again"', text().includes('Client upgrade in progress — all clients: 3 of 4 upgraded so far') && text().includes('No need to start it again'), '');
+  const bAll = $$('button').find(b => b.textContent.trim().startsWith('Upgrade all ('));
+  check('Upgrade all / pilot greyed while it runs', bAll.disabled && $$('button').find(b => b.textContent.trim() === 'Upgrade pilot').disabled && /in progress/.test(bAll.title), bAll.title);
+  st.veloUpgrade = { ...st.veloUpgrade, running: { ...st.veloUpgrade.running, upgraded: 4 } };
+  await waitFor(() => text().includes('Client upgrade: all 4 upgraded'));
+  check('all done: "all 4 upgraded — the run closes at its next hourly check"', text().includes('Client upgrade: all 4 upgraded — the run closes at its next hourly check'), '');
+  st.veloUpgrade = { ...st.veloUpgrade, running: realRunning };
   check('pager hidden for one page', st.velo.pages > 1 || $$('button').filter(b => /Prev/.test(b.textContent)).every(b => b.parentElement.style.display === 'none'), '');
   check('no Alpine / script errors', errors.length === 0, errors.slice(0, 3).join(' || '));
   console.log(fail ? `\n${fail} FAILED` : '\nall ok', '| requests:', net.length);

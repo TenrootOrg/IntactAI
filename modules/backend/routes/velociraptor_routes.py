@@ -1179,17 +1179,33 @@ def velociraptor_refresh_client_info():
 def velociraptor_upgrade_state():
     """The verified packages (if any), whether their pilot passed, and who is eligible."""
     from services.velociraptor_clients import package_state, pilot_passed, client_versions
-    from services.velociraptor_clients import auto_prepare_enabled, preparing, last_package_run
+    from services.velociraptor_clients import auto_prepare_enabled, preparing, last_package_run, running_upgrade
     pkg = package_state()
     last = last_package_run() or {}
+    run = running_upgrade()
+    rd = (run or {}).get("details") or {}
     out = {"package": pkg, "pilot_passed": bool(pkg) and pilot_passed(pkg["package_id"]),
            "auto_prepare": auto_prepare_enabled(), "preparing": bool(preparing()),
            "last_prepare": {"status": last.get("status"), "error": last.get("error"), "name": last.get("name"),
-                            "at": last.get("updated_at")} if last else None}
+                            "at": last.get("updated_at")} if last else None,
+           # an upgrade still being followed (pilot 15 min, the rest 24 h): the tab says
+           # "in progress -- no need to start it again, wait for it to finish"
+           "running": {"run_id": run.get("run_id"), "name": run.get("name"), "stage": rd.get("stage"),
+                       "started": run.get("created_at"), "watch_until": rd.get("watch_until"),
+                       "total": len(rd.get("targets") or []), "upgraded": len(rd.get("upgraded") or []),
+                       "failed": len(rd.get("failed") or [])} if run else None}
     try:      # counts only: a fleet of thousands is summarised, never listed here
-        from services.velociraptor_clients import summarize
-        sm = summarize(client_versions())
+        from services.velociraptor_clients import summarize, version_key
+        status = client_versions()
+        sm = summarize(status)
         out["eligible"], out["eligible_online"] = sm["eligible"], sm["eligible_online"]
+        if out["running"]:
+            # live, not the run's last (hourly) check: which of its targets already report
+            # the server's version -- it read "0 of 4" with 3 already upgraded
+            server = version_key(status["server_version"])
+            now = {c["client_id"]: c for c in status["clients"]}
+            out["running"]["upgraded"] = sum(1 for t in rd.get("targets") or []
+                                             if version_key((now.get(t["client_id"]) or {}).get("version")) == server)
     except Exception as e:  # noqa: BLE001 -- the tab still shows the package
         out["error"] = str(e)
     return jsonify(out)

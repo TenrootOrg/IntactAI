@@ -63,7 +63,8 @@ document.addEventListener('alpine:init', () => {
         veloUpgrade: {},
         veloPilot: null,
         veloShowUnknown: false,
-        veloAction: null,           // the last Prepare / Upgrade result, shown next to the buttons (the top banner is off-screen there)     // clients with no version (usually offline collections) start collapsed
+        veloAction: null,
+        veloRefreshMsg: null,           // the last Prepare / Upgrade result, shown next to the buttons (the top banner is off-screen there)     // clients with no version (usually offline collections) start collapsed
         veloPilotQ: '',
         veloPilotHits: [],
         veloFilter: { state: '', os: '', version: null, online: '', q: '', reason: '', page: 1, sort: '', dir: '' },
@@ -310,12 +311,11 @@ document.addEventListener('alpine:init', () => {
             try {
                 const r = await fetch('/api/velociraptor/clients/refresh-info', { method: 'POST' });
                 const d = await r.json().catch(() => ({}));
-                if (r.ok) this.showMessage('Asked every client to report its version (hunt ' + d.hunt_id
-                                           + '). Online clients answer within minutes; offline ones when they are next seen, for '
-                                           + d.open_days + ' days. Press Reload to see them.', 'success');
-                else this.showMessage('Could not ask the clients: ' + (d.error || 'HTTP ' + r.status), 'error');
+                this.veloRefreshMsg = r.ok
+                    ? { ok: true, text: 'Asked — online clients answer within minutes, offline ones when next seen (' + d.open_days + ' days). The page updates by itself.' }
+                    : { ok: false, text: 'Could not ask: ' + (d.error || 'HTTP ' + r.status) };
             } catch (e) {
-                this.showMessage('Could not ask the clients: ' + e.message, 'error');
+                this.veloRefreshMsg = { ok: false, text: 'Could not ask: ' + e.message };
             }
             this.veloRefreshing = false;
         },
