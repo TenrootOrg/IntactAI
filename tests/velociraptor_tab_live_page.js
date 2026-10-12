@@ -58,14 +58,17 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   const rows = () => $$('tbody tr').length;
   const sm = st.velo.summary;
   check('summary loaded', !!sm && sm.total >= 1, JSON.stringify(st.velo).slice(0, 200));
-  check('progress line', text().includes(`${sm.counts.current} of ${sm.total} clients on the server's version ${sm.server_version}`), text().slice(0, 300));
+  // the summary: one card, three columns (Updated / Upgradeable / Version unknown), each number once
+  const cols = $$('div.grid.grid-cols-3.rounded-lg > div').map(d => d.textContent.replace(/\s+/g, ' ').trim());
+  const reported = sm.total - sm.counts.unknown;
+  check('summary: three columns', cols.length === 3 && /^Updated/.test(cols[0]) && /^Upgradeable/.test(cols[1]) && /^Version unknown/.test(cols[2]), JSON.stringify(cols));
+  check('updated = current / clients that reported a version', cols[0].startsWith(`Updated ${sm.counts.current} / ${reported} on ${sm.server_version}`), cols[0]);
+  check('the bar shows updated of reported', $('div.grid.grid-cols-3.rounded-lg div.h-2 > div').style.width === Math.round(100 * sm.counts.current / Math.max(1, reported)) + '%', '');
+  check('upgradeable count', cols[1].startsWith(`Upgradeable ${sm.eligible}`), cols[1]);
+  check('version unknown count, "usually offline collections"', cols[2] === `Version unknown ${sm.counts.unknown} usually offline collections`, cols[2]);
   check('table shows one page (<= 50) of rows', rows() === Math.min(50, sm.total), rows());
-  check('by-version panel lists versions', /0\.77\.2/.test($$('div.grid.grid-cols-3 > div')[0].textContent), '');
-  check('not-upgradable grouped with a count', text().includes('Version unknown — Refresh client info'), text().slice(0, 600));
-  // the counts are information only, and the filter row is just a search box (2026-10-12: both were too much)
-  const panels = $$('div.grid.grid-cols-3 > div');
-  check('by-version / by-OS / not-upgradable panels have nothing to click', panels.length === 3 && panels.every(p => !p.querySelector('button')), panels.length);
-  check('counts under the bar are plain text', !$$('button').some(b => /version unknown$|on the server's version$/.test(b.textContent.trim())), '');
+  check('meta line under the title', text().includes(`Server ${sm.server_version} · ${sm.counts.online} of ${sm.total} online`), '');
+  check('nothing in the summary is clickable', !$('div.grid.grid-cols-3.rounded-lg').querySelector('button'), '');
   const box0 = $('input[placeholder="Search host or client ID"]'), row = box0.parentElement;
   check('filter row = search box only', !row.querySelector('select') && !$$('button').some(b => /upgradable from here|clear filters/.test(b.textContent)), row.innerHTML.slice(0, 200));
   // search
