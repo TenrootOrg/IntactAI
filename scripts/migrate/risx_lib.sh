@@ -640,14 +640,13 @@ slowly or are offline; watch the GUI. Trust chain checks all passed."
 fleet_upgrade_hint() {
     say "=== Phase 7: fleet client upgrade (optional) ==="
     cat <<'EOF'
-Deployed clients still run the legacy binary. To upgrade them THROUGH the new
-server (no endpoint touch; client_id and writeback survive):
-  1. GUI -> Hunts -> New hunt -> artifact 'Admin.Client.Upgrade'
-     (Windows) / 'Admin.Client.Upgrade.Linux' — set the version to the
-     server's own (0.77.x).
-  2. Start with a hunt limited to one label/canary host; confirm it comes
-     back on the new version; then widen to the fleet.
-Air-gapped fleets: point the artifact's tool at this server's own installers
-(Server Artifacts -> tools) instead of GitHub.
+Deployed clients still run the legacy binary. Upgrade them THROUGH the new
+server (no endpoint touch; client_id and writeback survive) from the dashboard:
+  Settings -> Velociraptor -> Refresh client info (so every client reports its
+  version), Prepare packages, Upgrade pilot (one host; it must come back on the
+  server's version), then Upgrade the rest -- followed in Settings -> Actions.
+It serves this server's own repacked installers, so air-gapped fleets need
+nothing from GitHub. Windows older than 10 / Server 2016 and old-glibc Linux
+cannot run the current build and are left on their legacy agent.
 EOF
 }

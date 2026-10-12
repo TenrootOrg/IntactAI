@@ -228,6 +228,15 @@ document.addEventListener('alpine:init', () => {
             setTimeout(() => window.ActiveCase.gotoSystemWorkflows(), 600);
         },
 
+        async setVeloAutoPrepare(enabled) {
+            const r = await fetch('/api/velociraptor/clients/auto-prepare', {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+            });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok) this.veloUpgrade.auto_prepare = d.auto_prepare_packages;
+            else this.showMessage('Could not change it: ' + (d.error || 'HTTP ' + r.status), 'error');
+        },
+
         async startVeloUpgrade(stage) {
             const n = stage === 'pilot' ? 1 : (this.veloUpgrade.rest_candidates || []).length;
             const who = stage === 'pilot' ? ((this.velo?.clients || []).find(c => c.client_id === this.veloPilot) || {}).hostname : n + ' client(s)';

@@ -1143,8 +1143,13 @@ def velociraptor_upgrade_state():
     """The verified packages (if any), whether their pilot passed, and who is eligible."""
     from services.velociraptor_clients import (package_state, pilot_passed, client_versions,
                                                upgrade_targets)
+    from services.velociraptor_clients import auto_prepare_enabled, preparing, last_package_run
     pkg = package_state()
-    out = {"package": pkg, "pilot_passed": bool(pkg) and pilot_passed(pkg["package_id"])}
+    last = last_package_run() or {}
+    out = {"package": pkg, "pilot_passed": bool(pkg) and pilot_passed(pkg["package_id"]),
+           "auto_prepare": auto_prepare_enabled(), "preparing": bool(preparing()),
+           "last_prepare": {"status": last.get("status"), "error": last.get("error"), "name": last.get("name"),
+                            "at": last.get("updated_at")} if last else None}
     try:
         status = client_versions()
         behind = [c["client_id"] for c in status["clients"] if c["state"] == "behind"]
@@ -1160,26 +1165,19 @@ def velociraptor_upgrade_state():
 @velociraptor_bp.route('/api/velociraptor/client-package', methods=['POST'])
 def velociraptor_prepare_package():
     """Build + verify + register the Windows MSI and the Linux binary (System action)."""
-    import threading
-    from services.velociraptor_clients import prepare_packages, running_upgrade
-    busy = running_upgrade()
-    if busy:      # refuse up front: a guard is not worth a failed row in Actions
-        return jsonify({"error": f"an upgrade is still being followed ({busy.get('name')}) -- "
-                                 "prepare once it has finished"}), 409
-    run_id = create_automation_run("velociraptor_client_package", "Prepare the Velociraptor client packages")
-    update_run_status(run_id, "running", progress=5)
+    from services.velociraptor_clients import start_prepare_run
+    try:
+        return jsonify({"run_id": start_prepare_run()}), 202
+    except ValueError as e:     # refused up front: a guard is not worth a failed row in Actions
+        return jsonify({"error": str(e)}), 409
 
-    def _work():
-        try:
-            pkg = prepare_packages(log=lambda m: add_log_to_run(run_id, m))
-            update_run_status(run_id, "completed", progress=100, details={"package": pkg})
-            add_log_to_run(run_id, f"Ready for {pkg['version']}: {pkg['windows']['filename']}, "
-                                   f"{pkg['linux']['filename']}", "success")
-        except Exception as e:  # noqa: BLE001 -- the reason is the result
-            add_log_to_run(run_id, f"Not prepared: {e}", "error")
-            update_run_status(run_id, "failed", progress=100, error=str(e)[:300])
-    threading.Thread(target=_work, daemon=True).start()
-    return jsonify({"run_id": run_id}), 202
+
+@velociraptor_bp.route('/api/velociraptor/clients/auto-prepare', methods=['PUT'])
+def velociraptor_auto_prepare():
+    """Switch the automatic package rebuild after a server upgrade (default on)."""
+    from services.velociraptor_clients import set_auto_prepare, auto_prepare_enabled
+    set_auto_prepare((request.get_json(silent=True) or {}).get("enabled", True))
+    return jsonify({"auto_prepare_packages": auto_prepare_enabled()})
 
 
 @velociraptor_bp.route('/api/velociraptor/clients/upgrade', methods=['POST'])

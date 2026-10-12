@@ -81,27 +81,35 @@ class Safety(unittest.TestCase):
         self.assertEqual(msi_config_text(b"\xd0\xcf\x11 plain upstream msi, no config"), "")
 
     def test_only_windows_and_linux_clients_behind_the_server_are_targeted(self):
+        W11 = "Microsoft Windows 11 IoT Enterprise LTSC 202424H2"
         status = classify([
-            {"client_id": "C.old", "hostname": "WS-OLD", "os": "windows", "version": "0.77.1", "last_seen_at": NOW},
-            {"client_id": "C.off", "hostname": "WS-OFF", "os": "windows", "version": "0.77.1", "last_seen_at": NOW - 9999},
-            {"client_id": "C.lin", "hostname": "LNX", "os": "linux", "version": "0.77.1", "last_seen_at": NOW},
-            {"client_id": "C.cur", "hostname": "WS-CUR", "os": "windows", "version": "0.77.2", "last_seen_at": NOW},
-            {"client_id": "C.new", "hostname": "WS-NEW", "os": "windows", "version": "0.78.0", "last_seen_at": NOW},
+            {"client_id": "C.old", "hostname": "WS-OLD", "os": "windows", "release": W11, "version": "0.77.1", "last_seen_at": NOW},
+            {"client_id": "C.off", "hostname": "WS-OFF", "os": "windows", "release": W11, "version": "0.77.1", "last_seen_at": NOW - 9999},
+            {"client_id": "C.lin", "hostname": "LNX", "os": "linux", "release": "debian 12", "version": "0.77.1", "last_seen_at": NOW},
+            # a RISX fleet: the old 0.7.x agent on a modern Windows MUST be upgradable
+            {"client_id": "C.risx", "hostname": "RISX-WS", "os": "windows", "release": "Microsoft Windows 10 Enterprise 22H2", "version": "0.7.1", "last_seen_at": NOW},
+            {"client_id": "C.cur", "hostname": "WS-CUR", "os": "windows", "release": W11, "version": "0.77.2", "last_seen_at": NOW},
+            {"client_id": "C.new", "hostname": "WS-NEW", "os": "windows", "release": W11, "version": "0.78.0", "last_seen_at": NOW},
             {"client_id": "C.unk", "hostname": "ALDC02", "os": "", "version": "", "last_seen_at": NOW},
             {"client_id": "C.mac", "hostname": "MAC", "os": "darwin", "version": "0.77.1", "last_seen_at": NOW},
-            {"client_id": "C.leg", "hostname": "W2K8", "os": "windows", "version": "0.7.1", "last_seen_at": NOW},
+            # Go 1.21+ does not run here: the 0.77 MSI would leave a dead client
+            {"client_id": "C.w2k8", "hostname": "W2K8", "os": "windows", "release": "Microsoft Windows Server 2008 R2 Standard", "version": "0.7.1", "last_seen_at": NOW},
+            {"client_id": "C.w7", "hostname": "W7", "os": "windows", "release": "Microsoft Windows 7 Professional", "version": "0.7.1", "last_seen_at": NOW},
+            {"client_id": "C.norel", "hostname": "NOREL", "os": "windows", "release": "", "version": "0.77.1", "last_seen_at": NOW},
         ], "0.77.2", now=NOW)
-        t, _ = upgrade_targets(status, "pilot", legacy="0.7.1")
+        t, _ = upgrade_targets(status, "pilot")
         self.assertEqual(len(t), 1)
         self.assertTrue(t[0]["online"])
-        t, _ = upgrade_targets(status, "rest", legacy="0.7.1")
-        self.assertEqual(sorted(c["client_id"] for c in t), ["C.lin", "C.off", "C.old"])   # offline ones too
-        t, refused = upgrade_targets(status, "pilot", ["C.cur", "C.new", "C.unk", "C.mac", "C.leg", "C.off", "C.x"],
-                                     legacy="0.7.1")
+        t, _ = upgrade_targets(status, "rest")
+        self.assertEqual(sorted(c["client_id"] for c in t), ["C.lin", "C.off", "C.old", "C.risx"])
+        t, refused = upgrade_targets(status, "pilot", ["C.cur", "C.new", "C.unk", "C.mac", "C.w2k8", "C.w7",
+                                                       "C.norel", "C.off", "C.x"])
         self.assertEqual(t, [])
         text = " ".join(refused)
         for why in ("WS-CUR: current", "WS-NEW: ahead", "ALDC02: unknown OS", "MAC: darwin",
-                    "W2K8: legacy agent 0.7.1", "WS-OFF: offline", "C.x: not a known client"):
+                    "W2K8: Microsoft Windows Server 2008 R2 Standard cannot run",
+                    "W7: Microsoft Windows 7 Professional cannot run", "NOREL: Windows release unknown",
+                    "WS-OFF: offline", "C.x: not a known client"):
             self.assertIn(why, text)
 
 
@@ -150,6 +158,63 @@ class UpgradeFailure(unittest.TestCase):
         self.assertEqual(self._check("windows", "IN_PROGRESS", [{"ReturnCode": 1603}]), "")   # MSI kills the client
         self.assertEqual(self._check("windows", "FINISHED", [{"ReturnCode": 1603}, {"ReturnCode": 0}]), "")
         self.assertEqual(self._check("linux", "FINISHED", []), "")
+
+
+class AutoPrepare(unittest.TestCase):
+    """After a server upgrade the packages are rebuilt by themselves -- never the
+    clients -- once per new version, never under a running upgrade, and only while
+    the switch is on."""
+
+    def _check(self, server="0.78.0", have="0.77.2", on=True, busy=None, building=None, now=1000.0):
+        from unittest import mock
+        from services import velociraptor_clients as vc
+        started = []
+        with mock.patch.object(vc, "_query", return_value=[{"v": server}]), \
+             mock.patch.object(vc, "package_state", return_value={"version": have} if have else {}), \
+             mock.patch.object(vc, "auto_prepare_enabled", return_value=on), \
+             mock.patch.object(vc, "running_upgrade", return_value=busy), \
+             mock.patch.object(vc, "preparing", return_value=building), \
+             mock.patch.object(vc, "start_prepare_run", side_effect=lambda reason=None: started.append(reason) or "r1"):
+            out = vc.auto_prepare_check(now=now)
+        return out, started
+
+    def setUp(self):
+        from services import velociraptor_clients as vc
+        vc._auto["tried"].clear()
+
+    def test_a_new_server_version_rebuilds_once(self):
+        out, started = self._check()
+        self.assertEqual(out, "r1")
+        self.assertIn("server is 0.78.0, packages were 0.77.2", started[0])
+        self.assertEqual(self._check(now=1000.0 + 60)[1], [])               # not again ten minutes later
+        self.assertEqual(self._check(now=1000.0 + 7 * 3600)[1] != [], True)  # retried after 6 h (it failed)
+
+    def test_nothing_when_current_off_or_busy(self):
+        self.assertEqual(self._check(have="0.78.0"), (None, []))
+        self.assertEqual(self._check(on=False), (None, []))
+        self.assertEqual(self._check(busy={"name": "upgrade"}), (None, []))
+        self.assertEqual(self._check(building={"name": "prepare"}), (None, []))
+
+    def test_the_check_never_starts_a_client_upgrade(self):
+        from unittest import mock
+        from services import velociraptor_clients as vc
+        with mock.patch.object(vc, "start_upgrade") as up:
+            self._check()
+        up.assert_not_called()
+
+
+class RoutesFindTheirFunctions(unittest.TestCase):
+    """An edit once dropped pilot_passed: every test passed, the tab answered 500."""
+
+    def test_every_name_the_routes_import_exists(self):
+        import ast
+        import os as _o
+        from services import velociraptor_clients as vc
+        src = open(_o.path.join(_o.path.dirname(_HERE), "modules/backend/routes/velociraptor_routes.py")).read()
+        names = {a.name for n in ast.walk(ast.parse(src)) if isinstance(n, ast.ImportFrom)
+                 and n.module == "services.velociraptor_clients" for a in n.names}
+        self.assertTrue(names)
+        self.assertEqual([n for n in sorted(names) if not hasattr(vc, n)], [])
 
 
 if __name__ == "__main__":

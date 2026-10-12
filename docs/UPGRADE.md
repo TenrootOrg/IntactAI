@@ -186,6 +186,45 @@ Everything comes from the package; nothing is fetched. If the package is
 missing something a module needs, that module fails loudly rather than
 quietly reaching for a registry.
 
+## Upgrading the Velociraptor clients
+
+The upgrade moves the Velociraptor **server**. Its clients stay on their version until you
+upgrade them from **Settings → Velociraptor**. Nothing is pushed to an endpoint
+without you.
+
+1. **After a server upgrade** the tab shows "Server X — N clients behind". The client packages
+   for the new version are rebuilt automatically within about 10 minutes. The switch for this
+   is *Rebuild automatically after a server upgrade*, which is on by default. You can also press
+   **Prepare packages**. Each package (the Windows MSI, the Linux binary) has this server's
+   client config inside it. That config is read back and must point at this server's address
+   and CA, or the package is not used.
+2. **Refresh client info** if versions show as unknown. Every client then reports its version.
+3. **Upgrade pilot** upgrades one online client. It is followed every 20 s for 15 minutes in
+   **Settings → Actions**.
+4. **Upgrade the rest** is available once a pilot with the same packages succeeded. This run
+   is followed for 24 hours and checked once an hour, logging *"Hour N: X of M upgraded, P
+   pending, F failed"*. Offline clients upgrade when they are next seen, for up to 7 days.
+   **Stop** in Actions stops it, and nothing else is upgraded after that.
+
+The rules it follows:
+
+* Only clients reporting an **older** version are upgraded. It never downgrades, never
+  re-pushes to a client already on the server's version, and never touches a client whose
+  version is unknown.
+* Only one upgrade runs at a time.
+* A backend restart does not lose an upgrade in progress.
+* **Windows** runs the MSI as a major upgrade, and the client ID is kept. There is no automatic
+  rollback, so the pilot is the safety net.
+* **Linux** works with the Downloads-page install (the binary plus the systemd unit
+  `velociraptor_client`) and with .deb/.rpm installs. The new binary is run first, and nothing
+  changes if it cannot run on that host. The old binary is kept as `<path>.bak` and is put back
+  automatically if the service does not come up.
+* These are **not upgraded from here** and must be upgraded by hand:
+  * Windows older than 10 / Server 2016, which cannot run the current build (Go 1.21+) and
+    keep the legacy agent;
+  * Linux whose glibc is too old or that is musl-only;
+  * macOS, because Velociraptor has no upgrade artifact for it.
+
 ## Why this runs on the host
 
 The upgrade engine used to live inside the backend container, which meant it

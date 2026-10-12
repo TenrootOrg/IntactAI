@@ -50,7 +50,8 @@ def classify(rows, server_version, now=None):
         counts[state] += 1
         counts["online"] += online
         clients.append({"client_id": r.get("client_id"), "hostname": r.get("hostname") or "",
-                        "os": r.get("os") or "", "version": v, "state": state, "online": online,
+                        "os": r.get("os") or "", "release": r.get("release") or "",
+                        "version": v, "state": state, "online": online,
                         "last_seen": int(seen_s) if seen_s else None})
     order = {"behind": 0, "unknown": 1, "ahead": 2, "current": 3}
     clients.sort(key=lambda c: (order[c["state"]], not c["online"], c["hostname"].lower()))
@@ -75,7 +76,7 @@ def client_versions():
     """The running server's version and every client's, classified (offline ones too)."""
     server = (_query("SELECT version.version AS v FROM config") or [{}])[0].get("v") or ""
     rows = _query("SELECT client_id, os_info.hostname AS hostname, os_info.system AS os, "
-                  "agent_information.version AS version, last_seen_at "
+                  "os_info.release AS release, agent_information.version AS version, last_seen_at "
                   "FROM clients() WHERE client_id != 'server'")
     return classify(rows, server)
 
@@ -309,9 +310,11 @@ def prepare_packages(log=print):
 # once an hour (light on the server), each check logging "N of M upgraded".
 # A backend restart resumes the watch (resume_upgrade_runs, at boot).
 #
-# Known gaps (left to a human): legacy agents (versions.velociraptor_legacy,
-# 0.7.x -- they exist because 0.77 cannot run on Win7/2008R2/old glibc);
-# musl-only Linux (the glibc binary fails its `version` check and nothing is
+# Known gaps (left to a human): Windows too old for the current build (Go
+# 1.21+ needs Windows 10 / Server 2016: Win7/8, 2008 R2, 2012 keep their legacy
+# agent -- decided by the OS RELEASE, not the client's version: a RISX fleet on
+# 0.7.x running Windows 10 must be upgradable); old-glibc or musl-only Linux
+# (the new binary fails its `version` check on the host and nothing is
 # changed); macOS (no upgrade artifact in Velociraptor 0.77.2).
 # ---------------------------------------------------------------------------
 RUN_TYPE = "velociraptor_client_upgrade"
@@ -320,46 +323,51 @@ WATCH = {"pilot": {"seconds": 15 * 60, "every": 20, "open_days": 1, "sleep": 5},
          "rest": {"seconds": 24 * 3600, "every": 3600, "open_days": 7, "sleep": 600}}
 
 
-def _legacy_version():
-    try:
-        from services.legacy_velociraptor_service import _read_default_legacy_version
-        return _read_default_legacy_version()
-    except Exception:  # noqa: BLE001
-        return "0.7.1"
+_OLD_WINDOWS = __import__("re").compile(
+    r"\bWindows (?:XP|Vista|7|8(?:\.1)?)\b|\bServer (?:20(?:03|08|12))\b", __import__("re").I)
 
 
-def upgrade_targets(status, stage, client_ids=None, legacy=None):
+def windows_can_run_current(release):
+    """(ok, why). The current Velociraptor build needs Windows 10 / Server 2016+;
+    pushing its MSI to an older Windows leaves a client that cannot start, and
+    Windows has no rollback. An unknown release is refused too."""
+    if not (release or "").strip():
+        return False, "Windows release unknown -- Refresh client info first"
+    if _OLD_WINDOWS.search(release):
+        return False, (f"{release} cannot run the current build (Windows 10 / Server 2016 or newer "
+                       "needed) -- it keeps its legacy agent; upgrade by hand")
+    return True, ""
+
+
+def upgrade_targets(status, stage, client_ids=None):
     """(targets, refusals) for a stage. Only Windows/Linux clients known to be
     BEHIND the server are ever targeted -- never current, never newer (no
-    downgrade), never unknown (refresh client info first), never a legacy agent."""
-    legacy_mm = (version_key(legacy if legacy is not None else _legacy_version()) or ())[:2]
+    downgrade), never unknown (refresh client info first), never a Windows too
+    old for the current build."""
     by_id = {c["client_id"]: c for c in status["clients"]}
 
-    def is_legacy(c):
-        return (version_key(c["version"]) or ())[:2] == legacy_mm
-
-    def eligible(c):
-        return c["state"] == "behind" and c["os"] in OS_UPGRADE and not is_legacy(c)
+    def why_not(c):
+        if c["os"] not in OS_UPGRADE:
+            return f"{c['os'] or 'unknown OS'} -- only Windows and Linux clients are upgraded from here"
+        if c["state"] != "behind":
+            return f"{c['state']} ({c['version'] or 'no version reported'}) -- not behind the server"
+        if c["os"] == "windows":
+            ok, why = windows_can_run_current(c.get("release"))
+            if not ok:
+                return why
+        return ""
     if stage == "pilot":
-        ids = client_ids or [c["client_id"] for c in status["clients"] if eligible(c) and c["online"]][:1]
+        ids = client_ids or [c["client_id"] for c in status["clients"] if not why_not(c) and c["online"]][:1]
     else:
-        ids = client_ids or [c["client_id"] for c in status["clients"] if eligible(c)]
+        ids = client_ids or [c["client_id"] for c in status["clients"] if not why_not(c)]
     targets, refused = [], []
     for cid in ids:
         c = by_id.get(cid)
-        if not c:
-            refused.append(f"{cid}: not a known client")
-        elif c["os"] not in OS_UPGRADE:
-            refused.append(f"{c['hostname']}: {c['os'] or 'unknown OS'} -- only Windows and Linux clients "
-                           "are upgraded from here")
-        elif c["state"] != "behind":
-            refused.append(f"{c['hostname']}: {c['state']} ({c['version'] or 'no version reported'}) "
-                           "-- not behind the server")
-        elif is_legacy(c):
-            refused.append(f"{c['hostname']}: legacy agent {c['version']} -- it runs where the current version "
-                           "cannot (Win7/2008R2, old glibc); upgrade by hand")
-        elif stage == "pilot" and not c["online"]:
-            refused.append(f"{c['hostname']}: offline -- a pilot must be online to be checked")
+        why = "not a known client" if not c else why_not(c)
+        if not why and stage == "pilot" and not c["online"]:
+            why = "offline -- a pilot must be online to be checked"
+        if why:
+            refused.append(f"{c['hostname'] if c else cid}: {why}")
         else:
             targets.append(c)
     return targets, refused
@@ -593,3 +601,113 @@ def _run_upgrade(run_id):
         update_run_status(run_id, "failed", progress=100, error=str(e)[:300])
     finally:
         unregister_cancel(run_id)
+
+
+# ---------------------------------------------------------------------------
+# Step 4 -- after a server upgrade the packages are rebuilt by themselves; the
+# CLIENTS are not: nothing is pushed without the operator ("we notify, never
+# auto-act"). Checked here, not in the host-side upgrade engine, so it holds
+# however the server got its new version. Switch: Settings → Velociraptor
+# ("Rebuild packages automatically", frontend_config velociraptor.auto_prepare_packages).
+# ---------------------------------------------------------------------------
+PACKAGE_RUN_TYPE = "velociraptor_client_package"
+AUTO_FIRST_SECONDS = 60
+AUTO_EVERY_SECONDS = 600
+AUTO_RETRY_SECONDS = 6 * 3600
+_auto = {"started": False, "tried": {}}        # server version -> last automatic attempt
+
+
+def auto_prepare_enabled():
+    try:
+        from services.storage.config_store import load_frontend_config
+        return bool(((load_frontend_config() or {}).get("velociraptor") or {}).get("auto_prepare_packages", True))
+    except Exception:  # noqa: BLE001 -- unreadable settings: keep the default
+        return True
+
+
+def set_auto_prepare(enabled):
+    from services.storage.config_store import load_frontend_config, save_frontend_config
+    v = dict((load_frontend_config() or {}).get("velociraptor") or {})
+    v["auto_prepare_packages"] = bool(enabled)
+    save_frontend_config({"velociraptor": v})
+
+
+def preparing():
+    """The package run in progress, if any."""
+    from services.workflow_service import get_automation_runs_by_case, _system_case_id
+    return next((r for r in get_automation_runs_by_case(_system_case_id()) or []
+                 if r.get("automation_type") == PACKAGE_RUN_TYPE and r.get("status") in ("running", "pending")), None)
+
+
+def last_package_run():
+    from services.workflow_service import get_automation_runs_by_case, _system_case_id
+    runs = [r for r in get_automation_runs_by_case(_system_case_id()) or []
+            if r.get("automation_type") == PACKAGE_RUN_TYPE]
+    return max(runs, key=lambda r: r.get("created_at") or "", default=None)
+
+
+def start_prepare_run(reason=None):
+    """Prepare packages as a System action (Settings → Actions). Returns run_id;
+    ValueError when one must not start now."""
+    import threading
+    from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
+    busy = running_upgrade()
+    if busy:
+        raise ValueError(f"an upgrade is still being followed ({busy.get('name')}) -- prepare once it has finished")
+    if preparing():
+        raise ValueError("the packages are already being prepared")
+    run_id = create_automation_run(PACKAGE_RUN_TYPE, "Prepare the Velociraptor client packages"
+                                   + (f" ({reason})" if reason else ""))
+    update_run_status(run_id, "running", progress=5)
+
+    def _work():
+        try:
+            pkg = prepare_packages(log=lambda m: add_log_to_run(run_id, m))
+            update_run_status(run_id, "completed", progress=100, details={"package": pkg})
+            add_log_to_run(run_id, f"Ready for {pkg['version']}: {pkg['windows']['filename']}, "
+                                   f"{pkg['linux']['filename']} -- upgrade the clients from Settings → "
+                                   "Velociraptor (pilot first)", "success")
+        except Exception as e:  # noqa: BLE001 -- the reason is the result
+            add_log_to_run(run_id, f"Not prepared: {e}", "error")
+            update_run_status(run_id, "failed", progress=100, error=str(e)[:300])
+    threading.Thread(target=_work, daemon=True, name=f"velo-package-{run_id}").start()
+    return run_id
+
+
+def auto_prepare_check(now=None):
+    """Rebuild the packages when the server's version moved past them. Returns
+    the run_id it started, or None. Never upgrades a client."""
+    import time
+    now = time.time() if now is None else now
+    if not auto_prepare_enabled():
+        return None
+    server = (_query("SELECT version.version AS v FROM config") or [{}])[0].get("v") or ""
+    if not server or package_state().get("version") == server:
+        return None
+    if running_upgrade() or preparing():
+        return None
+    last = _auto["tried"].get(server)
+    if last is not None and now - last < AUTO_RETRY_SECONDS:       # tried (and failed) recently
+        return None
+    _auto["tried"][server] = now
+    have = package_state().get("version")
+    return start_prepare_run(f"automatic: server is {server}" + (f", packages were {have}" if have else ""))
+
+
+def start_auto_prepare():
+    """At boot: check once after AUTO_FIRST_SECONDS, then every AUTO_EVERY_SECONDS."""
+    import threading
+    import time
+    if _auto["started"]:
+        return
+    _auto["started"] = True
+
+    def _loop():
+        time.sleep(AUTO_FIRST_SECONDS)
+        while True:
+            try:
+                auto_prepare_check()
+            except Exception as e:  # noqa: BLE001 -- Velociraptor down, etc.: try again later
+                print(f"[VELO-PACKAGES] automatic check skipped: {e}", flush=True)
+            time.sleep(AUTO_EVERY_SECONDS)
+    threading.Thread(target=_loop, daemon=True, name="velo-auto-prepare").start()
