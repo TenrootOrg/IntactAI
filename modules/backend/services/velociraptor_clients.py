@@ -315,6 +315,7 @@ def prepare_packages(log=print):
 # changed); macOS (no upgrade artifact in Velociraptor 0.77.2).
 # ---------------------------------------------------------------------------
 RUN_TYPE = "velociraptor_client_upgrade"
+ROLLBACK_SECONDS = 180          # Linux: OK reported, still old this long after = it was rolled back
 WATCH = {"pilot": {"seconds": 15 * 60, "every": 20, "open_days": 1, "sleep": 5},
          "rest": {"seconds": 24 * 3600, "every": 3600, "open_days": 7, "sleep": 600}}
 
@@ -451,13 +452,24 @@ def _upgrade_failed(client_id, os_name, hunt_id):
     """Why the upgrade failed on this client, or "" (not run yet / still running /
     succeeded). Seen live 2026-10-12: msiexec 1603 within a second, the client
     left on the old version -- and the run waited the full 15 minutes to say so."""
+    import time
     flow_id = hunt_flow_id(hunt_id)
-    flow = (_query(f"SELECT state FROM flows(client_id='{client_id}', flow_id='{flow_id}')") or [{}])[0]
+    flow = (_query(f"SELECT state, active_time FROM flows(client_id='{client_id}', flow_id='{flow_id}')")
+            or [{}])[0]
     if flow.get("state") != "FINISHED":
         return ""
     rows = _query(f"SELECT ReturnCode, Stdout FROM source(client_id='{client_id}', flow_id='{flow_id}', "
                   f"artifact='{OS_UPGRADE[os_name]['artifact']}')")
     codes = [r.get("ReturnCode") for r in rows]
+    if os_name == "linux" and 0 in codes:
+        # "OK: replaced" and yet -- the caller only asks while the client is still on
+        # the old version -- 3 minutes on: the new binary did not stay up and the
+        # artifact's watchdog put the old one back (tested: broken build, back in 33 s).
+        ended = (flow.get("active_time") or 0) / 1e6
+        if ended and time.time() - ended > ROLLBACK_SECONDS:
+            return ("installed, but the new version did not stay up -- the old binary was put back "
+                    "(see `journalctl -u velociraptor_client` on that host)")
+        return ""
     if not codes or any(c == 0 for c in codes):
         return ""
     if os_name == "linux":
@@ -550,8 +562,10 @@ def _run_upgrade(run_id):
                 _query(f"SELECT hunt_update(hunt_id='{hunt}', stop=TRUE) FROM scope()")
             for cid in pending():
                 _query(f"SELECT label(client_id='{cid}', labels=['{label}'], op='remove') FROM scope()")
-            log(f"Stopped: {len(done)} of {total} upgraded, {len(failed)} failed; hunts stopped -- "
-                f"the {len(pending())} not upgraded yet will not be", "warning")
+            # force: the run is already 'cancelled', and this IS the work the stop did
+            add_log_to_run(run_id, f"Stopped: {len(done)} of {total} upgraded, {len(failed)} failed; hunts "
+                                   f"stopped -- the {len(pending())} not upgraded yet will not be",
+                           "warning", force=True)
             return
         rows = {r["client_id"]: r for r in client_versions()["clients"]}
         left = pending()

@@ -1161,7 +1161,11 @@ def velociraptor_upgrade_state():
 def velociraptor_prepare_package():
     """Build + verify + register the Windows MSI and the Linux binary (System action)."""
     import threading
-    from services.velociraptor_clients import prepare_packages
+    from services.velociraptor_clients import prepare_packages, running_upgrade
+    busy = running_upgrade()
+    if busy:      # refuse up front: a guard is not worth a failed row in Actions
+        return jsonify({"error": f"an upgrade is still being followed ({busy.get('name')}) -- "
+                                 "prepare once it has finished"}), 409
     run_id = create_automation_run("velociraptor_client_package", "Prepare the Velociraptor client packages")
     update_run_status(run_id, "running", progress=5)
 

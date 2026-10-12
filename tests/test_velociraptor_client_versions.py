@@ -130,10 +130,25 @@ class UpgradeFailure(unittest.TestCase):
                                                                          "on this host: GLIBC_2.28 not found\n"}])
         self.assertEqual(why, "FAIL: the new binary does not run on this host: GLIBC_2.28 not found")
 
+    def test_linux_rolled_back_is_reported_after_a_grace_period(self):
+        import time as _t
+        from unittest import mock
+        from services import velociraptor_clients as vc
+        ok = [{"ReturnCode": 0, "Stdout": "OK: replaced /usr/local/bin/velociraptor with 0.77.2"}]
+
+        def run(age):
+            def q(vql):
+                if "FROM flows(" in vql:
+                    return [{"state": "FINISHED", "active_time": (_t.time() - age) * 1e6}]
+                return ok
+            with mock.patch.object(vc, "_query", side_effect=q):
+                return vc._upgrade_failed("C.1", "linux", "H.X")
+        self.assertEqual(run(30), "")                       # restarting: give it time
+        self.assertIn("old binary was put back", run(600))
+
     def test_silent_while_running_or_when_it_worked(self):
         self.assertEqual(self._check("windows", "IN_PROGRESS", [{"ReturnCode": 1603}]), "")   # MSI kills the client
         self.assertEqual(self._check("windows", "FINISHED", [{"ReturnCode": 1603}, {"ReturnCode": 0}]), "")
-        self.assertEqual(self._check("linux", "FINISHED", [{"ReturnCode": 0, "Stdout": "OK: replaced"}]), "")
         self.assertEqual(self._check("linux", "FINISHED", []), "")
 
 
