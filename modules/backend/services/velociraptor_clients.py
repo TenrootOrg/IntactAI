@@ -31,14 +31,21 @@ def version_key(v):
 
 def classify(rows, server_version, now=None):
     """Rows from clients() -> the status payload. Each client is current, behind,
-    ahead or unknown (no version reported), and online or not."""
+    ahead, unknown (no version reported) or imported, and online or not.
+
+    "imported" = the record an offline-collection import leaves: no agent ever
+    ran there (no agent name, never interrogated, no version). It is not part of
+    the fleet and can never answer or be upgraded -- the 9 AdatumLab hosts on the
+    lab box read as "version unknown, Refresh client info" until 2026-10-12."""
     now = time.time() if now is None else now
     server = version_key(server_version)
-    clients, counts = [], {"current": 0, "behind": 0, "ahead": 0, "unknown": 0, "online": 0}
+    clients, counts = [], {"current": 0, "behind": 0, "ahead": 0, "unknown": 0, "imported": 0, "online": 0}
     for r in rows:
         v = (r.get("version") or "").strip()
         key = version_key(v)
-        if key is None or server is None:
+        if "agent" in r and not r.get("agent") and not r.get("interrogated") and not v:
+            state = "imported"
+        elif key is None or server is None:
             state = "unknown"
         elif key == server:
             state = "current"
@@ -54,7 +61,7 @@ def classify(rows, server_version, now=None):
                         "labels": list(r.get("labels") or []),
                         "version": v, "state": state, "online": online,
                         "last_seen": int(seen_s) if seen_s else None})
-    order = {"behind": 0, "unknown": 1, "ahead": 2, "current": 3}
+    order = {"behind": 0, "unknown": 1, "ahead": 2, "current": 3, "imported": 4}
     clients.sort(key=lambda c: (order[c["state"]], not c["online"], c["hostname"].lower()))
     return {"server_version": server_version or "", "clients": clients, "counts": counts,
             "total": len(clients)}
@@ -79,7 +86,8 @@ def client_versions():
     """The running server's version and every client's, classified (offline ones too)."""
     server = (_query("SELECT version.version AS v FROM config") or [{}])[0].get("v") or ""
     rows = _query("SELECT client_id, os_info.hostname AS hostname, os_info.system AS os, "
-                  "os_info.release AS release, agent_information.version AS version, labels, last_seen_at "
+                  "os_info.release AS release, agent_information.version AS version, labels, last_seen_at, "
+                  "agent_information.name AS agent, last_interrogate_flow_id AS interrogated "
                   "FROM clients() WHERE client_id != 'server'")
     return classify(rows, server)
 
@@ -355,6 +363,8 @@ NOT_UPGRADABLE = {
 
 def eligibility(c):
     """(key, why) -- key is None when the client may be upgraded from here."""
+    if c["state"] == "imported":
+        return "imported", "an offline-collection import -- no agent runs there"
     if c["state"] == "current":
         return "current", "on the server's version"
     if c["state"] == "ahead":
@@ -375,6 +385,8 @@ def summarize(status):
     by_version, by_os, groups = {}, {}, {}
     eligible = eligible_online = 0
     for c in status["clients"]:
+        if c["state"] == "imported":
+            continue                      # not part of the fleet: counted apart
         by_version[c["version"] or ""] = by_version.get(c["version"] or "", 0) + 1
         by_os[c["os"] or ""] = by_os.get(c["os"] or "", 0) + 1
         key, _ = eligibility(c)
@@ -384,7 +396,10 @@ def summarize(status):
         elif key in NOT_UPGRADABLE:
             groups[key] = groups.get(key, 0) + 1
     versions = sorted(by_version.items(), key=lambda kv: (version_key(kv[0]) or (-1,)), reverse=True)
+    imported = status["counts"].get("imported", 0)
     return {"server_version": status["server_version"], "total": status["total"], "counts": status["counts"],
+            "agents": status["total"] - imported, "imported": imported,
+            "blocked": sum(groups.values()),
             "by_version": [{"version": v, "n": n} for v, n in versions],
             "by_os": [{"os": o, "n": n} for o, n in sorted(by_os.items(), key=lambda kv: -kv[1])],
             "eligible": eligible, "eligible_online": eligible_online,
@@ -393,10 +408,14 @@ def summarize(status):
 
 
 def filter_clients(status, state=None, os=None, version=None, online=None, q=None, reason=None):
-    """Server-side filter for the paged table. reason: 'eligible' or a NOT_UPGRADABLE key."""
+    """Server-side filter for the paged table. reason: 'eligible', 'blocked' (any
+    reason it cannot be upgraded from here) or a NOT_UPGRADABLE key. Imports are
+    left out unless asked for (state='imported')."""
     q = (q or "").strip().lower()
     out = []
     for c in status["clients"]:
+        if c["state"] == "imported" and state != "imported":
+            continue
         if state and c["state"] != state:
             continue
         if os and c["os"] != os:
@@ -409,7 +428,13 @@ def filter_clients(status, state=None, os=None, version=None, online=None, q=Non
             continue
         if reason:
             key, _ = eligibility(c)
-            if (reason == "eligible" and key is not None) or (reason != "eligible" and key != reason):
+            if reason == "eligible":
+                if key is not None:
+                    continue
+            elif reason == "blocked":
+                if key not in NOT_UPGRADABLE:
+                    continue
+            elif key != reason:
                 continue
         out.append(c)
     return out

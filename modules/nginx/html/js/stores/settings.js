@@ -66,6 +66,7 @@ document.addEventListener('alpine:init', () => {
         veloPilotHits: [],
         veloFilter: { state: '', os: '', version: null, online: '', q: '', reason: '', page: 1 },
         veloWave: { label: '', limit: '' },
+        veloShowClients: false,
         decisionTesting: false,
         decisionTestResult: null,
         decisionCatalog: { providers: {}, models: [] },
@@ -228,6 +229,14 @@ document.addEventListener('alpine:init', () => {
         setVeloFilter(change) {
             this.veloFilter = { ...this.veloFilter, ...change, page: 1 };
             this.loadVelociraptor();
+        },
+
+        // the table's "show" dropdown -> a server-side filter
+        setVeloShow(v) {
+            const f = { state: '', reason: '' };
+            if (v === 'behind' || v === 'current' || v === 'imported') f.state = v;
+            if (v === 'blocked') f.reason = 'blocked';
+            this.setVeloFilter(f);
         },
 
         clearVeloFilter() {

@@ -1458,155 +1458,56 @@
                         </div>
                     </div>
 
-                    <!-- Velociraptor Tab — built for fleets of thousands: everything above the table is a
-                         server-side summary; the table is one filtered page; the pilot is a search; the rest
-                         goes in waves. Plan: .claude/notes/velociraptor-client-upgrade-plan.md -->
+                    <!-- Velociraptor Tab — kept simple on purpose (2026-10-12: the first version showed
+                         too much): one status line, the three upgrade steps only when something is
+                         behind, the client list behind a toggle. The server still summarises and pages,
+                         so it holds for fleets of thousands. Plan: .claude/notes/velociraptor-client-upgrade-plan.md -->
                     <div x-show="settingsTab === 'velociraptor' && $store.services.has('velociraptor')" x-transition
                          class="bg-gray-800 rounded-lg p-5 border border-gray-700">
-                        <div class="flex items-center justify-between mb-1">
-                            <h3 class="text-lg font-semibold text-white">Velociraptor clients</h3>
-                            <div class="flex gap-2">
-                                <button @click="$store.settings.loadVelociraptor()" :disabled="$store.settings.veloLoading"
-                                        class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1.5 rounded text-sm">
-                                    <span x-text="$store.settings.veloLoading ? 'Loading…' : 'Reload'"></span>
-                                </button>
-                                <button @click="$store.settings.refreshVeloClientInfo()" :disabled="$store.settings.veloRefreshing"
-                                        title="Runs a Generic.Client.Info hunt: every client reports its version again. Offline clients answer when they are next seen (the hunt stays open 7 days)."
-                                        class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 rounded text-sm font-medium">
-                                    <span x-text="$store.settings.veloRefreshing ? 'Asking…' : 'Refresh client info'"></span>
-                                </button>
-                            </div>
-                        </div>
-                        <p class="text-xs text-gray-500 mb-4">The agent version each client runs, against the server's. The server moves with Intact upgrades; its clients are upgraded from here — a pilot first, then the rest in waves.</p>
-                        <p x-show="$store.settings.veloError" class="text-sm text-red-400 mb-3" x-text="$store.settings.veloError"></p>
+                        <h3 class="text-lg font-semibold text-white">Velociraptor clients</h3>
+                        <p x-show="$store.settings.veloError" class="text-sm text-red-400 mt-2" x-text="$store.settings.veloError"></p>
 
                         <template x-if="$store.settings.velo">
                             <div>
-                                <!-- After a server upgrade: who is behind and whether the packages are ready. Notify only. -->
-                                <div x-show="$store.settings.velo.summary.counts.behind" class="mb-4 rounded border border-yellow-700 bg-yellow-900/30 px-4 py-3 text-sm">
-                                    <div class="text-yellow-300 font-medium"
-                                         x-text="'Server ' + $store.settings.velo.summary.server_version + ' — ' + $store.settings.velo.summary.counts.behind.toLocaleString() + ' client(s) behind, ' + ($store.settings.veloUpgrade.eligible || 0).toLocaleString() + ' upgradable from here'"></div>
-                                    <div class="text-xs text-gray-300 mt-1">
-                                        <span x-show="($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.summary.server_version">Packages are ready — start with <b>Upgrade pilot</b> below.</span>
-                                        <span x-show="$store.settings.veloUpgrade.preparing">Packages for this version are being prepared (Settings → Actions)…</span>
-                                        <span x-show="!$store.settings.veloUpgrade.preparing && ($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.summary.server_version && ($store.settings.veloUpgrade.last_prepare||{}).status === 'failed'" class="text-red-300"
-                                              x-text="'Preparing the packages failed: ' + (($store.settings.veloUpgrade.last_prepare||{}).error || 'see Settings → Actions')"></span>
-                                        <span x-show="!$store.settings.veloUpgrade.preparing && ($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.summary.server_version && ($store.settings.veloUpgrade.last_prepare||{}).status !== 'failed'"
-                                              x-text="$store.settings.veloUpgrade.auto_prepare ? 'Packages for this version will be prepared automatically within 10 minutes — or press Prepare packages.' : 'Press Prepare packages below.'"></span>
-                                    </div>
+                                <!-- 1. Status, in one line -->
+                                <div class="flex items-center gap-3 mt-2 text-sm">
+                                    <span class="text-gray-300" x-text="'Server ' + $store.settings.velo.summary.server_version + ' · ' + $store.settings.velo.summary.agents.toLocaleString() + ' agent' + ($store.settings.velo.summary.agents === 1 ? '' : 's') + ' · ' + $store.settings.velo.summary.counts.online.toLocaleString() + ' online'"></span>
+                                    <span x-show="!$store.settings.velo.summary.counts.behind && $store.settings.velo.summary.agents" class="text-green-400">· all up to date</span>
+                                    <span x-show="$store.settings.velo.summary.counts.behind" class="text-yellow-400 font-medium"
+                                          x-text="'· ' + $store.settings.velo.summary.counts.behind.toLocaleString() + ' behind'"></span>
+                                    <button @click="$store.settings.refreshVeloClientInfo()" :disabled="$store.settings.veloRefreshing" class="ml-auto text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50"
+                                            title="Every agent reports its version again (a Generic.Client.Info hunt; offline agents answer when next seen, for 7 days)."
+                                            x-text="$store.settings.veloRefreshing ? 'asking…' : 'Refresh versions'"></button>
+                                </div>
+                                <div class="text-xs text-gray-500 mt-1 space-x-3">
+                                    <span x-show="$store.settings.velo.summary.counts.unknown" x-text="$store.settings.velo.summary.counts.unknown + ' agent(s) have not reported a version yet — Refresh versions'"></span>
+                                    <span x-show="$store.settings.velo.summary.blocked" x-text="$store.settings.velo.summary.blocked + ' can\'t be upgraded from here: ' + $store.settings.velo.summary.not_upgradable.filter(g => g.key !== 'unknown_version').map(g => g.label.split(' —')[0] + ' (' + g.n + ')').join(', ')"></span>
+                                    <span x-show="$store.settings.velo.summary.imported" x-text="$store.settings.velo.summary.imported + ' offline-collection import(s) (no agent) not counted'"></span>
                                 </div>
 
-                                <!-- Progress across the whole fleet -->
-                                <div class="mb-3">
-                                    <div class="flex items-baseline justify-between text-sm">
-                                        <span class="text-white"><b x-text="$store.settings.velo.summary.counts.current.toLocaleString()"></b> of <b x-text="$store.settings.velo.summary.total.toLocaleString()"></b> clients on the server's version <b x-text="$store.settings.velo.summary.server_version"></b></span>
-                                        <span class="text-gray-400 text-xs" x-text="$store.settings.velo.summary.counts.online.toLocaleString() + ' online now'"></span>
-                                    </div>
-                                    <div class="h-2 rounded bg-gray-900 mt-1 overflow-hidden flex">
-                                        <div class="bg-green-500" :style="'width:' + (100 * $store.settings.velo.summary.counts.current / Math.max(1, $store.settings.velo.summary.total)) + '%'"></div>
-                                        <div class="bg-yellow-500" :style="'width:' + (100 * $store.settings.velo.summary.counts.behind / Math.max(1, $store.settings.velo.summary.total)) + '%'"></div>
-                                        <div class="bg-gray-600" :style="'width:' + (100 * $store.settings.velo.summary.counts.unknown / Math.max(1, $store.settings.velo.summary.total)) + '%'"></div>
-                                    </div>
-                                    <div class="flex gap-3 mt-2 text-xs">
-                                        <template x-for="[k, label, cls] in [['current','on the server\'s version','text-green-400'],['behind','behind','text-yellow-400'],['unknown','version unknown','text-gray-300'],['ahead','newer than the server','text-blue-300']]" :key="k">
-                                            <button x-show="$store.settings.velo.summary.counts[k]" @click="$store.settings.setVeloFilter({state: $store.settings.veloFilter.state === k ? '' : k})"
-                                                    :class="[cls, $store.settings.veloFilter.state === k ? 'underline font-semibold' : '']"
-                                                    x-text="$store.settings.velo.summary.counts[k].toLocaleString() + ' ' + label"></button>
-                                        </template>
-                                    </div>
-                                </div>
-
-                                <!-- By version / by OS / not upgradable: counts, each a filter -->
-                                <div class="grid grid-cols-3 gap-3 mb-4 text-xs">
-                                    <div class="bg-gray-900 rounded p-3">
-                                        <div class="text-gray-500 mb-1">By version</div>
-                                        <template x-for="v in $store.settings.velo.summary.by_version.slice(0, 6)" :key="v.version">
-                                            <button class="flex w-full justify-between hover:text-white" @click="$store.settings.setVeloFilter({version: $store.settings.veloFilter.version === v.version ? null : v.version})"
-                                                    :class="$store.settings.veloFilter.version === v.version ? 'text-white font-semibold' : 'text-gray-300'">
-                                                <span x-text="v.version || 'unknown'"></span><span x-text="v.n.toLocaleString()"></span></button>
-                                        </template>
-                                        <div x-show="$store.settings.velo.summary.by_version.length > 6" class="text-gray-500" x-text="'+ ' + ($store.settings.velo.summary.by_version.length - 6) + ' more versions'"></div>
-                                    </div>
-                                    <div class="bg-gray-900 rounded p-3">
-                                        <div class="text-gray-500 mb-1">By OS</div>
-                                        <template x-for="o in $store.settings.velo.summary.by_os" :key="o.os">
-                                            <button class="flex w-full justify-between hover:text-white" @click="$store.settings.setVeloFilter({os: $store.settings.veloFilter.os === o.os ? '' : o.os})"
-                                                    :class="$store.settings.veloFilter.os === o.os && o.os ? 'text-white font-semibold' : 'text-gray-300'">
-                                                <span x-text="o.os || 'not reported'"></span><span x-text="o.n.toLocaleString()"></span></button>
-                                        </template>
-                                    </div>
-                                    <div class="bg-gray-900 rounded p-3">
-                                        <div class="text-gray-500 mb-1">Not upgraded from here</div>
-                                        <template x-for="g in $store.settings.velo.summary.not_upgradable" :key="g.key">
-                                            <button class="flex w-full justify-between text-left hover:text-white gap-2" @click="$store.settings.setVeloFilter({reason: $store.settings.veloFilter.reason === g.key ? '' : g.key})"
-                                                    :class="$store.settings.veloFilter.reason === g.key ? 'text-white font-semibold' : 'text-yellow-500'">
-                                                <span x-text="g.label"></span><span x-text="g.n.toLocaleString()"></span></button>
-                                        </template>
-                                        <div x-show="!$store.settings.velo.summary.not_upgradable.length" class="text-gray-500">none</div>
-                                    </div>
-                                </div>
-
-                                <!-- One page of clients, filtered on the server -->
-                                <div class="flex flex-wrap items-center gap-2 mb-2 text-sm">
-                                    <input type="search" placeholder="Search host or client ID" :value="$store.settings.veloFilter.q"
-                                           @input.debounce.400ms="$store.settings.setVeloFilter({q: $event.target.value})"
-                                           class="bg-gray-900 text-white border border-gray-700 rounded px-2 py-1 w-64">
-                                    <select @change="$store.settings.setVeloFilter({online: $event.target.value})" :value="$store.settings.veloFilter.online"
-                                            class="bg-gray-900 text-white border border-gray-700 rounded px-2 py-1">
-                                        <option value="">online + offline</option><option value="1">online</option><option value="0">offline</option>
-                                    </select>
-                                    <button @click="$store.settings.setVeloFilter({reason: $store.settings.veloFilter.reason === 'eligible' ? '' : 'eligible'})"
-                                            :class="$store.settings.veloFilter.reason === 'eligible' ? 'bg-blue-700' : 'bg-gray-700'" class="px-2 py-1 rounded text-white text-xs">upgradable from here</button>
-                                    <button x-show="$store.settings.veloFilter.state || $store.settings.veloFilter.os || $store.settings.veloFilter.online || $store.settings.veloFilter.q || $store.settings.veloFilter.reason || $store.settings.veloFilter.version !== null" @click="$store.settings.clearVeloFilter()" class="text-xs text-blue-400 hover:text-blue-300">clear filters</button>
-                                    <span class="ml-auto text-xs text-gray-400"
-                                          x-text="$store.settings.velo.filtered ? (($store.settings.velo.page - 1) * $store.settings.velo.per + 1).toLocaleString() + '–' + Math.min($store.settings.velo.page * $store.settings.velo.per, $store.settings.velo.filtered).toLocaleString() + ' of ' + $store.settings.velo.filtered.toLocaleString() : 'no client matches'"></span>
-                                </div>
-                                <table class="w-full text-sm">
-                                    <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-700">
-                                        <th class="py-1.5">Host</th><th>OS</th><th>Version</th><th>State</th><th>Last seen</th></tr></thead>
-                                    <tbody>
-                                        <template x-for="c in $store.settings.velo.clients" :key="c.client_id">
-                                            <tr class="border-b border-gray-700/50">
-                                                <td class="py-1.5 text-white" :title="c.client_id + (c.release ? ' — ' + c.release : '')" x-text="c.hostname || c.client_id"></td>
-                                                <td class="text-gray-400" x-text="c.os || '—'"></td>
-                                                <td class="text-gray-300" x-text="c.version || '—'"></td>
-                                                <td><span class="text-xs px-2 py-0.5 rounded"
-                                                          :class="{current: 'bg-green-900 text-green-300', behind: 'bg-yellow-900 text-yellow-300', ahead: 'bg-blue-900 text-blue-300', unknown: 'bg-gray-700 text-gray-300'}[c.state]"
-                                                          x-text="{current: 'current', behind: 'behind', ahead: 'newer than server', unknown: 'unknown'}[c.state]"></span></td>
-                                                <td :class="c.online ? 'text-green-400' : 'text-gray-500'"
-                                                    x-text="c.online ? 'online' : (c.last_seen ? new Date(c.last_seen * 1000).toLocaleString() : 'never')"></td>
-                                            </tr>
-                                        </template>
-                                    </tbody>
-                                </table>
-                                <div x-show="$store.settings.velo.pages > 1" class="flex items-center justify-end gap-2 mt-2 text-xs">
-                                    <button @click="$store.settings.veloGoPage($store.settings.velo.page - 1)" :disabled="$store.settings.velo.page <= 1" class="px-2 py-1 rounded bg-gray-700 disabled:opacity-40">‹ Prev</button>
-                                    <span class="text-gray-400" x-text="'Page ' + $store.settings.velo.page + ' of ' + $store.settings.velo.pages"></span>
-                                    <button @click="$store.settings.veloGoPage($store.settings.velo.page + 1)" :disabled="$store.settings.velo.page >= $store.settings.velo.pages" class="px-2 py-1 rounded bg-gray-700 disabled:opacity-40">Next ›</button>
-                                </div>
-
-                                <!-- Upgrade: packages → pilot → waves. Each is a System action (Settings → Actions). -->
-                                <div class="mt-5 pt-4 border-t border-gray-700">
-                                    <h4 class="text-sm font-semibold text-white mb-2">Upgrade clients to <span x-text="$store.settings.velo.summary.server_version"></span></h4>
-                                    <div class="text-xs text-gray-400 mb-3 flex flex-wrap items-center gap-3">
-                                        <span x-show="($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.summary.server_version" class="text-green-400"
-                                              x-text="'Packages ready (Windows MSI + Linux binary) — config verified, built ' + new Date(($store.settings.veloUpgrade.package||{}).built_at).toLocaleString()"></span>
-                                        <span x-show="($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.summary.server_version" class="text-yellow-400">No verified packages for this server version yet.</span>
-                                        <button @click="$store.settings.prepareVeloPackage()"
-                                                title="Repacks the server's Windows MSI and Linux binary with this server's client config, checks the config inside each points at this server, and registers them as the tools the upgrade uses."
-                                                class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-white">Prepare packages</button>
-                                        <label class="flex items-center gap-1" title="When the server is upgraded, rebuild the client packages for its version by themselves (checked every 10 minutes). Clients are never upgraded without you.">
-                                            <input type="checkbox" :checked="$store.settings.veloUpgrade.auto_prepare" @change="$store.settings.setVeloAutoPrepare($event.target.checked)"
-                                                   class="w-3.5 h-3.5 rounded bg-gray-700 border-gray-600"> Rebuild automatically after a server upgrade</label>
-                                    </div>
-
-                                    <div class="grid grid-cols-2 gap-4 text-sm">
-                                        <div class="bg-gray-900 rounded p-3">
-                                            <div class="text-gray-300 font-medium mb-2">1. Pilot <span class="text-xs text-gray-500">— one online client, followed every 20 s</span></div>
-                                            <div class="relative">
-                                                <input type="search" placeholder="Search an online client to pilot" x-model="$store.settings.veloPilotQ"
+                                <!-- 2. Upgrade: three steps, only when there is something to upgrade -->
+                                <div class="mt-4 rounded border border-gray-700 p-4">
+                                    <div x-show="!$store.settings.velo.summary.counts.behind" class="text-sm text-gray-400">Nothing to upgrade — every agent that reported a version is on <span x-text="$store.settings.velo.summary.server_version"></span>.</div>
+                                    <div x-show="$store.settings.velo.summary.counts.behind" class="space-y-3 text-sm">
+                                        <!-- step 1 -->
+                                        <div class="flex items-center gap-3">
+                                            <span class="w-5 h-5 rounded-full text-xs flex items-center justify-center" :class="($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.summary.server_version ? 'bg-green-700' : 'bg-gray-600'">1</span>
+                                            <span x-show="($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.summary.server_version" class="text-green-400">Packages ready for <span x-text="$store.settings.velo.summary.server_version"></span></span>
+                                            <span x-show="!(($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.summary.server_version) && $store.settings.veloUpgrade.preparing" class="text-gray-300">Preparing the packages… (Settings → Actions)</span>
+                                            <span x-show="!(($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.summary.server_version) && !$store.settings.veloUpgrade.preparing" class="text-yellow-400"
+                                                  x-text="($store.settings.veloUpgrade.last_prepare||{}).status === 'failed' ? 'Preparing failed: ' + ($store.settings.veloUpgrade.last_prepare.error || 'see Actions') : 'Packages not ready'"></span>
+                                            <button x-show="!$store.settings.veloUpgrade.preparing" @click="$store.settings.prepareVeloPackage()" class="text-xs text-blue-400 hover:text-blue-300"
+                                                    title="Repacks the Windows MSI and Linux binary with this server's client config and checks it before use."
+                                                    x-text="($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.summary.server_version ? 'rebuild' : 'Prepare packages'"></button>
+                                        </div>
+                                        <!-- step 2 -->
+                                        <div class="flex items-center gap-3">
+                                            <span class="w-5 h-5 rounded-full text-xs flex items-center justify-center" :class="$store.settings.veloUpgrade.pilot_passed ? 'bg-green-700' : 'bg-gray-600'">2</span>
+                                            <span class="text-gray-300 w-28">Pilot one client</span>
+                                            <div class="relative w-72">
+                                                <input type="search" placeholder="Search an online client" x-model="$store.settings.veloPilotQ"
                                                        @input.debounce.300ms="$store.settings.searchVeloPilot()" @focus="$store.settings.searchVeloPilot()"
-                                                       class="w-full bg-gray-800 text-white border border-gray-700 rounded px-2 py-1">
+                                                       class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1">
                                                 <div x-show="$store.settings.veloPilotHits.length && !$store.settings.veloPilot" class="absolute z-20 w-full mt-1 bg-gray-800 border border-gray-600 rounded max-h-48 overflow-y-auto">
                                                     <template x-for="c in $store.settings.veloPilotHits" :key="c.client_id">
                                                         <div @mousedown.prevent="$store.settings.veloPilot = c; $store.settings.veloPilotQ = c.hostname"
@@ -1614,32 +1515,72 @@
                                                     </template>
                                                 </div>
                                             </div>
-                                            <div class="flex items-center gap-2 mt-2">
-                                                <span x-show="$store.settings.veloPilot" class="text-xs text-gray-300"
-                                                      x-text="($store.settings.veloPilot||{}).hostname + ' (' + ($store.settings.veloPilot||{}).os + ' ' + ($store.settings.veloPilot||{}).version + ')'"></span>
-                                                <button x-show="$store.settings.veloPilot" @click="$store.settings.veloPilot = null; $store.settings.veloPilotQ = ''" class="text-xs text-blue-400">change</button>
-                                                <button @click="$store.settings.startVeloUpgrade('pilot')" class="ml-auto bg-blue-600 hover:bg-blue-700 disabled:opacity-40 px-3 py-1 rounded text-white"
-                                                        :disabled="!$store.settings.veloPilot || ($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.summary.server_version">Upgrade pilot</button>
-                                            </div>
-                                            <p x-show="!$store.settings.veloUpgrade.eligible_online" class="text-xs text-gray-500 mt-2">No online client can be upgraded right now.</p>
+                                            <button @click="$store.settings.startVeloUpgrade('pilot')" :disabled="!$store.settings.veloPilot || !(($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.summary.server_version)"
+                                                    class="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 px-3 py-1 rounded text-white">Upgrade pilot</button>
+                                            <span x-show="$store.settings.veloUpgrade.pilot_passed" class="text-xs text-green-400">passed</span>
                                         </div>
-                                        <div class="bg-gray-900 rounded p-3">
-                                            <div class="text-gray-300 font-medium mb-2">2. The rest, in waves <span class="text-xs text-gray-500">— followed 24 h, checked hourly</span></div>
-                                            <div class="flex gap-2">
-                                                <input type="text" placeholder="Label (optional)" x-model="$store.settings.veloWave.label" title="Only clients carrying this Velociraptor label, e.g. wave-1"
-                                                       class="w-1/2 bg-gray-800 text-white border border-gray-700 rounded px-2 py-1">
-                                                <input type="number" min="1" placeholder="Max clients" x-model.number="$store.settings.veloWave.limit" title="At most this many clients in this wave (online first)"
-                                                       class="w-1/2 bg-gray-800 text-white border border-gray-700 rounded px-2 py-1">
-                                            </div>
-                                            <div class="flex items-center gap-2 mt-2">
-                                                <span class="text-xs text-gray-500" x-text="$store.settings.veloWaveText()"></span>
-                                                <button @click="$store.settings.startVeloUpgrade('rest')" class="ml-auto bg-blue-600 hover:bg-blue-700 disabled:opacity-40 px-3 py-1 rounded text-white"
-                                                        :disabled="!$store.settings.veloUpgrade.pilot_passed || !$store.settings.veloUpgrade.eligible"
-                                                        :title="$store.settings.veloUpgrade.pilot_passed ? '' : 'Available once a pilot client upgraded with these packages.'">Upgrade wave</button>
-                                            </div>
+                                        <!-- step 3 -->
+                                        <div class="flex items-center gap-3">
+                                            <span class="w-5 h-5 rounded-full text-xs flex items-center justify-center bg-gray-600">3</span>
+                                            <span class="text-gray-300 w-28">Everyone else</span>
+                                            <button @click="$store.settings.startVeloUpgrade('rest')" :disabled="!$store.settings.veloUpgrade.pilot_passed || !$store.settings.veloUpgrade.eligible"
+                                                    :title="$store.settings.veloUpgrade.pilot_passed ? $store.settings.veloWaveText() : 'Available once the pilot has upgraded.'"
+                                                    class="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 px-3 py-1 rounded text-white"
+                                                    x-text="'Upgrade ' + ($store.settings.veloWave.limit ? Math.min($store.settings.veloWave.limit, $store.settings.veloUpgrade.eligible || 0) : ($store.settings.veloUpgrade.eligible || 0)).toLocaleString() + ' client(s)'"></button>
+                                            <details class="text-xs text-gray-400">
+                                                <summary class="cursor-pointer hover:text-gray-200">options</summary>
+                                                <div class="flex gap-2 mt-1">
+                                                    <input type="text" placeholder="only label…" x-model="$store.settings.veloWave.label" title="Only clients carrying this Velociraptor label, e.g. wave-1"
+                                                           class="w-32 bg-gray-900 text-white border border-gray-700 rounded px-2 py-1">
+                                                    <input type="number" min="1" placeholder="at most…" x-model.number="$store.settings.veloWave.limit" title="At most this many clients in this wave (online first)"
+                                                           class="w-24 bg-gray-900 text-white border border-gray-700 rounded px-2 py-1">
+                                                </div>
+                                            </details>
                                         </div>
+                                        <p class="text-xs text-gray-500">Progress and failures: Settings → Actions (the rest is followed 24 h, checked hourly).</p>
                                     </div>
-                                    <p class="text-xs text-gray-500 mt-2">Only clients reporting an older version — never a newer one, never one whose version is unknown. Not upgraded from here (by hand): Windows older than 10 / Server 2016, Linux whose glibc is too old or musl-only, macOS. Results, failures and the hourly "N of M upgraded" are in Settings → Actions.</p>
+                                    <label class="flex items-center gap-1 text-xs text-gray-500 mt-3" title="When the server is upgraded, rebuild the client packages for its version by themselves. Clients are never upgraded without you.">
+                                        <input type="checkbox" :checked="$store.settings.veloUpgrade.auto_prepare" @change="$store.settings.setVeloAutoPrepare($event.target.checked)"
+                                               class="w-3.5 h-3.5 rounded bg-gray-700 border-gray-600"> Rebuild packages automatically after a server upgrade</label>
+                                </div>
+
+                                <!-- 3. The clients, on demand -->
+                                <button @click="$store.settings.veloShowClients = !$store.settings.veloShowClients" class="mt-4 text-sm text-blue-400 hover:text-blue-300"
+                                        x-text="($store.settings.veloShowClients ? 'Hide' : 'Show') + ' clients (' + $store.settings.velo.summary.agents.toLocaleString() + ')'"></button>
+                                <div x-show="$store.settings.veloShowClients" class="mt-2">
+                                    <div class="flex items-center gap-2 mb-2 text-sm">
+                                        <input type="search" placeholder="Search host" :value="$store.settings.veloFilter.q"
+                                               @input.debounce.400ms="$store.settings.setVeloFilter({q: $event.target.value})"
+                                               class="bg-gray-900 text-white border border-gray-700 rounded px-2 py-1 w-56">
+                                        <select @change="$store.settings.setVeloShow($event.target.value)" class="bg-gray-900 text-white border border-gray-700 rounded px-2 py-1">
+                                            <option value="">all</option><option value="behind">behind</option>
+                                            <option value="current">up to date</option><option value="blocked">can't upgrade from here</option>
+                                            <option value="imported">offline-collection imports</option>
+                                        </select>
+                                        <span class="ml-auto text-xs text-gray-400"
+                                              x-text="$store.settings.velo.filtered ? (($store.settings.velo.page - 1) * $store.settings.velo.per + 1) + '–' + Math.min($store.settings.velo.page * $store.settings.velo.per, $store.settings.velo.filtered) + ' of ' + $store.settings.velo.filtered.toLocaleString() : 'none'"></span>
+                                    </div>
+                                    <table class="w-full text-sm">
+                                        <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-700">
+                                            <th class="py-1.5">Host</th><th>OS</th><th>Version</th><th>Last seen</th></tr></thead>
+                                        <tbody>
+                                            <template x-for="c in $store.settings.velo.clients" :key="c.client_id">
+                                                <tr class="border-b border-gray-700/50">
+                                                    <td class="py-1.5 text-white" :title="c.client_id + (c.release ? ' — ' + c.release : '')" x-text="c.hostname || c.client_id"></td>
+                                                    <td class="text-gray-400" x-text="c.os || '—'"></td>
+                                                    <td :class="{current: 'text-green-400', behind: 'text-yellow-400'}[c.state] || 'text-gray-400'"
+                                                        x-text="c.state === 'imported' ? 'import (no agent)' : (c.version || 'not reported')"></td>
+                                                    <td :class="c.online ? 'text-green-400' : 'text-gray-500'"
+                                                        x-text="c.online ? 'online' : (c.last_seen ? new Date(c.last_seen * 1000).toLocaleString() : 'never')"></td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                    <div x-show="$store.settings.velo.pages > 1" class="flex items-center justify-end gap-2 mt-2 text-xs">
+                                        <button @click="$store.settings.veloGoPage($store.settings.velo.page - 1)" :disabled="$store.settings.velo.page <= 1" class="px-2 py-1 rounded bg-gray-700 disabled:opacity-40">‹ Prev</button>
+                                        <span class="text-gray-400" x-text="'Page ' + $store.settings.velo.page + ' of ' + $store.settings.velo.pages"></span>
+                                        <button @click="$store.settings.veloGoPage($store.settings.velo.page + 1)" :disabled="$store.settings.velo.page >= $store.settings.velo.pages" class="px-2 py-1 rounded bg-gray-700 disabled:opacity-40">Next ›</button>
+                                    </div>
                                 </div>
                             </div>
                         </template>
