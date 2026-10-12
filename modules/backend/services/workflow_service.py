@@ -68,7 +68,10 @@ SYSTEM_TYPES = {"upgrade", "online_upgrade", "prepare_package", "maintenance",
                 # A Volatility symbol table / pack added on Memory -> Symbol tables.
                 # It changes the appliance's library, not a case -- and it had no
                 # run at all: an 840 MB upload left nothing in any log.
-                "memory_symbols_upload"}
+                "memory_symbols_upload",
+                # Settings → Velociraptor: building the client MSI and upgrading the
+                # clients act on the whole fleet, not on a case.
+                "velociraptor_client_package", "velociraptor_client_upgrade"}
 
 # Internal bookkeeping run-types (match services.fusion.store CASE_TYPE /
 # BASELINE_TYPE). The workspace row + fusion baseline marker are not case work

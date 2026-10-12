@@ -1135,3 +1135,58 @@ def velociraptor_refresh_client_info():
     if not hunt_id:
         return jsonify({"error": "Velociraptor did not create the hunt (see the backend log)"}), 502
     return jsonify({"hunt_id": hunt_id, "open_days": REFRESH_HUNT_DAYS})
+
+
+# --- Settings → Velociraptor: the client upgrade (package, then pilot, then the rest) ---
+@velociraptor_bp.route('/api/velociraptor/clients/upgrade-state', methods=['GET'])
+def velociraptor_upgrade_state():
+    """The verified packages (if any), whether their pilot passed, and who is eligible."""
+    from services.velociraptor_clients import (package_state, pilot_passed, client_versions,
+                                               upgrade_targets)
+    pkg = package_state()
+    out = {"package": pkg, "pilot_passed": bool(pkg) and pilot_passed(pkg["package_id"])}
+    try:
+        status = client_versions()
+        behind = [c["client_id"] for c in status["clients"] if c["state"] == "behind"]
+        eligible, refused = upgrade_targets(status, "rest", behind)
+        out["rest_candidates"] = [c["client_id"] for c in eligible]
+        out["pilot_candidates"] = [c["client_id"] for c in eligible if c["online"]]
+        out["refused"] = refused          # behind but never upgraded from here (legacy, macOS...)
+    except Exception as e:  # noqa: BLE001 -- the tab still shows the package
+        out["error"] = str(e)
+    return jsonify(out)
+
+
+@velociraptor_bp.route('/api/velociraptor/client-package', methods=['POST'])
+def velociraptor_prepare_package():
+    """Build + verify + register the Windows MSI and the Linux binary (System action)."""
+    import threading
+    from services.velociraptor_clients import prepare_packages
+    run_id = create_automation_run("velociraptor_client_package", "Prepare the Velociraptor client packages")
+    update_run_status(run_id, "running", progress=5)
+
+    def _work():
+        try:
+            pkg = prepare_packages(log=lambda m: add_log_to_run(run_id, m))
+            update_run_status(run_id, "completed", progress=100, details={"package": pkg})
+            add_log_to_run(run_id, f"Ready for {pkg['version']}: {pkg['windows']['filename']}, "
+                                   f"{pkg['linux']['filename']}", "success")
+        except Exception as e:  # noqa: BLE001 -- the reason is the result
+            add_log_to_run(run_id, f"Not prepared: {e}", "error")
+            update_run_status(run_id, "failed", progress=100, error=str(e)[:300])
+    threading.Thread(target=_work, daemon=True).start()
+    return jsonify({"run_id": run_id}), 202
+
+
+@velociraptor_bp.route('/api/velociraptor/clients/upgrade', methods=['POST'])
+def velociraptor_upgrade_clients():
+    """Start the pilot (stage=pilot, optional client_ids) or the rest (stage=rest)."""
+    from services.velociraptor_clients import start_upgrade
+    body = request.get_json(silent=True) or {}
+    try:
+        run_id = start_upgrade(body.get("stage"), body.get("client_ids") or None)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": f"Could not start the upgrade: {e}"}), 502
+    return jsonify({"run_id": run_id}), 202

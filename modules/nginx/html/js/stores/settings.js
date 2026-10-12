@@ -60,6 +60,8 @@ document.addEventListener('alpine:init', () => {
         veloLoading: false,
         veloRefreshing: false,
         veloError: '',
+        veloUpgrade: {},
+        veloPilot: '',
         decisionTesting: false,
         decisionTestResult: null,
         decisionCatalog: { providers: {}, models: [] },
@@ -207,10 +209,38 @@ document.addEventListener('alpine:init', () => {
                 const d = await r.json().catch(() => ({}));
                 if (r.ok) this.velo = d;
                 else this.veloError = d.error || ('HTTP ' + r.status);
+                const u = await fetch('/api/velociraptor/clients/upgrade-state');
+                if (u.ok) this.veloUpgrade = await u.json();
+                // default pilot: the first client the backend says may pilot
+                const pick = this.veloUpgrade.pilot_candidates || [];
+                if (!pick.includes(this.veloPilot)) this.veloPilot = pick[0] || '';
             } catch (e) {
                 this.veloError = e.message;
             }
             this.veloLoading = false;
+        },
+
+        async prepareVeloPackage() {
+            const r = await fetch('/api/velociraptor/client-package', { method: 'POST' });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) return this.showMessage('Could not start: ' + (d.error || 'HTTP ' + r.status), 'error');
+            this.showMessage('Preparing the client packages — follow it in Actions.', 'success');
+            setTimeout(() => window.ActiveCase.gotoSystemWorkflows(), 600);
+        },
+
+        async startVeloUpgrade(stage) {
+            const n = stage === 'pilot' ? 1 : (this.veloUpgrade.rest_candidates || []).length;
+            const who = stage === 'pilot' ? ((this.velo?.clients || []).find(c => c.client_id === this.veloPilot) || {}).hostname : n + ' client(s)';
+            if (!confirm('Upgrade the Velociraptor client on ' + who + ' to ' + this.velo.server_version
+                         + '? The client restarts during the upgrade.' + (stage === 'rest' ? ' Followed in Actions for 24 hours, checked once an hour.' : '')))  return;
+            const r = await fetch('/api/velociraptor/clients/upgrade', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stage, client_ids: stage === 'pilot' ? [this.veloPilot] : null }),
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) return this.showMessage('Not started: ' + (d.error || 'HTTP ' + r.status), 'error');
+            this.showMessage('Upgrade started — follow it in Actions.', 'success');
+            setTimeout(() => window.ActiveCase.gotoSystemWorkflows(), 600);
         },
 
         async refreshVeloClientInfo() {

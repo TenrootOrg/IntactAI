@@ -1,0 +1,77 @@
+name: Intact.Client.Upgrade.Linux
+description: |
+  Upgrades a Linux Velociraptor client to the server's version (Settings →
+  Velociraptor → Upgrade clients). Registered by Intact when it prepares the
+  client packages.
+
+  Intact installs Linux clients as a repacked binary (config embedded) at
+  /usr/local/bin/velociraptor run by the systemd unit `velociraptor_client`
+  (Downloads page), not from a .deb/.rpm -- so the built-in
+  Admin.Client.Upgrade.Debian/RedHat do not fit. This replaces whatever binary
+  the running client was started from (so a .deb install works too) and:
+
+  * runs the new binary's `version` FIRST and changes nothing if it cannot run
+    here (too old a glibc, a musl-only host);
+  * keeps the old binary as <path>.bak;
+  * restarts the unit from a transient systemd unit (a process inside the
+    client's own cgroup dies with the restart), and puts the old binary back if
+    the unit is not active 30 seconds later.
+
+  ReturnCode 0 and "OK:" = replaced, restart scheduled; anything else = nothing
+  was changed (Stdout says why).
+
+type: CLIENT
+
+required_permissions:
+  - EXECVE
+  - FILESYSTEM_WRITE
+
+tools:
+  - name: IntactVelociraptorLinux
+
+precondition: SELECT OS FROM info() WHERE OS = 'linux'
+
+parameters:
+  - name: SleepDuration
+    type: int
+    default: "600"
+    description: Wait a random time up to this many seconds before downloading (spreads the load).
+  - name: ServiceName
+    default: velociraptor_client
+
+sources:
+  - query: |
+      LET Script <= '''
+      set -u
+      NEW="$1"; CUR="$2"; SVC="$3"
+      case "$CUR" in /*) ;; *) echo "FAIL: the running binary's path is unknown ($CUR)"; exit 2 ;; esac
+      command -v systemctl >/dev/null 2>&1 && command -v systemd-run >/dev/null 2>&1 \
+        || { echo "FAIL: no systemd here -- upgrade this client by hand"; exit 3; }
+      systemctl cat "$SVC" >/dev/null 2>&1 \
+        || { echo "FAIL: no systemd unit $SVC -- the client is not installed as a service"; exit 3; }
+      chmod 0755 "$NEW"
+      OUT=$("$NEW" version 2>&1) || { echo "FAIL: the new binary does not run on this host: $(echo "$OUT" | head -c 300)"; exit 4; }
+      cp -p "$CUR" "$CUR.bak" || { echo "FAIL: cannot back up $CUR"; exit 5; }
+      cp "$NEW" "$CUR.new" && chmod 0755 "$CUR.new" && mv -f "$CUR.new" "$CUR" \
+        || { rm -f "$CUR.new"; echo "FAIL: cannot replace $CUR"; exit 6; }
+      systemd-run --unit="intact-velo-upgrade-$$" --collect /bin/sh -c \
+        "sleep 3; systemctl restart '$SVC'; sleep 30; systemctl is-active --quiet '$SVC' || { mv -f '$CUR.bak' '$CUR'; systemctl restart '$SVC'; }" \
+        >/dev/null 2>&1 || { mv -f "$CUR.bak" "$CUR"; echo "FAIL: could not schedule the restart; old binary put back"; exit 7; }
+      echo "OK: replaced $CUR with $(echo "$OUT" | sed -n 's/^version: //p'); restarting $SVC (backup $CUR.bak)"
+      '''
+
+      LET Exe <= SELECT Exe FROM info()
+
+      LET Bin <= SELECT OSPath FROM Artifact.Generic.Utils.FetchBinary(
+          ToolName="IntactVelociraptorLinux", SleepDuration=SleepDuration, IsExecutable=TRUE)
+
+      SELECT * FROM if(condition=Bin,
+        then={
+          SELECT Stdout, Stderr, ReturnCode
+          FROM execve(argv=["/bin/sh", "-c", Script, "intact-upgrade",
+                            str(str=Bin[0].OSPath), Exe[0].Exe, ServiceName], length=10000)
+        },
+        else={
+          SELECT "FAIL: could not fetch the IntactVelociraptorLinux tool" AS Stdout,
+                 "" AS Stderr, 1 AS ReturnCode FROM scope()
+        })

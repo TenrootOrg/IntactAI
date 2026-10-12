@@ -1507,6 +1507,46 @@
                                     </tbody>
                                 </table>
                                 <p x-show="!$store.settings.velo.total" class="text-sm text-gray-500 mt-3">No clients enrolled yet.</p>
+
+                                <!-- Upgrade: packages → pilot → the rest. Each starts a System action
+                                     (Settings → Actions): the pilot is followed for 15 min, the rest for
+                                     24 h with one "N of M upgraded" line an hour. -->
+                                <div class="mt-5 pt-4 border-t border-gray-700">
+                                    <h4 class="text-sm font-semibold text-white mb-2">Upgrade clients to <span x-text="$store.settings.velo.server_version"></span></h4>
+                                    <div class="text-xs text-gray-400 mb-3 flex items-center gap-3">
+                                        <span x-show="($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.server_version" class="text-green-400"
+                                              x-text="'Packages ready (Windows MSI + Linux binary) — config verified, built ' + new Date(($store.settings.veloUpgrade.package||{}).built_at).toLocaleString()"></span>
+                                        <span x-show="($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.server_version" class="text-yellow-400">
+                                            No verified packages for this server version yet.</span>
+                                        <button @click="$store.settings.prepareVeloPackage()"
+                                                title="Repacks the server's Windows MSI and Linux binary with this server's client config, checks the config inside each points at this server, and registers them as the tools the upgrade uses."
+                                                class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-white">Prepare packages</button>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-2 text-sm">
+                                        <span class="text-gray-400">1. Pilot:</span>
+                                        <select x-model="$store.settings.veloPilot" class="bg-gray-900 text-white border border-gray-700 rounded px-2 py-1 text-sm">
+                                            <template x-for="c in $store.settings.velo.clients.filter(c => ($store.settings.veloUpgrade.pilot_candidates||[]).includes(c.client_id))" :key="c.client_id">
+                                                <option :value="c.client_id" x-text="c.hostname + ' — ' + c.os + ' ' + c.version"></option>
+                                            </template>
+                                        </select>
+                                        <button @click="$store.settings.startVeloUpgrade('pilot')"
+                                                :disabled="!$store.settings.veloPilot || ($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.server_version"
+                                                class="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 px-3 py-1 rounded text-white">Upgrade pilot</button>
+                                        <span class="text-gray-400 ml-4">2. Then:</span>
+                                        <button @click="$store.settings.startVeloUpgrade('rest')"
+                                                :disabled="!$store.settings.veloUpgrade.pilot_passed || !($store.settings.veloUpgrade.rest_candidates||[]).length"
+                                                :title="$store.settings.veloUpgrade.pilot_passed ? 'Every other eligible client; offline ones upgrade when next seen. Followed in Actions for 24 hours, checked once an hour.' : 'Available once a pilot client upgraded with these packages.'"
+                                                class="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 px-3 py-1 rounded text-white"
+                                                x-text="'Upgrade the rest (' + ($store.settings.veloUpgrade.rest_candidates||[]).length + ')'"></button>
+                                    </div>
+                                    <p x-show="!($store.settings.veloUpgrade.pilot_candidates||[]).length" class="text-xs text-gray-500 mt-2">
+                                        No online client is behind the server — nothing to pilot.</p>
+                                    <template x-if="($store.settings.veloUpgrade.refused||[]).length">
+                                        <div class="text-xs text-yellow-500 mt-2">Not upgraded from here:
+                                            <template x-for="r in $store.settings.veloUpgrade.refused" :key="r"><div class="ml-2" x-text="r"></div></template></div>
+                                    </template>
+                                    <p class="text-xs text-gray-500 mt-2">Windows and Linux clients behind the server only — never a newer one, never one whose version is unknown (Refresh client info first). Known gaps, upgrade by hand: legacy agents (Win7/2008R2, old glibc), musl-only Linux, macOS.</p>
+                                </div>
                             </div>
                         </template>
                     </div>
