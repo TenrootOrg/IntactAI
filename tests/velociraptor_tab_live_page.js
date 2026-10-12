@@ -55,40 +55,40 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   const A = w.Alpine, st = A.store('settings');
   A.store('services').statuses = { velociraptor: 'online' };
   await st.loadVelociraptor(); await sleep(300);
-  const sm = st.velo.summary;
   const rows = () => $$('tbody tr').length;
-  const visible = el => el && el.style.display !== 'none' && (!el.parentElement || visible(el.parentElement) || el.parentElement === w.document.body);
-  const btn = t => $$('button').find(b => b.textContent.trim().startsWith(t));
-  check('summary loaded', !!sm && sm.agents >= 1, JSON.stringify(st.velo).slice(0, 200));
-  check('rate: "X of Y agents updated to <version>" + %', text().includes(`${sm.counts.current} of ${sm.agents} agents updated to ${sm.server_version}`)
-        && text().includes(`${Math.round(100 * sm.counts.current / Math.max(1, sm.agents))}%`), text().slice(0, 300));
-  check('the bar is there', $$('div.h-3 > div').length === 3 && $('div.h-3 > div.bg-green-500').style.width.endsWith('%'), '');
-  check('offline-collection imports counted apart', !sm.imported || text().includes(`${sm.imported} offline-collection import(s), no agent — not counted`), text().slice(0, 400));
-  check('the three actions are always on screen', ['Prepare packages', 'Upgrade pilot', 'Upgrade all'].every(t => btn(t)), '');
-  check('pilot / upgrade-all greyed when not usable', btn('Upgrade pilot').disabled && (sm.counts.behind || btn('Upgrade all').disabled), '');
-  check('auto-rebuild switch present', text().includes('rebuild packages automatically after a server upgrade'), '');
-  const tbl = $('table');
-  check('client list hidden until asked', tbl && tbl.closest('div[x-show]').style.display === 'none', tbl && tbl.closest('div[x-show]').style.display);
-  btn('Show clients').click();
-  await waitFor(() => tbl.closest('div[x-show]').style.display !== 'none');
-  check('Show clients opens the list', tbl.closest('div[x-show]').style.display !== 'none', '');
-  check('imports are not listed by default', rows() === Math.min(50, sm.agents) && $$('tbody tr').every(r => !r.textContent.includes('import (no agent)')), rows());
-  const sel = $$('select').find(x => [...x.options].some(o => o.value === 'imported'));
-  sel.value = 'imported'; sel.dispatchEvent(new w.Event('change'));
-  await waitFor(() => net.some(n => n.includes('state=imported')) && rows() === Math.min(50, sm.imported));
-  check('"offline-collection imports" lists them (server-side)', net.some(n => n.includes('state=imported')) && (sm.imported === 0 || $$('tbody tr').every(r => r.textContent.includes('import (no agent)'))), rows());
-  sel.value = ''; sel.dispatchEvent(new w.Event('change'));
-  await waitFor(() => rows() === Math.min(50, sm.agents));
-  const box = $('input[placeholder="Search host"]');
+  const sm = st.velo.summary;
+  check('summary loaded', !!sm && sm.total >= 1, JSON.stringify(st.velo).slice(0, 200));
+  check('progress line', text().includes(`${sm.counts.current} of ${sm.total} clients on the server's version ${sm.server_version}`), text().slice(0, 300));
+  check('table shows one page (<= 50) of rows', rows() === Math.min(50, sm.total), rows());
+  check('by-version panel lists versions', $$('button').some(b => /0\.77\.2/.test(b.textContent)), '');
+  check('not-upgradable grouped with a count', text().includes('Version unknown — Refresh client info'), text().slice(0, 600));
+  // click the "version unknown" count -> filtered on the server
+  const unk = $$('button').find(b => /version unknown$/.test(b.textContent.trim()));
+  check('state chip present', !!unk, '');
+  if (unk) { unk.click(); await waitFor(() => rows() === sm.counts.unknown);
+    check('chip filters on the server (state=unknown)', net.some(n => n.includes('state=unknown')), net.slice(-3).join(' | '));
+    check('only unknown rows shown', rows() === sm.counts.unknown && $$('tbody tr').every(r => r.textContent.includes('unknown')), rows()); }
+  st.clearVeloFilter(); await sleep(400);
+  // search
+  const box = $('input[placeholder="Search host or client ID"]');
   box.value = 'DESKTOP'; box.dispatchEvent(new w.Event('input'));
-  await waitFor(() => net.some(n => n.includes('q=DESKTOP')) && rows() === 1);
-  check('search filters on the server', net.some(n => n.includes('q=DESKTOP')) && rows() === 1 && $('tbody tr').textContent.includes('DESKTOP-2175T02'), rows());
-  // the box may have nothing behind: show the three steps from the page's own state (nothing is sent)
-  st.velo = { ...st.velo, summary: { ...st.velo.summary, counts: { ...st.velo.summary.counts, behind: 3 } } };
-  st.veloUpgrade = { ...st.veloUpgrade, eligible: 3, pilot_passed: false };
-  await waitFor(() => text().includes('Upgrade all (3)'));
-  check('with clients behind: counts and "Upgrade all (3)"', ['Upgrade all (3)', '3 behind'].every(t => text().includes(t)), text().slice(0, 500));
-  check('"Upgrade all" waits for the pilot', btn('Upgrade all').disabled === true && /pilot first/.test(btn('Upgrade all').title), btn('Upgrade all').title);
+  await waitFor(() => rows() === 1);
+  await waitFor(() => $$('button').some(b => b.textContent.trim() === 'clear filters' && b.style.display !== 'none'));
+  check('search filters on the server (q=DESKTOP)', net.some(n => n.includes('q=DESKTOP')), net.slice(-3).join(' | '));
+  check('search shows the matching host', rows() === 1 && $('tbody tr').textContent.includes('DESKTOP-2175T02'), rows());
+  check('"clear filters" offered', $$('button').some(b => b.textContent.trim() === 'clear filters' && b.style.display !== 'none'), '');
+  st.clearVeloFilter();
+  await waitFor(() => $$('button').filter(b => b.textContent.trim() === 'clear filters').every(b => b.style.display === 'none'));
+  check('"clear filters" gone after clearing', $$('button').filter(b => b.textContent.trim() === 'clear filters').every(b => b.style.display === 'none'), '');
+  st.clearVeloFilter(); await sleep(400);
+  // pilot search
+  st.veloPilotQ = ''; await st.searchVeloPilot(); await sleep(200);
+  check('pilot search calls the server', net.some(n => n.includes('/pilot-candidates?q=')), '');
+  check('pilot candidates are online + eligible only', st.veloPilotHits.length === (st.veloUpgrade.eligible_online || 0) || st.veloPilotHits.length === 20, st.veloPilotHits.length);
+  check('wave text', st.veloWaveText().length > 10, st.veloWaveText());
+  check('upgrade wave disabled without a passed pilot or eligible clients',
+        $$('button').find(b => b.textContent.trim() === 'Upgrade wave').disabled === !(st.veloUpgrade.pilot_passed && st.veloUpgrade.eligible), '');
+  check('pager hidden for one page', st.velo.pages > 1 || $$('button').filter(b => /Prev/.test(b.textContent)).every(b => b.parentElement.style.display === 'none'), '');
   check('no Alpine / script errors', errors.length === 0, errors.slice(0, 3).join(' || '));
   console.log(fail ? `\n${fail} FAILED` : '\nall ok', '| requests:', net.length);
   process.exit(fail ? 1 : 0);

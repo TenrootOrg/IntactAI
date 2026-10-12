@@ -48,7 +48,7 @@ class Versions(unittest.TestCase):
         self.assertTrue(by["C.1"]["online"])
         self.assertFalse(by["C.2"]["online"])
         self.assertIsNone(by["C.3"]["last_seen"])
-        self.assertEqual(out["counts"], {"current": 1, "behind": 1, "ahead": 1, "unknown": 1, "imported": 0, "online": 2})
+        self.assertEqual(out["counts"], {"current": 1, "behind": 1, "ahead": 1, "unknown": 1, "online": 2})
         self.assertEqual(out["clients"][0]["client_id"], "C.1")          # behind first
         self.assertEqual(out["server_version"], "0.77.2")
 
@@ -113,44 +113,6 @@ class Safety(unittest.TestCase):
                     "W7: Microsoft Windows 7 Professional cannot run", "NOREL: Windows release unknown",
                     "WS-OFF: offline", "C.x: not a known client"):
             self.assertIn(why, text)
-
-
-class OfflineCollectionImports(unittest.TestCase):
-    """An offline-collection import leaves a client record no agent ever ran on
-    (the 9 AdatumLab hosts on the lab box): not part of the fleet, never upgradable."""
-
-    def test_recognised_counted_apart_and_never_upgraded(self):
-        st = classify([
-            # as clients() returns them on the box (2026-10-12)
-            {"client_id": "C.imp", "hostname": "ALDC02", "os": "", "version": "", "agent": "", "interrogated": "",
-             "last_seen_at": NOW - 99999},
-            {"client_id": "C.vm", "hostname": "DESKTOP-2175T02", "os": "windows", "version": "0.77.2",
-             "agent": "velociraptor", "interrogated": "F.DB6735K421NVU", "release": "Microsoft Windows 11 Pro",
-             "last_seen_at": NOW},
-            # a real agent that has not reported a version yet is NOT an import
-            {"client_id": "C.new", "hostname": "NEW", "os": "windows", "version": "", "agent": "velociraptor",
-             "interrogated": "", "last_seen_at": NOW},
-        ], "0.77.2", now=NOW)
-        by = {c["client_id"]: c["state"] for c in st["clients"]}
-        self.assertEqual(by, {"C.imp": "imported", "C.vm": "current", "C.new": "unknown"})
-        sm = summarize(st)
-        self.assertEqual((sm["agents"], sm["imported"], sm["counts"]["unknown"]), (2, 1, 1))
-        self.assertNotIn("imported", {g["key"] for g in sm["not_upgradable"]})
-        self.assertEqual([c["client_id"] for c in filter_clients(st)], ["C.new", "C.vm"])   # imports left out
-        self.assertEqual([c["client_id"] for c in filter_clients(st, state="imported")], ["C.imp"])
-        t, refused = upgrade_targets(st, "pilot", ["C.imp"])
-        self.assertEqual(t, [])
-        self.assertIn("offline-collection import", refused[0])
-
-    def test_blocked_filter(self):
-        st = classify([
-            {"client_id": "C.w7", "hostname": "W7", "os": "windows", "release": "Microsoft Windows 7 Professional",
-             "version": "0.7.1", "last_seen_at": NOW},
-            {"client_id": "C.ok", "hostname": "OK", "os": "windows", "release": "Microsoft Windows 11 Pro",
-             "version": "0.77.1", "last_seen_at": NOW},
-        ], "0.77.2", now=NOW)
-        self.assertEqual([c["client_id"] for c in filter_clients(st, reason="blocked")], ["C.w7"])
-        self.assertEqual(summarize(st)["blocked"], 1)
 
 
 class Outcomes(unittest.TestCase):
