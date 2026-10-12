@@ -392,11 +392,16 @@ def summarize(status):
                                for k in NOT_UPGRADABLE if groups.get(k)]}
 
 
-def filter_clients(status, state=None, os=None, version=None, online=None, q=None, reason=None):
-    """Server-side filter for the paged table. reason: 'eligible' or a NOT_UPGRADABLE key."""
+def filter_clients(status, state=None, os=None, version=None, online=None, q=None, reason=None,
+                   hide_unknown=False):
+    """Server-side filter for the paged table. reason: 'eligible' or a NOT_UPGRADABLE key.
+    hide_unknown: leave out clients that never reported a version -- usually
+    offline-collection imports, collapsed in the table unless asked for."""
     q = (q or "").strip().lower()
     out = []
     for c in status["clients"]:
+        if hide_unknown and c["state"] == "unknown":
+            continue
         if state and c["state"] != state:
             continue
         if os and c["os"] != os:

@@ -193,6 +193,13 @@ class Fleet(unittest.TestCase):
         self.assertTrue(all(c["version"] == "" for c in filter_clients(st, version="")))
         self.assertEqual(len(filter_clients(st, reason="old_windows")), 100)
 
+    def test_unknown_versions_can_be_collapsed(self):
+        st = self.fleet(1000)
+        shown = filter_clients(st, hide_unknown=True)
+        self.assertEqual(len(shown), 900)                       # every 10th has no version
+        self.assertTrue(all(c["state"] != "unknown" for c in shown))
+        self.assertEqual(len(filter_clients(st)), 1000)
+
     def test_waves_by_label_and_size_online_first(self):
         st = self.fleet(1000)
         t, _ = upgrade_targets(st, "rest", limit=100)

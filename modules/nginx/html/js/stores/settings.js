@@ -62,6 +62,7 @@ document.addEventListener('alpine:init', () => {
         veloError: '',
         veloUpgrade: {},
         veloPilot: null,
+        veloShowUnknown: false,     // clients with no version (usually offline collections) start collapsed
         veloPilotQ: '',
         veloPilotHits: [],
         veloFilter: { state: '', os: '', version: null, online: '', q: '', reason: '', page: 1 },
@@ -212,6 +213,7 @@ document.addEventListener('alpine:init', () => {
                 const f = this.veloFilter, qs = new URLSearchParams({ page: f.page, per: 50 });
                 for (const k of ['state', 'os', 'online', 'q', 'reason']) if (f[k]) qs.set(k, f[k]);
                 if (f.version !== null) qs.set('version', f.version);
+                if (!this.veloShowUnknown) qs.set('hide', 'unknown');
                 const r = await fetch('/api/velociraptor/clients/versions?' + qs);
                 const d = await r.json().catch(() => ({}));
                 if (r.ok) this.velo = d;
@@ -226,6 +228,12 @@ document.addEventListener('alpine:init', () => {
 
         setVeloFilter(change) {
             this.veloFilter = { ...this.veloFilter, ...change, page: 1 };
+            this.loadVelociraptor();
+        },
+
+        toggleVeloUnknown() {
+            this.veloShowUnknown = !this.veloShowUnknown;
+            this.veloFilter.page = 1;
             this.loadVelociraptor();
         },
 

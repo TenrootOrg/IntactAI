@@ -1122,7 +1122,8 @@ def velociraptor_client_versions():
     """Summary of the whole fleet + ONE page of clients, filtered here (a fleet of
     thousands is never sent, nor rendered, whole). Filters: state, os, version,
     online (1/0), q (host or client id), reason ('eligible' or a not-upgradable
-    key); page (1-based), per (<= 200)."""
+    key), hide=unknown (collapse clients that never reported a version); page
+    (1-based), per (<= 200)."""
     from services.velociraptor_clients import client_versions, summarize, filter_clients
     a = request.args
     try:
@@ -1131,7 +1132,8 @@ def velociraptor_client_versions():
         return jsonify({"error": f"Could not read client versions: {e}"}), 502
     online = {"1": True, "0": False}.get(a.get("online", ""))
     rows = filter_clients(status, state=a.get("state") or None, os=a.get("os") or None,
-                          version=a.get("version"), online=online, q=a.get("q"), reason=a.get("reason") or None)
+                          version=a.get("version"), online=online, q=a.get("q"), reason=a.get("reason") or None,
+                          hide_unknown=a.get("hide") == "unknown")
     per = max(1, min(200, int(a.get("per", 50) or 50)))
     pages = max(1, -(-len(rows) // per))
     page = max(1, min(pages, int(a.get("page", 1) or 1)))

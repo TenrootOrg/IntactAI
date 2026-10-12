@@ -66,7 +66,18 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   check('the bar shows updated of reported', $('div.grid.grid-cols-3.rounded-lg div.h-2 > div').style.width === Math.round(100 * sm.counts.current / Math.max(1, reported)) + '%', '');
   check('upgradeable count', cols[1].startsWith(`Upgradeable ${sm.eligible}`), cols[1]);
   check('version unknown count, "usually offline collections"', cols[2] === `Version unknown ${sm.counts.unknown} usually offline collections`, cols[2]);
-  check('table shows one page (<= 50) of rows', rows() === Math.min(50, sm.total), rows());
+  check('table shows one page, unknown versions collapsed', rows() === Math.min(50, sm.total - sm.counts.unknown)
+        && $$('tbody tr').every(r => !/unknown/.test(r.textContent)), rows());
+  if (sm.counts.unknown) {
+    const tog = () => $$('button').find(b => /with unknown version/.test(b.textContent));
+    check('"Show N with unknown version" offered', !!tog() && tog().textContent.includes(`Show ${sm.counts.unknown} with unknown version`), tog() && tog().textContent);
+    tog().click();
+    await waitFor(() => rows() === Math.min(50, sm.total));
+    check('... shows them', rows() === Math.min(50, sm.total) && /^Hide the/.test(tog().textContent.trim()), rows());
+    tog().click();
+    await waitFor(() => rows() === Math.min(50, sm.total - sm.counts.unknown));
+    check('... and hides them again', rows() === Math.min(50, sm.total - sm.counts.unknown), rows());
+  }
   check('meta line under the title', text().includes(`Server ${sm.server_version} · ${sm.counts.online} of ${sm.total} online`), '');
   check('nothing in the summary is clickable', !$('div.grid.grid-cols-3.rounded-lg').querySelector('button'), '');
   const box0 = $('input[placeholder="Search host or client ID"]'), row = box0.parentElement;
@@ -74,6 +85,8 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   // search
   const box = $('input[placeholder="Search host or client ID"]');
   box.value = 'DESKTOP'; box.dispatchEvent(new w.Event('input'));
+  // wait for the search request itself: with unknown versions collapsed the table may already be 1 row
+  await waitFor(() => net.some(n => n.includes('q=DESKTOP')));
   await waitFor(() => rows() === 1);
   check('search filters on the server (q=DESKTOP)', net.some(n => n.includes('q=DESKTOP')), net.slice(-3).join(' | '));
   check('search shows the matching host', rows() === 1 && $('tbody tr').textContent.includes('DESKTOP-2175T02'), rows());

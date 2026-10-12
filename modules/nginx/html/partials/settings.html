@@ -1532,6 +1532,8 @@
                                     <input type="search" placeholder="Search host or client ID" :value="$store.settings.veloFilter.q"
                                            @input.debounce.400ms="$store.settings.setVeloFilter({q: $event.target.value})"
                                            class="bg-gray-900 text-white border border-gray-700 rounded px-2 py-1" style="width:16rem">
+                                    <button x-show="$store.settings.velo.summary.counts.unknown" @click="$store.settings.toggleVeloUnknown()" class="text-xs text-blue-400 hover:text-blue-300"
+                                            x-text="$store.settings.veloShowUnknown ? 'Hide the ' + $store.settings.velo.summary.counts.unknown + ' with unknown version' : 'Show ' + $store.settings.velo.summary.counts.unknown + ' with unknown version (usually offline collections)'"></button>
                                     <span class="ml-auto text-xs text-gray-400"
                                           x-text="$store.settings.velo.filtered ? (($store.settings.velo.page - 1) * $store.settings.velo.per + 1).toLocaleString() + '–' + Math.min($store.settings.velo.page * $store.settings.velo.per, $store.settings.velo.filtered).toLocaleString() + ' of ' + $store.settings.velo.filtered.toLocaleString() : 'no client matches'"></span>
                                 </div>
