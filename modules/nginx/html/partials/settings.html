@@ -1509,55 +1509,44 @@
                                     </div>
                                     <div class="flex gap-3 mt-2 text-xs">
                                         <template x-for="[k, label, cls] in [['current','on the server\'s version','text-green-400'],['behind','behind','text-yellow-400'],['unknown','version unknown','text-gray-300'],['ahead','newer than the server','text-blue-300']]" :key="k">
-                                            <button x-show="$store.settings.velo.summary.counts[k]" @click="$store.settings.setVeloFilter({state: $store.settings.veloFilter.state === k ? '' : k})"
-                                                    :class="[cls, $store.settings.veloFilter.state === k ? 'underline font-semibold' : '']"
-                                                    x-text="$store.settings.velo.summary.counts[k].toLocaleString() + ' ' + label"></button>
+                                            <span x-show="$store.settings.velo.summary.counts[k]" :class="cls"
+                                                  x-text="$store.settings.velo.summary.counts[k].toLocaleString() + ' ' + label"></span>
                                         </template>
                                     </div>
                                 </div>
 
-                                <!-- By version / by OS / not upgradable: counts, each a filter -->
+                                <!-- By version / by OS / not upgradable: counts only (clicking them to filter was too much) -->
                                 <div class="grid grid-cols-3 gap-3 mb-4 text-xs">
                                     <div class="bg-gray-900 rounded p-3">
                                         <div class="text-gray-500 mb-1">By version</div>
                                         <template x-for="v in $store.settings.velo.summary.by_version.slice(0, 6)" :key="v.version">
-                                            <button class="flex w-full justify-between hover:text-white" @click="$store.settings.setVeloFilter({version: $store.settings.veloFilter.version === v.version ? null : v.version})"
-                                                    :class="$store.settings.veloFilter.version === v.version ? 'text-white font-semibold' : 'text-gray-300'">
-                                                <span x-text="v.version || 'unknown'"></span><span x-text="v.n.toLocaleString()"></span></button>
+                                            <div class="flex w-full justify-between text-gray-300">
+                                                <span x-text="v.version || 'unknown'"></span><span x-text="v.n.toLocaleString()"></span></div>
                                         </template>
                                         <div x-show="$store.settings.velo.summary.by_version.length > 6" class="text-gray-500" x-text="'+ ' + ($store.settings.velo.summary.by_version.length - 6) + ' more versions'"></div>
                                     </div>
                                     <div class="bg-gray-900 rounded p-3">
                                         <div class="text-gray-500 mb-1">By OS</div>
                                         <template x-for="o in $store.settings.velo.summary.by_os" :key="o.os">
-                                            <button class="flex w-full justify-between hover:text-white" @click="$store.settings.setVeloFilter({os: $store.settings.veloFilter.os === o.os ? '' : o.os})"
-                                                    :class="$store.settings.veloFilter.os === o.os && o.os ? 'text-white font-semibold' : 'text-gray-300'">
-                                                <span x-text="o.os || 'not reported'"></span><span x-text="o.n.toLocaleString()"></span></button>
+                                            <div class="flex w-full justify-between text-gray-300">
+                                                <span x-text="o.os || 'not reported'"></span><span x-text="o.n.toLocaleString()"></span></div>
                                         </template>
                                     </div>
                                     <div class="bg-gray-900 rounded p-3">
                                         <div class="text-gray-500 mb-1">Not upgraded from here</div>
                                         <template x-for="g in $store.settings.velo.summary.not_upgradable" :key="g.key">
-                                            <button class="flex w-full justify-between text-left hover:text-white gap-2" @click="$store.settings.setVeloFilter({reason: $store.settings.veloFilter.reason === g.key ? '' : g.key})"
-                                                    :class="$store.settings.veloFilter.reason === g.key ? 'text-white font-semibold' : 'text-yellow-500'">
-                                                <span x-text="g.label"></span><span x-text="g.n.toLocaleString()"></span></button>
+                                            <div class="flex w-full justify-between gap-2 text-yellow-500">
+                                                <span x-text="g.label"></span><span x-text="g.n.toLocaleString()"></span></div>
                                         </template>
                                         <div x-show="!$store.settings.velo.summary.not_upgradable.length" class="text-gray-500">none</div>
                                     </div>
                                 </div>
 
-                                <!-- One page of clients, filtered on the server -->
+                                <!-- One page of clients: a search box, filtered on the server -->
                                 <div class="flex flex-wrap items-center gap-2 mb-2 text-sm">
                                     <input type="search" placeholder="Search host or client ID" :value="$store.settings.veloFilter.q"
                                            @input.debounce.400ms="$store.settings.setVeloFilter({q: $event.target.value})"
                                            class="bg-gray-900 text-white border border-gray-700 rounded px-2 py-1 w-64">
-                                    <select @change="$store.settings.setVeloFilter({online: $event.target.value})" :value="$store.settings.veloFilter.online"
-                                            class="bg-gray-900 text-white border border-gray-700 rounded px-2 py-1">
-                                        <option value="">online + offline</option><option value="1">online</option><option value="0">offline</option>
-                                    </select>
-                                    <button @click="$store.settings.setVeloFilter({reason: $store.settings.veloFilter.reason === 'eligible' ? '' : 'eligible'})"
-                                            :class="$store.settings.veloFilter.reason === 'eligible' ? 'bg-blue-700' : 'bg-gray-700'" class="px-2 py-1 rounded text-white text-xs">upgradable from here</button>
-                                    <button x-show="$store.settings.veloFilter.state || $store.settings.veloFilter.os || $store.settings.veloFilter.online || $store.settings.veloFilter.q || $store.settings.veloFilter.reason || $store.settings.veloFilter.version !== null" @click="$store.settings.clearVeloFilter()" class="text-xs text-blue-400 hover:text-blue-300">clear filters</button>
                                     <span class="ml-auto text-xs text-gray-400"
                                           x-text="$store.settings.velo.filtered ? (($store.settings.velo.page - 1) * $store.settings.velo.per + 1).toLocaleString() + '–' + Math.min($store.settings.velo.page * $store.settings.velo.per, $store.settings.velo.filtered).toLocaleString() + ' of ' + $store.settings.velo.filtered.toLocaleString() : 'no client matches'"></span>
                                 </div>

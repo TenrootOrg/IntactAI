@@ -230,11 +230,6 @@ document.addEventListener('alpine:init', () => {
             this.loadVelociraptor();
         },
 
-        clearVeloFilter() {
-            this.veloFilter = { state: '', os: '', version: null, online: '', q: '', reason: '', page: 1 };
-            this.loadVelociraptor();
-        },
-
         veloGoPage(p) {
             this.veloFilter.page = p;
             this.loadVelociraptor();

@@ -60,27 +60,21 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   check('summary loaded', !!sm && sm.total >= 1, JSON.stringify(st.velo).slice(0, 200));
   check('progress line', text().includes(`${sm.counts.current} of ${sm.total} clients on the server's version ${sm.server_version}`), text().slice(0, 300));
   check('table shows one page (<= 50) of rows', rows() === Math.min(50, sm.total), rows());
-  check('by-version panel lists versions', $$('button').some(b => /0\.77\.2/.test(b.textContent)), '');
+  check('by-version panel lists versions', /0\.77\.2/.test($$('div.grid.grid-cols-3 > div')[0].textContent), '');
   check('not-upgradable grouped with a count', text().includes('Version unknown — Refresh client info'), text().slice(0, 600));
-  // click the "version unknown" count -> filtered on the server
-  const unk = $$('button').find(b => /version unknown$/.test(b.textContent.trim()));
-  check('state chip present', !!unk, '');
-  if (unk) { unk.click(); await waitFor(() => rows() === sm.counts.unknown);
-    check('chip filters on the server (state=unknown)', net.some(n => n.includes('state=unknown')), net.slice(-3).join(' | '));
-    check('only unknown rows shown', rows() === sm.counts.unknown && $$('tbody tr').every(r => r.textContent.includes('unknown')), rows()); }
-  st.clearVeloFilter(); await sleep(400);
+  // the counts are information only, and the filter row is just a search box (2026-10-12: both were too much)
+  const panels = $$('div.grid.grid-cols-3 > div');
+  check('by-version / by-OS / not-upgradable panels have nothing to click', panels.length === 3 && panels.every(p => !p.querySelector('button')), panels.length);
+  check('counts under the bar are plain text', !$$('button').some(b => /version unknown$|on the server's version$/.test(b.textContent.trim())), '');
+  const box0 = $('input[placeholder="Search host or client ID"]'), row = box0.parentElement;
+  check('filter row = search box only', !row.querySelector('select') && !$$('button').some(b => /upgradable from here|clear filters/.test(b.textContent)), row.innerHTML.slice(0, 200));
   // search
   const box = $('input[placeholder="Search host or client ID"]');
   box.value = 'DESKTOP'; box.dispatchEvent(new w.Event('input'));
   await waitFor(() => rows() === 1);
-  await waitFor(() => $$('button').some(b => b.textContent.trim() === 'clear filters' && b.style.display !== 'none'));
   check('search filters on the server (q=DESKTOP)', net.some(n => n.includes('q=DESKTOP')), net.slice(-3).join(' | '));
   check('search shows the matching host', rows() === 1 && $('tbody tr').textContent.includes('DESKTOP-2175T02'), rows());
-  check('"clear filters" offered', $$('button').some(b => b.textContent.trim() === 'clear filters' && b.style.display !== 'none'), '');
-  st.clearVeloFilter();
-  await waitFor(() => $$('button').filter(b => b.textContent.trim() === 'clear filters').every(b => b.style.display === 'none'));
-  check('"clear filters" gone after clearing', $$('button').filter(b => b.textContent.trim() === 'clear filters').every(b => b.style.display === 'none'), '');
-  st.clearVeloFilter(); await sleep(400);
+  st.setVeloFilter({ q: '' }); await waitFor(() => rows() === Math.min(50, sm.total));
   // pilot search
   st.veloPilotQ = ''; await st.searchVeloPilot(); await sleep(200);
   check('pilot search calls the server', net.some(n => n.includes('/pilot-candidates?q=')), '');
