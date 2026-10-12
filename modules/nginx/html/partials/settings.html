@@ -1491,14 +1491,7 @@
                                 <div x-show="$store.settings.velo.summary.counts.behind && !$store.settings.veloUpgrade.running" class="mb-4 rounded border border-yellow-700 bg-yellow-900/30 px-4 py-3 text-sm">
                                     <div class="text-yellow-300 font-medium"
                                          x-text="'Server ' + $store.settings.velo.summary.server_version + ' — ' + $store.settings.velo.summary.counts.behind.toLocaleString() + ' client(s) behind, ' + ($store.settings.veloUpgrade.eligible || 0).toLocaleString() + ' upgradable from here'"></div>
-                                    <div class="text-xs text-gray-300 mt-1">
-                                        <span x-show="($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.summary.server_version">Packages are ready — start with <b>Upgrade pilot</b> below.</span>
-                                        <span x-show="$store.settings.veloUpgrade.preparing">Packages for this version are being prepared (Settings → Actions)…</span>
-                                        <span x-show="!$store.settings.veloUpgrade.preparing && ($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.summary.server_version && ($store.settings.veloUpgrade.last_prepare||{}).status === 'failed'" class="text-red-300"
-                                              x-text="'Preparing the packages failed: ' + (($store.settings.veloUpgrade.last_prepare||{}).error || 'see Settings → Actions')"></span>
-                                        <span x-show="!$store.settings.veloUpgrade.preparing && ($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.summary.server_version && ($store.settings.veloUpgrade.last_prepare||{}).status !== 'failed'"
-                                              x-text="$store.settings.veloUpgrade.auto_prepare ? 'Packages for this version will be prepared automatically within 10 minutes — or press Prepare packages.' : 'Press Prepare packages below.'"></span>
-                                    </div>
+                                    <div class="text-xs text-gray-300 mt-1">Start with <b>Upgrade pilot</b> below — the packages for this version are built and checked as its first step.</div>
                                 </div>
 
                                 <!-- Summary, try-out 3 (2026-10-12): one card, three columns, each number once.
@@ -1579,20 +1572,11 @@
                                     <button @click="$store.settings.veloGoPage($store.settings.velo.page + 1)" :disabled="$store.settings.velo.page >= $store.settings.velo.pages" class="px-2 py-1 rounded bg-gray-700 disabled:opacity-50">Next ›</button>
                                 </div>
 
-                                <!-- Upgrade: packages → pilot → waves. Each is a System action (Settings → Actions). -->
+                                <!-- Upgrade: pilot → all. Each is a System action (Settings → Actions) whose first
+                                     step builds and verifies the packages when this server version has none yet
+                                     (no separate "Prepare packages" / auto-rebuild: server upgrades are months apart). -->
                                 <div class="mt-5 pt-4 border-t border-gray-700">
                                     <h4 class="text-sm font-semibold text-white mb-2">Upgrade clients to <span x-text="$store.settings.velo.summary.server_version"></span></h4>
-                                    <div class="text-xs text-gray-400 mb-3 flex flex-wrap items-center gap-3">
-                                        <span x-show="($store.settings.veloUpgrade.package||{}).version === $store.settings.velo.summary.server_version" class="text-green-400"
-                                              x-text="'Packages ready (Windows MSI + Linux binary) — config verified, built ' + new Date(($store.settings.veloUpgrade.package||{}).built_at).toLocaleString()"></span>
-                                        <span x-show="($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.summary.server_version" class="text-yellow-400">No verified packages for this server version yet.</span>
-                                        <button @click="$store.settings.prepareVeloPackage()"
-                                                title="Repacks the server's Windows MSI and Linux binary with this server's client config, checks the config inside each points at this server, and registers them as the tools the upgrade uses."
-                                                class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-white">Prepare packages</button>
-                                        <label class="flex items-center gap-1" title="When the server is upgraded, rebuild the client packages for its version by themselves (checked every 10 minutes). Clients are never upgraded without you.">
-                                            <input type="checkbox" :checked="$store.settings.veloUpgrade.auto_prepare" @change="$store.settings.setVeloAutoPrepare($event.target.checked)"
-                                                   class="w-3.5 h-3.5 rounded bg-gray-700 border-gray-600"> Rebuild automatically after a server upgrade</label>
-                                    </div>
 
                                     <div class="grid grid-cols-2 gap-4 text-sm">
                                         <div class="bg-gray-900 rounded p-3">
@@ -1619,7 +1603,7 @@
                                                       x-text="($store.settings.veloPilot||{}).hostname + ' (' + ($store.settings.veloPilot||{}).os + ' ' + ($store.settings.veloPilot||{}).version + ')'"></span>
                                                 <button x-show="$store.settings.veloPilot" @click="$store.settings.veloPilot = null; $store.settings.veloPilotQ = ''" class="text-xs text-blue-400">change</button>
                                                 <button @click="$store.settings.startVeloUpgrade('pilot')" class="ml-auto bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1 rounded text-white"
-                                                        :disabled="!$store.settings.veloPilot || ($store.settings.veloUpgrade.package||{}).version !== $store.settings.velo.summary.server_version || $store.settings.veloUpgrade.running"
+                                                        :disabled="!$store.settings.veloPilot || $store.settings.veloUpgrade.running"
                                                 :title="$store.settings.veloUpgrade.running ? 'An upgrade is in progress — wait until it finishes.' : ''">Upgrade pilot</button>
                                             </div>
                                             <p x-show="!$store.settings.veloUpgrade.eligible_online" class="text-xs text-gray-500 mt-2">No online client can be upgraded right now.</p>

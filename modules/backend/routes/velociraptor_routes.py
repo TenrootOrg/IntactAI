@@ -1177,17 +1177,14 @@ def velociraptor_refresh_client_info():
 # --- Settings → Velociraptor: the client upgrade (package, then pilot, then the rest) ---
 @velociraptor_bp.route('/api/velociraptor/clients/upgrade-state', methods=['GET'])
 def velociraptor_upgrade_state():
-    """The verified packages (if any), whether their pilot passed, and who is eligible."""
+    """The packages last built (if any), whether their pilot passed, who is eligible,
+    and the upgrade being followed. (Packages are built by the upgrade run itself.)"""
     from services.velociraptor_clients import package_state, pilot_passed, client_versions
-    from services.velociraptor_clients import auto_prepare_enabled, preparing, last_package_run, running_upgrade
+    from services.velociraptor_clients import running_upgrade
     pkg = package_state()
-    last = last_package_run() or {}
     run = running_upgrade()
     rd = (run or {}).get("details") or {}
     out = {"package": pkg, "pilot_passed": bool(pkg) and pilot_passed(pkg["package_id"]),
-           "auto_prepare": auto_prepare_enabled(), "preparing": bool(preparing()),
-           "last_prepare": {"status": last.get("status"), "error": last.get("error"), "name": last.get("name"),
-                            "at": last.get("updated_at")} if last else None,
            # an upgrade still being followed (pilot 15 min, the rest 24 h): the tab says
            # "in progress -- no need to start it again, wait for it to finish"
            "running": {"run_id": run.get("run_id"), "name": run.get("name"), "stage": rd.get("stage"),
@@ -1209,24 +1206,6 @@ def velociraptor_upgrade_state():
     except Exception as e:  # noqa: BLE001 -- the tab still shows the package
         out["error"] = str(e)
     return jsonify(out)
-
-
-@velociraptor_bp.route('/api/velociraptor/client-package', methods=['POST'])
-def velociraptor_prepare_package():
-    """Build + verify + register the Windows MSI and the Linux binary (System action)."""
-    from services.velociraptor_clients import start_prepare_run
-    try:
-        return jsonify({"run_id": start_prepare_run()}), 202
-    except ValueError as e:     # refused up front: a guard is not worth a failed row in Actions
-        return jsonify({"error": str(e)}), 409
-
-
-@velociraptor_bp.route('/api/velociraptor/clients/auto-prepare', methods=['PUT'])
-def velociraptor_auto_prepare():
-    """Switch the automatic package rebuild after a server upgrade (default on)."""
-    from services.velociraptor_clients import set_auto_prepare, auto_prepare_enabled
-    set_auto_prepare((request.get_json(silent=True) or {}).get("enabled", True))
-    return jsonify({"auto_prepare_packages": auto_prepare_enabled()})
 
 
 @velociraptor_bp.route('/api/velociraptor/clients/upgrade', methods=['POST'])

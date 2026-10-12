@@ -248,47 +248,63 @@ class Fleet(unittest.TestCase):
         self.assertEqual(spread_seconds(50000), 4 * 3600)        # at most 4 h
 
 
-class AutoPrepare(unittest.TestCase):
-    """After a server upgrade the packages are rebuilt by themselves -- never the
-    clients -- once per new version, never under a running upgrade, and only while
-    the switch is on."""
+class PackagesBuiltByTheRun(unittest.TestCase):
+    """No separate "Prepare packages": the upgrade run builds and verifies them as its
+    first step when this server version has none (server upgrades are months apart,
+    a build takes ~15 s) -- and pushes nothing if that fails."""
 
-    def _check(self, server="0.78.0", have="0.77.2", on=True, busy=None, building=None, now=1000.0):
+    def _run(self, ready, build_fails=False):
+        import threading
         from unittest import mock
         from services import velociraptor_clients as vc
-        started = []
-        with mock.patch.object(vc, "_query", return_value=[{"v": server}]), \
-             mock.patch.object(vc, "package_state", return_value={"version": have} if have else {}), \
-             mock.patch.object(vc, "auto_prepare_enabled", return_value=on), \
-             mock.patch.object(vc, "running_upgrade", return_value=busy), \
-             mock.patch.object(vc, "preparing", return_value=building), \
-             mock.patch.object(vc, "start_prepare_run", side_effect=lambda reason=None: started.append(reason) or "r1"):
-            out = vc.auto_prepare_check(now=now)
-        return out, started
+        from services import workflow_service as ws
+        built, hunts, logs, details = [], [], [], {}
+        pkg = {"package_id": "abc123", "version": "0.77.2", "built_at": "x"}
 
-    def setUp(self):
-        from services import velociraptor_clients as vc
-        vc._auto["tried"].clear()
+        def prepare(log=print):
+            built.append(1)
+            if build_fails:
+                raise RuntimeError("the repacked Windows MSI is NOT safe to push: no client config is embedded")
+            return pkg
 
-    def test_a_new_server_version_rebuilds_once(self):
-        out, started = self._check()
-        self.assertEqual(out, "r1")
-        self.assertIn("server is 0.78.0, packages were 0.77.2", started[0])
-        self.assertEqual(self._check(now=1000.0 + 60)[1], [])               # not again ten minutes later
-        self.assertEqual(self._check(now=1000.0 + 7 * 3600)[1] != [], True)  # retried after 6 h (it failed)
+        def query(vql, timeout=120):
+            if "hunt(" in vql:
+                hunts.append(vql)
+                return [{"HuntId": "H.T"}]
+            return []
+        stop = threading.Event(); stop.set()          # Stop at once after the hunts: the watch is not under test
+        run = {"details": {"stage": "pilot", "package_version": "0.77.2", "label": "intact-upgrade-0.77.2-pilot",
+                           "targets": [{"client_id": "C.1", "hostname": "H", "os": "windows", "from": "0.77.1"}],
+                           "watch_until": 9e12}}
+        with mock.patch.object(vc, "packages_ready", return_value=pkg if ready else None), \
+             mock.patch.object(vc, "prepare_packages", side_effect=prepare), \
+             mock.patch.object(vc, "_query", side_effect=query), \
+             mock.patch.object(vc, "_label_clients"), \
+             mock.patch.object(ws, "get_automation_run", return_value=run), \
+             mock.patch.object(ws, "add_log_to_run", side_effect=lambda rid, m, lvl="info", force=False: logs.append(m)), \
+             mock.patch.object(ws, "update_run_status", side_effect=lambda rid, st, **kw: details.update(kw.get("details") or {})), \
+             mock.patch.object(ws, "register_cancel_event", return_value=stop), \
+             mock.patch.object(ws, "unregister_cancel"):
+            vc._run_upgrade("run1")
+        return built, hunts, logs, details
 
-    def test_nothing_when_current_off_or_busy(self):
-        self.assertEqual(self._check(have="0.78.0"), (None, []))
-        self.assertEqual(self._check(on=False), (None, []))
-        self.assertEqual(self._check(busy={"name": "upgrade"}), (None, []))
-        self.assertEqual(self._check(building={"name": "prepare"}), (None, []))
+    def test_builds_first_when_the_version_has_no_packages(self):
+        built, hunts, logs, details = self._run(ready=False)
+        self.assertEqual(built, [1])
+        self.assertEqual(len(hunts), 1)
+        self.assertTrue(any("Preparing the client packages for 0.77.2" in m for m in logs))
+        self.assertEqual(details.get("package_id"), "abc123")   # the pilot gate keys on it
 
-    def test_the_check_never_starts_a_client_upgrade(self):
-        from unittest import mock
-        from services import velociraptor_clients as vc
-        with mock.patch.object(vc, "start_upgrade") as up:
-            self._check()
-        up.assert_not_called()
+    def test_reuses_ready_packages(self):
+        built, hunts, logs, _ = self._run(ready=True)
+        self.assertEqual(built, [])
+        self.assertEqual(len(hunts), 1)
+        self.assertTrue(any("Using the verified packages for 0.77.2" in m for m in logs))
+
+    def test_a_failed_build_pushes_nothing(self):
+        built, hunts, logs, _ = self._run(ready=False, build_fails=True)
+        self.assertEqual(hunts, [])
+        self.assertTrue(any("NOT safe to push" in m for m in logs))
 
 
 class RoutesFindTheirFunctions(unittest.TestCase):

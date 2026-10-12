@@ -267,23 +267,6 @@ document.addEventListener('alpine:init', () => {
         },
 
 
-        async prepareVeloPackage() {
-            const r = await fetch('/api/velociraptor/client-package', { method: 'POST' });
-            const d = await r.json().catch(() => ({}));
-            if (!r.ok) return (this.veloAction = { ok: false, text: 'Packages not prepared: ' + (d.error || 'HTTP ' + r.status) });
-            this.veloAction = { ok: true, text: 'Preparing the client packages — follow it in Settings → Actions.' };
-            setTimeout(() => window.ActiveCase.gotoSystemWorkflows(), 600);
-        },
-
-        async setVeloAutoPrepare(enabled) {
-            const r = await fetch('/api/velociraptor/clients/auto-prepare', {
-                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
-            });
-            const d = await r.json().catch(() => ({}));
-            if (r.ok) this.veloUpgrade.auto_prepare = d.auto_prepare_packages;
-            else this.showMessage('Could not change it: ' + (d.error || 'HTTP ' + r.status), 'error');
-        },
-
         async startVeloUpgrade(stage) {
             const ver = this.velo.summary.server_version;
             let body, who;

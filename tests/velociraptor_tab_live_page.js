@@ -147,6 +147,7 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   await waitFor(() => text().includes('Client upgrade: all 4 upgraded'));
   check('all done: "all 4 upgraded — the run closes at its next hourly check"', text().includes('Client upgrade: all 4 upgraded — the run closes at its next hourly check'), '');
   st.veloUpgrade = { ...st.veloUpgrade, running: realRunning };
+  check('no "Prepare packages" button or rebuild switch (the run builds them)', !$$('button').some(b => /Prepare packages/.test(b.textContent)) && !/Rebuild automatically/.test(text()), '');
   check('pager hidden for one page', st.velo.pages > 1 || $$('button').filter(b => /Prev/.test(b.textContent)).every(b => b.parentElement.style.display === 'none'), '');
   check('no Alpine / script errors', errors.length === 0, errors.slice(0, 3).join(' || '));
   console.log(fail ? `\n${fail} FAILED` : '\nall ok', '| requests:', net.length);

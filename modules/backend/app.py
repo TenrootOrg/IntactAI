@@ -207,9 +207,8 @@ def run_startup_initialization():
     # A client upgrade is followed for up to 24 h (Settings → Velociraptor); a
     # restart must not orphan it -- its hunts keep upgrading clients regardless.
     try:
-        from services.velociraptor_clients import resume_upgrade_runs, start_auto_prepare
+        from services.velociraptor_clients import resume_upgrade_runs
         resume_upgrade_runs()
-        start_auto_prepare()      # packages follow the server's version; clients never auto-upgrade
     except Exception as e:  # noqa: BLE001 — never block boot on housekeeping
         print(f"[STARTUP] Velociraptor upgrade runs not resumed: {e}", flush=True)
 

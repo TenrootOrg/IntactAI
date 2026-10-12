@@ -267,6 +267,20 @@ def _define_linux_artifact():
         raise RuntimeError(f"Velociraptor did not accept the Linux upgrade artifact ({out[:200]})")
 
 
+def packages_ready(server):
+    """The verified packages for `server`, if they exist AND are still the registered
+    tools; else None. Built on demand by the upgrade run that needs them (~15 s)."""
+    pkg = package_state()
+    if pkg.get("version") != server:
+        return None
+    for os_name, spec in OS_UPGRADE.items():
+        tool = (_query(f"SELECT inventory_get(tool='{spec['tool']}').Definition AS d FROM scope()")
+                or [{}])[0].get("d") or {}
+        if tool.get("filename") != (pkg.get(os_name) or {}).get("filename"):
+            return None
+    return pkg
+
+
 def prepare_packages(log=print):
     """Build, verify and register the Windows MSI and the Linux binary for the
     server's version. Raises RuntimeError with the reason; nothing is recorded as
@@ -275,10 +289,6 @@ def prepare_packages(log=print):
     import json
     import tempfile
     from datetime import datetime, timezone
-    busy = running_upgrade()
-    if busy:
-        raise RuntimeError(f"an upgrade is still being followed ({busy.get('name')}); its offline clients "
-                           "would get the new packages -- prepare once it has finished")
     server = (_query("SELECT version.version AS v FROM config") or [{}])[0].get("v") or ""
     cc = (_query("SELECT server_urls, ca_certificate FROM config") or [{}])[0]
     if not server or not cc.get("server_urls"):
@@ -531,29 +541,25 @@ def start_upgrade(stage, client_ids=None, label=None, limit=None):
     if busy:
         raise ValueError(f"an upgrade is still being followed ({busy.get('name')}) -- wait for it to finish "
                          "or stop it in Settings → Actions")
-    pkg = package_state()
     status = client_versions()
     server = status["server_version"]
-    if pkg.get("version") != server:
-        raise ValueError(f"no verified packages for the server's version {server} -- Prepare packages first")
-    for os_name, spec in OS_UPGRADE.items():
-        tool = (_query(f"SELECT inventory_get(tool='{spec['tool']}').Definition AS d FROM scope()")
-                or [{}])[0].get("d") or {}
-        if tool.get("filename") != pkg[os_name]["filename"]:
-            raise ValueError(f"the {spec['tool']} tool is {tool.get('filename')!r}, not the verified package "
-                             "-- Prepare packages again")
-    if stage == "rest" and not pilot_passed(pkg["package_id"]):
-        raise ValueError("upgrade a pilot client with these packages first; the rest follow once it succeeded")
+    # The packages are built by the run itself when missing or stale (a server upgrade
+    # happens every few months; building takes ~15 s). A new server version means new
+    # packages, so the pilot gate starts over.
+    pkg = packages_ready(server)
+    if stage == "rest" and not (pkg and pilot_passed(pkg["package_id"])):
+        raise ValueError(f"upgrade a pilot client first -- the rest follow once one came back on {server}")
     targets, refused = upgrade_targets(status, stage, client_ids, label=label, limit=limit)
     if not targets:
         why = "; ".join(refused[:5]) if refused else (
             f"no eligible client{' labelled ' + label if label else ''} -- see 'Not upgraded from here'")
         raise ValueError("no client to upgrade: " + why)
-    run_label = f"intact-upgrade-{pkg['package_id'][:8]}-{stage}"
+    run_label = f"intact-upgrade-{server}-{stage}"
     scope = (f" labelled {label}" if label else "") + (f", wave of {limit}" if limit else "")
     run_id = create_automation_run(
         RUN_TYPE, f"Upgrade Velociraptor clients to {server} ({stage}: {len(targets)}{scope})",
-        details={"stage": stage, "package_version": server, "package_id": pkg["package_id"], "label": run_label,
+        details={"stage": stage, "package_version": server, "package_id": (pkg or {}).get("package_id"),
+                 "label": run_label,
                  "scope": {"label": label, "limit": limit},
                  "targets": [{"client_id": c["client_id"], "hostname": c["hostname"], "os": c["os"],
                               "from": c["version"]} for c in targets],
@@ -678,6 +684,14 @@ def _run_upgrade(run_id):
         total = len(by_id)
         hunts = dict(d.get("hunts") or {})
         if not hunts:
+            pkg = packages_ready(server)
+            if pkg:
+                log(f"Using the verified packages for {server} (built {pkg.get('built_at', '?')})")
+            else:
+                log(f"Preparing the client packages for {server} (Windows MSI + Linux binary) -- "
+                    "the first upgrade with this server version")
+                pkg = prepare_packages(log=log)      # raises (run failed, nothing pushed) unless verified
+            update_run_status(run_id, "running", progress=3, details={"package_id": pkg["package_id"]})
             _label_clients(list(by_id), label, "set")
             sleep = w["sleep"] if stage == "pilot" else spread_seconds(total)
             for os_name in sorted({t["os"] for t in by_id.values()}):
@@ -787,113 +801,3 @@ def _run_upgrade(run_id):
         update_run_status(run_id, "failed", progress=100, error=str(e)[:300])
     finally:
         unregister_cancel(run_id)
-
-
-# ---------------------------------------------------------------------------
-# Step 4 -- after a server upgrade the packages are rebuilt by themselves; the
-# CLIENTS are not: nothing is pushed without the operator ("we notify, never
-# auto-act"). Checked here, not in the host-side upgrade engine, so it holds
-# however the server got its new version. Switch: Settings → Velociraptor
-# ("Rebuild packages automatically", frontend_config velociraptor.auto_prepare_packages).
-# ---------------------------------------------------------------------------
-PACKAGE_RUN_TYPE = "velociraptor_client_package"
-AUTO_FIRST_SECONDS = 60
-AUTO_EVERY_SECONDS = 600
-AUTO_RETRY_SECONDS = 6 * 3600
-_auto = {"started": False, "tried": {}}        # server version -> last automatic attempt
-
-
-def auto_prepare_enabled():
-    try:
-        from services.storage.config_store import load_frontend_config
-        return bool(((load_frontend_config() or {}).get("velociraptor") or {}).get("auto_prepare_packages", True))
-    except Exception:  # noqa: BLE001 -- unreadable settings: keep the default
-        return True
-
-
-def set_auto_prepare(enabled):
-    from services.storage.config_store import load_frontend_config, save_frontend_config
-    v = dict((load_frontend_config() or {}).get("velociraptor") or {})
-    v["auto_prepare_packages"] = bool(enabled)
-    save_frontend_config({"velociraptor": v})
-
-
-def preparing():
-    """The package run in progress, if any."""
-    from services.workflow_service import get_automation_runs_by_case, _system_case_id
-    return next((r for r in get_automation_runs_by_case(_system_case_id()) or []
-                 if r.get("automation_type") == PACKAGE_RUN_TYPE and r.get("status") in ("running", "pending")), None)
-
-
-def last_package_run():
-    from services.workflow_service import get_automation_runs_by_case, _system_case_id
-    runs = [r for r in get_automation_runs_by_case(_system_case_id()) or []
-            if r.get("automation_type") == PACKAGE_RUN_TYPE]
-    return max(runs, key=lambda r: r.get("created_at") or "", default=None)
-
-
-def start_prepare_run(reason=None):
-    """Prepare packages as a System action (Settings → Actions). Returns run_id;
-    ValueError when one must not start now."""
-    import threading
-    from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
-    busy = running_upgrade()
-    if busy:
-        raise ValueError(f"an upgrade is still being followed ({busy.get('name')}) -- prepare once it has finished")
-    if preparing():
-        raise ValueError("the packages are already being prepared")
-    run_id = create_automation_run(PACKAGE_RUN_TYPE, "Prepare the Velociraptor client packages"
-                                   + (f" ({reason})" if reason else ""))
-    update_run_status(run_id, "running", progress=5)
-
-    def _work():
-        try:
-            pkg = prepare_packages(log=lambda m: add_log_to_run(run_id, m))
-            update_run_status(run_id, "completed", progress=100, details={"package": pkg})
-            add_log_to_run(run_id, f"Ready for {pkg['version']}: {pkg['windows']['filename']}, "
-                                   f"{pkg['linux']['filename']} -- upgrade the clients from Settings → "
-                                   "Velociraptor (pilot first)", "success")
-        except Exception as e:  # noqa: BLE001 -- the reason is the result
-            add_log_to_run(run_id, f"Not prepared: {e}", "error")
-            update_run_status(run_id, "failed", progress=100, error=str(e)[:300])
-    threading.Thread(target=_work, daemon=True, name=f"velo-package-{run_id}").start()
-    return run_id
-
-
-def auto_prepare_check(now=None):
-    """Rebuild the packages when the server's version moved past them. Returns
-    the run_id it started, or None. Never upgrades a client."""
-    import time
-    now = time.time() if now is None else now
-    if not auto_prepare_enabled():
-        return None
-    server = (_query("SELECT version.version AS v FROM config") or [{}])[0].get("v") or ""
-    if not server or package_state().get("version") == server:
-        return None
-    if running_upgrade() or preparing():
-        return None
-    last = _auto["tried"].get(server)
-    if last is not None and now - last < AUTO_RETRY_SECONDS:       # tried (and failed) recently
-        return None
-    _auto["tried"][server] = now
-    have = package_state().get("version")
-    return start_prepare_run(f"automatic: server is {server}" + (f", packages were {have}" if have else ""))
-
-
-def start_auto_prepare():
-    """At boot: check once after AUTO_FIRST_SECONDS, then every AUTO_EVERY_SECONDS."""
-    import threading
-    import time
-    if _auto["started"]:
-        return
-    _auto["started"] = True
-
-    def _loop():
-        time.sleep(AUTO_FIRST_SECONDS)
-        while True:
-            try:
-                auto_prepare_check()
-            except Exception as e:  # noqa: BLE001 -- Velociraptor down, etc.: try again later
-                print(f"[VELO-PACKAGES] automatic check skipped: {e}", flush=True)
-            time.sleep(AUTO_EVERY_SECONDS)
-    threading.Thread(target=_loop, daemon=True, name="velo-auto-prepare").start()
