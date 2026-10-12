@@ -16,7 +16,8 @@ for _p in (_HERE, os.path.join(os.path.dirname(_HERE), "modules/backend")):
 
 import _optional_deps  # noqa: F401,E402
 from services.velociraptor_clients import (  # noqa: E402
-    check_embedded_config, classify, msi_config_text, upgrade_targets, version_key)
+    check_embedded_config, classify, filter_clients, msi_config_text, outcomes, spread_seconds,
+    summarize, upgrade_targets, version_key)
 
 NOW = 1_800_000_000
 
@@ -106,58 +107,106 @@ class Safety(unittest.TestCase):
                                                        "C.norel", "C.off", "C.x"])
         self.assertEqual(t, [])
         text = " ".join(refused)
-        for why in ("WS-CUR: current", "WS-NEW: ahead", "ALDC02: unknown OS", "MAC: darwin",
+        for why in ("WS-CUR: on the server's version", "WS-NEW: 0.78.0 is newer than the server",
+                    "ALDC02: no version reported", "MAC: darwin",
                     "W2K8: Microsoft Windows Server 2008 R2 Standard cannot run",
                     "W7: Microsoft Windows 7 Professional cannot run", "NOREL: Windows release unknown",
                     "WS-OFF: offline", "C.x: not a known client"):
             self.assertIn(why, text)
 
 
-class UpgradeFailure(unittest.TestCase):
-    """Seen live: msiexec 1603 in a second; the client stays on the old version and
-    the run waited the full 15 minutes before saying so."""
+class Outcomes(unittest.TestCase):
+    """Failures for a whole hunt from ONE hunt_flows() and ONE hunt_results() query."""
+    NOW = 2_000_000_000
 
-    def _check(self, os_name, state, rows):
-        from unittest import mock
-        from services import velociraptor_clients as vc
+    def flow(self, cid, state, idle):
+        return {"ClientId": cid, "Flow": {"state": state, "active_time": (self.NOW - idle) * 1e6}}
 
-        def q(vql):
-            # the hunt's flow on a client is F.<id>.H -- not H.<id>.H
-            self.assertIn("flow_id='F.X.H'", vql)
-            return [{"state": state}] if "FROM flows(" in vql else rows
-        with mock.patch.object(vc, "_query", side_effect=q):
-            return vc._upgrade_failed("C.1", os_name, "H.X")
-
-    def test_windows_reports_the_msiexec_codes(self):
-        why = self._check("windows", "FINISHED", [{"ReturnCode": 1603}, {"ReturnCode": 1603}])
+    def test_windows_1603_is_a_failure_even_while_the_flow_says_in_progress(self):
+        # seen live: the flow of a failed MSI stayed IN_PROGRESS for hours after msiexec returned 1603
+        res = [{"ClientId": "C.1", "ReturnCode": 1603}, {"ClientId": "C.1", "ReturnCode": 1603}]
+        why = outcomes([self.flow("C.1", "IN_PROGRESS", 3600)], res, "windows", now=self.NOW)["C.1"]
         self.assertIn("msiexec returned 1603, 1603", why)
         self.assertIn("installer file that no longer exists", why)
+        # but not while msiexec may still be retrying (activity in the last 5 min)
+        self.assertEqual(outcomes([self.flow("C.1", "IN_PROGRESS", 60)], res, "windows", now=self.NOW), {})
 
-    def test_linux_reports_what_the_artifact_said(self):
-        why = self._check("linux", "FINISHED", [{"ReturnCode": 4, "Stdout": "FAIL: the new binary does not run "
-                                                                         "on this host: GLIBC_2.28 not found\n"}])
-        self.assertEqual(why, "FAIL: the new binary does not run on this host: GLIBC_2.28 not found")
+    def test_windows_success_or_not_run_yet_is_no_failure(self):
+        flows = [self.flow("C.ok", "IN_PROGRESS", 9999), self.flow("C.wait", "IN_PROGRESS", 9999)]
+        res = [{"ClientId": "C.ok", "ReturnCode": 1603}, {"ClientId": "C.ok", "ReturnCode": 0}]
+        self.assertEqual(outcomes(flows, res, "windows", now=self.NOW), {})
 
-    def test_linux_rolled_back_is_reported_after_a_grace_period(self):
+    def test_linux_fail_line_and_rollback(self):
+        flows = [self.flow("C.fail", "FINISHED", 10), self.flow("C.rb", "FINISHED", 600),
+                 self.flow("C.fresh", "FINISHED", 30)]
+        res = [{"ClientId": "C.fail", "ReturnCode": 4, "Stdout": "FAIL: the new binary does not run on this host: GLIBC_2.28 not found\n"},
+               {"ClientId": "C.rb", "ReturnCode": 0, "Stdout": "OK: replaced"},
+               {"ClientId": "C.fresh", "ReturnCode": 0, "Stdout": "OK: replaced"}]
+        out = outcomes(flows, res, "linux", now=self.NOW)
+        self.assertEqual(out["C.fail"], "FAIL: the new binary does not run on this host: GLIBC_2.28 not found")
+        self.assertIn("old binary was put back", out["C.rb"])
+        self.assertNotIn("C.fresh", out)                       # restarting: give it time
+
+    def test_a_flow_error_without_results(self):
+        out = outcomes([{"ClientId": "C.e", "Flow": {"state": "ERROR", "status": "artifact not found", "active_time": 0}}],
+                       [], "linux", now=self.NOW)
+        self.assertIn("artifact not found", out["C.e"])
+
+
+class Fleet(unittest.TestCase):
+    """Built for thousands: the tab gets a summary and a page; waves are capped and
+    can be scoped to a label; downloads spread with the wave's size."""
+
+    def fleet(self, n=5000):
+        rows = []
+        for i in range(n):
+            kind = i % 10
+            rows.append({"client_id": f"C.{i:016x}", "hostname": f"HOST-{i:05d}",
+                         "os": "darwin" if kind == 9 else ("linux" if kind >= 7 else "windows"),
+                         "release": "Microsoft Windows 7 Professional" if kind == 6 else "Microsoft Windows 11 Pro",
+                         "version": "" if kind == 5 else ("0.77.2" if kind < 3 else "0.77.1"),
+                         "labels": ["wave-1"] if i % 4 == 0 else [],
+                         "last_seen_at": NOW if i % 3 else NOW - 9999})
+        return classify(rows, "0.77.2", now=NOW)
+
+    def test_five_thousand_clients_are_summarised_fast(self):
         import time as _t
-        from unittest import mock
-        from services import velociraptor_clients as vc
-        ok = [{"ReturnCode": 0, "Stdout": "OK: replaced /usr/local/bin/velociraptor with 0.77.2"}]
+        t0 = _t.perf_counter()
+        st = self.fleet()
+        sm = summarize(st)
+        page = filter_clients(st, reason="eligible")[:50]
+        took = _t.perf_counter() - t0
+        self.assertLess(took, 2.0, f"{took:.2f}s for 5,000 clients")
+        self.assertEqual(sm["total"], 5000)
+        self.assertEqual(sm["counts"]["current"], 1500)
+        groups = {g["key"]: g["n"] for g in sm["not_upgradable"]}
+        self.assertEqual(groups, {"unknown_version": 500, "unsupported_os": 500, "old_windows": 500})
+        self.assertEqual(sm["eligible"], 2000)                  # behind, Windows 10+/Linux
+        self.assertEqual(len(page), 50)
+        self.assertEqual(sm["by_version"][0]["version"], "0.77.2")
 
-        def run(age):
-            def q(vql):
-                if "FROM flows(" in vql:
-                    return [{"state": "FINISHED", "active_time": (_t.time() - age) * 1e6}]
-                return ok
-            with mock.patch.object(vc, "_query", side_effect=q):
-                return vc._upgrade_failed("C.1", "linux", "H.X")
-        self.assertEqual(run(30), "")                       # restarting: give it time
-        self.assertIn("old binary was put back", run(600))
+    def test_filters(self):
+        st = self.fleet(1000)
+        self.assertTrue(all(c["state"] == "behind" for c in filter_clients(st, state="behind")))
+        self.assertEqual([c["hostname"] for c in filter_clients(st, q="host-00042")], ["HOST-00042"])
+        self.assertTrue(all(c["os"] == "linux" and not c["online"] for c in filter_clients(st, os="linux", online=False)))
+        self.assertTrue(all(c["version"] == "" for c in filter_clients(st, version="")))
+        self.assertEqual(len(filter_clients(st, reason="old_windows")), 100)
 
-    def test_silent_while_running_or_when_it_worked(self):
-        self.assertEqual(self._check("windows", "IN_PROGRESS", [{"ReturnCode": 1603}]), "")   # MSI kills the client
-        self.assertEqual(self._check("windows", "FINISHED", [{"ReturnCode": 1603}, {"ReturnCode": 0}]), "")
-        self.assertEqual(self._check("linux", "FINISHED", []), "")
+    def test_waves_by_label_and_size_online_first(self):
+        st = self.fleet(1000)
+        t, _ = upgrade_targets(st, "rest", limit=100)
+        self.assertEqual(len(t), 100)
+        self.assertTrue(all(c["online"] for c in t))            # online clients go first
+        t, _ = upgrade_targets(st, "rest", label="wave-1")
+        self.assertTrue(t and all("wave-1" in c["labels"] for c in t))
+        t, _ = upgrade_targets(st, "rest", label="no-such-label")
+        self.assertEqual(t, [])
+
+    def test_downloads_spread_with_the_wave(self):
+        self.assertEqual(spread_seconds(5), 600)                 # at least 10 min
+        self.assertEqual(spread_seconds(1000), 2000)             # 2 s a client
+        self.assertEqual(spread_seconds(50000), 4 * 3600)        # at most 4 h
 
 
 class AutoPrepare(unittest.TestCase):

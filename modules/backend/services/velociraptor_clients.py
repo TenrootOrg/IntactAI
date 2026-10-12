@@ -51,6 +51,7 @@ def classify(rows, server_version, now=None):
         counts["online"] += online
         clients.append({"client_id": r.get("client_id"), "hostname": r.get("hostname") or "",
                         "os": r.get("os") or "", "release": r.get("release") or "",
+                        "labels": list(r.get("labels") or []),
                         "version": v, "state": state, "online": online,
                         "last_seen": int(seen_s) if seen_s else None})
     order = {"behind": 0, "unknown": 1, "ahead": 2, "current": 3}
@@ -59,7 +60,9 @@ def classify(rows, server_version, now=None):
             "total": len(clients)}
 
 
-def _query(vql):
+def _query(vql, timeout=120):
+    """Rows of one VQL query (max_row is a batch size, not a cap: checked with 2,500
+    rows; a fleet of thousands comes back whole)."""
     from pyvelociraptor import api_pb2_grpc
     from services.velociraptor_service import setup_velociraptor_connection
     from services.vql_utils import execute_vql
@@ -67,7 +70,7 @@ def _query(vql):
     if not channel:
         raise RuntimeError("Velociraptor is not reachable")
     try:
-        return execute_vql(api_pb2_grpc.APIStub(channel), vql)
+        return execute_vql(api_pb2_grpc.APIStub(channel), vql, timeout=timeout, max_row=5000)
     finally:
         channel.close()
 
@@ -76,7 +79,7 @@ def client_versions():
     """The running server's version and every client's, classified (offline ones too)."""
     server = (_query("SELECT version.version AS v FROM config") or [{}])[0].get("v") or ""
     rows = _query("SELECT client_id, os_info.hostname AS hostname, os_info.system AS os, "
-                  "os_info.release AS release, agent_information.version AS version, last_seen_at "
+                  "os_info.release AS release, agent_information.version AS version, labels, last_seen_at "
                   "FROM clients() WHERE client_id != 'server'")
     return classify(rows, server)
 
@@ -325,6 +328,7 @@ WATCH = {"pilot": {"seconds": 15 * 60, "every": 20, "open_days": 1, "sleep": 5},
 
 _OLD_WINDOWS = __import__("re").compile(
     r"\bWindows (?:XP|Vista|7|8(?:\.1)?)\b|\bServer (?:20(?:03|08|12))\b", __import__("re").I)
+_LABEL_RE = __import__("re").compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
 def windows_can_run_current(release):
@@ -339,38 +343,111 @@ def windows_can_run_current(release):
     return True, ""
 
 
-def upgrade_targets(status, stage, client_ids=None):
-    """(targets, refusals) for a stage. Only Windows/Linux clients known to be
-    BEHIND the server are ever targeted -- never current, never newer (no
-    downgrade), never unknown (refresh client info first), never a Windows too
-    old for the current build."""
-    by_id = {c["client_id"]: c for c in status["clients"]}
+# Why a client is not upgraded from here, grouped for the summary: a fleet of
+# thousands gets one line per reason with a count, never one line per client.
+NOT_UPGRADABLE = {
+    "unknown_version": "Version unknown — Refresh client info",
+    "unsupported_os": "macOS or another OS — upgrade by hand",
+    "old_windows": "Windows older than 10 / Server 2016 — keeps its legacy agent",
+    "unknown_release": "Windows release unknown — Refresh client info",
+}
 
-    def why_not(c):
-        if c["os"] not in OS_UPGRADE:
-            return f"{c['os'] or 'unknown OS'} -- only Windows and Linux clients are upgraded from here"
-        if c["state"] != "behind":
-            return f"{c['state']} ({c['version'] or 'no version reported'}) -- not behind the server"
-        if c["os"] == "windows":
-            ok, why = windows_can_run_current(c.get("release"))
-            if not ok:
-                return why
-        return ""
+
+def eligibility(c):
+    """(key, why) -- key is None when the client may be upgraded from here."""
+    if c["state"] == "current":
+        return "current", "on the server's version"
+    if c["state"] == "ahead":
+        return "ahead", f"{c['version']} is newer than the server -- never downgraded"
+    if c["state"] == "unknown":
+        return "unknown_version", "no version reported -- Refresh client info first"
+    if c["os"] not in OS_UPGRADE:
+        return "unsupported_os", f"{c['os'] or 'unknown OS'} -- only Windows and Linux are upgraded from here"
+    if c["os"] == "windows":
+        ok, why = windows_can_run_current(c.get("release"))
+        if not ok:
+            return ("unknown_release" if not (c.get("release") or "").strip() else "old_windows"), why
+    return None, ""
+
+
+def summarize(status):
+    """Everything the tab shows above the table, computed here (one pass)."""
+    by_version, by_os, groups = {}, {}, {}
+    eligible = eligible_online = 0
+    for c in status["clients"]:
+        by_version[c["version"] or ""] = by_version.get(c["version"] or "", 0) + 1
+        by_os[c["os"] or ""] = by_os.get(c["os"] or "", 0) + 1
+        key, _ = eligibility(c)
+        if key is None:
+            eligible += 1
+            eligible_online += c["online"]
+        elif key in NOT_UPGRADABLE:
+            groups[key] = groups.get(key, 0) + 1
+    versions = sorted(by_version.items(), key=lambda kv: (version_key(kv[0]) or (-1,)), reverse=True)
+    return {"server_version": status["server_version"], "total": status["total"], "counts": status["counts"],
+            "by_version": [{"version": v, "n": n} for v, n in versions],
+            "by_os": [{"os": o, "n": n} for o, n in sorted(by_os.items(), key=lambda kv: -kv[1])],
+            "eligible": eligible, "eligible_online": eligible_online,
+            "not_upgradable": [{"key": k, "label": NOT_UPGRADABLE[k], "n": groups[k]}
+                               for k in NOT_UPGRADABLE if groups.get(k)]}
+
+
+def filter_clients(status, state=None, os=None, version=None, online=None, q=None, reason=None):
+    """Server-side filter for the paged table. reason: 'eligible' or a NOT_UPGRADABLE key."""
+    q = (q or "").strip().lower()
+    out = []
+    for c in status["clients"]:
+        if state and c["state"] != state:
+            continue
+        if os and c["os"] != os:
+            continue
+        if version is not None and version != "__any__" and (c["version"] or "") != version:
+            continue
+        if online is not None and c["online"] != online:
+            continue
+        if q and q not in c["hostname"].lower() and q not in c["client_id"].lower():
+            continue
+        if reason:
+            key, _ = eligibility(c)
+            if (reason == "eligible" and key is not None) or (reason != "eligible" and key != reason):
+                continue
+        out.append(c)
+    return out
+
+
+def pilot_candidates(status, q="", limit=20):
+    """Online clients the pilot may use, matching q (host or client id)."""
+    rows = [c for c in filter_clients(status, online=True, q=q, reason="eligible")]
+    return rows[:limit]
+
+
+def upgrade_targets(status, stage, client_ids=None, label=None, limit=None):
+    """(targets, refusals). Explicit client_ids are each checked (refusals say why);
+    otherwise every eligible client -- online only for a pilot, which takes one --
+    narrowed to a Velociraptor label and capped at `limit` (a wave), online first.
+    Never current, never newer (no downgrade), never unknown, never a Windows too
+    old for the current build, never macOS."""
+    by_id = {c["client_id"]: c for c in status["clients"]}
+    if client_ids:
+        targets, refused = [], []
+        for cid in client_ids:
+            c = by_id.get(cid)
+            key, why = eligibility(c) if c else ("missing", "not a known client")
+            if key is None and stage == "pilot" and not c["online"]:
+                key, why = "offline", "offline -- a pilot must be online to be checked"
+            if key is None:
+                targets.append(c)
+            else:
+                refused.append(f"{c['hostname'] if c else cid}: {why}")
+        return targets, refused
+    pool = [c for c in status["clients"] if eligibility(c)[0] is None
+            and (stage != "pilot" or c["online"]) and (not label or label in c["labels"])]
+    pool.sort(key=lambda c: (not c["online"], c["hostname"].lower()))
     if stage == "pilot":
-        ids = client_ids or [c["client_id"] for c in status["clients"] if not why_not(c) and c["online"]][:1]
-    else:
-        ids = client_ids or [c["client_id"] for c in status["clients"] if not why_not(c)]
-    targets, refused = [], []
-    for cid in ids:
-        c = by_id.get(cid)
-        why = "not a known client" if not c else why_not(c)
-        if not why and stage == "pilot" and not c["online"]:
-            why = "offline -- a pilot must be online to be checked"
-        if why:
-            refused.append(f"{c['hostname'] if c else cid}: {why}")
-        else:
-            targets.append(c)
-    return targets, refused
+        pool = pool[:1]
+    elif limit:
+        pool = pool[:int(limit)]
+    return pool, []
 
 
 def pilot_passed(package_id):
@@ -394,7 +471,7 @@ def running_upgrade():
                  if r.get("automation_type") == RUN_TYPE and r.get("status") in ("running", "pending")), None)
 
 
-def start_upgrade(stage, client_ids=None):
+def start_upgrade(stage, client_ids=None, label=None, limit=None):
     """Preflight, then start the run. Returns run_id; raises ValueError (the
     operator's reason) when it must not start."""
     import threading
@@ -402,6 +479,15 @@ def start_upgrade(stage, client_ids=None):
     from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
     if stage not in WATCH:
         raise ValueError("stage must be pilot or rest")
+    if label and not _LABEL_RE.match(label):
+        raise ValueError("a label is letters, digits and . _ : - (at most 64)")
+    if limit is not None:
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            raise ValueError("the wave size must be a number")
+        if limit < 1:
+            raise ValueError("the wave size must be at least 1")
     busy = running_upgrade()
     if busy:
         raise ValueError(f"an upgrade is still being followed ({busy.get('name')}) -- wait for it to finish "
@@ -419,20 +505,25 @@ def start_upgrade(stage, client_ids=None):
                              "-- Prepare packages again")
     if stage == "rest" and not pilot_passed(pkg["package_id"]):
         raise ValueError("upgrade a pilot client with these packages first; the rest follow once it succeeded")
-    targets, refused = upgrade_targets(status, stage, client_ids)
+    targets, refused = upgrade_targets(status, stage, client_ids, label=label, limit=limit)
     if not targets:
-        raise ValueError("no client to upgrade" + (": " + "; ".join(refused) if refused else
-                                                   " -- every Windows/Linux client is on the server's version"))
-    label = f"intact-upgrade-{pkg['package_id'][:8]}-{stage}"
+        why = "; ".join(refused[:5]) if refused else (
+            f"no eligible client{' labelled ' + label if label else ''} -- see 'Not upgraded from here'")
+        raise ValueError("no client to upgrade: " + why)
+    run_label = f"intact-upgrade-{pkg['package_id'][:8]}-{stage}"
+    scope = (f" labelled {label}" if label else "") + (f", wave of {limit}" if limit else "")
     run_id = create_automation_run(
-        RUN_TYPE, f"Upgrade Velociraptor clients to {server} ({stage}: {len(targets)})",
-        details={"stage": stage, "package_version": server, "package_id": pkg["package_id"], "label": label,
+        RUN_TYPE, f"Upgrade Velociraptor clients to {server} ({stage}: {len(targets)}{scope})",
+        details={"stage": stage, "package_version": server, "package_id": pkg["package_id"], "label": run_label,
+                 "scope": {"label": label, "limit": limit},
                  "targets": [{"client_id": c["client_id"], "hostname": c["hostname"], "os": c["os"],
                               "from": c["version"]} for c in targets],
                  "watch_until": time.time() + WATCH[stage]["seconds"],
                  "upgraded": [], "failed": [], "pending": [c["client_id"] for c in targets]})
-    for why in refused:
+    for why in refused[:20]:
         add_log_to_run(run_id, f"Skipped {why}", "warning")
+    if len(refused) > 20:
+        add_log_to_run(run_id, f"... and {len(refused) - 20} more skipped", "warning")
     update_run_status(run_id, "running", progress=1)
     threading.Thread(target=_run_upgrade, args=(run_id,), daemon=True, name=f"velo-upgrade-{run_id}").start()
     return run_id
@@ -451,42 +542,84 @@ def resume_upgrade_runs():
 
 
 def hunt_flow_id(hunt_id):
-    """A hunt's flow on each client: H.XYZ -> F.XYZ.H (first version used H.XYZ.H,
-    which matches nothing -- every failure went unseen until the watch ended)."""
+    """A hunt's flow on each client: H.XYZ -> F.XYZ.H."""
     return "F." + hunt_id.split(".", 1)[-1] + ".H"
 
 
-def _upgrade_failed(client_id, os_name, hunt_id):
-    """Why the upgrade failed on this client, or "" (not run yet / still running /
-    succeeded). Seen live 2026-10-12: msiexec 1603 within a second, the client
-    left on the old version -- and the run waited the full 15 minutes to say so."""
+WINDOWS_IDLE_SECONDS = 300      # msiexec codes in, all non-zero, no activity since: it failed
+
+
+def outcomes(flows, results, os_name, now=None):
+    """{client_id: why it failed} for a hunt, from ONE hunt_flows() and ONE
+    hunt_results() query -- not two queries per client (a fleet of thousands).
+    Only failures; a success shows up as the client reporting the new version.
+
+    Seen live: the Windows flow of a failed MSI stayed IN_PROGRESS for hours after
+    msiexec returned 1603 twice, so "finished" is never required -- results with
+    no zero and no activity for WINDOWS_IDLE_SECONDS is a failure. Linux: the
+    artifact's FAIL: line; or OK and, ROLLBACK_SECONDS on, the client still old
+    (the caller only asks about clients still on the old version) = rolled back."""
     import time
-    flow_id = hunt_flow_id(hunt_id)
-    flow = (_query(f"SELECT state, active_time FROM flows(client_id='{client_id}', flow_id='{flow_id}')")
-            or [{}])[0]
-    if flow.get("state") != "FINISHED":
-        return ""
-    rows = _query(f"SELECT ReturnCode, Stdout FROM source(client_id='{client_id}', flow_id='{flow_id}', "
-                  f"artifact='{OS_UPGRADE[os_name]['artifact']}')")
-    codes = [r.get("ReturnCode") for r in rows]
-    if os_name == "linux" and 0 in codes:
-        # "OK: replaced" and yet -- the caller only asks while the client is still on
-        # the old version -- 3 minutes on: the new binary did not stay up and the
-        # artifact's watchdog put the old one back (tested: broken build, back in 33 s).
-        ended = (flow.get("active_time") or 0) / 1e6
-        if ended and time.time() - ended > ROLLBACK_SECONDS:
-            return ("installed, but the new version did not stay up -- the old binary was put back "
-                    "(see `journalctl -u velociraptor_client` on that host)")
-        return ""
-    if not codes or any(c == 0 for c in codes):
-        return ""
-    if os_name == "linux":
-        said = next((str(r.get("Stdout") or "").strip() for r in rows if r.get("Stdout")), "")
-        return said or f"the upgrade returned {codes[0]}"
-    hint = (" (Windows Installer failed; 1603 when the same version is already installed from an "
-            "installer file that no longer exists -- see the MsiInstaller events on that host)"
-            if 1603 in codes else "")
-    return f"msiexec returned {', '.join(str(c) for c in codes)}{hint}"
+    now = time.time() if now is None else now
+    by_client = {}
+    for r in results:
+        by_client.setdefault(r.get("ClientId"), []).append(r)
+    out = {}
+    for f in flows:
+        cid = f.get("ClientId")
+        flow = f.get("Flow") or {}
+        rows = by_client.get(cid) or []
+        codes = [r.get("ReturnCode") for r in rows]
+        idle = now - (flow.get("active_time") or 0) / 1e6
+        state = flow.get("state") or ""
+        if not codes:
+            if state == "ERROR":
+                out[cid] = f"the upgrade did not run: {(flow.get('status') or 'flow error')[:200]}"
+            continue
+        if os_name == "linux":
+            if 0 in codes:
+                if idle > ROLLBACK_SECONDS:
+                    out[cid] = ("installed, but the new version did not stay up -- the old binary was put "
+                                "back (see `journalctl -u velociraptor_client` on that host)")
+                continue
+            said = next((str(r.get("Stdout") or "").strip() for r in rows if r.get("Stdout")), "")
+            out[cid] = said or f"the upgrade returned {codes[0]}"
+            continue
+        if 0 in codes or (state != "FINISHED" and idle <= WINDOWS_IDLE_SECONDS):
+            continue
+        hint = (" (Windows Installer failed; 1603 when the same version is already installed from an "
+                "installer file that no longer exists -- see the MsiInstaller events on that host)"
+                if 1603 in codes else "")
+        out[cid] = f"msiexec returned {', '.join(str(c) for c in codes)}{hint}"
+    return out
+
+
+def _hunt_failures(hunt_id, os_name):
+    art = OS_UPGRADE[os_name]["artifact"]
+    return outcomes(_query(f"SELECT ClientId, Flow FROM hunt_flows(hunt_id='{hunt_id}')"),
+                    _query(f"SELECT ClientId, ReturnCode, Stdout FROM hunt_results(hunt_id='{hunt_id}', "
+                           f"artifact='{art}')"), os_name)
+
+
+def _label_clients(ids, label, op):
+    """One VQL per 200 clients, not one per client."""
+    from services.vql_safety import is_valid_client_id
+    ids = [i for i in ids if is_valid_client_id(i)]
+    for i in range(0, len(ids), 200):
+        arr = "[" + ",".join(f"'{c}'" for c in ids[i:i + 200]) + "]"
+        _query(f"SELECT label(client_id=_value, labels=['{label}'], op='{op}') AS r FROM foreach(row={arr})")
+
+
+def spread_seconds(n):
+    """The random delay before each client downloads: 2 s per client, at least 10
+    min, at most 4 h -- 1,000 clients x a 27 MB MSI over 10 min was ~45 MB/s off
+    the Velociraptor server."""
+    return min(4 * 3600, max(600, 2 * n))
+
+
+def _names(rows, n=3):
+    hosts = [r["hostname"] for r in rows[:n]]
+    return ", ".join(hosts) + (f" and {len(rows) - n} more" if len(rows) > n else "")
 
 
 def _run_upgrade(run_id):
@@ -506,22 +639,23 @@ def _run_upgrade(run_id):
         total = len(by_id)
         hunts = dict(d.get("hunts") or {})
         if not hunts:
-            for cid in by_id:
-                _query(f"SELECT label(client_id='{cid}', labels=['{label}'], op='set') FROM scope()")
+            _label_clients(list(by_id), label, "set")
+            sleep = w["sleep"] if stage == "pilot" else spread_seconds(total)
             for os_name in sorted({t["os"] for t in by_id.values()}):
                 art = OS_UPGRADE[os_name]["artifact"]
                 hunt = (_query(
                     "LET h = hunt(description='Settings → Velociraptor: upgrade clients to " + server
                     + f" ({stage}, {os_name})', artifacts='{art}', "
-                    f"spec=dict(`{art}`=dict(SleepDuration='{w['sleep']}')), include_labels=['{label}'], "
-                    f"expires=now() + {w['open_days'] * 86400}, timeout=900, cpu_limit=50) "
+                    f"spec=dict(`{art}`=dict(SleepDuration='{sleep}')), include_labels=['{label}'], "
+                    # the per-client timeout covers the random wait plus the install
+                    f"expires=now() + {w['open_days'] * 86400}, timeout={sleep + 900}, cpu_limit=50) "
                     "SELECT HuntId FROM h") or [{}])[0].get("HuntId")
                 if not hunt:
                     raise RuntimeError(f"Velociraptor did not create the {os_name} upgrade hunt")
                 hunts[os_name] = hunt
                 log(f"Hunt {hunt}: {art} on {sum(t['os'] == os_name for t in by_id.values())} {os_name} "
-                    f"client(s) labelled {label} (open {w['open_days']} day(s); offline clients upgrade "
-                    "when next seen)")
+                    f"client(s) labelled {label}; downloads spread over {sleep // 60} min; open "
+                    f"{w['open_days']} day(s) (offline clients upgrade when next seen)")
             update_run_status(run_id, "running", progress=5, details={"hunts": hunts})
             log(f"Following the upgrade: every {w['every'] // 60 or w['every']} "
                 f"{'min' if w['every'] >= 60 else 's'} for {w['seconds'] // 3600 or w['seconds'] // 60} "
@@ -539,26 +673,40 @@ def _run_upgrade(run_id):
                 break
             checks += 1
             rows = {r["client_id"]: r for r in client_versions()["clients"]}
-            for cid in pending():
-                row, t = rows.get(cid) or {}, by_id[cid]
-                if row.get("version") and version_key(row["version"]) == version_key(server):
-                    done.add(cid)
-                    log(f"{t['hostname']} ({t['os']}): upgraded {t['from']} → {row['version']}", "success")
-                    _query(f"SELECT label(client_id='{cid}', labels=['{label}'], op='remove') FROM scope()")
-                elif (why := _upgrade_failed(cid, t["os"], hunts[t["os"]])):
-                    # It ran and failed: the client is alive on the old version and
-                    # will stay there -- say so now, not at the end of the watch.
-                    failed.add(cid)
-                    log(f"{t['hostname']} ({t['os']}): {why}", "error")
-                elif row.get("online") and time.time() - asked.get(cid, 0) > 120:
-                    # The server may keep the old version on record after a restart:
-                    # ask the client to re-report (cheap, read-only).
-                    _query(f"SELECT collect_client(client_id='{cid}', artifacts='Generic.Client.Info') FROM scope()")
-                    asked[cid] = time.time()
+            new_done = [cid for cid in pending() if (rows.get(cid) or {}).get("version")
+                        and version_key(rows[cid]["version"]) == version_key(server)]
+            done.update(new_done)
+            if new_done:
+                _label_clients(new_done, label, "remove")
+                if stage == "pilot" or len(new_done) <= 5:
+                    for cid in new_done:
+                        t = by_id[cid]
+                        log(f"{t['hostname']} ({t['os']}): upgraded {t['from']} → {rows[cid]['version']}", "success")
+                else:
+                    log(f"+{len(new_done)} upgraded: {_names([by_id[c] for c in new_done])}", "success")
+            new_failed, pend = {}, set(pending())
+            for os_name, hunt in hunts.items():
+                for cid, why in _hunt_failures(hunt, os_name).items():
+                    if cid in pend:
+                        new_failed[cid] = why
+            failed.update(new_failed)
+            for i, (cid, why) in enumerate(new_failed.items()):
+                if i == 20:
+                    log(f"... and {len(new_failed) - 20} more failed (all listed in this run's details)", "error")
+                    break
+                log(f"{by_id[cid]['hostname']} ({by_id[cid]['os']}): {why}", "error")
+            if stage == "pilot":
+                for cid in pending():
+                    if (rows.get(cid) or {}).get("online") and time.time() - asked.get(cid, 0) > 120:
+                        # the server may keep the old version on record after a restart
+                        _query(f"SELECT collect_client(client_id='{cid}', artifacts='Generic.Client.Info') FROM scope()")
+                        asked[cid] = time.time()
             left = pending()
             offline = [cid for cid in left if not (rows.get(cid) or {}).get("online")]
             update_run_status(run_id, "running", progress=5 + int(90 * (len(done) + len(failed)) / total),
-                              details={"upgraded": sorted(done), "failed": sorted(failed), "pending": left})
+                              details={"upgraded": sorted(done), "failed": sorted(failed), "pending": left,
+                                       "failures": {**(d.get("failures") or {}), **new_failed}})
+            d["failures"] = {**(d.get("failures") or {}), **new_failed}
             if stage == "rest":       # the hourly line the operator follows
                 log(f"Hour {checks}: {len(done)} of {total} upgraded, {len(left)} pending "
                     f"({len(offline)} offline), {len(failed)} failed")
@@ -568,8 +716,7 @@ def _run_upgrade(run_id):
             # stop the hunts and unlabel who is left, so nothing else is upgraded.
             for hunt in hunts.values():
                 _query(f"SELECT hunt_update(hunt_id='{hunt}', stop=TRUE) FROM scope()")
-            for cid in pending():
-                _query(f"SELECT label(client_id='{cid}', labels=['{label}'], op='remove') FROM scope()")
+            _label_clients(pending(), label, "remove")
             # force: the run is already 'cancelled', and this IS the work the stop did
             add_log_to_run(run_id, f"Stopped: {len(done)} of {total} upgraded, {len(failed)} failed; hunts "
                                    f"stopped -- the {len(pending())} not upgraded yet will not be",
@@ -578,17 +725,17 @@ def _run_upgrade(run_id):
         rows = {r["client_id"]: r for r in client_versions()["clients"]}
         left = pending()
         offline = [cid for cid in left if not (rows.get(cid) or {}).get("online")]
-        for cid in left:
-            t = by_id[cid]
-            if cid in offline:
-                log(f"{t['hostname']}: offline -- it still upgrades when next seen (hunt {hunts[t['os']]} "
-                    f"open {w['open_days']} day(s))", "warning")
-            else:
-                log(f"{t['hostname']}: still {t['from']} -- check the upgrade hunt's flow on that client "
-                    "in Velociraptor", "error")
-        bad = sorted(failed | (set(left) - set(offline)))
-        for cid in bad:       # offline ones keep it: the open hunt reaches them through the label
-            _query(f"SELECT label(client_id='{cid}', labels=['{label}'], op='remove') FROM scope()")
+        stuck = [cid for cid in left if cid not in offline]
+        if offline:
+            log(f"{len(offline)} offline ({_names([by_id[c] for c in offline])}) -- they still upgrade when "
+                f"next seen, while the hunt is open ({w['open_days']} day(s))", "warning")
+        for cid in stuck[:20]:
+            log(f"{by_id[cid]['hostname']}: still {by_id[cid]['from']} -- check the upgrade hunt's flow on "
+                "that client in Velociraptor", "error")
+        if len(stuck) > 20:
+            log(f"... and {len(stuck) - 20} more still on the old version", "error")
+        bad = sorted(failed | set(stuck))
+        _label_clients(bad, label, "remove")   # offline ones keep it: the open hunt reaches them through it
         status = "failed" if bad or (stage == "pilot" and left) else "completed"
         update_run_status(run_id, status, progress=100,
                           error=(f"{len(bad)} client(s) did not upgrade" if bad else None),

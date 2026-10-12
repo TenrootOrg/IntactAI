@@ -61,7 +61,11 @@ document.addEventListener('alpine:init', () => {
         veloRefreshing: false,
         veloError: '',
         veloUpgrade: {},
-        veloPilot: '',
+        veloPilot: null,
+        veloPilotQ: '',
+        veloPilotHits: [],
+        veloFilter: { state: '', os: '', version: null, online: '', q: '', reason: '', page: 1 },
+        veloWave: { label: '', limit: '' },
         decisionTesting: false,
         decisionTestResult: null,
         decisionCatalog: { providers: {}, models: [] },
@@ -200,25 +204,61 @@ document.addEventListener('alpine:init', () => {
             this.llmTesting = false;
         },
 
-        // Settings → Velociraptor: client versions against the server.
+        // Settings → Velociraptor. Built for fleets of thousands: the server sends a
+        // summary + ONE filtered page (50), never the whole fleet.
         async loadVelociraptor() {
             this.veloLoading = true;
             this.veloError = '';
             try {
-                const r = await fetch('/api/velociraptor/clients/versions');
+                const f = this.veloFilter, qs = new URLSearchParams({ page: f.page, per: 50 });
+                for (const k of ['state', 'os', 'online', 'q', 'reason']) if (f[k]) qs.set(k, f[k]);
+                if (f.version !== null) qs.set('version', f.version);
+                const r = await fetch('/api/velociraptor/clients/versions?' + qs);
                 const d = await r.json().catch(() => ({}));
                 if (r.ok) this.velo = d;
                 else this.veloError = d.error || ('HTTP ' + r.status);
                 const u = await fetch('/api/velociraptor/clients/upgrade-state');
                 if (u.ok) this.veloUpgrade = await u.json();
-                // default pilot: the first client the backend says may pilot
-                const pick = this.veloUpgrade.pilot_candidates || [];
-                if (!pick.includes(this.veloPilot)) this.veloPilot = pick[0] || '';
             } catch (e) {
                 this.veloError = e.message;
             }
             this.veloLoading = false;
         },
+
+        setVeloFilter(change) {
+            this.veloFilter = { ...this.veloFilter, ...change, page: 1 };
+            this.loadVelociraptor();
+        },
+
+        clearVeloFilter() {
+            this.veloFilter = { state: '', os: '', version: null, online: '', q: '', reason: '', page: 1 };
+            this.loadVelociraptor();
+        },
+
+        veloGoPage(p) {
+            this.veloFilter.page = p;
+            this.loadVelociraptor();
+        },
+
+        async searchVeloPilot() {
+            this.veloPilot = null;
+            try {
+                const r = await fetch('/api/velociraptor/clients/pilot-candidates?q=' + encodeURIComponent(this.veloPilotQ || ''));
+                this.veloPilotHits = r.ok ? (await r.json()).clients : [];
+            } catch (e) { this.veloPilotHits = []; }
+        },
+
+        // How a wave goes out: the backend spreads the downloads 2 s per client, 10 min to 4 h.
+        veloWaveText() {
+            const all = this.veloUpgrade.eligible || 0, lim = parseInt(this.veloWave.limit) || 0;
+            const label = (this.veloWave.label || '').trim();
+            if (!all) return 'No client can be upgraded from here right now.';
+            if (label) return 'Clients labelled ' + label + (lim ? ', at most ' + lim : '') + '; downloads spread over 10 min to 4 h.';
+            const n = lim ? Math.min(lim, all) : all;
+            const min = Math.round(Math.min(4 * 3600, Math.max(600, 2 * n)) / 60);
+            return n.toLocaleString() + ' of ' + all.toLocaleString() + ' upgradable client(s); downloads spread over ~' + min + ' min.';
+        },
+
 
         async prepareVeloPackage() {
             const r = await fetch('/api/velociraptor/client-package', { method: 'POST' });
@@ -238,19 +278,27 @@ document.addEventListener('alpine:init', () => {
         },
 
         async startVeloUpgrade(stage) {
-            const n = stage === 'pilot' ? 1 : (this.veloUpgrade.rest_candidates || []).length;
-            const who = stage === 'pilot' ? ((this.velo?.clients || []).find(c => c.client_id === this.veloPilot) || {}).hostname : n + ' client(s)';
-            if (!confirm('Upgrade the Velociraptor client on ' + who + ' to ' + this.velo.server_version
-                         + '? The client restarts during the upgrade.' + (stage === 'rest' ? ' Followed in Actions for 24 hours, checked once an hour.' : '')))  return;
+            const ver = this.velo.summary.server_version;
+            let body, who;
+            if (stage === 'pilot') {
+                body = { stage, client_ids: [this.veloPilot.client_id] };
+                who = this.veloPilot.hostname;
+            } else {
+                const label = (this.veloWave.label || '').trim(), limit = parseInt(this.veloWave.limit) || null;
+                body = { stage, label: label || null, limit };
+                who = (label ? 'the clients labelled ' + label : 'the upgradable clients') + (limit ? ' (at most ' + limit + ')' : '');
+            }
+            if (!confirm('Upgrade the Velociraptor client on ' + who + ' to ' + ver + '? Each client restarts during the upgrade.'
+                         + (stage === 'rest' ? ' Followed in Settings → Actions for 24 hours, checked once an hour.' : ''))) return;
             const r = await fetch('/api/velociraptor/clients/upgrade', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ stage, client_ids: stage === 'pilot' ? [this.veloPilot] : null }),
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
             });
             const d = await r.json().catch(() => ({}));
             if (!r.ok) return this.showMessage('Not started: ' + (d.error || 'HTTP ' + r.status), 'error');
             this.showMessage('Upgrade started — follow it in Actions.', 'success');
             setTimeout(() => window.ActiveCase.gotoSystemWorkflows(), 600);
         },
+
 
         async refreshVeloClientInfo() {
             this.veloRefreshing = true;

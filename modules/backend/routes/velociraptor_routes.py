@@ -1119,12 +1119,32 @@ def adopt_velociraptor_collection():
 # --- Settings → Velociraptor: client versions (read-only; step 1 of the client upgrade) ---
 @velociraptor_bp.route('/api/velociraptor/clients/versions', methods=['GET'])
 def velociraptor_client_versions():
-    """Server version and every client's version: current / behind / ahead / unknown."""
-    from services.velociraptor_clients import client_versions
+    """Summary of the whole fleet + ONE page of clients, filtered here (a fleet of
+    thousands is never sent, nor rendered, whole). Filters: state, os, version,
+    online (1/0), q (host or client id), reason ('eligible' or a not-upgradable
+    key); page (1-based), per (<= 200)."""
+    from services.velociraptor_clients import client_versions, summarize, filter_clients
+    a = request.args
     try:
-        return jsonify(client_versions())
+        status = client_versions()
     except Exception as e:  # noqa: BLE001 -- the tab shows the reason
         return jsonify({"error": f"Could not read client versions: {e}"}), 502
+    online = {"1": True, "0": False}.get(a.get("online", ""))
+    rows = filter_clients(status, state=a.get("state") or None, os=a.get("os") or None,
+                          version=a.get("version"), online=online, q=a.get("q"), reason=a.get("reason") or None)
+    per = max(1, min(200, int(a.get("per", 50) or 50)))
+    pages = max(1, -(-len(rows) // per))
+    page = max(1, min(pages, int(a.get("page", 1) or 1)))
+    return jsonify({"summary": summarize(status), "clients": rows[(page - 1) * per: page * per],
+                    "filtered": len(rows), "page": page, "pages": pages, "per": per})
+
+
+@velociraptor_bp.route('/api/velociraptor/clients/pilot-candidates', methods=['GET'])
+def velociraptor_pilot_candidates():
+    """Online clients that may pilot, matching ?q= (at most 20) -- a search, not a list."""
+    from services.velociraptor_clients import client_versions, pilot_candidates
+    rows = pilot_candidates(client_versions(), request.args.get("q", ""))
+    return jsonify({"clients": [{k: c[k] for k in ("client_id", "hostname", "os", "version")} for c in rows]})
 
 
 @velociraptor_bp.route('/api/velociraptor/clients/refresh-info', methods=['POST'])
@@ -1141,8 +1161,7 @@ def velociraptor_refresh_client_info():
 @velociraptor_bp.route('/api/velociraptor/clients/upgrade-state', methods=['GET'])
 def velociraptor_upgrade_state():
     """The verified packages (if any), whether their pilot passed, and who is eligible."""
-    from services.velociraptor_clients import (package_state, pilot_passed, client_versions,
-                                               upgrade_targets)
+    from services.velociraptor_clients import package_state, pilot_passed, client_versions
     from services.velociraptor_clients import auto_prepare_enabled, preparing, last_package_run
     pkg = package_state()
     last = last_package_run() or {}
@@ -1150,13 +1169,10 @@ def velociraptor_upgrade_state():
            "auto_prepare": auto_prepare_enabled(), "preparing": bool(preparing()),
            "last_prepare": {"status": last.get("status"), "error": last.get("error"), "name": last.get("name"),
                             "at": last.get("updated_at")} if last else None}
-    try:
-        status = client_versions()
-        behind = [c["client_id"] for c in status["clients"] if c["state"] == "behind"]
-        eligible, refused = upgrade_targets(status, "rest", behind)
-        out["rest_candidates"] = [c["client_id"] for c in eligible]
-        out["pilot_candidates"] = [c["client_id"] for c in eligible if c["online"]]
-        out["refused"] = refused          # behind but never upgraded from here (legacy, macOS...)
+    try:      # counts only: a fleet of thousands is summarised, never listed here
+        from services.velociraptor_clients import summarize
+        sm = summarize(client_versions())
+        out["eligible"], out["eligible_online"] = sm["eligible"], sm["eligible_online"]
     except Exception as e:  # noqa: BLE001 -- the tab still shows the package
         out["error"] = str(e)
     return jsonify(out)
@@ -1182,11 +1198,13 @@ def velociraptor_auto_prepare():
 
 @velociraptor_bp.route('/api/velociraptor/clients/upgrade', methods=['POST'])
 def velociraptor_upgrade_clients():
-    """Start the pilot (stage=pilot, optional client_ids) or the rest (stage=rest)."""
+    """Start the pilot (stage=pilot, optional client_ids) or a wave of the rest (stage=rest,
+    optional label = a Velociraptor label, limit = at most this many clients)."""
     from services.velociraptor_clients import start_upgrade
     body = request.get_json(silent=True) or {}
     try:
-        run_id = start_upgrade(body.get("stage"), body.get("client_ids") or None)
+        run_id = start_upgrade(body.get("stage"), body.get("client_ids") or None,
+                               label=(body.get("label") or "").strip() or None, limit=body.get("limit") or None)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:  # noqa: BLE001
