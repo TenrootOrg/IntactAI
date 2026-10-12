@@ -2,12 +2,11 @@
 
 Branch `dev-velociraptor-client-upgrade` (from main 5268f189). Planned 2026-10-11.
 
-**Status 2026-10-12:** steps 1-3 done and live-tested for Windows AND Linux (4a5f2a3a, 91a27762, 47034514);
-the critical cases (mixed results, retry, force, Linux rollback, offline, Stop, one run at a time, restart
-resume) all run live. **Left: step 4** (banner after a server upgrade + prepare from velo_refresh), docs,
-the risx_lib artifact names. The scope grew to Linux on request: Intact.Client.Upgrade.Linux (backend
-config/) swaps the running binary; legacy, musl-only Linux and macOS are known gaps (commit 91a27762).
-The fleet stage is followed 24 h and checked once an hour; the pilot every 20 s for 15 min.
+**Status 2026-10-12: all four steps done** (4a5f2a3a, 91a27762, 47034514, b9cffd6e), Windows AND Linux,
+live-tested incl. the critical cases. After a server upgrade the packages rebuild themselves (every 10 min,
+switchable); clients are never upgraded without the operator. Old Windows is decided by OS release (Go 1.21+
+needs Win10/2016), not client version -- RISX 0.7.x fleets on Win10 are upgradable. Remaining known gaps:
+old Windows, old-glibc/musl-only Linux, macOS (docs/UPGRADE.md).
 
 ## Decided with the user
 1. **Rollout:** pilot first, then the rest. Upgrade the picked client(s) (1 by default), wait until they
