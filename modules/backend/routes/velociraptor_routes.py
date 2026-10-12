@@ -1141,10 +1141,20 @@ def velociraptor_client_versions():
 
 @velociraptor_bp.route('/api/velociraptor/clients/pilot-candidates', methods=['GET'])
 def velociraptor_pilot_candidates():
-    """Online clients that may pilot, matching ?q= (at most 20) -- a search, not a list."""
-    from services.velociraptor_clients import client_versions, pilot_candidates
-    rows = pilot_candidates(client_versions(), request.args.get("q", ""))
-    return jsonify({"clients": [{k: c[k] for k in ("client_id", "hostname", "os", "version")} for c in rows]})
+    """Autocomplete for the pilot box: every client matching ?q= (at most 20), the
+    ones that may pilot (online, behind, upgradable) first. The others come back
+    with `why` so the box can show them greyed -- typing a host name always finds
+    it, and still can't pilot the wrong client."""
+    from services.velociraptor_clients import client_versions, filter_clients, eligibility
+    rows = []
+    for c in filter_clients(client_versions(), q=request.args.get("q", "")):
+        key, why = eligibility(c)
+        if key is None and not c["online"]:
+            key, why = "offline", "offline -- a pilot must be online"
+        rows.append({"client_id": c["client_id"], "hostname": c["hostname"], "os": c["os"],
+                     "version": c["version"], "ok": key is None, "why": why})
+    rows.sort(key=lambda r: (not r["ok"], r["hostname"].lower()))
+    return jsonify({"clients": rows[:20]})
 
 
 @velociraptor_bp.route('/api/velociraptor/clients/refresh-info', methods=['POST'])

@@ -65,7 +65,6 @@ document.addEventListener('alpine:init', () => {
         veloPilotQ: '',
         veloPilotHits: [],
         veloFilter: { state: '', os: '', version: null, online: '', q: '', reason: '', page: 1 },
-        veloWave: { label: '', limit: '' },
         decisionTesting: false,
         decisionTestResult: null,
         decisionCatalog: { providers: {}, models: [] },
@@ -243,15 +242,12 @@ document.addEventListener('alpine:init', () => {
             } catch (e) { this.veloPilotHits = []; }
         },
 
-        // How a wave goes out: the backend spreads the downloads 2 s per client, 10 min to 4 h.
+        // What "Upgrade all" will do: the backend spreads the downloads 2 s per client, 10 min to 4 h.
         veloWaveText() {
-            const all = this.veloUpgrade.eligible || 0, lim = parseInt(this.veloWave.limit) || 0;
-            const label = (this.veloWave.label || '').trim();
-            if (!all) return 'No client can be upgraded from here right now.';
-            if (label) return 'Clients labelled ' + label + (lim ? ', at most ' + lim : '') + '; downloads spread over 10 min to 4 h.';
-            const n = lim ? Math.min(lim, all) : all;
+            const n = this.veloUpgrade.eligible || 0;
+            if (!n) return 'No client can be upgraded from here right now.';
             const min = Math.round(Math.min(4 * 3600, Math.max(600, 2 * n)) / 60);
-            return n.toLocaleString() + ' of ' + all.toLocaleString() + ' upgradable client(s); downloads spread over ~' + min + ' min.';
+            return n.toLocaleString() + ' client(s); downloads spread over ~' + min + ' min.';
         },
 
 
@@ -279,9 +275,8 @@ document.addEventListener('alpine:init', () => {
                 body = { stage, client_ids: [this.veloPilot.client_id] };
                 who = this.veloPilot.hostname;
             } else {
-                const label = (this.veloWave.label || '').trim(), limit = parseInt(this.veloWave.limit) || null;
-                body = { stage, label: label || null, limit };
-                who = (label ? 'the clients labelled ' + label : 'the upgradable clients') + (limit ? ' (at most ' + limit + ')' : '');
+                body = { stage };
+                who = (this.veloUpgrade.eligible || 0).toLocaleString() + ' client(s)';
             }
             if (!confirm('Upgrade the Velociraptor client on ' + who + ' to ' + ver + '? Each client restarts during the upgrade.'
                          + (stage === 'rest' ? ' Followed in Settings → Actions for 24 hours, checked once an hour.' : ''))) return;

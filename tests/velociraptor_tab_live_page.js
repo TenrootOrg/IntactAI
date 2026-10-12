@@ -75,13 +75,21 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   check('search filters on the server (q=DESKTOP)', net.some(n => n.includes('q=DESKTOP')), net.slice(-3).join(' | '));
   check('search shows the matching host', rows() === 1 && $('tbody tr').textContent.includes('DESKTOP-2175T02'), rows());
   st.setVeloFilter({ q: '' }); await waitFor(() => rows() === Math.min(50, sm.total));
-  // pilot search
-  st.veloPilotQ = ''; await st.searchVeloPilot(); await sleep(200);
-  check('pilot search calls the server', net.some(n => n.includes('/pilot-candidates?q=')), '');
-  check('pilot candidates are online + eligible only', st.veloPilotHits.length === (st.veloUpgrade.eligible_online || 0) || st.veloPilotHits.length === 20, st.veloPilotHits.length);
+  // pilot box: autocompletes from every client as you type; only those that may pilot can be picked
+  const pq = $('input[placeholder="Search an online client to pilot"]');
+  pq.value = 'DESK'; pq.dispatchEvent(new w.Event('input'));
+  await waitFor(() => net.some(n => n.includes('/pilot-candidates?q=DESK')) && st.veloPilotHits.length > 0);
+  const hit = st.veloPilotHits.find(c => c.hostname === 'DESKTOP-2175T02');
+  check('pilot box autocompletes from all clients', !!hit, JSON.stringify(st.veloPilotHits).slice(0, 200));
+  await waitFor(() => $$('div[title]').some(d => d.textContent.includes('DESKTOP-2175T02')));
+  const opt = $$('div.px-2.py-1').find(d => d.textContent.includes('DESKTOP-2175T02'));
+  check('a client that cannot pilot is shown greyed with why', hit && (hit.ok || (opt && /cursor-not-allowed/.test(opt.className) && /server's version/.test(opt.textContent))), opt && opt.outerHTML.slice(0, 200));
+  if (opt && hit && !hit.ok) { opt.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true })); await sleep(100);
+    check('... and cannot be picked', st.veloPilot === null, JSON.stringify(st.veloPilot)); }
   check('wave text', st.veloWaveText().length > 10, st.veloWaveText());
-  check('upgrade wave disabled without a passed pilot or eligible clients',
-        $$('button').find(b => b.textContent.trim() === 'Upgrade wave').disabled === !(st.veloUpgrade.pilot_passed && st.veloUpgrade.eligible), '');
+  const all = $$('button').find(b => b.textContent.trim().startsWith('Upgrade all ('));
+  check('one "Upgrade all (N)" button, no label/size fields', !!all && !$('input[placeholder="Label (optional)"]') && !$('input[placeholder="Max clients"]'), '');
+  check('Upgrade all disabled without a passed pilot or eligible clients', all.disabled === !(st.veloUpgrade.pilot_passed && st.veloUpgrade.eligible), '');
   check('pager hidden for one page', st.velo.pages > 1 || $$('button').filter(b => /Prev/.test(b.textContent)).every(b => b.parentElement.style.display === 'none'), '');
   check('no Alpine / script errors', errors.length === 0, errors.slice(0, 3).join(' || '));
   console.log(fail ? `\n${fail} FAILED` : '\nall ok', '| requests:', net.length);

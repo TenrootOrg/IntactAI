@@ -415,12 +415,6 @@ def filter_clients(status, state=None, os=None, version=None, online=None, q=Non
     return out
 
 
-def pilot_candidates(status, q="", limit=20):
-    """Online clients the pilot may use, matching q (host or client id)."""
-    rows = [c for c in filter_clients(status, online=True, q=q, reason="eligible")]
-    return rows[:limit]
-
-
 def upgrade_targets(status, stage, client_ids=None, label=None, limit=None):
     """(targets, refusals). Explicit client_ids are each checked (refusals say why);
     otherwise every eligible client -- online only for a pilot, which takes one --
