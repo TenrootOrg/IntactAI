@@ -1622,6 +1622,9 @@
                                             </div>
                                         </div>
                                     </div>
+                                    <p x-show="$store.settings.veloAction" class="text-sm mt-3"
+                                       :class="($store.settings.veloAction||{}).ok ? 'text-green-400' : 'text-red-400'"
+                                       x-text="($store.settings.veloAction||{}).text"></p>
                                     <p class="text-xs text-gray-500 mt-2">Only clients reporting an older version — never a newer one, never one whose version is unknown. Not upgraded from here (by hand): Windows older than 10 / Server 2016, Linux whose glibc is too old or musl-only, macOS. Results, failures and the hourly "N of M upgraded" are in Settings → Actions.</p>
                                 </div>
                             </div>

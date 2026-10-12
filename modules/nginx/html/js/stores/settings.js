@@ -62,7 +62,8 @@ document.addEventListener('alpine:init', () => {
         veloError: '',
         veloUpgrade: {},
         veloPilot: null,
-        veloShowUnknown: false,     // clients with no version (usually offline collections) start collapsed
+        veloShowUnknown: false,
+        veloAction: null,           // the last Prepare / Upgrade result, shown next to the buttons (the top banner is off-screen there)     // clients with no version (usually offline collections) start collapsed
         veloPilotQ: '',
         veloPilotHits: [],
         veloFilter: { state: '', os: '', version: null, online: '', q: '', reason: '', page: 1, sort: '', dir: '' },
@@ -268,8 +269,8 @@ document.addEventListener('alpine:init', () => {
         async prepareVeloPackage() {
             const r = await fetch('/api/velociraptor/client-package', { method: 'POST' });
             const d = await r.json().catch(() => ({}));
-            if (!r.ok) return this.showMessage('Could not start: ' + (d.error || 'HTTP ' + r.status), 'error');
-            this.showMessage('Preparing the client packages — follow it in Actions.', 'success');
+            if (!r.ok) return (this.veloAction = { ok: false, text: 'Packages not prepared: ' + (d.error || 'HTTP ' + r.status) });
+            this.veloAction = { ok: true, text: 'Preparing the client packages — follow it in Settings → Actions.' };
             setTimeout(() => window.ActiveCase.gotoSystemWorkflows(), 600);
         },
 
@@ -298,8 +299,8 @@ document.addEventListener('alpine:init', () => {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
             });
             const d = await r.json().catch(() => ({}));
-            if (!r.ok) return this.showMessage('Not started: ' + (d.error || 'HTTP ' + r.status), 'error');
-            this.showMessage('Upgrade started — follow it in Actions.', 'success');
+            if (!r.ok) return (this.veloAction = { ok: false, text: (stage === 'pilot' ? 'Pilot' : 'Upgrade') + ' not started: ' + (d.error || 'HTTP ' + r.status) });
+            this.veloAction = { ok: true, text: (stage === 'pilot' ? 'Pilot' : 'Upgrade') + ' started — follow it in Settings → Actions.' };
             setTimeout(() => window.ActiveCase.gotoSystemWorkflows(), 600);
         },
 

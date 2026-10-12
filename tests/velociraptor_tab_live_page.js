@@ -117,6 +117,13 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   check('click again: reversed', th('Version').textContent.includes('▼'), th('Version').textContent);
   const vm = $$('tbody tr').find(r => r.textContent.includes('DESKTOP-2175T02'));
   check('the VM row says its upgrade status', vm && /up to date|will upgrade/.test(vm.textContent), vm && vm.textContent);
+  // a refused action says why NEXT TO the buttons (the top banner is off-screen there): the page's
+  // own POST is refused by this driver (599), which must show up inline
+  st.veloPilot = { client_id: 'C.x', hostname: 'X' }; w.confirm = () => true;
+  await st.startVeloUpgrade('pilot'); await sleep(100);
+  const msg = $$('p').find(p => /^Pilot not started:/.test(p.textContent.trim()));
+  check('a refused pilot says why next to the buttons', !!msg && msg.style.display !== 'none' && /text-red-400/.test(msg.className), msg && msg.outerHTML.slice(0, 160));
+  w.confirm = () => false; st.veloPilot = null; st.veloAction = null;
   check('pager hidden for one page', st.velo.pages > 1 || $$('button').filter(b => /Prev/.test(b.textContent)).every(b => b.parentElement.style.display === 'none'), '');
   check('no Alpine / script errors', errors.length === 0, errors.slice(0, 3).join(' || '));
   console.log(fail ? `\n${fail} FAILED` : '\nall ok', '| requests:', net.length);
