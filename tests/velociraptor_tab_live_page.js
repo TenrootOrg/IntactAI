@@ -60,11 +60,13 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   const visible = el => el && el.style.display !== 'none' && (!el.parentElement || visible(el.parentElement) || el.parentElement === w.document.body);
   const btn = t => $$('button').find(b => b.textContent.trim().startsWith(t));
   check('summary loaded', !!sm && sm.agents >= 1, JSON.stringify(st.velo).slice(0, 200));
-  check('one status line', text().includes(`Server ${sm.server_version} · ${sm.agents} agent`), text().slice(0, 300));
-  check('offline-collection imports counted apart', !sm.imported || text().includes(`${sm.imported} offline-collection import(s) (no agent) not counted`), text().slice(0, 400));
-  check('upgrade steps only when something is behind',
-        sm.counts.behind ? text().includes('Pilot one client') : text().includes('Nothing to upgrade'), text().slice(0, 600));
-  check('auto-rebuild switch present', text().includes('Rebuild packages automatically after a server upgrade'), '');
+  check('rate: "X of Y agents updated to <version>" + %', text().includes(`${sm.counts.current} of ${sm.agents} agents updated to ${sm.server_version}`)
+        && text().includes(`${Math.round(100 * sm.counts.current / Math.max(1, sm.agents))}%`), text().slice(0, 300));
+  check('the bar is there', $$('div.h-3 > div').length === 3 && $('div.h-3 > div.bg-green-500').style.width.endsWith('%'), '');
+  check('offline-collection imports counted apart', !sm.imported || text().includes(`${sm.imported} offline-collection import(s), no agent — not counted`), text().slice(0, 400));
+  check('the three actions are always on screen', ['Prepare packages', 'Upgrade pilot', 'Upgrade all'].every(t => btn(t)), '');
+  check('pilot / upgrade-all greyed when not usable', btn('Upgrade pilot').disabled && (sm.counts.behind || btn('Upgrade all').disabled), '');
+  check('auto-rebuild switch present', text().includes('rebuild packages automatically after a server upgrade'), '');
   const tbl = $('table');
   check('client list hidden until asked', tbl && tbl.closest('div[x-show]').style.display === 'none', tbl && tbl.closest('div[x-show]').style.display);
   btn('Show clients').click();
@@ -84,9 +86,9 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   // the box may have nothing behind: show the three steps from the page's own state (nothing is sent)
   st.velo = { ...st.velo, summary: { ...st.velo.summary, counts: { ...st.velo.summary.counts, behind: 3 } } };
   st.veloUpgrade = { ...st.veloUpgrade, eligible: 3, pilot_passed: false };
-  await waitFor(() => text().includes('Pilot one client'));
-  check('with clients behind: the three steps show', ['Pilot one client', 'Everyone else', 'Upgrade 3 client(s)', '· 3 behind'].every(t => text().includes(t)), text().slice(0, 500));
-  check('"Upgrade 3 client(s)" waits for the pilot', btn('Upgrade 3').disabled === true, '');
+  await waitFor(() => text().includes('Upgrade all (3)'));
+  check('with clients behind: counts and "Upgrade all (3)"', ['Upgrade all (3)', '3 behind'].every(t => text().includes(t)), text().slice(0, 500));
+  check('"Upgrade all" waits for the pilot', btn('Upgrade all').disabled === true && /pilot first/.test(btn('Upgrade all').title), btn('Upgrade all').title);
   check('no Alpine / script errors', errors.length === 0, errors.slice(0, 3).join(' || '));
   console.log(fail ? `\n${fail} FAILED` : '\nall ok', '| requests:', net.length);
   process.exit(fail ? 1 : 0);
