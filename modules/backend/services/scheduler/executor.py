@@ -5,6 +5,7 @@ Scheduler Executor - Blueprint execution functions for scheduled jobs
 Contains the callback functions that APScheduler invokes when jobs run.
 """
 
+import re
 import threading
 from datetime import datetime
 
@@ -139,7 +140,12 @@ def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list, op
         print(f"[SCHEDULER] Blueprint not found: {blueprint_id}", flush=True)
         return
 
-    artifacts = blueprint.get('artifacts', [])
+    # An artifact name goes between backticks in the VQL below: only real artifact
+    # names (letters, digits . _ -) are sent, so a ` in an edited blueprint cannot
+    # end the name and add VQL.
+    artifacts = [a for a in blueprint.get('artifacts', []) if isinstance(a, str) and re.fullmatch(r"[\w.\-]+", a)]
+    if len(artifacts) != len(blueprint.get('artifacts', [])):
+        print(f"[SCHEDULER] Skipped invalid artifact name(s) in blueprint {blueprint_id}", flush=True)
     settings = blueprint.get('settings', {})
     expire_minutes = settings.get('hunt_expiry', 120)
     timeout_seconds = settings.get('timeout', 3600)
@@ -190,16 +196,20 @@ def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list, op
         # hunt() rejects max_logs (collect_client-only arg), so we omit it.
         # flow_max_logs is still honored on the TimeSketch / collect_client path.
         _ = flow_max_logs  # intentionally unused here
+        # The job name is operator text: it goes in as a query PARAMETER (env), never
+        # spliced into the VQL -- a ' in the name ended the string and anything after
+        # it ran as server-side VQL. Numbers are forced to numbers for the same reason.
+        description = f"Scheduled: {job_name} ({len(artifacts)} artifacts)"
         query = f"""
 LET collection = hunt(
-    description='Scheduled: {job_name} ({len(artifacts)} artifacts)',
+    description=HuntDescription,
     artifacts={artifacts_list},
     spec=dict({spec_parts}),
-{labels_clause}    expires=now() + {expire_seconds},
-    timeout={timeout_seconds},
-    max_rows={flow_max_rows},
-    max_bytes={flow_max_bytes},
-    cpu_limit={cpu_limit}
+{labels_clause}    expires=now() + {int(expire_seconds)},
+    timeout={int(timeout_seconds)},
+    max_rows={int(flow_max_rows)},
+    max_bytes={int(flow_max_bytes)},
+    cpu_limit={int(cpu_limit)}
 )
 SELECT HuntId FROM collection
 """
@@ -209,6 +219,7 @@ SELECT HuntId FROM collection
         request_obj = api_pb2.VQLCollectorArgs(
             max_wait=30,
             max_row=100,
+            env=[api_pb2.VQLEnv(key="HuntDescription", value=description)],
             Query=[api_pb2.VQLRequest(VQL=query)]
         )
 
