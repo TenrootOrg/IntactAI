@@ -1021,8 +1021,11 @@ _MASK_IDENTITY_LEGEND = (
     "user@domain, SAM<n> = a bare account name, SID<n> = a security identifier, "
     "NAME<n> = the person's display name. So "
     "USER1, UPN1, SAM1, SID1 and NAME1 are ONE and the same person; likewise Hostname<n>, "
-    "Domain<n> and IP_*<n> are consistent per real value. Correlate and reason over "
-    "these as if they were the real entities.\n\n"
+    "Domain<n>, InternalIP<n>, ExternalIP<n>, Email<n> and Credential<n> are consistent "
+    "per real value. Correlate and reason over "
+    "these as if they were the real entities. Write every pseudonym EXACTLY as given -- "
+    "same letters, case and digits, no space before the number, no plural -- because the "
+    "real values are put back by exact match.\n\n"
 )
 
 
