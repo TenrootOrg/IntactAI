@@ -138,6 +138,7 @@ class VersionsAreNotAddresses(unittest.TestCase):
     def test_version_shaped_quads_kept_real_ips_masked(self):
         m = _mask(_ent("event", "e", {"details": "ProductVersion 2.0.0.1 FileVersion: 1.0.0.1 "
                                                  "System.Web, Version=4.0.0.0, Culture=neutral v3.1.0.2 "
+                                                 "ModuleVersion = '2.9.0.0' FileVersion: \"5.1.0.0\" "
                                                  "connect 185.220.101.7 and 10.20.30.40"}))
         self.assertEqual({"185.220.101.7", "10.20.30.40"}, {k for k in m.mapping if k[0].isdigit()}, m.mapping)
         text = "Build 2.0.0.1, Version=4.0.0.0, 1.0.0.1"

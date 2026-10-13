@@ -1061,7 +1061,8 @@ _INTERNAL_FQDN_RE = re.compile(
 # A dotted quad right after a version keyword is a version, not an address:
 # "ProductVersion 2.0.0.1" and .NET's "Version=4.0.0.0, Culture=neutral" were
 # masked as ExternalIP1 -- in every place that version appeared.
-_VERSION_BEFORE = re.compile(r"(?i)(?:version|\bver|\bbuild|\bv)[\s:=.]{0,3}$")
+# Quotes too: a PowerShell manifest says ModuleVersion = '2.9.0.0' (APT29 test case).
+_VERSION_BEFORE = re.compile(r"(?i)(?:version|\bver|\bbuild|\bv)[\s:=.'\"]{0,5}$")
 
 # Per-event char cap for the evidence free-text scan. Real cmdlines/paths carrying
 # identifiers are short; anything past this is a serialized blob that only adds regex
