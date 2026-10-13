@@ -140,9 +140,12 @@ class BuiltinAccountsAreNotIdentities(unittest.TestCase):
         m = DataAnonymizer()
         llm_sim._build_mask_mapping(g, m)
         keys = {k.lower() for k in m.mapping}
-        for v in ("alclient022", "desktop-kfb8neg", "alclient02.adatumlab.local", "alclient02",
+        for v in ("alclient022", "desktop-kfb8neg", "alclient02",
                   "192.168.1.56", "dc.adatum.local", "adatum.local"):
             self.assertIn(v, keys, m.mapping)
+        # an FQDN masks as its NetBIOS name's pseudonym + the domain's (one machine, one name)
+        self.assertEqual(m.mapping["ALClient02"] + "." + m.mapping["adatumlab.local"],
+                         llm_sim._apply_mask("ALClient02.AdatumLab.local", m, ner=False))
         # former names keep their OWN pseudonym, so the restored report stays exact
         self.assertNotEqual(m.mapping["ALClient022"], m.mapping["DESKTOP-KFB8NEG"])
 

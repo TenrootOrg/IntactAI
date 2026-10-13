@@ -1160,6 +1160,9 @@ def _build_mask_mapping(graph, mask):
             return                                # bare name of a built-in seen above
         if "%" in stem:
             return                                # unexpanded %variable%, not a principal
+        if stem.endswith("$") and stem[:-1] in host_roots:
+            return                                # HOST$ is the machine: masks as Domain1\Hostname2$
+                                                  # (it was USER8, unrelated to Hostname2)
         if stem in _MASK_STOPWORDS:
             return                                # generic word (user/null/root/...), not an identity
         root = _norm_domain(dom).split(".", 1)[0]
@@ -1215,12 +1218,17 @@ def _build_mask_mapping(graph, mask):
         same machine goes by elsewhere (ALDC01.AdatumLab.local -> ALDC01)."""
         if _mask_noise(nm) or _IPV4_RE.fullmatch(nm):
             return
-        rows.append({"hostname": nm})
         if "." in nm:
             short = nm.split(".", 1)[0]
-            if len(short) >= 3 and not _mask_noise(short):
-                rows.append({"hostname": short})
             _add_org_domain(nm.split(".", 1)[1])
+            if len(short) >= 3 and not _mask_noise(short):
+                # Only the NetBIOS name: the FQDN then masks as "Hostname9.Domain1".
+                # As its own key it got a second pseudonym -- names_test sent
+                # ALMECM01 as Hostname9 and almecm01.adatumlab.local as Hostname18,
+                # one machine the model took for two.
+                rows.append({"hostname": short})
+                return
+        rows.append({"hostname": nm})
 
     # The case's own RULE names (SIGMA titles, DetectRaptor MFT detections) are
     # vendor-authored machine text, never a person or company -- hand them to the

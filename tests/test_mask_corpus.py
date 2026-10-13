@@ -284,5 +284,22 @@ class CaseCustomPatterns(unittest.TestCase):
         self.assertEqual(text.replace("projectfalcon", "ProjectFalcon"), llm_sim._revert_mask(masked, m))
 
 
+class OneMachineOnePseudonym(unittest.TestCase):
+    def test_fqdn_and_machine_account_share_the_host_pseudonym(self):
+        m = _mask(_ent("account", "adatumlab\\almogs"), _ent("asset", "ALMECM01"),
+                  _ent("asset", "ALClient02.AdatumLab.local"), _ent("account", "adatumlab\\alclient02$"),
+                  _ent("event", "e", {"details": "ldap to almecm01.adatumlab.local"}))
+        text = "almecm01.adatumlab.local and ALMECM01; ALClient02.AdatumLab.local is ALClient02; adatumlab\\alclient02$"
+        out = _json_masked(m, text)
+        h9, h2 = m.mapping["ALMECM01"], m.mapping["ALClient02"]
+        self.assertEqual(2, out.count(h9), out)                      # FQDN and short name: one machine
+        self.assertEqual(2, out.count(h2 + ".") + out.count(h2 + "$"), out)
+        self.assertNotIn("USER", out.split(";")[-1], out)            # machine account is the host
+        self.assertIn(h2 + "$", out)
+        self.assertNotIn("adatum", out.lower())
+        self.assertNotIn("almecm01", out.lower())
+        self.assertEqual(text.lower(), llm_sim._revert_mask(out, m).lower())
+
+
 if __name__ == "__main__":
     unittest.main()
