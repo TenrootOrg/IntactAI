@@ -1587,6 +1587,82 @@ def _refetch_agentic_rows(rid, det, log=None):
         return None
 
 
+# A run's MAPPED result, kept beside its raw_results.json. Reading and mapping a
+# 568 MB run is ~19 s (15 s of it json.load), and every Refusion -- a window or
+# severity change -- redid it for every member run although an imported run never
+# changes: ~234 s of a 108-host fuse. The key is the file's size + mtime, the
+# run's hostname map (the mapper's only other input) and a hash of the fusion
+# code, so a release that changes mapping re-maps once instead of serving stale
+# entities. Never travels: a case bundle only carries payloads/<id>/raw_results.json
+# (case_bundle.py), so this pickle is only ever one the backend wrote itself.
+MAP_CACHE_NAME = "fusion_map.pickle"
+_code_hash = None
+
+
+def _mapper_code_hash() -> str:
+    global _code_hash
+    if _code_hash is None:
+        import glob
+        here = os.path.dirname(os.path.abspath(__file__))
+        files = sorted(glob.glob(os.path.join(here, "**", "*.py"), recursive=True))
+        files.append(os.path.join(os.path.dirname(here), "memory", "analyzers.py"))  # anomaly.score_row
+        h = hashlib.sha1()
+        for fp in files:
+            try:
+                with open(fp, "rb") as f:
+                    h.update(os.path.relpath(fp, here).encode() + b"\0" + f.read())
+            except OSError:
+                pass
+        _code_hash = h.hexdigest()
+    return _code_hash
+
+
+def _cached_map(fp, det, load_rows, map_rows):
+    """map_rows(load_rows()), served from MAP_CACHE_NAME when nothing it depends on
+    moved. Any trouble reading or writing the cache is a miss, never an error."""
+    import pickle
+    from .schema import _MAP_SKIPS
+    st = os.stat(fp)
+    key = json.dumps([st.st_size, st.st_mtime_ns, _mapper_code_hash(),
+                      det.get("hostnames") or {}], sort_keys=True, default=str)
+    cache = os.path.join(os.path.dirname(fp), MAP_CACHE_NAME)
+    box = _MAP_SKIPS.get()
+    try:
+        with open(cache, "rb") as f:
+            if pickle.load(f) == key:                  # the key first: a stale body is never unpickled
+                ents, rels, skips = pickle.load(f)
+                # Rows the mapper skipped are reported as a PARTIAL graph; a cache
+                # hit must say so too.
+                for where, (n, first) in skips.items():
+                    if box is not None:
+                        m, f0 = box.get(where, (0, None))
+                        box[where] = (m + n, f0 or first)
+                return ents, rels
+    except FileNotFoundError:
+        pass
+    except Exception as e:                             # noqa: BLE001
+        print(f"[FUSION] map cache unreadable, re-mapping: {cache}: {e}", flush=True)
+    before = dict(box) if box is not None else {}
+    rows = load_rows()
+    ents, rels = map_rows(rows)
+    if rows:                                           # {} = unreadable / too big for now: not a result
+        skips = {w: (n - before.get(w, (0, None))[0], first)
+                 for w, (n, first) in (box or {}).items() if n != before.get(w, (0, None))[0]}
+        tmp = cache + ".tmp"
+        try:
+            with open(tmp, "wb") as f:
+                pickle.dump(key, f, protocol=pickle.HIGHEST_PROTOCOL)
+                pickle.dump((ents, rels, skips), f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, cache)
+        except Exception as e:                         # noqa: BLE001  disk full etc.: just slower next time
+            print(f"[FUSION] map cache not written: {cache}: {e}", flush=True)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return ents, rels
+
+
 def _contribution_for_run(run, log=None, refetch=False):
     atype, rid = run.get("automation_type"), run.get("run_id")
     det = run.get("details") or {}
@@ -1606,17 +1682,23 @@ def _contribution_for_run(run, log=None, refetch=False):
             # and logged as a red error on the upload at every Refusion.
             rows = (_refetch_agentic_rows(rid, det, log=log)
                     if refetch and atype == "velociraptor_collection" else None)
+
+            def _map(rows):
+                ents, rels = map_agentic(_filter_supported(rows), run_id=rid,
+                                         hostnames=det.get("hostnames") or {})
+                # Coverage is by DATA SOURCE, and a collection is Velociraptor data
+                # whether or not the agent post-analyzed it — exactly like a hunt,
+                # upload, import or adopt (all already relabelled). Relabel both here
+                # so the coverage column reads "velociraptor", never a confusing
+                # "agentic" that made the same source look like two.
+                _relabel_source(ents, rels, "agentic", "velociraptor")
+                return ents, rels
             if rows is None:
+                fp = "" if det.get("collected_data") else _raw_results_path(rid, det)
+                if fp:
+                    return _cached_map(fp, det, lambda: _agentic_collected_data(rid, det, log=log), _map)
                 rows = _agentic_collected_data(rid, det, log=log)
-            ents, rels = map_agentic(_filter_supported(rows), run_id=rid,
-                                     hostnames=det.get("hostnames") or {})
-            # Coverage is by DATA SOURCE, and a collection is Velociraptor data
-            # whether or not the agent post-analyzed it — exactly like a hunt,
-            # upload, import or adopt (all already relabelled). Relabel both here
-            # so the coverage column reads "velociraptor", never a confusing
-            # "agentic" that made the same source look like two.
-            _relabel_source(ents, rels, "agentic", "velociraptor")
-            return ents, rels
+            return _map(rows)
         if atype in ("velociraptor_hunt", "velociraptor_offline_import",
                      "velociraptor_adopt"):
             # An offline import lands its rows under a Velociraptor HUNT (the
