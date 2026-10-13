@@ -247,7 +247,7 @@ class ClientManager {
             const groupClients = groups[key];
             const heading = `
                 <div class="flex items-center gap-2 px-2 pt-2 pb-1 mt-1 border-t border-gray-800 first:border-t-0 first:mt-0 first:pt-0">
-                    <span class="text-xs uppercase tracking-wide text-gray-400 font-semibold">${key}</span>
+                    <span class="text-xs uppercase tracking-wide text-gray-400 font-semibold">${escapeHtml(key)}</span>
                     <span class="text-xs text-gray-600">(${groupClients.length})</span>
                 </div>
             `;
@@ -314,7 +314,8 @@ class ClientManager {
             const cls = active
                 ? 'bg-blue-600 text-white border-blue-500'
                 : 'bg-gray-700 text-gray-300 border-gray-600 hover:bg-gray-600';
-            return `<button type="button" data-facet="${facet}" data-val="${val}" class="text-[11px] px-2 py-0.5 rounded-full border ${cls} transition-colors">${label}</button>`;
+            // OS and label values are endpoint-reported: escaped in the attribute and the text.
+            return `<button type="button" data-facet="${facet}" data-val="${escapeHtml(val)}" class="text-[11px] px-2 py-0.5 rounded-full border ${cls} transition-colors">${escapeHtml(label)}</button>`;
         };
 
         const osChips = osOrder.map(o => chip('os', o, o, this.activeOs.has(o))).join(' ');

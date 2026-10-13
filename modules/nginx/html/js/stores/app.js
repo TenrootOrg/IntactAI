@@ -27,9 +27,12 @@ window.defaultConfig = {
 
 // Utility functions
 function escapeHtml(text) {
+    // Quotes too: the text-node trick leaves " and ' as they are, so a value put in
+    // an ATTRIBUTE (data-hostname="...", value="...") could close it and add an
+    // event handler -- and hostnames, OS and labels come from the endpoints.
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function openService(serviceId) {
