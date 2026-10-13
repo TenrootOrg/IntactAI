@@ -1050,6 +1050,11 @@ _INTERNAL_FQDN_RE = re.compile(
     r"\b((?:[A-Za-z0-9-]+\.)+(?:local|lan|corp|internal|intranet|home\.arpa))\b", re.I)
 
 
+# A dotted quad right after a version keyword is a version, not an address:
+# "ProductVersion 2.0.0.1" and .NET's "Version=4.0.0.0, Culture=neutral" were
+# masked as ExternalIP1 -- in every place that version appeared.
+_VERSION_BEFORE = re.compile(r"(?i)(?:version|\bver|\bbuild|\bv)[\s:=.]{0,3}$")
+
 # Per-event char cap for the evidence free-text scan. Real cmdlines/paths carrying
 # identifiers are short; anything past this is a serialized blob that only adds regex
 # backtracking cost. Generous enough to cover any explicit-detail evidence the payload
@@ -1267,8 +1272,9 @@ def _build_mask_mapping(graph, mask):
             # \\127.0.0.1\ADMIN$ is an address, not a host name: it was masked as
             # "Hostname2". IP literals go through the IP path below (loopback kept).
             _host(host)
-        for ip in _IPV4_RE.findall(text):
-            rows.append({"ipaddress": ip})
+        for mi in _IPV4_RE.finditer(text):
+            if not _VERSION_BEFORE.search(text[max(0, mi.start() - 16):mi.start()]):
+                rows.append({"ipaddress": mi.group(0)})
         for fq in _INTERNAL_FQDN_RE.findall(text):
             if fq.count(".") >= 2:                # dc.corp.local: a host in that domain
                 _host(fq)
