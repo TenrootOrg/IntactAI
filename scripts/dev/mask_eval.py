@@ -213,8 +213,9 @@ def leaks(cid):
     shapes = {"internal FQDN": r"(?i)\b(?:[a-z0-9-]+\.)+(?:local|lan|corp|internal|intranet)\b",
               "private IP": r"\b(?:10\.\d+|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d+\.\d+\b",
               "default host name": r"\b(?:DESKTOP|WIN|LAPTOP)-[A-Z0-9]{5,}\b"}
+    ours = re.compile(r"^(?:[A-Za-z]+\d+\.)+")      # Hostname4.Domain2.local is masked already
     for k, rx in shapes.items():
-        hits = sorted(set(re.findall(rx, blob)))
+        hits = sorted(h for h in set(re.findall(rx, blob)) if not ours.match(h))
         print(f"{k:18} still visible: {len(hits)}", hits[:10])
 
 

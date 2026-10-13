@@ -1336,6 +1336,17 @@ def _build_mask_mapping(graph, mask):
             mask.mask_data(rows)
         except Exception:
             pass
+    # ONE domain, one number: NetBIOS "adatumlab" and DNS "adatumlab.local" were
+    # Domain2 and Domain1, and the model saw two domains. A DNS name whose first
+    # label is itself a known domain is dropped, so it masks as "Domain2.local"
+    # (dot is a delimiter) and reverts exactly. Run after everything, so the order
+    # the two forms were met in does not matter.
+    dom_keys = {k.lower() for k, v in mask.mapping.items() if str(v).startswith("Domain")}
+    for k in [k for k, v in mask.mapping.items() if str(v).startswith("Domain") and "." in k]:
+        if k.split(".", 1)[0].lower() in dom_keys:
+            ps = mask.mapping.pop(k)
+            if mask.reverse_mapping.get(ps) == k:
+                del mask.reverse_mapping[ps]
     # Collapse case-variant duplicates (e.g. asset 'DESKTOP-566AT85' and the local
     # account domain 'desktop-566at85' from DESKTOP-566AT85\\user) onto ONE pseudonym,
     # preferring the asset-label casing — so case-insensitive masking reverts to the

@@ -316,5 +316,18 @@ class DomainSids(unittest.TestCase):
         self.assertEqual(text, llm_sim._revert_mask(out, m))
 
 
+class OneDomainOneNumber(unittest.TestCase):
+    def test_netbios_and_dns_forms_share_the_pseudonym(self):
+        for ents in ((_ent("asset", "ALMECM01.adatumlab.local"), _ent("account", "adatumlab\\almogs")),
+                     (_ent("account", "adatumlab\\almogs"), _ent("asset", "ALMECM01.adatumlab.local"))):
+            m = _mask(*ents)
+            text = "adatumlab\\noda via ALMECM01.adatumlab.local in adatumlab.local (ADATUMLAB)"
+            out = _json_masked(m, text)
+            self.assertNotIn("adatum", out.lower(), out)
+            nums = set(__import__("re").findall(r"Domain(\d+)", out))
+            self.assertEqual(1, len(nums), out)
+            self.assertEqual(text.lower(), llm_sim._revert_mask(out, m).lower())
+
+
 if __name__ == "__main__":
     unittest.main()
