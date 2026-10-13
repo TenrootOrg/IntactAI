@@ -46,6 +46,12 @@ logger = logging.getLogger(__name__)
 # bigger hunts.
 VELO_MAX_ROWS_PER_ARTIFACT = int(os.environ.get("VELO_MAX_ROWS_PER_ARTIFACT", "200000"))
 VELO_QUERY_TIMEOUT_SECONDS = int(os.environ.get("VELO_QUERY_TIMEOUT_SECONDS", "300"))
+# Rows per gRPC RESPONSE PART. VQLCollectorArgs.max_row is a batch size, not a cap:
+# it was set to VELO_MAX_ROWS_PER_ARTIFACT (200,000), so an imported collection's
+# 144,890 Hayabusa rows (~640 MB with their event payloads) came as ONE message,
+# hit the channel's 100 MB limit (RESOURCE_EXHAUSTED) and the case got none of
+# them. The total ceiling is still VELO_MAX_ROWS_PER_ARTIFACT, counted below.
+VELO_FETCH_BATCH_ROWS = 1000
 
 
 def _distinct_artifacts(sources):
@@ -586,7 +592,7 @@ def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None,
         )
         request_obj = api_pb2.VQLCollectorArgs(
             max_wait=10,
-            max_row=VELO_MAX_ROWS_PER_ARTIFACT,
+            max_row=VELO_FETCH_BATCH_ROWS,
             Query=[api_pb2.VQLRequest(VQL=query)],
         )
         rows = []
@@ -609,7 +615,10 @@ def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None,
                 artifact, flow_id, VELO_MAX_ROWS_PER_ARTIFACT,
             )
         return rows
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        # Said, not swallowed: an empty list here looks like "the artifact had no
+        # rows", and a case silently lost its main detections that way.
+        logger.warning("[Velociraptor] fetching %s from %s failed: %s", artifact, flow_id, e)
         return []
 
 
