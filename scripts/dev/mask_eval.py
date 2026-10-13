@@ -36,6 +36,11 @@ was reported masked but leaked, and one person got two identity numbers.
           pseudonym reuse past 999), Hebrew/accented names in JSON text, the case's
           custom patterns, the NER engine failing, masking off. ~5 s.
 
+  impact  Does masking change the decision model's verdicts? Asks about each finding
+          raw twice (noise floor), masked now, and masked by an older llm_sim.py copied
+          to /tmp/llm_sim_old.py (git show <ref>:modules/backend/services/fusion/llm_sim.py).
+          Costs a few decision-model calls per case; writes nothing.
+
     docker cp scripts/dev/mask_eval.py intact_backend:/tmp/mask_eval.py
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py corpus'
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py roundtrip'
@@ -517,8 +522,68 @@ def limits():
     print(f"5 OFF       unchanged: {llm_sim._apply_mask(t5, None) == t5}")
 
 
+def impact(ids, per_case=40):
+    """Does masking change what the decision model concludes? Each finding's exact
+    input (finding_state) is asked about raw TWICE (the model's own noise floor),
+    masked by today's code, and masked by the code of OLD_REF where that differs.
+    Nothing is written; this costs a few decision-model calls per case."""
+    import importlib.util
+    from services.fusion import store, decision_model as dm
+    old_src = "/tmp/llm_sim_old.py"
+    try:
+        spec = importlib.util.spec_from_file_location("services.fusion.llm_sim_old", old_src)
+        old = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(old)
+    except Exception as e:  # noqa: BLE001
+        old = None
+        print("old masker not loaded (copy it to", old_src, "):", e)
+    sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
+
+    def verdicts(fs, render):
+        ans = dm.ask_each(fs, render, dm._verdict_question)
+        return [dm._answer_to_suggestion(a) for a in ans]
+    for cid in ids:
+        d = store.get_case(cid)
+        g = store.view_graph(cid, d)
+        fs = sorted(g.findings, key=lambda f: sev_rank.get(f.severity, 5))[:per_case]
+        if not fs:
+            continue
+        mk = DataAnonymizer()
+        from services.fusion import llm_sim
+        llm_sim._build_mask_mapping(g, mk)
+        new_txt = {f.id: llm_sim._apply_mask(json.dumps(dm.finding_state(g, f), default=str), mk, ner=False) for f in fs}
+        old_txt = {}
+        if old is not None:
+            mo = DataAnonymizer()
+            old._build_mask_mapping(g, mo)
+            old_txt = {f.id: old._apply_mask(json.dumps(dm.finding_state(g, f), default=str), mo, ner=False) for f in fs}
+        raw = lambda f: json.dumps(dm.finding_state(g, f), default=str)  # noqa: E731
+        r1, r2 = verdicts(fs, raw), verdicts(fs, raw)
+        nw = verdicts(fs, lambda f: new_txt[f.id])
+        differ = [f for f in fs if old_txt and old_txt[f.id] != new_txt[f.id]]
+        od = dict(zip([f.id for f in differ], verdicts(differ, lambda f: old_txt[f.id]))) if differ else {}
+
+        def cmp(a, b, pick):
+            pairs = [(x, y) for x, y in zip(a, b) if x and y]
+            flips = [(f, x, y) for f, (x, y) in zip(pick, zip(a, b)) if x and y and x["label"] != y["label"]]
+            dp = sum(abs(x["p"] - y["p"]) for x, y in pairs) / max(1, len(pairs))
+            return len(pairs), len(flips), dp, flips
+        print(NL + f"### {cid} — {d.get('name')}: {len(fs)} findings, old and new masked input differ on {len(differ)}")
+        for name, a, b, pick in (("raw vs raw (noise)", r1, r2, fs), ("raw vs masked NOW", r1, nw, fs),
+                                 ("raw vs masked BEFORE", [r1[fs.index(f)] for f in differ],
+                                  [od.get(f.id) for f in differ], differ),
+                                 ("raw vs masked NOW (same subset)", [r1[fs.index(f)] for f in differ],
+                                  [nw[fs.index(f)] for f in differ], differ)):
+            n, fl, dp, flips = cmp(a, b, pick)
+            print(f"  {name:32} answered {n:3}  verdict flips {fl:3}  mean |dp| {dp:.3f}")
+            for f, x, y in flips[:4]:
+                print(f"      {f.title[:70]!r}: {x['label']} {x['p']:.2f} -> {y['label']} {y['p']:.2f}")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "limits":
+    if len(sys.argv) > 1 and sys.argv[1] == "impact":
+        impact(sys.argv[2:])
+    elif len(sys.argv) > 1 and sys.argv[1] == "limits":
         limits()
     elif len(sys.argv) > 1 and sys.argv[1] == "corpus":
         corpus()
