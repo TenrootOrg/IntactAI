@@ -248,5 +248,13 @@ class MaskingIsOnePass(unittest.TestCase):
         self.assertIn("GL-WS-0001 and GL-WS-00011", back)       # restored, the unknown one untouched
 
 
+class PseudonymsNeverRepeat(unittest.TestCase):
+    def test_more_than_999_values_each_get_their_own(self):
+        ips = [f"10.{i // 250}.{i % 250}.9" for i in range(1100)]
+        m = _mask(*[_ent("netconn", ip) for ip in ips])
+        self.assertEqual(1100, len({m.mapping[ip] for ip in ips}))
+        self.assertEqual("InternalIP1100", m.mapping[ips[-1]])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,17 +9,13 @@ import re
 import ipaddress
 from typing import Any
 
-# Pseudo-value pools — indexed labels for visual consistency.
-# Same original -> same label across all artifacts in one run, guaranteed
-# by the self.mapping dedup dict in DataAnonymizer.__init__.
-PSEUDO_EXTERNAL_IPS = [f"ExternalIP{i}" for i in range(1, 1000)]
-PSEUDO_INTERNAL_IPS = [f"InternalIP{i}" for i in range(1, 1000)]
-PSEUDO_USERS        = [f"Username{i}"   for i in range(1, 1000)]
-PSEUDO_HOSTS        = [f"Hostname{i}"   for i in range(1, 1000)]
-PSEUDO_EMAILS       = [f"Email{i}"      for i in range(1, 1000)]
-PSEUDO_DOMAINS      = [f"Domain{i}"     for i in range(1, 1000)]
-PSEUDO_GUIDS        = [f"GUID{i}"       for i in range(1, 1000)]
-PSEUDO_CREDENTIALS  = [f"Credential{i}" for i in range(1, 1000)]
+# Pseudonym per category, numbered from 1. Same original -> same label across all
+# artifacts in one run (self.mapping dedups). These were fixed pools of 999 used
+# modulo, so the 1,000th internal IP became InternalIP1 AGAIN: two real machines
+# shared one pseudonym, the model merged them and the revert restored the wrong
+# one (mask_eval limits: 101 shared at 1,100 IPs). Numbers never wrap now.
+_PSEUDO_PREFIX = {"ip_ext": "ExternalIP", "ip_int": "InternalIP", "user": "Username", "host": "Hostname",
+                  "email": "Email", "domain": "Domain", "guid": "GUID", "credential": "Credential"}
 
 # Safe values that should NOT be masked
 SAFE_IPS = {
@@ -253,38 +249,10 @@ class DataAnonymizer:
         if original in self.mapping:
             return self.mapping[original]
 
-        if category == "ip_ext":
-            idx = self.counters["ip_ext"] % len(PSEUDO_EXTERNAL_IPS)
-            pseudo = PSEUDO_EXTERNAL_IPS[idx]
-            self.counters["ip_ext"] += 1
-        elif category == "ip_int":
-            idx = self.counters["ip_int"] % len(PSEUDO_INTERNAL_IPS)
-            pseudo = PSEUDO_INTERNAL_IPS[idx]
-            self.counters["ip_int"] += 1
-        elif category == "user":
-            idx = self.counters["user"] % len(PSEUDO_USERS)
-            pseudo = PSEUDO_USERS[idx]
-            self.counters["user"] += 1
-        elif category == "host":
-            idx = self.counters["host"] % len(PSEUDO_HOSTS)
-            pseudo = PSEUDO_HOSTS[idx]
-            self.counters["host"] += 1
-        elif category == "email":
-            idx = self.counters["email"] % len(PSEUDO_EMAILS)
-            pseudo = PSEUDO_EMAILS[idx]
-            self.counters["email"] += 1
-        elif category == "domain":
-            idx = self.counters["domain"] % len(PSEUDO_DOMAINS)
-            pseudo = PSEUDO_DOMAINS[idx]
-            self.counters["domain"] += 1
-        elif category == "guid":
-            idx = self.counters["guid"] % len(PSEUDO_GUIDS)
-            pseudo = PSEUDO_GUIDS[idx]
-            self.counters["guid"] += 1
-        elif category == "credential":
-            idx = self.counters["credential"] % len(PSEUDO_CREDENTIALS)
-            pseudo = PSEUDO_CREDENTIALS[idx]
-            self.counters["credential"] += 1
+        prefix = _PSEUDO_PREFIX.get(category)
+        if prefix:
+            self.counters[category] = self.counters.get(category, 0) + 1
+            pseudo = f"{prefix}{self.counters[category]}"
         else:
             pseudo = "<REDACTED>"
 
