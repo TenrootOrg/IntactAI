@@ -53,5 +53,17 @@ class FetchInBatches(unittest.TestCase):
         self.assertIn("Windows.Hayabusa.Rules", cm.output[0])
 
 
+class NoFetchAsksForHugeParts(unittest.TestCase):
+    """The import used a SECOND loop (max_row=50000 -> a 393 MB message): every
+    VQLCollectorArgs in the collector module must ask for small parts."""
+    def test_every_max_row_is_small(self):
+        import re
+        src = open(os.path.join(ROOT, "modules/backend/services/agentic/collectors/_base.py")).read()
+        for m in re.finditer(r"max_row=([A-Za-z_0-9]+)", src):
+            v = m.group(1)
+            n = _base.VELO_FETCH_BATCH_ROWS if v == "VELO_FETCH_BATCH_ROWS" else int(v)
+            self.assertLessEqual(n, 5000, f"max_row={v} at offset {m.start()}")
+
+
 if __name__ == "__main__":
     unittest.main()

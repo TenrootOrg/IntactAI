@@ -907,14 +907,17 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     if not _wanted_source(source, only_artifacts):
                         continue
                     query = f"SELECT * FROM source(client_id='{located_client_id}', flow_id='{fid}', artifact='{source}')"
+                    # Small response parts (see VELO_FETCH_BATCH_ROWS): 50,000 rows a
+                    # part was a 393 MB message for an imported Hayabusa collection,
+                    # over the channel's 100 MB limit, and the case got none of it.
                     src_req = api_pb2.VQLCollectorArgs(
                         max_wait=60,
-                        max_row=50000,
+                        max_row=VELO_FETCH_BATCH_ROWS,
                         Query=[api_pb2.VQLRequest(VQL=query)]
                     )
 
                     rows = []
-                    for response in stub.Query(src_req, timeout=120):
+                    for response in stub.Query(src_req, timeout=VELO_QUERY_TIMEOUT_SECONDS):
                         if response.Response:
                             try:
                                 resp_data = json.loads(response.Response)
