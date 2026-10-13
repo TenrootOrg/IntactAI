@@ -542,7 +542,7 @@ SELECT * FROM enumerate_flow(client_id='{client_id}', flow_id='{flow_id}')
 
 
 def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None,
-                           end_iso=None, start_row=0):
+                           end_iso=None, start_row=0, errors=None):
     """Query for available results from a specific artifact with optional VQL time filtering.
 
     Args:
@@ -552,6 +552,8 @@ def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None,
         artifact: Artifact name (may include /source suffix)
         start_iso: Optional start time (ISO 8601) for VQL filtering
         end_iso: Optional end time (ISO 8601) for VQL filtering
+        errors: Optional list; a failed fetch appends "<artifact>: <error>" to it,
+            so a caller can tell "failed" from "no rows".
         start_row: Skip this many rows server-side and return only what follows.
 
             THIS IS WHAT KEEPS A LONG COLLECTION FROM STRANGLING ITSELF. The
@@ -619,6 +621,8 @@ def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None,
         # Said, not swallowed: an empty list here looks like "the artifact had no
         # rows", and a case silently lost its main detections that way.
         logger.warning("[Velociraptor] fetching %s from %s failed: %s", artifact, flow_id, e)
+        if errors is not None:
+            errors.append(f"{artifact}: {e}")
         return []
 
 
@@ -672,7 +676,7 @@ def _wanted_source(source_name, only_artifacts):
 
 def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_filter=None,
                                     client_ids=None, only_artifacts=None,
-                                    progress_log=False):
+                                    progress_log=False, errors=None):
     """Fetch results from an existing Velociraptor flow or hunt with optional time filtering.
 
     Args:
@@ -693,6 +697,10 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
             This is a fetch filter, not a policy change: those artifacts are
             still collected, still stored, still downloadable. Fusion simply
             stops asking for rows it is about to throw away.
+        errors: Optional list; every source (or the whole fetch) that failed is
+            appended as "<source>: <error>". The results are then PARTIAL -- an
+            import used to report "Added N rows ... success" over a source that
+            never arrived.
         progress_log: Log a line per source as it lands.
 
             Off for fusion, which fetches quietly inside a fuse that has its own
@@ -917,13 +925,22 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     )
 
                     rows = []
-                    for response in stub.Query(src_req, timeout=VELO_QUERY_TIMEOUT_SECONDS):
-                        if response.Response:
-                            try:
-                                resp_data = json.loads(response.Response)
-                                rows.extend(resp_data)
-                            except Exception:
-                                pass
+                    try:
+                        for response in stub.Query(src_req, timeout=VELO_QUERY_TIMEOUT_SECONDS):
+                            if response.Response:
+                                try:
+                                    resp_data = json.loads(response.Response)
+                                    rows.extend(resp_data)
+                                except Exception:
+                                    pass
+                    except Exception as e:  # noqa: BLE001
+                        # One failed source used to abort the whole fetch and drop
+                        # every source after it; record it and keep going.
+                        add_log_to_run(run_id, f"[Velociraptor] Fetching {source} (flow {fid}) "
+                                               f"failed: {e}", "error")
+                        if errors is not None:
+                            errors.append(f"{source}: {e}")
+                        rows = []
 
                     _done += 1
                     if progress_log:
@@ -1092,7 +1109,8 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                 for source_name in sources:
                     if not _wanted_source(source_name, only_artifacts):
                         continue
-                    rows = query_artifact_results(stub, flow_client_id, flow_id, source_name, start_iso, end_iso)
+                    rows = query_artifact_results(stub, flow_client_id, flow_id, source_name, start_iso, end_iso,
+                                                  errors=errors)
                     _done += 1
                     if progress_log:
                         add_log_to_run(
@@ -1119,6 +1137,8 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
 
     except Exception as e:
         add_log_to_run(run_id, f"[Velociraptor] Error fetching existing results: {str(e)}", "error")
+        if errors is not None:
+            errors.append(f"fetch: {e}")
 
     finally:
         channel.close()

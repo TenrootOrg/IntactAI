@@ -165,22 +165,40 @@ def _fuse_offline_import(import_result, upload_run_id):
         # of 1,158 MB across stored payloads was artifacts with no mapper.
         from services.fusion.mappers.agentic import SUPPORTED_ARTIFACTS
         add_log_to_run(upload_run_id, "[Import] Reading imported data into the case…")
+        fetch_errors = []
         if hunt_id:
             # Hunt: enumerate every imported client's flow and pull their rows.
             all_results, artifacts, client_info = get_existing_collection_results(
                 upload_run_id, flow_id=None, hunt_id=hunt_id, client_ids=None,
-                only_artifacts=SUPPORTED_ARTIFACTS)
+                only_artifacts=SUPPORTED_ARTIFACTS,
+                errors=fetch_errors)
         else:
             client_id = import_result.get("client_id")
             all_results, artifacts, client_info = get_existing_collection_results(
                 upload_run_id, flow_id=flow_id, hunt_id=None,
                 client_ids=[client_id] if client_id else None,
-                only_artifacts=SUPPORTED_ARTIFACTS)
+                only_artifacts=SUPPORTED_ARTIFACTS,
+                errors=fetch_errors)
 
         total_rows = sum(len(rows) for rows in (all_results or {}).values())
+        # The data is in Velociraptor either way; only the read-back failed, so
+        # say which sources are missing and how to get them, never "success".
+        partial = (f" {len(fetch_errors)} source(s) could not be read and are MISSING: "
+                   + "; ".join(fetch_errors[:5]) + ("; …" if len(fetch_errors) > 5 else "")
+                   + ". Use Fetch results on this run to retry.") if fetch_errors else ""
         if total_rows == 0:
+            if fetch_errors:
+                # Keep the locator, or Fetch results has nothing to retry with.
+                run = get_automation_run(upload_run_id) or {}
+                run["details"] = dict(run.get("details") or {},
+                                      **{"offline_hunt_id" if hunt_id else "offline_flow_id": hunt_id or flow_id})
+                try:
+                    save_workflow(run)
+                except Exception:
+                    pass
             add_log_to_run(upload_run_id,
-                           "[Import] Import had no rows to fuse into the case.", "warning")
+                           "[Import] Import had no rows to fuse into the case." + partial,
+                           "error" if fetch_errors else "warning")
             return
 
         # Seed the run's hostnames map (client_id -> hostname) so the Case host
@@ -252,7 +270,8 @@ def _fuse_offline_import(import_result, upload_run_id):
         add_log_to_run(
             upload_run_id,
             f"[Import] Added {total_rows} rows across {len(artifacts)} artifact(s) "
-            f"from {len(client_info or {})} host(s) to the workspace.", "success")
+            f"from {len(client_info or {})} host(s) to the workspace." + partial,
+            "warning" if fetch_errors else "success")
         update_run_status(upload_run_id, "completed", progress=100)
 
         # Do NOT auto-fuse. The imported data is now a member of the workspace;

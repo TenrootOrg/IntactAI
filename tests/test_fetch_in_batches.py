@@ -52,6 +52,75 @@ class FetchInBatches(unittest.TestCase):
         self.assertEqual([], rows)
         self.assertIn("Windows.Hayabusa.Rules", cm.output[0])
 
+    def test_a_failed_fetch_is_reported_to_the_caller(self):
+        errors = []
+        with self.assertLogs(_base.logger, level="WARNING"):
+            _base.query_artifact_results(_Stub(fail=RuntimeError("RESOURCE_EXHAUSTED")),
+                                         "C.1", "F.1", "Windows.Hayabusa.Rules", errors=errors)
+        self.assertEqual(["Windows.Hayabusa.Rules: RESOURCE_EXHAUSTED"], errors)
+
+
+def _load_upload_routes():
+    """upload_routes.py on its own (routes/__init__ pulls in every blueprint),
+    with flask/werkzeug stubbed where they are not installed."""
+    import importlib.util
+    for name, attrs in (("flask", ("Blueprint", "request", "jsonify")),
+                        ("werkzeug", ()), ("werkzeug.utils", ("secure_filename",))):
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            mod = types.ModuleType(name)
+            for a in attrs:
+                setattr(mod, a, lambda *a, **k: types.SimpleNamespace(route=lambda *a, **k: (lambda f: f)))
+            sys.modules[name] = mod
+    spec = importlib.util.spec_from_file_location(
+        "_upload_routes_under_test", os.path.join(ROOT, "modules/backend/routes/upload_routes.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class ImportSaysWhatIsMissing(unittest.TestCase):
+    """The UTICA import lost its detections to RESOURCE_EXHAUSTED and still ended
+    with "[Import] Added N rows ... success"."""
+    def run_import(self, rows, errors):
+        from unittest import mock
+        up = _load_upload_routes()
+        logs, saved = [], []
+
+        def fetch(*a, **kw):
+            kw["errors"].extend(errors)
+            return rows, list(rows), {"C.1": {"hostname": "UTICA"}}
+        with mock.patch("services.workflow_service.add_log_to_run",
+                        lambda rid, msg, level="info": logs.append((level, msg))), \
+             mock.patch("services.workflow_service.get_automation_run", lambda rid: {"id": rid}), \
+             mock.patch("services.workflow_service.update_run_status", lambda *a, **k: None), \
+             mock.patch("services.file_storage_service.save_workflow", saved.append), \
+             mock.patch("services.agentic.collectors.get_existing_collection_results", fetch), \
+             mock.patch("services.agentic.collectors.persist_pipeline_artifacts", lambda *a: None):
+            up._fuse_offline_import({"success": True, "flow_id": "F.X", "client_id": "C.1"}, "velociraptor_upload_1")
+        return logs, saved
+
+    def test_partial_import_is_a_warning_naming_the_source(self):
+        logs, _ = self.run_import({"Windows.EventLogs.CondensedAccountUsage": [{"a": 1}]},
+                                  ["Windows.Hayabusa.Rules: RESOURCE_EXHAUSTED"])
+        added = [(lvl, m) for lvl, m in logs if m.startswith("[Import] Added")]
+        self.assertEqual(1, len(added))
+        self.assertEqual("warning", added[0][0])
+        self.assertIn("MISSING: Windows.Hayabusa.Rules", added[0][1])
+
+    def test_clean_import_still_succeeds(self):
+        logs, _ = self.run_import({"Windows.Hayabusa.Rules": [{"a": 1}]}, [])
+        added = [(lvl, m) for lvl, m in logs if m.startswith("[Import] Added")]
+        self.assertEqual("success", added[0][0])
+        self.assertNotIn("MISSING", added[0][1])
+
+    def test_nothing_read_is_an_error_and_keeps_the_retry_locator(self):
+        logs, saved = self.run_import({}, ["fetch: deadline exceeded"])
+        self.assertEqual("error", logs[-1][0])
+        self.assertIn("MISSING", logs[-1][1])
+        self.assertEqual("F.X", saved[-1]["details"]["offline_flow_id"])
+
 
 class NoFetchAsksForHugeParts(unittest.TestCase):
     """The import used a SECOND loop (max_row=50000 -> a 393 MB message): every
