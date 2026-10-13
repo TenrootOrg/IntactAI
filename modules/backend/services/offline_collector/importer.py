@@ -201,6 +201,33 @@ def _wait_import_flow_finished(config, creds, max_message_size, flow_id, run_id,
     return last_state or "TIMEOUT"
 
 
+_SAFE_HOST = re.compile(r'[A-Za-z0-9._-]{1,64}')
+
+
+def _hostname_from_filename(name):
+    """Collection-<FQDN>-<timestamp>.zip, the collector's default name. Host names
+    and timestamps both contain '-' (DESKTOP-2175T02, 2026-10-07T09_52_00Z), and
+    'Collection-([^-]+)-' cut the host at its first hyphen: 'DESKTOP', which the
+    prefix client search then matched to a DIFFERENT machine's client."""
+    base = os.path.basename(name or "")
+    m = (re.match(r'Collection-(.+?)-(?:\d{4}-\d{2}-\d{2}T[\d_:.]+Z?|\d{9,})(?:\.zip)?$', base)
+         or re.match(r'Collection-([^-]+)-', base))
+    host = m.group(1) if m else ""
+    # Interpolated into VQL below: allowlist, never escape.
+    return host if _SAFE_HOST.fullmatch(host) else "OfflineClient"
+
+
+def _hostname_from_zip(zf):
+    """The endpoint's own name from client_info.json (FQDN, else Hostname), or None."""
+    try:
+        name = next((n for n in zf.namelist() if n.rsplit("/", 1)[-1] == "client_info.json"), None)
+        info = json.loads(zf.read(name)) if name else {}
+    except Exception:  # noqa: BLE001 -- a missing/odd file just means "use the file name"
+        return None
+    host = str(info.get("Fqdn") or info.get("Hostname") or "")
+    return host if _SAFE_HOST.fullmatch(host) else None
+
+
 def import_results(zip_file_path, original_filename="import.zip", run_id=None, password=None,
                    finalize=True):
     """Import offline collection results to Velociraptor using Server.Utils.ImportCollection
@@ -241,17 +268,9 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
         file_size = os.path.getsize(zip_file_path)
         add_log_to_run(run_id, f"File size: {file_size / 1024 / 1024:.2f} MB")
 
-        # Extract hostname from filename (Collection-HOSTNAME-timestamp.zip)
-        hostname_match = re.search(r'Collection-([^-]+)-', original_filename)
-        hostname = hostname_match.group(1) if hostname_match else "OfflineClient"
-        # Sanitize: this value gets interpolated directly into a VQL string
-        # literal below (and into a VQL search filter) with no escaping.
-        # Rather than trying to escape VQL/query syntax correctly, restrict
-        # to a safe allowlist — anything else (quotes, backticks, parens,
-        # etc. from a maliciously-crafted upload filename) falls back to a
-        # safe default instead of reaching the query.
-        if not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', hostname):
-            hostname = "OfflineClient"
+        # Hostname: the collection's own client_info.json (read below, after any
+        # decryption) wins; the file name is the fallback.
+        hostname = _hostname_from_filename(original_filename)
         add_log_to_run(run_id, f"Client hostname: {hostname}")
         print(f"[OFFLINE] Importing collection for hostname: {hostname}", flush=True)
 
@@ -281,6 +300,10 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
                     add_log_to_run(run_id, "Warning: ZIP missing collection_context.json - may not import correctly", "warning")
                 else:
                     add_log_to_run(run_id, "Valid Velociraptor collection format detected")
+                info_host = _hostname_from_zip(zf)
+                if info_host and info_host != hostname:
+                    add_log_to_run(run_id, f"Client hostname (from the collection): {info_host}")
+                    hostname = info_host
         except Exception as e:
             print(f"[OFFLINE] Error checking ZIP: {e}", flush=True)
             add_log_to_run(run_id, f"Warning: Could not verify ZIP: {str(e)}", "warning")
@@ -347,7 +370,17 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
         # exists and reuse it instead of always minting a new one.
         existing_client_id = None
         try:
-            lookup_query = f"SELECT client_id FROM clients(search='host:{hostname}')"
+            # host: is a PREFIX search ('host:ALClient0' returned five clients) and
+            # rows[0] was taken: a WS1 import merged into WS10's client. Only an exact
+            # hostname / FQDN match is the same machine.
+            # The host: index holds the SHORT name, so an FQDN from client_info is
+            # searched by its first label and compared whole.
+            short = hostname.split(".", 1)[0]
+            lookup_query = (f"SELECT client_id FROM clients(search='host:{short}') "
+                            f"WHERE lowcase(string=os_info.fqdn) = lowcase(string='{hostname}') "
+                            f"OR lowcase(string=os_info.hostname) = lowcase(string='{hostname}') "
+                            f"OR (lowcase(string=os_info.hostname) = lowcase(string='{short}') "
+                            f"AND NOT os_info.fqdn =~ '[.]')")      # same name, another domain: not it
             lookup_request = api_pb2.VQLCollectorArgs(Query=[api_pb2.VQLRequest(VQL=lookup_query)])
             for response in stub.Query(lookup_request, timeout=30):
                 if response.Response:
