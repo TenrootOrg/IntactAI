@@ -1009,7 +1009,7 @@ _MASK_SKIP_DOMAINS = {
     "virtual users",
 }
 # Per-FORM pseudonym prefix for an identity. The NUMBER is the identity — every
-# form of the same person shares it, so USER1/UPN1/SAM1/SID1 are one identity.
+# form of the same person shares it, so USER1/UPN1/SAM1/NAME1 are one identity.
 _IDENT_PREFIX = {"nt": "USER", "upn": "UPN", "sam": "SAM", "sid": "SID"}
 _DISPLAY_NAME_RE = re.compile(r"([a-z]{2,})[._]([a-z]{2,})")   # first.last / first_last
 
@@ -1018,9 +1018,10 @@ _DISPLAY_NAME_RE = re.compile(r"([a-z]{2,})[._]([a-z]{2,})")   # first.last / fi
 _MASK_IDENTITY_LEGEND = (
     "IDENTITY KEY (this data is anonymised): pseudonyms that share a NUMBER are the "
     "SAME identity in different forms — USER<n> = a Windows DOMAIN\\user, UPN<n> = "
-    "user@domain, SAM<n> = a bare account name, SID<n> = a security identifier, "
-    "NAME<n> = the person's display name. So "
-    "USER1, UPN1, SAM1, SID1 and NAME1 are ONE and the same person; likewise Hostname<n>, "
+    "user@domain, SAM<n> = a bare account name, NAME<n> = the person's display name. So "
+    "USER1, UPN1, SAM1 and NAME1 are ONE and the same person. A SID written "
+    "S-1-5-21-DOMAIN<n>-<RID> is a real SID with its domain part hidden; the RID is real "
+    "(500 = Administrator, 512 = Domain Admins). Likewise Hostname<n>, "
     "Domain<n>, InternalIP<n>, ExternalIP<n>, Email<n> and Credential<n> are consistent "
     "per real value; Custom<n> is a value the operator chose to hide. Correlate and reason over "
     "these as if they were the real entities. Write every pseudonym EXACTLY as given -- "
@@ -1522,6 +1523,28 @@ def _mask_custom_patterns(text, mask, mapping):
                 known.add(v.lower())
 
 
+# A per-domain SID went out as is: S-1-5-21-<three numbers> is unique to the
+# customer's domain (or machine). The RID after it is what the model needs (500 =
+# Administrator, 512 = Domain Admins), so only the authority is replaced:
+# S-1-5-21-DOMAIN1-1013, one number per domain. Well-known SIDs (S-1-5-18, -32-544)
+# are not domain-specific and stay.
+_SID_RE = re.compile(r"(?<![\w-])S-1-5-21-(\d{1,10}-\d{1,10}-\d{1,10})(?:-(\d{1,10}))?(?![\w-])", re.I)
+
+
+def _mask_sids(text, mask, mapping):
+    if "-21-" not in text or not hasattr(mask, "reverse_mapping"):
+        return
+    doms = mask.__dict__.setdefault("_sid_domains", {})
+    for m in _SID_RE.finditer(text):
+        sid = m.group(0)
+        if sid in mapping:
+            continue
+        n = doms.setdefault(m.group(1), len(doms) + 1)
+        ps = f"S-1-5-21-DOMAIN{n}" + (f"-{m.group(2)}" if m.group(2) else "")
+        mapping[sid] = ps
+        mask.reverse_mapping[ps] = sid
+
+
 def _apply_mask(text, mask, ner=True):
     """Replace originals→pseudonyms (longest-first), CASE-INSENSITIVE and identifier-
     boundary aware (see _MASK_BOUNDARY), so lowercase/uppercase/FQDN/path variants
@@ -1536,6 +1559,7 @@ def _apply_mask(text, mask, ner=True):
         mapping = {}
     _mask_free_emails(text, mask, mapping)
     _mask_custom_patterns(text, mask, mapping)
+    _mask_sids(text, mask, mapping)
     low = _key_table(mapping)
     pat = _keys_re(low, True)
 
@@ -1618,6 +1642,7 @@ def _log_mask_audit(run_id, mask, text=None):
     if text:
         _mask_free_emails(text, mask, getattr(mask, "mapping", {}))   # list them too
         _mask_custom_patterns(text, mask, getattr(mask, "mapping", {}))
+        _mask_sids(text, mask, getattr(mask, "mapping", {}))
     mapping = getattr(mask, "mapping", {}) or {}
     if text is not None:                         # report only what really appears in the payload
         low = _key_table(mapping)

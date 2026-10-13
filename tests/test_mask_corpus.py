@@ -301,5 +301,20 @@ class OneMachineOnePseudonym(unittest.TestCase):
         self.assertEqual(text.lower(), llm_sim._revert_mask(out, m).lower())
 
 
+class DomainSids(unittest.TestCase):
+    def test_domain_part_hidden_rid_and_wellknown_kept(self):
+        m = _mask(_ent("account", "GALIL\\dana.levi"))
+        d1, d2 = "S-1-5-21-3623811015-3361044348-30300820", "S-1-5-21-1111111111-2222222222-3333333333"
+        text = f"owner {d1}-1013, admin {d1}-500, group {d1}-512, other {d2}-1001, domain {d1}; S-1-5-18 S-1-5-32-544"
+        masked = llm_sim._apply_mask(json.dumps({"v": text}), m, ner=False)
+        out = json.loads(masked)["v"]
+        self.assertNotIn("3623811015", out)
+        self.assertNotIn("1111111111", out)
+        for kept in ("S-1-5-21-DOMAIN1-1013", "S-1-5-21-DOMAIN1-500", "S-1-5-21-DOMAIN1-512",
+                     "S-1-5-21-DOMAIN2-1001", "domain S-1-5-21-DOMAIN1;", "S-1-5-18", "S-1-5-32-544"):
+            self.assertIn(kept, out, out)
+        self.assertEqual(text, llm_sim._revert_mask(out, m))
+
+
 if __name__ == "__main__":
     unittest.main()
