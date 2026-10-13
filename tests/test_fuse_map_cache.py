@@ -82,6 +82,22 @@ class MapCache(unittest.TestCase):
         self.call()
         self.assertFalse(os.path.exists(os.path.join(self.dir, store.MAP_CACHE_NAME)))
 
+    def test_concurrent_writers_never_share_a_temp_file(self):
+        """Two cases sharing a run can fuse at once; one '.tmp' for both let one
+        writer truncate the other's half-written file."""
+        import threading
+        tmps, real = [], os.replace
+
+        def record(src, dst):
+            tmps.append(src)
+            return real(src, dst)
+        with mock.patch.object(store.os, "replace", record):
+            ts = [threading.Thread(target=self.call) for _ in range(2)]
+            [t.start() for t in ts]
+            [t.join() for t in ts]
+        self.assertEqual(2, len(set(tmps)), tmps)
+        self.assertEqual([store.MAP_CACHE_NAME, "raw_results.json"], sorted(os.listdir(self.dir)))
+
     def test_skipped_rows_are_still_reported_on_a_hit(self):
         def mapper(rows):
             schema.map_skip("Windows.Hayabusa.Rules", ValueError("bad row"))

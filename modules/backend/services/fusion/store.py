@@ -1648,7 +1648,9 @@ def _cached_map(fp, det, load_rows, map_rows):
     if rows:                                           # {} = unreadable / too big for now: not a result
         skips = {w: (n - before.get(w, (0, None))[0], first)
                  for w, (n, first) in (box or {}).items() if n != before.get(w, (0, None))[0]}
-        tmp = cache + ".tmp"
+        # A temp file of its OWN: two cases sharing this run can fuse at once, and
+        # a shared ".tmp" would interleave both writes into one file.
+        tmp = f"{cache}.{os.getpid()}.{threading.get_ident()}.tmp"
         try:
             with open(tmp, "wb") as f:
                 pickle.dump(key, f, protocol=pickle.HIGHEST_PROTOCOL)
