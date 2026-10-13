@@ -1011,14 +1011,16 @@ _MASK_SKIP_DOMAINS = {
 # Per-FORM pseudonym prefix for an identity. The NUMBER is the identity — every
 # form of the same person shares it, so USER1/UPN1/SAM1/SID1 are one identity.
 _IDENT_PREFIX = {"nt": "USER", "upn": "UPN", "sam": "SAM", "sid": "SID"}
+_DISPLAY_NAME_RE = re.compile(r"([a-z]{2,})[._]([a-z]{2,})")   # first.last / first_last
 
 # Prepended to the LLM system prompt when masking is on, so the model can connect
 # the forms of one identity by the shared number (we don't pass an alias table).
 _MASK_IDENTITY_LEGEND = (
     "IDENTITY KEY (this data is anonymised): pseudonyms that share a NUMBER are the "
     "SAME identity in different forms — USER<n> = a Windows DOMAIN\\user, UPN<n> = "
-    "user@domain, SAM<n> = a bare account name, SID<n> = a security identifier. So "
-    "USER1, UPN1, SAM1 and SID1 are ONE and the same person; likewise Hostname<n>, "
+    "user@domain, SAM<n> = a bare account name, SID<n> = a security identifier, "
+    "NAME<n> = the person's display name. So "
+    "USER1, UPN1, SAM1, SID1 and NAME1 are ONE and the same person; likewise Hostname<n>, "
     "Domain<n> and IP_*<n> are consistent per real value. Correlate and reason over "
     "these as if they were the real entities.\n\n"
 )
@@ -1191,6 +1193,15 @@ def _build_mask_mapping(graph, mask):
             # to the model in clear text (9-host lab case: noda, sccm_sql). Same number.
             mask.mapping[bare] = f"SAM{n}"
             mask.reverse_mapping.setdefault(f"SAM{n}", bare)
+        dn = _DISPLAY_NAME_RE.fullmatch(stem)
+        if dn and not any(p in _MASK_STOPWORDS for p in dn.groups()):
+            # dana.levi is "Dana Levi" in a DN, a sign-in log or an analyst note, and
+            # only NER (when on) caught that: the account was hidden and the person's
+            # real name sent. Same identity number.
+            disp = f"{dn.group(1).title()} {dn.group(2).title()}"
+            if disp.lower() not in (k.lower() for k in mask.mapping):
+                mask.mapping[disp] = f"NAME{n}"
+                mask.reverse_mapping.setdefault(f"NAME{n}", disp)
         if dom:
             _add_org_domain(dom)
 
@@ -1474,7 +1485,7 @@ def _mask_audit_lines(mapping) -> str:
         if key in seen:
             continue
         seen.add(key)
-        m = re.match(r"^(USER|UPN|SAM|SID)(\d+)$", str(ps))
+        m = re.match(r"^(USER|UPN|SAM|SID|NAME)(\d+)$", str(ps))
         if m:
             idents.setdefault(m.group(2), []).append(f"{orig} = {ps}")
         else:

@@ -197,5 +197,19 @@ class FreeTextEmails(unittest.TestCase):
         self.assertLess(time.time() - t, 2.0)
 
 
+class DisplayNameFromAccount(unittest.TestCase):
+    def test_first_last_account_masks_the_display_name(self):
+        m = _mask(_ent("account", "GALIL\\dana.levi"), _ent("account", "GALIL\\amit_cohen"),
+                  _ent("account", "GALIL\\svc.backup"))
+        text = "DN CN=Dana Levi,OU=Finance; DANA LEVI and Amit Cohen confirmed; Svc Backup ran"
+        masked = llm_sim._apply_mask(json.dumps({"v": text}), m, ner=False)
+        out = json.loads(masked)["v"]
+        self.assertIn("CN=NAME1,", out)
+        self.assertNotIn("levi", out.lower())
+        self.assertNotIn("Amit Cohen", out)
+        self.assertEqual(m.mapping["GALIL\\dana.levi"][-1], m.mapping["Dana Levi"][-1])
+        self.assertEqual(text.replace("DANA LEVI", "Dana Levi"), json.loads(llm_sim._revert_mask(masked, m))["v"])
+
+
 if __name__ == "__main__":
     unittest.main()
