@@ -26,6 +26,16 @@ class ClientListRefresh(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
 
+    @unittest.skipIf(shutil.which("node") is None, "node is not installed")
+    def test_a_big_selection_asks_first_and_counts_hidden_clients(self):
+        """Every online client is pre-selected: on a 1,000-endpoint fleet one click
+        started a collection on all of them. Runs the real component in jsdom."""
+        r = subprocess.run(["node", os.path.join(ROOT, "tests", "client_picker_confirm.js"), ROOT],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode == 77:
+            self.skipTest("jsdom is not installed")
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+
     def test_every_client_picker_uses_the_shared_component(self):
         """A picker built another way would not get the button."""
         js = os.path.join(HTML, "js")

@@ -236,6 +236,7 @@ async function startForensicsCollection() {
             alert('Please select at least one client');
             return;
         }
+        if (!forensicsClientManager.confirmMany('Start the collection')) return;
     }
 
     // A collection uses timeout + CPU; a hunt also uses expiry.

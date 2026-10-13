@@ -396,6 +396,7 @@ async function saveScheduleFromModal() {
         alert('Please select at least one client');
         return;
     }
+    if (!envWide && !schedulerClientManager.confirmMany('Schedule this job')) return;
 
     // Build payload
     const payload = {

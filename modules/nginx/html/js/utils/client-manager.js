@@ -462,6 +462,15 @@ class ClientManager {
         return Array.from(this.selected);
     }
 
+    /** Ask before acting on many clients. The list pre-selects every online client,
+     *  so on a 1,000-endpoint fleet one click started a collection on all of them. */
+    confirmMany(action) {
+        const n = this.selected.size;
+        if (n <= ClientManager.CONFIRM_ABOVE) return true;
+        return window.confirm(`${action} on ${n} clients?\n\nEvery online client is selected by default. ` +
+                              'Cancel to change the selection.');
+    }
+
     /** Look up a loaded client object by id (e.g. to read its hostname). */
     getClient(id) {
         return this._clients.find(c => c.client_id === id) || null;
@@ -493,5 +502,7 @@ class ClientManager {
         return (now - lastSeen) < this.onlineThreshold;
     }
 }
+
+ClientManager.CONFIRM_ABOVE = 10;   // more selected than this asks first
 
 window.ClientManager = ClientManager;
