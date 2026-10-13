@@ -1036,8 +1036,13 @@ def _norm_domain(d: str) -> str:
 #  - UNC '\\HOST\share' yields a host (lateral-movement targets that aren't entities).
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _UPN_RE = re.compile(r"\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-_DOMUSER_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]+)\\([A-Za-z0-9._$-]+)")
-_UNC_RE = re.compile(r"\\\\([A-Za-z0-9][A-Za-z0-9._-]+)\\")
+#  Both must START a token: a lab case's "\\adatumlab.local\SysVol\...\Policies\..."
+#  made SysVol/Policies/scripts fake accounts (then "Change PowerShell Policies to an
+#  Insecure Level", a rule title, went out as "Change PowerShell SAM24 ..."), and a
+#  JSON-escaped local path "C:\\Windows\\CCM\\ServiceData\\" read as \\HOST\ made
+#  ServiceData/Staging/LocalPayload fake hosts.
+_DOMUSER_RE = re.compile(r"(?<![\\A-Za-z0-9._-])([A-Za-z0-9][A-Za-z0-9._-]+)\\([A-Za-z0-9._$-]+)")
+_UNC_RE = re.compile(r"(?<![A-Za-z0-9._$:-])\\\\([A-Za-z0-9][A-Za-z0-9._-]+)\\")
 # An FQDN under an internal-only suffix names the customer's own network -- it has
 # no public meaning, so it is always an identifier. A lab case's script text carried
 # "ldap://dc.adatum.local:389" in clear (a spelling the known "adatumlab" missed).

@@ -67,5 +67,28 @@ class EscapeEndsAToken(unittest.TestCase):
         self.assertNotIn("GL-WS-014", out)
 
 
+class PathSegmentsAreNotIdentities(unittest.TestCase):
+    """A lab case masked SysVol/Policies/scripts as accounts and ServiceData/Staging
+    as hosts, then rewrote the rule title "Change PowerShell Policies to an Insecure
+    Level" as "Change PowerShell SAM24 ..."."""
+    def test_sysvol_and_escaped_local_paths(self):
+        m = _mask(_ent("account", "GALIL\\dana.levi"),
+                  _ent("event", "gpo", {"details": "\\\\galil.local\\SysVol\\galil.local\\Policies\\{31B2F340}\\scripts\\x.ps1"}),
+                  _ent("event", "ccm", {"details": "C:\\\\Windows\\\\CCM\\\\ServiceData\\\\Messaging D:\\\\Staging\\\\a.zip"}))
+        keys = {k.lower() for k in m.mapping}
+        for seg in ("sysvol", "policies", "scripts", "servicedata", "ccm", "staging", "messaging"):
+            self.assertNotIn(seg, keys, sorted(m.mapping))
+        title = "Change PowerShell Policies to an Insecure Level; WinAPI Calls Via PowerShell Scripts"
+        self.assertEqual(title, llm_sim._apply_mask(title, m, ner=False))
+
+    def test_real_unc_host_and_domain_user_still_found(self):
+        m = _mask(_ent("account", "GALIL\\dana.levi"),
+                  _ent("event", "net use", {"ev_cmdline": "net use \\\\FILESRV01\\c$ /user:GALIL\\amit.cohen x"}),
+                  _ent("event", "esc", {"details": "copy \\\\\\\\BKSRV02\\\\share"}))
+        self.assertTrue(m.mapping.get("FILESRV01", "").startswith("Hostname"), m.mapping)
+        self.assertTrue(m.mapping.get("BKSRV02", "").startswith("Hostname"), m.mapping)
+        self.assertTrue(m.mapping.get("GALIL\\amit.cohen", "").startswith("USER"), m.mapping)
+
+
 if __name__ == "__main__":
     unittest.main()
