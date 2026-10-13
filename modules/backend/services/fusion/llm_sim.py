@@ -1162,6 +1162,10 @@ def _build_mask_mapping(graph, mask):
             return                                # bare name of a built-in seen above
         if "%" in stem:
             return                                # unexpanded %variable%, not a principal
+        if re.fullmatch(r"s-1-\d+(?:-\d+)+", stem):
+            return                                # a SID, not a name: _mask_sids keeps its RID
+                                                  # (an account labelled s-1-5-21-...-500 was SAM7,
+                                                  # hiding that it is THE Administrator)
         if stem.endswith("$") and stem[:-1] in host_roots:
             return                                # HOST$ is the machine: masks as Domain1\Hostname2$
                                                   # (it was USER8, unrelated to Hostname2)

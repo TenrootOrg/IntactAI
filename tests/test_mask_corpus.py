@@ -302,6 +302,16 @@ class OneMachineOnePseudonym(unittest.TestCase):
         self.assertEqual(text.lower(), llm_sim._revert_mask(out, m).lower())
 
 
+class SidLabelledAccounts(unittest.TestCase):
+    def test_an_account_named_by_its_sid_keeps_the_rid(self):
+        sid = "s-1-5-21-2232410529-1445159330-2725690660-500"
+        m = _mask(_ent("account", sid), _ent("account", "c137\\ricksanchez"))
+        self.assertNotIn(sid, m.mapping)
+        out = llm_sim._apply_mask(json.dumps({"v": f"logon by {sid}"}), m, ner=False)
+        self.assertIn("-500", out)
+        self.assertNotIn("2232410529", out)
+
+
 class DomainSids(unittest.TestCase):
     def test_domain_part_hidden_rid_and_wellknown_kept(self):
         m = _mask(_ent("account", "GALIL\\dana.levi"))
