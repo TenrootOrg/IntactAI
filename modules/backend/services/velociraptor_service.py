@@ -40,7 +40,7 @@ def get_clients_from_snapshot(include_offline=False):
         channel = setup_velociraptor_connection()
         if not channel:
             print("[CLIENT-LIST] Failed to setup connection, falling back to snapshot file", flush=True)
-            return get_clients_from_snapshot_file()
+            return get_clients_from_snapshot_file(include_offline)
 
         stub = api_pb2_grpc.APIStub(channel)
 
@@ -114,7 +114,7 @@ def get_clients_from_snapshot(include_offline=False):
         print(f"[CLIENT-LIST] Error querying via API: {e}", flush=True)
         traceback.print_exc()
         # Fallback to snapshot file method
-        return get_clients_from_snapshot_file()
+        return get_clients_from_snapshot_file(include_offline)
     finally:
         # Previously only closed on the success path — any exception above
         # (or the pre-existing early return via the `if not channel` branch,
@@ -123,8 +123,16 @@ def get_clients_from_snapshot(include_offline=False):
             channel.close()
 
 
-def get_clients_from_snapshot_file():
-    """Read clients from Velociraptor snapshot file (fallback method only)"""
+def get_clients_from_snapshot_file(include_offline=True):
+    """Read clients from Velociraptor snapshot file (fallback method only).
+
+    The file says nothing about when a client was last seen. This used to stamp
+    every client "seen now", so with the API down the whole fleet showed online and
+    the pickers pre-selected all of it. Liveness is unknown here: clients are
+    listed as not seen (last_seen_at 0), and an online-only request gets none."""
+    if not include_offline:
+        print("[CLIENT-LIST] Snapshot fallback cannot tell who is online -- returning none", flush=True)
+        return []
     try:
         print("[CLIENT-LIST] Using fallback snapshot file method...", flush=True)
         cmd = [
@@ -182,9 +190,7 @@ def get_clients_from_snapshot_file():
                             if ip_match:
                                 last_ip = ip_match.group(1)
 
-                            # Try to extract timestamp (last_seen_at)
-                            # Use current time in microseconds (dashboard expects microseconds)
-                            last_seen_at = int(time.time() * 1000000)
+                            last_seen_at = 0        # unknown -- never claim "online"
 
                             clients.append({
                                 "client_id": client_id,
