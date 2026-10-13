@@ -1557,7 +1557,23 @@ def _mask_sids(text, mask, mapping):
         mask.reverse_mapping[ps] = sid
 
 
-def _apply_mask(text, mask, ner=True):
+def _mask_human(obj, mask):
+    """Text a PERSON or the model wrote -- the chat question and history, analyst notes,
+    manual events, dispositions -- masked STRICTLY: every known name, everywhere. The
+    one-word-name rule (identifier positions only) is for machine evidence; in prose an
+    operator types, "did almogs run it?" IS the account, and it went out in clear."""
+    if not mask:
+        return obj
+    if isinstance(obj, str):
+        return _apply_mask(obj, mask, ner=False, strict=True)
+    if isinstance(obj, dict):
+        return {k: _mask_human(v, mask) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_mask_human(v, mask) for v in obj]
+    return obj
+
+
+def _apply_mask(text, mask, ner=True, strict=False):
     """Replace originals→pseudonyms (longest-first), CASE-INSENSITIVE and identifier-
     boundary aware (see _MASK_BOUNDARY), so lowercase/uppercase/FQDN/path variants
     are caught without matching inside a larger identifier. LLM INPUT only; no-op off."""
@@ -1580,7 +1596,7 @@ def _apply_mask(text, mask, ner=True):
         ps = str(low.get(_norm_key(hit, True), ("", ""))[1])
         if not ps or not _left_ok(m.string, m.start(), ps.startswith("Hostname")):
             return hit
-        if _WORD_KEY.fullmatch(hit) and ps.startswith(("SAM", "Hostname")) and \
+        if not strict and _WORD_KEY.fullmatch(hit) and ps.startswith(("SAM", "Hostname")) and \
                 not _ident_position(m, hit if hit in mapping else None):
             return hit
         return ps
@@ -2151,8 +2167,10 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         if (analyst or {}).get("automated_estimates"):
             sys_p = sys_p + "\n\n" + ESTIMATES_RULE
         if master_prompt:
+            # The Steering is text the operator typed: masked strictly like their notes
+            # (it went into every system prompt in clear).
             sys_p = ("## OPERATOR CONTEXT — treat as ground truth:\n"
-                     f"{master_prompt.strip()}\n\n---\n\n") + sys_p
+                     f"{_mask_human(master_prompt.strip(), mask)}\n\n---\n\n") + sys_p
         if mask:
             sys_p = _MASK_IDENTITY_LEGEND + sys_p
         # The SAME output allowance as the report, not a low per-phase cap. A phase
@@ -2187,7 +2205,10 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                                       max_output_tokens=max_output_tokens,
                                       reasoning_effort="low"),
                     _phase_deadline(), f"phase{z['n']}")
-                out = _revert_mask(out, mask)
+                # Returned as the model wrote it (pseudonyms): the synthesis call is
+                # given THIS text. Reverting first and re-masking later leaked: a
+                # one-word name restored into the model's prose ("adim ran ...") is
+                # not in an identifier position, so the re-mask left it in clear.
                 if not (out or "").strip():
                     raise LLMUnavailable("empty_reply")
                 z["_seconds"] = round(time.time() - _t0)
@@ -2227,8 +2248,9 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                 if m:
                     name = m.group(1).strip().strip("*").strip()
                     text = text[:m.start()] + text[m.end():]
-                results[z["n"]] = {"name": name,
-                                   "body": _cap_severity_word(text.strip(), z.get("severity"), "phase")}
+                masked_body = _cap_severity_word(text.strip(), z.get("severity"), "phase")
+                results[z["n"]] = {"name": _revert_mask(name, mask), "body": _revert_mask(masked_body, mask),
+                                   "masked_name": name, "masked_body": masked_body}
                 if not should_continue or should_continue():   # a stopped run's lines are not this run's
                     _case_event(run_id, f"Report · phase {z['n']} of {_total} — answered", "success",
                                 f"{z.get('_seconds', '?')}s · {len(text):,} chars")
@@ -2312,7 +2334,9 @@ def generate_report(graph, *, window=None, min_severity="informational",
             if mask:                                  # anonymize the LLM input too
                 _build_mask_mapping(graph, mask)
                 _log_mask_audit(run_id, mask, payload_str)   # audit BEFORE the send; only what's in the payload
-                payload_str = _apply_mask(payload_str, mask)
+                # The analyst's own words are prose: strict (every name), then the rest.
+                _analyst = _mask_human(_analyst, mask)
+                payload_str = _apply_mask(json.dumps({**payload, **_analyst}), mask)
             # SEGMENTED PATH: a broad case is analysed phase by phase, then
             # synthesised -- instead of one call trying to narrate everything, which
             # measured live returned an empty narrative on a 258K-token payload.
@@ -2342,13 +2366,13 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                                  min_severity=min_severity)
                 payload = {"case_totals": payload.get("scope", {}),
                            "phases": [{"n": z["n"], "window": z["window"],
-                                       "name": (_phase_out.get(z["n"]) or {}).get("name") or None,
+                                       "name": (_phase_out.get(z["n"]) or {}).get("masked_name") or None,
                                        "hosts": z.get("host_labels") or [],
                                        "findings": z["finding_count"],
                                        "critical": z.get("critical_count", 0),
                                        **({"not_analysed": _phase_out[z["n"]]["error"]}
                                           if (_phase_out.get(z["n"]) or {}).get("error")
-                                          else {"analysis": _phase_out.get(z["n"], {}).get("body", "")})}
+                                          else {"analysis": _phase_out.get(z["n"], {}).get("masked_body", "")})}
                                       for z in render.analysable(_zt)],
                            # High+ activity NO phase covers. Without this the
                            # synthesis cannot mention it, and 40% of the case went
@@ -2364,7 +2388,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     # "Mark these hosts as known" came back Person1. Skip just those
                     # values; the evidence and analyst context beside them are read.
                     mask._ner_skip = {_apply_mask(b, mask, ner=False) for b in
-                                      ((_phase_out.get(z["n"]) or {}).get("body") for z in render.analysable(_zt))
+                                      ((_phase_out.get(z["n"]) or {}).get("masked_body") for z in render.analysable(_zt))
                                       if b}
                     try:
                         payload_str = _apply_mask(payload_str, mask)
@@ -2389,7 +2413,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             if master_prompt:
                 system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
                           "ground truth; apply the removals/focus described:\n"
-                          f"{master_prompt.strip()}\n\n---\n\n") + system
+                          f"{_mask_human(master_prompt.strip(), mask)}\n\n---\n\n") + system
             if mask:                              # teach the model the identity-number key
                 system = _MASK_IDENTITY_LEGEND + system
             if should_continue and not should_continue():
@@ -3092,7 +3116,8 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                                                pin_ids=pin_ids, focus_labels=focus,
                                                also_finding_ids=[v.get("finding_id") for v in (validations or [])])
             # the analyst's triage, validations and manual events -- same as the report
-            payload.update(analyst_context(dispositions, validations, manual_events, graph, checklist))
+            _ac = analyst_context(dispositions, validations, manual_events, graph, checklist)
+            payload.update(_ac)
             if excluded_hosts:
                 # Taken out of the analysis in Configuration: say so rather than
                 # answering that the host does not exist.
@@ -3111,7 +3136,12 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
             if mask:                                  # anonymize the LLM input too
                 _build_mask_mapping(graph, mask)
                 _log_mask_audit(run_id, mask, user)
-                user = _apply_mask(user, mask)
+                # The question, the earlier turns and the analyst's notes are prose
+                # people wrote: strict. The evidence payload: the normal rule.
+                user = (_apply_mask(json.dumps({**payload, **_mask_human(_ac, mask)}), mask) + "\n\n"
+                        + _apply_mask(_mask_human(f"{turns}Q: {question}", mask), mask))
+                if master_prompt:                     # the Steering, typed by the operator
+                    system = system.replace(master_prompt.strip(), _mask_human(master_prompt.strip(), mask))
                 system = _MASK_IDENTITY_LEGEND + system
             ans = _real_llm(system, user, run_id=run_id, max_output_tokens=max_output_tokens)
             if tool_case:

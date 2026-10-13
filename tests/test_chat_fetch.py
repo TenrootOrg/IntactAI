@@ -87,7 +87,7 @@ class Fetch(unittest.TestCase):
             mapping = {"WS1": "Hostname1"}
 
         with mock.patch.object(llm_sim, "_build_mask_mapping"), mock.patch.object(llm_sim, "_log_mask_audit"), \
-             mock.patch.object(llm_sim, "_apply_mask", side_effect=lambda t, m: t.replace("WS1", "Hostname1")), \
+             mock.patch.object(llm_sim, "_apply_mask", side_effect=lambda t, m, **_k: t.replace("WS1", "Hostname1")), \
              mock.patch.object(llm_sim, "_revert_mask", side_effect=lambda t, m: t.replace("Hostname1", "WS1")):
             ans, sent, tools = self.run_chat(['{"tool":"pivot","args":{"value":"Hostname1"}}', "On Hostname1: …"],
                                              mask=M())

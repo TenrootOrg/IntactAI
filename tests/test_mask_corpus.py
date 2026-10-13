@@ -329,5 +329,34 @@ class OneDomainOneNumber(unittest.TestCase):
             self.assertEqual(text.lower(), llm_sim._revert_mask(out, m).lower())
 
 
+class PeopleWrittenTextIsMaskedStrictly(unittest.TestCase):
+    """A one-word name is masked only in identifier positions in EVIDENCE, but text a
+    person typed -- the chat question, earlier turns, the Steering -- is prose where
+    "almogs" IS the account. A live report also leaked it through the phase
+    write-ups (model text restored, then re-masked as prose)."""
+    def test_chat_question_history_and_steering(self):
+        from unittest import mock
+        g = _graph(_ent("account", "GALIL\\almogs"), _ent("account", "GALIL\\will"))
+        m = DataAnonymizer()
+        sent = {}
+
+        def fake(system, user, *a, **k):
+            sent["system"], sent["user"] = system, user
+            return "SAM1 ran it."
+        with mock.patch.object(llm_sim, "_real_llm", fake), mock.patch.object(llm_sim, "_use_real", lambda: True), \
+                mock.patch.object(llm_sim, "_agentic_cfg", lambda: {}), \
+                mock.patch.object(llm_sim, "_case_event", lambda *a, **k: None):
+            ans = llm_sim.chat(g, "did almogs run it, and will he again?", require_llm=True,
+                               history=[{"role": "user", "content": "check almogs first"}],
+                               mask=m, master_prompt="almogs is the IT admin")
+        for part in ("system", "user"):
+            self.assertNotIn("almogs", sent[part], sent[part][-300:])
+        self.assertIn("almogs ran it", ans)
+
+    def test_report_phase_text_reaches_the_synthesis_as_the_model_wrote_it(self):
+        src = open(os.path.join(_HERE, "..", "modules/backend/services/fusion/llm_sim.py")).read()
+        self.assertIn('"analysis": _phase_out.get(z["n"], {}).get("masked_body", "")', src)
+
+
 if __name__ == "__main__":
     unittest.main()
