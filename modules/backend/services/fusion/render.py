@@ -856,6 +856,7 @@ def suspicious_timeframes_md(graph, *, window=None, min_severity="informational"
     return "\n".join(rows) + "\n"
 
 
+import re
 import re as _tf_re
 # "Phase" is what the segmented report writes; "Timeframe" is kept so a report
 # generated before the rename still yields its names instead of blank cards.
@@ -1455,10 +1456,13 @@ _HOST_ROLE_HINTS = (
 def _host_role(label: str) -> str:
     """Best-effort role from the hostname. Naming is a convention, not a fact, so
     this is a HINT for the narrative to verify — never asserted as ground truth."""
-    lo = (label or "").lower()
+    # The SHORT name, and the token ending it or followed by a digit/-/_ (ALDC02,
+    # ALCA01, CITADEL-DC01, SQL01). A plain substring test on the FQDN found 'ca'
+    # in '.local', so every host of a .local domain was hinted to the model as a
+    # "certificate authority" (a Szechuan test-case chat called a desktop the CA).
+    short = (label or "").split(".", 1)[0].lower()
     for token, role in _HOST_ROLE_HINTS:
-        # token as a word-ish fragment: ALDC02 -> dc, ALCA01 -> ca
-        if token in lo:
+        if re.search(rf"{token}(?=\d|-|_|$)", short):
             return role
     return ""
 
