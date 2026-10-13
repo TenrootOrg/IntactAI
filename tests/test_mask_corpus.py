@@ -211,5 +211,24 @@ class DisplayNameFromAccount(unittest.TestCase):
         self.assertEqual(text.replace("DANA LEVI", "Dana Levi"), json.loads(llm_sim._revert_mask(masked, m))["v"])
 
 
+class ChecklistRevertsAfterParsing(unittest.TestCase):
+    """The checklist reverted the model's raw JSON, so 'USER1' became GALIL\\dana.levi
+    with an invalid \\d escape, the parse failed and the checklist came back empty."""
+    def test_question_naming_a_domain_account_survives(self):
+        from services.fusion.schema import Finding
+        g = _graph(_ent("account", "GALIL\\dana.levi"))
+        g.findings.append(Finding(id="f1", title="t", severity="high", confidence="high", summary="s"))
+        m = DataAnonymizer()
+        real_use, real_llm = llm_sim._use_real, llm_sim._real_llm
+        llm_sim._use_real = lambda: True
+        llm_sim._real_llm = lambda *a, **k: json.dumps({"checklist": [
+            {"finding_id": "f1", "question": "Did USER1 run this?", "suggestion": "benign"}]})
+        try:
+            out = llm_sim.generate_disposition_checklist(g, mask=m)
+        finally:
+            llm_sim._use_real, llm_sim._real_llm = real_use, real_llm
+        self.assertEqual(["Did GALIL\\dana.levi run this?"], [i["question"] for i in out], out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2518,8 +2518,11 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
         # it parsed to {} and was logged as a successful, empty checklist.
         if not (raw or "").strip():
             raise LLMUnavailable("empty_reply")
-        raw = _revert_mask(raw, mask)
-        data = _parse_json(raw)
+        # Parse FIRST, then revert each string: reverting the raw JSON put an original
+        # like GALIL\dana.levi into it as an invalid "\d" escape, the parse failed, and
+        # the whole checklist came back empty (mask_eval roundtrip).
+        from . import investigate as _inv
+        data = _inv._revert_obj(_parse_json(raw), mask)
         valid = {f.id for f in graph.findings}
         out = []
         for it in (data.get("checklist") or []):
