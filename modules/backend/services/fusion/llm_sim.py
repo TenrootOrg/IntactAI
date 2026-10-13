@@ -1403,6 +1403,19 @@ def _left_ok(t, s, host):
     return bool(_ESC_BEFORE.search(t[max(0, s - 6):s]))
 
 
+def _key_table(mapping):
+    """normalised spelling -> (key, pseudonym). Case variants share one pseudonym. A
+    non-ASCII key is ALSO listed as json.dumps writes it: the payload is masked as
+    JSON text, where "GALIL\\דנה" or "JOSÉ-PC" appear as \\uXXXX escapes, so a Hebrew
+    username or an accented host never matched and went out in clear (mask_eval limits)."""
+    low = {}
+    for k, v in mapping.items():
+        if k:
+            for var in (k,) if k.isascii() else (k, json.dumps(k)[1:-1]):
+                low.setdefault(_norm_key(var, True), (k, v))
+    return low
+
+
 def _norm_key(matched, ignorecase):
     k = re.sub(r"\\+", lambda _m: "\\", matched)        # DOMAIN\\\\user -> DOMAIN\\user
     return k.lower() if ignorecase else k
@@ -1469,15 +1482,12 @@ def _apply_mask(text, mask, ner=True):
         return text
     mapping = getattr(mask, "mapping", {}) or {}
     _mask_free_emails(text, mask, mapping)
-    low = {}
-    for k, v in mapping.items():                  # case variants share one pseudonym
-        if k:
-            low.setdefault(k.lower(), v)
+    low = _key_table(mapping)
     pat = _keys_re(low, True)
 
     def _sub(m):
         hit = m.group(0)
-        ps = str(low.get(_norm_key(hit, True), ""))
+        ps = str(low.get(_norm_key(hit, True), ("", ""))[1])
         if not ps or not _left_ok(m.string, m.start(), ps.startswith("Hostname")):
             return hit
         if _WORD_KEY.fullmatch(hit) and ps.startswith(("SAM", "Hostname")) and \
@@ -1555,8 +1565,10 @@ def _log_mask_audit(run_id, mask, text=None):
         _mask_free_emails(text, mask, getattr(mask, "mapping", {}))   # list them too
     mapping = getattr(mask, "mapping", {}) or {}
     if text is not None:                         # report only what really appears in the payload
-        pat = _keys_re([k for k in mapping if k], True)
-        found = {_norm_key(m.group(0), True) for m in pat.finditer(text)} if pat else set()
+        low = _key_table(mapping)
+        pat = _keys_re(low, True)
+        found = {low[n][0].lower() for m in (pat.finditer(text) if pat else ())
+                 for n in [_norm_key(m.group(0), True)] if n in low}
         mapping = {k: v for k, v in mapping.items() if k and k.lower() in found}
     # Log each masked value ONCE per report generation. The report, its checklist
     # and any synthesis are separate model calls sharing one mask, so without this

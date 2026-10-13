@@ -256,5 +256,16 @@ class PseudonymsNeverRepeat(unittest.TestCase):
         self.assertEqual("InternalIP1100", m.mapping[ips[-1]])
 
 
+class NonAsciiNames(unittest.TestCase):
+    def test_hebrew_and_accented_names_masked_in_json_and_listed(self):
+        m = _mask(_ent("account", "GALIL\\דנה"), _ent("asset", "JOSÉ-PC"), _ent("account", "GALIL\\zoë.müller"))
+        text = "GALIL\\דנה logged on to JOSÉ-PC; zoë.müller too"
+        for out in (_json_masked(m, text), llm_sim._apply_mask(text, m, ner=False)):
+            for name in ("דנה", "JOSÉ", "zoë"):
+                self.assertNotIn(name, out, out)
+        masked = llm_sim._apply_mask(json.dumps({"v": text}), m, ner=False)
+        self.assertEqual(text, llm_sim._revert_mask(json.loads(masked)["v"], m))
+
+
 if __name__ == "__main__":
     unittest.main()
