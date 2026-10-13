@@ -48,7 +48,10 @@ def get_clients_from_snapshot(include_offline=False):
         # applied when include_offline=False — for existing-flow analysis
         # we want every enrolled client visible since the data was
         # collected previously.
-        liveness_clause = "" if include_offline else "  AND last_seen_at > now() - 600"
+        # last_seen_at is MICROseconds and now() seconds: compared raw, every enrolled
+        # client passed, so the "online only" list was the whole fleet (10 of 10
+        # on the lab box, with 1 really online).
+        liveness_clause = "" if include_offline else "  AND last_seen_at / 1000000 > now() - 600"
         vql_query = f"""
         SELECT client_id,
                os_info.hostname AS hostname,

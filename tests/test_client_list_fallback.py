@@ -38,5 +38,15 @@ class SnapshotFallbackNeverClaimsOnline(unittest.TestCase):
         self.assertEqual([], vs.get_clients_from_snapshot_file(include_offline=False))
 
 
+
+class OnlineFilterUsesSeconds(unittest.TestCase):
+    def test_last_seen_microseconds_are_converted(self):
+        # clients() reports last_seen_at in MICROseconds; compared raw with now() - 600
+        # every enrolled client passed (10 of 10 "online" on the lab box, 1 real).
+        src = open(os.path.join(ROOT, "modules/backend/services/velociraptor_service.py")).read()
+        self.assertIn("last_seen_at / 1000000 > now() - 600", src)
+        self.assertNotIn('"  AND last_seen_at > now() - 600"', src)
+
+
 if __name__ == "__main__":
     unittest.main()
