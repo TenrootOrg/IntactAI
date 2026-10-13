@@ -1077,6 +1077,9 @@ _MASK_STOPWORDS = frozenset({
     # above): the SAM collection lists them on every host, and a lab report masked
     # them as SAM1/SAM2 -- hiding from the model that they are built-ins.
     "defaultaccount", "wdagutilityaccount",
+    # The Kerberos service account exists in every domain; as SAM8 the model could
+    # not see that a ticket was forged for krbtgt (golden ticket).
+    "krbtgt",
 })
 
 

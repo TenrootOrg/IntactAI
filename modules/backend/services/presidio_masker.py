@@ -72,6 +72,10 @@ _KEEP = {
     "reason", "service", "file", "share", "package", "privilege", "privileges",
     "member", "sid", "guid", "caller", "client", "session", "signature", "original",
     "description", "product", "version", "security",
+    # Built-in AD groups and accounts: "Domain Admins" came back Person1, hiding
+    # from the model that a user was added to THE privileged group.
+    "admins", "operators", "controllers", "computers", "enterprise", "schema", "krbtgt",
+    "backup",
 }
 
 # Security / admin tools. A "company" span naming one is the tool's publisher, a
@@ -146,6 +150,11 @@ def _span_rejected(det: str, start: int, end: int, surface: str, etype: str,
             return True                                # a phrase, not a company
         if any(w in _VENDOR_WORDS or w in _TOOL_WORDS for w in words):
             return True                                # a public vendor ("Microsoft Corporation")
+    if etype == "PERSON" and len(words) == 1:
+        # One capitalised word is a threat actor or tool far more often than a
+        # person ("Agrius" came back Person4, erasing the attribution), and a first
+        # name alone identifies little; full names are still masked.
+        return True
     if det[end:].lstrip(" ")[:1] in (":", "`"):
         return True                                    # "Possiblecause: x" / "Domain Name `y`" -- a field label
     if any(low in p for p in tech_phrases):

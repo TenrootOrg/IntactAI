@@ -202,6 +202,20 @@ class SecurityTermsAreNotMasked(unittest.TestCase):
             self.assertTrue(all(w in pm._KEEP for w in span.lower().split()), span)
 
 
+class BuiltinsAndThreatActorsAreNotPeople(unittest.TestCase):
+    """mask_eval corpus: "Domain Admins" came back Person1 and the threat actor
+    "Agrius" Person4 -- the model lost the privileged group and the attribution."""
+    def test_builtin_groups_are_all_kept_words(self):
+        for span in ("Domain Admins", "Enterprise Admins", "Schema Admins", "Domain Controllers",
+                     "Backup Operators", "Domain Computers"):
+            self.assertTrue(all(w in pm._KEEP for w in span.lower().split()), span)
+
+    def test_one_word_person_rejected_full_name_kept(self):
+        t = "Overlaps MuddyWater and Agrius; escalated by Yossi Cohen."
+        i = t.index("Agrius"); self.assertTrue(pm._span_rejected(t, i, i + 6, "Agrius", "PERSON"))
+        i = t.index("Yossi Cohen"); self.assertFalse(pm._span_rejected(t, i, i + 11, "Yossi Cohen", "PERSON"))
+
+
 class SaysWhenItFoundNothing(unittest.TestCase):
     """The Log only listed names Presidio hid, so "checked, nothing to hide" and
     "never ran" looked identical. It now says so -- once per report, not per chunk."""

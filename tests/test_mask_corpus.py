@@ -141,5 +141,11 @@ class VersionsAreNotAddresses(unittest.TestCase):
         self.assertEqual(text, _json_masked(m, text))
 
 
+class BuiltinsAreNotIdentities(unittest.TestCase):
+    def test_krbtgt_is_not_masked(self):
+        m = _mask(_ent("account", "krbtgt"), _ent("account", "GALIL\\krbtgt"))
+        self.assertFalse([k for k in m.mapping if "krbtgt" in k.lower()], m.mapping)
+
+
 if __name__ == "__main__":
     unittest.main()
