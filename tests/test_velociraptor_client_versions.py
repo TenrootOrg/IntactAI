@@ -271,6 +271,9 @@ class Fleet(unittest.TestCase):
         self.assertEqual(spread_seconds(5), 600)                 # at least 10 min
         self.assertEqual(spread_seconds(1000), 2000)             # 2 s a client
         self.assertEqual(spread_seconds(50000), 4 * 3600)        # at most 4 h
+        # sized by megabytes: 1,000 Linux clients (85 MB) need ~3x the MSI window
+        self.assertEqual(spread_seconds(1000, 85), 6296)
+        self.assertEqual(spread_seconds(1, 500 * 27 + 500 * 85), spread_seconds(500) + spread_seconds(500, 85))
 
 
 class PackagesBuiltByTheRun(unittest.TestCase):

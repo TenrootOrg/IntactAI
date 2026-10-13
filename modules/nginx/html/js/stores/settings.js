@@ -258,11 +258,12 @@ document.addEventListener('alpine:init', () => {
             } catch (e) { this.veloPilotHits = []; }
         },
 
-        // What "Upgrade all" will do: the backend spreads the downloads 2 s per client, 10 min to 4 h.
+        // What "Upgrade all" will do: the backend sizes the download window by megabytes
+        // (a Linux client downloads ~3x a Windows one), 10 min to 4 h, and says it.
         veloWaveText() {
             const n = this.veloUpgrade.eligible || 0;
             if (!n) return 'No client can be upgraded from here right now.';
-            const min = Math.round(Math.min(4 * 3600, Math.max(600, 2 * n)) / 60);
+            const min = Math.round((this.veloUpgrade.spread_seconds || Math.min(4 * 3600, Math.max(600, 2 * n))) / 60);
             return n.toLocaleString() + ' client(s); downloads spread over ~' + min + ' min.';
         },
 

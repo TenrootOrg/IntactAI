@@ -1196,6 +1196,11 @@ def velociraptor_upgrade_state():
         status = client_versions()
         sm = summarize(status)
         out["eligible"], out["eligible_online"] = sm["eligible"], sm["eligible_online"]
+        # the download window "Upgrade all" would use, sized by what each eligible
+        # client downloads (the page used to estimate it from the count alone)
+        from services.velociraptor_clients import OS_UPGRADE, eligibility, spread_seconds
+        out["spread_seconds"] = spread_seconds(1, sum(OS_UPGRADE[c["os"]]["mb"] for c in status["clients"]
+                                                     if eligibility(c)[0] is None))
         if out["running"]:
             # live, not the run's last (hourly) check: which of its targets already report
             # the server's version -- it read "0 of 4" with 3 already upgraded

@@ -119,8 +119,9 @@ def refresh_client_info():
 import os as _os
 
 OS_UPGRADE = {
-    "windows": {"tool": "WindowsMSI", "artifact": "Admin.Client.Upgrade.Windows"},
-    "linux": {"tool": "IntactVelociraptorLinux", "artifact": "Intact.Client.Upgrade.Linux"},
+    # mb: what each client downloads (sizes the download spread).
+    "windows": {"tool": "WindowsMSI", "artifact": "Admin.Client.Upgrade.Windows", "mb": 27},
+    "linux": {"tool": "IntactVelociraptorLinux", "artifact": "Intact.Client.Upgrade.Linux", "mb": 85},
 }
 SOURCE_MSI_TOOL = "VelociraptorWindowsMSI"
 LINUX_SOURCE = "/opt/velociraptor/linux/velociraptor"     # staged by the image: the server's version
@@ -667,11 +668,14 @@ def _label_clients(ids, label, op):
         _query(f"SELECT label(client_id=_value, labels=['{label}'], op='{op}') AS r FROM foreach(row={arr})")
 
 
-def spread_seconds(n):
-    """The random delay before each client downloads: 2 s per client, at least 10
-    min, at most 4 h -- 1,000 clients x a 27 MB MSI over 10 min was ~45 MB/s off
-    the Velociraptor server."""
-    return min(4 * 3600, max(600, 2 * n))
+def spread_seconds(n, mb=27):
+    """The random delay before each client downloads: 2 s per 27 MB (about 13.5
+    MB/s off the Velociraptor server), at least 10 min, at most 4 h. `n` clients of
+    `mb` each -- or pass the total as n=1, mb=<all MB>. Sized by MEGABYTES: the Linux
+    binary is 85 MB, three times the MSI, and the Windows and Linux hunts download
+    at the same time, so a count-based window put ~3x the traffic through on a
+    Linux-heavy fleet."""
+    return int(min(4 * 3600, max(600, 2 * n * mb / 27)))
 
 
 def _names(rows, n=3):
@@ -705,7 +709,9 @@ def _run_upgrade(run_id):
                 pkg = prepare_packages(log=log)      # raises (run failed, nothing pushed) unless verified
             update_run_status(run_id, "running", progress=3, details={"package_id": pkg["package_id"]})
             _label_clients(list(by_id), label, "set")
-            sleep = w["sleep"] if stage == "pilot" else spread_seconds(total)
+            # ONE window for every OS hunt (they run at once), sized by all the MB.
+            sleep = w["sleep"] if stage == "pilot" else spread_seconds(
+                1, sum(OS_UPGRADE[t["os"]]["mb"] for t in by_id.values()))
             for os_name in sorted({t["os"] for t in by_id.values()}):
                 art = OS_UPGRADE[os_name]["artifact"]
                 hunt = (_query(
