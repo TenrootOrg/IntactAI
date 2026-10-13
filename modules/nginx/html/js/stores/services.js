@@ -96,7 +96,9 @@ document.addEventListener('alpine:init', () => {
 
         async loadClients() {
             try {
-                const response = await fetch('/api/clients');
+                // ALL enrolled clients: without include_offline the API returns only
+                // the ones seen in the last 10 minutes, so "total" was the online count.
+                const response = await fetch('/api/clients?include_offline=true');
                 if (response.ok) {
                     const data = await response.json();
                     const clients = data.items || [];
