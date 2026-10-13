@@ -1360,21 +1360,52 @@ def _build_mask_mapping(graph, mask):
 _MASK_BOUNDARY = r"A-Za-z0-9_@-"
 
 
-def _mask_pattern(token: str, ignorecase: bool, host: bool = False):
-    flags = re.IGNORECASE if ignorecase else 0
-    # Tolerate JSON-doubled backslashes: a key 'DOMAIN\user' must match the serialized
-    # payload form 'DOMAIN\\user' too (json.dumps escapes every backslash).
-    esc = re.escape(token).replace("\\\\", r"\\+")
-    # A HOST name may follow a '-': tools embed the source machine in a name --
-    # PAExec's service is "PAExec-<pid>-<HOST>", which sent "PAExec-7032-ALDC01" in
-    # clear. Left side only: the right side still binds, so WS-01 stays out of WS-011.
-    left = _MASK_BOUNDARY.replace("-", "") if host else _MASK_BOUNDARY
-    # An ESCAPE ends a token even though its last character is a letter/digit. The
-    # payload is masked as json.dumps text, so a value starting a line is "\ndana",
-    # a Hebrew letter glued on is "לdana" and a URL-encoded backslash "%5Cdana":
-    # the plain boundary saw the 'n' / 'c' / 'C' and all three went out in clear.
-    return re.compile(rf"(?:(?<![{left}])|(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{{4}})|(?<=%[0-9A-Fa-f]{{2}}))"
-                      rf"{esc}(?![{_MASK_BOUNDARY}])", flags)
+# ONE PASS for every key. This used to compile and run one regex per mapping key,
+# each starting with lookbehinds that stop the regex engine skipping ahead: 2,302
+# keys over a 0.3 MB payload took 62.8 s, and a report masks 7-14 times, so a
+# 1,000-endpoint case sat for minutes (mask_eval limits). The keys are now one trie-
+# shaped pattern (55 ms) and the left boundary is checked per match.
+_ESC_BEFORE = re.compile(r"(?:\\[nrtbf]|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2})$")
+
+
+def _keys_re(keys, ignorecase):
+    """Longest-match pattern for `keys`: a trie, so its cost does not grow with the
+    key count. JSON-doubled backslashes are tolerated: a key 'DOMAIN\\user' also
+    matches the serialized form 'DOMAIN\\\\user' (json.dumps escapes every backslash)."""
+    trie: dict = {}
+    for k in keys:
+        d = trie
+        for ch in (k.lower() if ignorecase else k):
+            d = d.setdefault(ch, {})
+        d[""] = {}
+
+    def emit(d):
+        alts = [(r"\\+" if ch == "\\" else re.escape(ch)) + emit(sub) for ch, sub in sorted(d.items()) if ch]
+        if not alts:
+            return ""
+        body = alts[0] if len(alts) == 1 else "(?:" + "|".join(alts) + ")"
+        return f"(?:{body})?" if "" in d else body
+    if not trie:
+        return None
+    return re.compile(f"(?:{emit(trie)})(?![{_MASK_BOUNDARY}])", re.IGNORECASE if ignorecase else 0)
+
+
+def _left_ok(t, s, host):
+    """The match at `s` starts a token. A HOST name may follow a '-': PAExec's service
+    is "PAExec-<pid>-<HOST>", which sent "PAExec-7032-ALDC01" in clear (the right side
+    still binds, so WS-01 stays out of WS-011). An ESCAPE also ends a token though its
+    last character is a letter/digit: the payload is json.dumps text, so a value at a
+    line start is "\\ndana", a Hebrew letter glued on "\\u05dcdana" and a URL-encoded
+    backslash "%5Cdana" -- all three used to go out in clear."""
+    a = t[s - 1:s]
+    if not a or not (a.isascii() and (a.isalnum() or a in "_@" or (a == "-" and not host))):
+        return True
+    return bool(_ESC_BEFORE.search(t[max(0, s - 6):s]))
+
+
+def _norm_key(matched, ignorecase):
+    k = re.sub(r"\\+", lambda _m: "\\", matched)        # DOMAIN\\\\user -> DOMAIN\\user
+    return k.lower() if ignorecase else k
 
 
 # A one-word account or host name ("will", "mark", "scan", "backup", "web") is also
@@ -1394,7 +1425,7 @@ _ID_LABEL = re.compile(
 
 def _ident_position(m, orig) -> bool:
     t, s, e = m.string, m.start(), m.end()
-    if m.group(0) == orig and not (orig.islower() or orig.istitle()):
+    if orig and m.group(0) == orig and not (orig.islower() or orig.istitle()):
         return True                               # BACKUP / GiladT: not a prose casing
     a, b = t[s - 1:s], t[e:e + 1]
     if a == b == '"' or a in ("\\", "/", "@", "=", ":", "\t") or b in ("\\", "/", "@", "$"):
@@ -1438,13 +1469,23 @@ def _apply_mask(text, mask, ner=True):
         return text
     mapping = getattr(mask, "mapping", {}) or {}
     _mask_free_emails(text, mask, mapping)
-    for orig in sorted((k for k in mapping if k), key=len, reverse=True):
-        ps = mapping[orig]
-        pat = _mask_pattern(orig, True, host=str(ps).startswith("Hostname"))
-        if _WORD_KEY.fullmatch(orig) and str(ps).startswith(("SAM", "Hostname")):
-            text = pat.sub(lambda _m, _p=ps, _o=orig: _p if _ident_position(_m, _o) else _m.group(0), text)
-        else:
-            text = pat.sub(lambda _m, _p=ps: _p, text)
+    low = {}
+    for k, v in mapping.items():                  # case variants share one pseudonym
+        if k:
+            low.setdefault(k.lower(), v)
+    pat = _keys_re(low, True)
+
+    def _sub(m):
+        hit = m.group(0)
+        ps = str(low.get(_norm_key(hit, True), ""))
+        if not ps or not _left_ok(m.string, m.start(), ps.startswith("Hostname")):
+            return hit
+        if _WORD_KEY.fullmatch(hit) and ps.startswith(("SAM", "Hostname")) and \
+                not _ident_position(m, hit if hit in mapping else None):
+            return hit
+        return ps
+    if pat is not None:
+        text = pat.sub(_sub, text)
     # Optional NER second pass: scrub free-text leftovers the deterministic layer
     # cannot catch (person/company names in notes, docs, scriptblocks). No-op
     # unless the case enabled it (mask._ner) AND Presidio + a spaCy model are
@@ -1465,14 +1506,14 @@ def _revert_mask(text, mask):
     operator always gets the real report back. No-op when off."""
     if not mask:
         return text
-    rev = getattr(mask, "reverse_mapping", {}) or {}
-    for ps in sorted((k for k in rev if k), key=len, reverse=True):
-        orig = rev[ps]
-        # Same left-side rule as the mask, or "PAExec-7032-Hostname5" would come back
-        # un-restored in the operator's report.
-        text = _mask_pattern(ps, False, host=str(ps).startswith("Hostname")).sub(
-            lambda _m, _o=orig: _o, text)
-    return text
+    rev = {k: v for k, v in (getattr(mask, "reverse_mapping", {}) or {}).items() if k}
+    pat = _keys_re(rev, False)
+    if pat is None:
+        return text
+    # Same left-side rule as the mask, or "PAExec-7032-Hostname5" would come back
+    # un-restored in the operator's report.
+    return pat.sub(lambda m: rev[m.group(0)] if m.group(0) in rev and _left_ok(
+        m.string, m.start(), m.group(0).startswith("Hostname")) else m.group(0), text)
 
 
 def _mask_audit_lines(mapping) -> str:
@@ -1514,8 +1555,9 @@ def _log_mask_audit(run_id, mask, text=None):
         _mask_free_emails(text, mask, getattr(mask, "mapping", {}))   # list them too
     mapping = getattr(mask, "mapping", {}) or {}
     if text is not None:                         # report only what really appears in the payload
-        mapping = {k: v for k, v in mapping.items()
-                   if k and _mask_pattern(k, True, host=str(v).startswith("Hostname")).search(text)}
+        pat = _keys_re([k for k in mapping if k], True)
+        found = {_norm_key(m.group(0), True) for m in pat.finditer(text)} if pat else set()
+        mapping = {k: v for k, v in mapping.items() if k and k.lower() in found}
     # Log each masked value ONCE per report generation. The report, its checklist
     # and any synthesis are separate model calls sharing one mask, so without this
     # the same identity list was re-logged for every call. Track what's been shown

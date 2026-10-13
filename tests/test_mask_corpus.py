@@ -230,5 +230,23 @@ class ChecklistRevertsAfterParsing(unittest.TestCase):
         self.assertEqual(["Did GALIL\\dana.levi run this?"], [i["question"] for i in out], out)
 
 
+class MaskingIsOnePass(unittest.TestCase):
+    """2,302 keys over 0.3 MB took 62.8 s with one regex per key (mask_eval limits)."""
+    def test_thousands_of_keys_stay_fast_and_exact(self):
+        import time
+        ents = [_ent("asset", f"GL-WS-{i:04d}") for i in range(600)] + \
+               [_ent("account", f"GALIL\\user{i:04d}x") for i in range(600)]
+        m = _mask(*ents)
+        text = json.dumps([f"GALIL\\user{i % 600:04d}x on GL-WS-{i % 600:04d} and GL-WS-{i % 600:04d}1"
+                           for i in range(3000)])
+        t = time.time()
+        out = llm_sim._apply_mask(text, m, ner=False)
+        self.assertLess(time.time() - t, 3.0)
+        self.assertNotIn("user0001x", out)
+        self.assertIn("GL-WS-00011", out)                  # a longer, unknown name is not cut
+        back = llm_sim._revert_mask(out, m)
+        self.assertIn("GL-WS-0001 and GL-WS-00011", back)       # restored, the unknown one untouched
+
+
 if __name__ == "__main__":
     unittest.main()
