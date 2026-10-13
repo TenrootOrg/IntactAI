@@ -1632,8 +1632,46 @@ def _revert_mask(text, mask):
         return text
     # Same left-side rule as the mask, or "PAExec-7032-Hostname5" would come back
     # un-restored in the operator's report.
-    return pat.sub(lambda m: rev[m.group(0)] if m.group(0) in rev and _left_ok(
+    text = pat.sub(lambda m: rev[m.group(0)] if m.group(0) in rev and _left_ok(
         m.string, m.start(), m.group(0).startswith("Hostname")) else m.group(0), text)
+    return _revert_misspelled(text, rev)
+
+
+_FUZZY_PREFIXES = ("Hostname", "Domain", "InternalIP", "ExternalIP", "Credential", "Custom",
+                   "Username", "Person", "Email")
+_FUZZY_TOKEN = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z]{4,14})(\d{1,5})(?![A-Za-z0-9_@])")
+
+
+def _one_edit(a, b):
+    """Exactly one insertion, deletion, substitution or adjacent swap apart."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(diff) == 1 or (len(diff) == 2 and diff[1] == diff[0] + 1
+                                  and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]])
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def _revert_misspelled(text, rev):
+    """The model sometimes MISSPELLS a pseudonym: a live APT29 report said
+    "Hostename2.dmevals.local", which no exact revert restores, so the operator's
+    report showed a made-up host. Restored only when the word is one typo from a long
+    pseudonym prefix and that exact pseudonym exists; never a case-only difference
+    ("hostname2" may be a literal) and never the short USER/SAM/UPN/NAME forms."""
+    if not rev or not any(ch.isdigit() for ch in text):
+        return text
+
+    def fix(m):
+        word, num = m.group(1), m.group(2)
+        if word + num in rev:
+            return m.group(0)
+        for p in _FUZZY_PREFIXES:
+            if p + num in rev and word.lower() != p.lower() and _one_edit(word, p):
+                return rev[p + num]
+        return m.group(0)
+    return _FUZZY_TOKEN.sub(fix, text)
 
 
 def _mask_audit_lines(mapping) -> str:

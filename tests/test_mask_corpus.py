@@ -370,5 +370,25 @@ class RevertWhatTheModelWrites(unittest.TestCase):
         self.assertIn(f"{h}1 stays", out)
 
 
+class RevertMisspelledPseudonyms(unittest.TestCase):
+    """A live APT29 report said 'Hostename2.dmevals.local' -- the model misspelled
+    the pseudonym of SCRANTON, and the report showed a host that does not exist."""
+    def test_one_typo_from_a_long_prefix_is_restored(self):
+        m = _mask(_ent("asset", "SCRANTON"), _ent("asset", "NASHUA"), _ent("account", "GALIL\\pbeesly"))
+        h = m.mapping["SCRANTON"]                       # Hostname<n>
+        n = h[len("Hostname"):]
+        out = llm_sim._revert_mask(f"Hostename{n}.dmevals.local and Hsotname{n} ran", m)
+        self.assertEqual("SCRANTON.dmevals.local and SCRANTON ran", out)
+
+    def test_what_is_left_alone(self):
+        m = _mask(_ent("asset", "SCRANTON"), _ent("account", "GALIL\\pbeesly"))
+        n = m.mapping["SCRANTON"][len("Hostname"):]
+        for text in (f"hostname{n}",                 # case only: may be a literal
+                     "SAMM1 and SM1",                 # short prefixes are never fuzzy
+                     "Hostename99",                   # no such pseudonym
+                     "Hostfile1 Hosting2"):           # more than one edit away
+            self.assertEqual(text, llm_sim._revert_mask(text, m), text)
+
+
 if __name__ == "__main__":
     unittest.main()
