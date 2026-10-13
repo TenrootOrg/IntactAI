@@ -1105,9 +1105,11 @@ def _build_mask_mapping(graph, mask):
     must be masked. _apply_mask then substitutes every mapping key across the payload
     text. Speed comes from the bounded evidence sweep below, not from skipping entities."""
     try:
-        from services.data_anonymizer import SYSTEM_ACCOUNTS
+        from services.data_anonymizer import SYSTEM_ACCOUNTS, DataAnonymizer
+        _CRED_FLAG_RE = DataAnonymizer._CMDLINE_CRED_FLAG_RE
     except Exception:
         SYSTEM_ACCOUNTS = set()
+        _CRED_FLAG_RE = re.compile(r"(?!)")
     rows = []
     accounts = []
     org_roots: set = set()        # known org-domain netbios roots (evidence DOMAIN\user gate)
@@ -1279,6 +1281,14 @@ def _build_mask_mapping(graph, mask):
         _ev_seen.add(text)
         for upn in _UPN_RE.findall(text):
             _assign_account(upn)
+        # A password typed on a command line ("net use ... /user:GALIL\x Winter2026!",
+        # "psexec -p ...") went to the model in clear. Same flag rule the row
+        # anonymizer uses. Not a $var / (expression) / bare number (nmap -p 445),
+        # and not a plain word: it would then be masked in every sentence.
+        for mc in _CRED_FLAG_RE.finditer(text):
+            sec = mc.group("secret")
+            if len(sec) >= 4 and sec[0] not in "($%-*" and not sec.isdigit() and not sec.isalpha():
+                mask._get_or_create_pseudo(sec, "credential")
         for dom, usr in _DOMUSER_RE.findall(text):
             if _norm_domain(dom).split(".", 1)[0] in org_roots:   # gate vs benign paths
                 _assign_account(f"{dom}\\{usr}")

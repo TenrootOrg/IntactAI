@@ -162,5 +162,18 @@ class OnePersonOneNumber(unittest.TestCase):
         self.assertNotEqual(m.mapping["GALIL\\dana.levi"], m.mapping["PARTNER\\dana.levi"])
 
 
+class CommandLinePasswords(unittest.TestCase):
+    def test_password_masked_ports_and_expressions_kept(self):
+        cmd = ("net use \\\\FILESRV01\\c$ /user:GALIL\\dana.levi Winter2026! & psexec -p S3cr3t#9 cmd "
+               "& nmap -p 445 & -Password (ConvertTo-SecureString $pw) & -p password")
+        m = _mask(_ent("account", "GALIL\\dana.levi"), _ent("event", "e", {"ev_cmdline": cmd}))
+        out = _json_masked(m, cmd + " -- the password spray used Winter2026!")
+        for secret in ("Winter2026!", "S3cr3t#9"):
+            self.assertNotIn(secret, out)
+        for kept in ("445", "(ConvertTo-SecureString", "-p password", "the password spray"):
+            self.assertIn(kept, out)
+        self.assertEqual(out.count("Credential1"), 2, out)   # same secret, same pseudonym
+
+
 if __name__ == "__main__":
     unittest.main()
