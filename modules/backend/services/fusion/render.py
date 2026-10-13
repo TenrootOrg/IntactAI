@@ -7,6 +7,8 @@ is templating, not analysis. The LLM (real or simulated) only narrates over
 
 from __future__ import annotations
 
+import json
+
 from . import severity as sev, keys
 from .correlate import in_window, finding_in_window, _assets_of, _host_label, _detection_name
 
@@ -1713,20 +1715,55 @@ def finding_detail(graph, f, verdict=None, max_details=6) -> dict:
     return out
 
 
-def critical_details(graph, findings, per_finding=2, width=150, also_ids=None) -> list:
-    """File name, path, user and command for the CRITICAL findings only -- small by
-    design (qasw: 9 findings, ~650 chars). Everything below critical stays on demand:
-    a question naming a date, host, account or file pulls that finding's full details."""
+# A rule about exposure to the outside: its evidence (the source IP, the account)
+# is what a report is asked first, at any severity.
+_EXPOSURE_TITLE = _tf_re.compile(r"(?i)public ip|external|internet|remote (?:rdp|desktop|logon)|"
+                                 r"\brdp\b|brute|password spray")
+_SEV_RANK = {"critical": 0, "high": 1, "medium": 2}
+
+
+def critical_details(graph, findings, per_finding=2, width=150, also_ids=None, extra=20,
+                     max_chars=30000) -> list:
+    """File name, path, user and command for the CRITICAL (and analyst-confirmed)
+    findings, plus ONE line each for up to `extra` high/medium findings -- exposure
+    rules first, then high, then medium. Critical-only meant a medium finding's key
+    detail never reached the model: the Szechuan report said the RDP logon from a
+    public IP had no source IP, though its evidence read 'Source IP: 194.61.24.102'.
+    Picked by title before any detail lookup, so a 12k-finding case stays cheap."""
+    def details(f, n):
+        det = finding_detail(graph, f, max_details=n).get("evidence_details") or []
+        if not det:
+            # finding_detail covers file/path/user/command findings only; a logon or
+            # service finding's line ("Source IP: ... · Type: 10") is the evidence line
+            # the finding view shows -- without it the RDP finding was picked and dropped.
+            det = [{"evidence": line} for line in (_finding_evidence(graph, f) or [])[:n]]
+        return [{k: (v[:width] if isinstance(v, str) else v) for k, v in x.items()} for x in det]
+
     out = []
     also = set(also_ids or [])
+    rest = []
     for f in findings:
-        if f.severity != "critical" and f.id not in also:
-            continue
-        det = finding_detail(graph, f, max_details=per_finding).get("evidence_details") or []
-        det = [{k: (v[:width] if isinstance(v, str) else v) for k, v in x.items()} for x in det]
+        if f.severity == "critical" or f.id in also:
+            det = details(f, per_finding)
+            if det:
+                out.append({"finding": f.title, "time": f.ts, "evidence_details": det})
+        elif f.severity in _SEV_RANK:
+            rest.append(f)
+    rest.sort(key=lambda f: (0 if _EXPOSURE_TITLE.search(f.title or "") else 1,
+                             _SEV_RANK.get(f.severity, 3), str(f.ts or "")))
+    for f in rest[:max(0, extra)]:
+        det = details(f, 1)
         if det:
             out.append({"finding": f.title, "time": f.ts, "evidence_details": det})
-    return out
+    # A total ceiling, in this order (critical first): 108 critical findings on the
+    # 108-host test case came to 74k characters once every finding had a line.
+    kept, size = [], 0
+    for o in out:
+        size += len(json.dumps(o, default=str))
+        if size > max_chars:
+            break
+        kept.append(o)
+    return kept
 
 
 def _entity_dict(graph, e):
