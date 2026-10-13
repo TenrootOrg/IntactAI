@@ -358,5 +358,17 @@ class PeopleWrittenTextIsMaskedStrictly(unittest.TestCase):
         self.assertIn('"analysis": _phase_out.get(z["n"], {}).get("masked_body", "")', src)
 
 
+class RevertWhatTheModelWrites(unittest.TestCase):
+    """Seen in a live APT29 report: 'SAM1-related cross-host activity' stayed masked."""
+    def test_pseudonym_before_a_hyphen_is_restored(self):
+        m = _mask(_ent("account", "GALIL\\pbeesly"), _ent("asset", "SCRANTON"), _ent("asset", "WS-1"))
+        h, w = m.mapping["SCRANTON"], m.mapping["WS-1"]
+        out = llm_sim._revert_mask(f"SAM1-related activity; {h}-based; {w}0 stays; {h}1 stays", m)
+        self.assertIn("pbeesly-related activity", out)
+        self.assertIn("SCRANTON-based", out)
+        self.assertIn(f"{w}0 stays", out)                  # a longer pseudonym is not cut
+        self.assertIn(f"{h}1 stays", out)
+
+
 if __name__ == "__main__":
     unittest.main()

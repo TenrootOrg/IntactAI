@@ -1392,7 +1392,7 @@ _MASK_BOUNDARY = r"A-Za-z0-9_@-"
 _ESC_BEFORE = re.compile(r"(?:\\[nrtbf]|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2})$")
 
 
-def _keys_re(keys, ignorecase):
+def _keys_re(keys, ignorecase, right=None):
     """Longest-match pattern for `keys`: a trie, so its cost does not grow with the
     key count. JSON-doubled backslashes are tolerated: a key 'DOMAIN\\user' also
     matches the serialized form 'DOMAIN\\\\user' (json.dumps escapes every backslash)."""
@@ -1411,7 +1411,8 @@ def _keys_re(keys, ignorecase):
         return f"(?:{body})?" if "" in d else body
     if not trie:
         return None
-    return re.compile(f"(?:{emit(trie)})(?![{_MASK_BOUNDARY}])", re.IGNORECASE if ignorecase else 0)
+    return re.compile(f"(?:{emit(trie)})(?![{_MASK_BOUNDARY if right is None else right}])",
+                      re.IGNORECASE if ignorecase else 0)
 
 
 def _left_ok(t, s, host):
@@ -1623,7 +1624,10 @@ def _revert_mask(text, mask):
     if not mask:
         return text
     rev = {k: v for k, v in (getattr(mask, "reverse_mapping", {}) or {}).items() if k}
-    pat = _keys_re(rev, False)
+    # A pseudonym followed by '-' is the model's compound word ("SAM1-related"), not
+    # a longer identifier: a live report kept "SAM1-related cross-host activity". The
+    # digits/letters/_/@ boundary still keeps Hostname1 out of Hostname10.
+    pat = _keys_re(rev, False, right="A-Za-z0-9_@")
     if pat is None:
         return text
     # Same left-side rule as the mask, or "PAExec-7032-Hostname5" would come back
