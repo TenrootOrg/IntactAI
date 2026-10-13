@@ -1113,6 +1113,7 @@ def _build_mask_mapping(graph, mask):
     org_roots: set = set()        # known org-domain netbios roots (evidence DOMAIN\user gate)
     ident_num: dict = {}          # (user-stem, domain-root) -> identity number
     stem_nums: dict = {}          # user-stem -> {numbers} (for bare-SAM stem linking)
+    num_forms: dict = {}          # identity number -> {forms it already has: nt/upn/sam}
     builtin_stems: set = set()    # user-stems seen under a built-in authority (sshd_<pid>)
     host_roots: set = set()       # this case's computer names: HOST\user is a local account
     nseq = [0]
@@ -1164,11 +1165,21 @@ def _build_mask_mapping(graph, mask):
                     # it used to get a new number: SAM1 and USER2 for ONE person,
                     # and the legend told the model they were two.
                     ident_num[key] = ident_num[(stem, "")]
+                elif len(stem_nums.get(stem, ())) == 1 and \
+                        form not in num_forms[next(iter(stem_nums[stem]))]:
+                    # GALIL\dana.levi and dana.levi@galil-dyn.co.il: the NetBIOS name
+                    # and the UPN suffix differ in most real ADs, so the roots never
+                    # matched and one person became USER1 and UPN2 -- the legend then
+                    # told the model they were two. The same username with ONE
+                    # identity that lacks this form is that identity; a second
+                    # GALIL2\dana.levi (form already taken) is still someone else.
+                    ident_num[key] = next(iter(stem_nums[stem]))
                 else:
                     nseq[0] += 1
                     ident_num[key] = nseq[0]
             n = ident_num[key]
         stem_nums.setdefault(stem, set()).add(n)
+        num_forms.setdefault(n, set()).add(form)
         mask.mapping[lbl] = f"{_IDENT_PREFIX[form]}{n}"
         mask.reverse_mapping[mask.mapping[lbl]] = lbl
         bare = user.strip()

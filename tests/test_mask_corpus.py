@@ -147,5 +147,20 @@ class BuiltinsAreNotIdentities(unittest.TestCase):
         self.assertFalse([k for k in m.mapping if "krbtgt" in k.lower()], m.mapping)
 
 
+class OnePersonOneNumber(unittest.TestCase):
+    def _nums(self, m, *keys):
+        return [m.mapping[k][-1] for k in keys]
+
+    def test_netbios_and_upn_suffix_differ(self):
+        for order in ((0, 1), (1, 0)):
+            forms = ["GALIL\\dana.levi", "dana.levi@galil-dyn.co.il"]
+            m = _mask(*[_ent("account", forms[i]) for i in order], _ent("account", "dana.levi"))
+            self.assertEqual({"1"}, set(self._nums(m, *forms, "dana.levi")), m.mapping)
+
+    def test_same_username_in_a_second_domain_is_someone_else(self):
+        m = _mask(_ent("account", "GALIL\\dana.levi"), _ent("account", "PARTNER\\dana.levi"))
+        self.assertNotEqual(m.mapping["GALIL\\dana.levi"], m.mapping["PARTNER\\dana.levi"])
+
+
 if __name__ == "__main__":
     unittest.main()
