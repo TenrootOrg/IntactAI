@@ -17,7 +17,7 @@ function page(mode) {
   const blueprint = { id: 'bp1', name: 'QuickWins', artifacts: ['A.B'], settings: { hunt_expiry: 720, timeout: 3600, cpu_limit: 50 } };
   const ctx = {
     document: { getElementById: id => els[id] || null, querySelectorAll: () => [], addEventListener() {}, querySelector: () => null },
-    ClientManager: class { constructor() {} getSelected() { return ['C.1']; } load() { return Promise.resolve(); } },
+    ClientManager: class { constructor() {} getSelected() { return ['C.1']; } confirmMany() { return true; } load() { return Promise.resolve(); } },
     getBlueprintById: async () => blueprint, loadBlueprints: async () => [blueprint],
     fetch: async (url, opt) => { sent.push({ url, body: JSON.parse(opt.body) }); return { ok: true, json: async () => ({ run_id: 'r1' }) }; },
     alert: m => alerts.push(m), setTimeout: () => 0, window: {}, Alpine: undefined, console,
