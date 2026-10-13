@@ -15,7 +15,8 @@ from typing import Any
 # shared one pseudonym, the model merged them and the revert restored the wrong
 # one (mask_eval limits: 101 shared at 1,100 IPs). Numbers never wrap now.
 _PSEUDO_PREFIX = {"ip_ext": "ExternalIP", "ip_int": "InternalIP", "user": "Username", "host": "Hostname",
-                  "email": "Email", "domain": "Domain", "guid": "GUID", "credential": "Credential"}
+                  "email": "Email", "domain": "Domain", "guid": "GUID", "credential": "Credential",
+                  "custom": "Custom"}
 
 # Safe values that should NOT be masked
 SAFE_IPS = {

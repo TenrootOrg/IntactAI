@@ -267,5 +267,17 @@ class NonAsciiNames(unittest.TestCase):
         self.assertEqual(text, llm_sim._revert_mask(json.loads(masked)["v"], m))
 
 
+class CaseCustomPatterns(unittest.TestCase):
+    def test_operator_patterns_reach_the_text_and_revert(self):
+        m = DataAnonymizer(custom_patterns=["ProjectFalcon", "*.galil-secret.com", "/ACME-\\d{4}/", "Orion|Vega"])
+        llm_sim._build_mask_mapping(_graph(), m)
+        text = "ProjectFalcon data sent to vpn.galil-secret.com; ticket ACME-1234; Orion and Vega; projectfalcon"
+        masked = json.loads(llm_sim._apply_mask(json.dumps({"v": text}), m, ner=False))["v"]
+        for gone in ("falcon", "galil-secret", "ACME-1234", "Orion", "Vega"):
+            self.assertNotIn(gone.lower(), masked.lower(), masked)
+        self.assertIn("data sent to", masked)                  # a wildcard does not eat the sentence
+        self.assertEqual(text.replace("projectfalcon", "ProjectFalcon"), llm_sim._revert_mask(masked, m))
+
+
 if __name__ == "__main__":
     unittest.main()

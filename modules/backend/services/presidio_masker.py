@@ -30,7 +30,7 @@ import re
 # Our own pseudonyms must never be re-masked by NER (Username1 reads as a PERSON).
 _OUR_PSEUDO = re.compile(
     r"^(ExternalIP|InternalIP|Username|Hostname|Email|Domain|Guid|Credential|Person|Org|Loc|"
-    r"USER|UPN|SAM|SID|NAME)\d+$")
+    r"USER|UPN|SAM|SID|NAME|Custom)\d+$")
 
 # NER routinely tags infrastructure and product names as PERSON/ORG. Masking them
 # would strip the very context the report needs, so they pass through. Lowercased,

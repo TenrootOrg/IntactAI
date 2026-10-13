@@ -1022,7 +1022,7 @@ _MASK_IDENTITY_LEGEND = (
     "NAME<n> = the person's display name. So "
     "USER1, UPN1, SAM1, SID1 and NAME1 are ONE and the same person; likewise Hostname<n>, "
     "Domain<n>, InternalIP<n>, ExternalIP<n>, Email<n> and Credential<n> are consistent "
-    "per real value. Correlate and reason over "
+    "per real value; Custom<n> is a value the operator chose to hide. Correlate and reason over "
     "these as if they were the real entities. Write every pseudonym EXACTLY as given -- "
     "same letters, case and digits, no space before the number, no plural -- because the "
     "real values are put back by exact match.\n\n"
@@ -1474,14 +1474,56 @@ def _mask_free_emails(text, mask, mapping):
         known.add(addr.lower())
 
 
+def _custom_pattern_re(p):
+    """The case's own "always mask" pattern, for FREE TEXT: exact word, a|b,
+    *.domain.com, or /regex/ (the forms the masking settings accept). A '*' spans one
+    token only -- the row masker's '.*' would swallow a whole sentence here."""
+    p = (p or "").strip()
+    if len(p) > 2 and p.startswith("/") and p.endswith("/"):
+        body = p[1:-1]
+    elif "*" in p:
+        body = r"[\w.-]*".join(re.escape(x) for x in p.split("*"))
+    else:
+        body = "|".join(re.escape(x.strip()) for x in p.split("|") if x.strip())
+    try:
+        return re.compile(rf"(?<![A-Za-z0-9_])(?:{body})(?![A-Za-z0-9_])", re.IGNORECASE) if body else None
+    except re.error:
+        return None
+
+
+def _mask_custom_patterns(text, mask, mapping):
+    """The operator's patterns only ever reached structured rows, never the text sent
+    to the model: "ProjectFalcon", "*.galil-secret.com", "ACME-1234" all went out
+    (mask_eval limits, 0 of 5). Each value found becomes Custom<n>."""
+    pats = mask.__dict__.get("_free_patterns")
+    if pats is None:
+        pats = [r for r in map(_custom_pattern_re, getattr(mask, "custom_patterns", None) or []) if r]
+        mask.__dict__["_free_patterns"] = pats
+    if not pats or not hasattr(mask, "_get_or_create_pseudo"):
+        return
+    known = {k.lower() for k in mapping}
+    for rx in pats:
+        for m in rx.finditer(text):
+            v = m.group(0)
+            if len(v) >= 2 and v.lower() not in known:
+                mask._get_or_create_pseudo(v, "custom")
+                known.add(v.lower())
+
+
 def _apply_mask(text, mask, ner=True):
     """Replace originals→pseudonyms (longest-first), CASE-INSENSITIVE and identifier-
     boundary aware (see _MASK_BOUNDARY), so lowercase/uppercase/FQDN/path variants
     are caught without matching inside a larger identifier. LLM INPUT only; no-op off."""
     if not mask:
         return text
-    mapping = getattr(mask, "mapping", {}) or {}
+    # The mask's OWN dict even when empty: `... or {}` swapped an empty mapping for a
+    # throwaway one, so values registered just below (free-text e-mails, the case's
+    # custom patterns) were never substituted on a case with no graph identities.
+    mapping = getattr(mask, "mapping", None)
+    if mapping is None:
+        mapping = {}
     _mask_free_emails(text, mask, mapping)
+    _mask_custom_patterns(text, mask, mapping)
     low = _key_table(mapping)
     pat = _keys_re(low, True)
 
@@ -1563,6 +1605,7 @@ def _log_mask_audit(run_id, mask, text=None):
         return
     if text:
         _mask_free_emails(text, mask, getattr(mask, "mapping", {}))   # list them too
+        _mask_custom_patterns(text, mask, getattr(mask, "mapping", {}))
     mapping = getattr(mask, "mapping", {}) or {}
     if text is not None:                         # report only what really appears in the payload
         low = _key_table(mapping)
