@@ -165,3 +165,7 @@ class TestSigmaFoldsInsteadOfCopying(unittest.TestCase):
                    encoding="utf-8").read()
         self.assertIn("occurrences=n", src,
                       "folded sigma entities must carry their occurrence count")
+
+
+if __name__ == "__main__":
+    unittest.main()

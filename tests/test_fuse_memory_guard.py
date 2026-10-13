@@ -104,3 +104,7 @@ class TestTheBudgetReflectsMeasurement(unittest.TestCase):
     def test_the_multiplier_covers_the_observed_expansion(self):
         """539.9 MB -> 1.64 GB RSS is 3.1x; the budget must exceed it."""
         self.assertGreaterEqual(NS["_PAYLOAD_RAM_MULTIPLIER"], 3.1)
+
+
+if __name__ == "__main__":
+    unittest.main()

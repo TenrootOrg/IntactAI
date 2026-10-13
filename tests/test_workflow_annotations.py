@@ -120,3 +120,7 @@ class TheTestSuiteMustRunStandalone(unittest.TestCase):
         for name in _optional_deps.MISSING:
             self.assertNotIn(name, ("json", "os", "sys", "re"),
                              "a stdlib module was stubbed")
+
+
+if __name__ == "__main__":
+    unittest.main()

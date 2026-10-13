@@ -47,6 +47,16 @@ def read(rel):
         return fh.read()
 
 
+def branch(src, head):
+    """One `elif` branch of the mapper, comments stripped: from `head` to the
+    next `elif` at the SAME indent. (A fixed 12-space marker broke when the
+    branches were re-indented, and every test here died on index().)"""
+    i = src.index(head)
+    indent = i - src.rindex("\n", 0, i) - 1
+    j = src.index("\n" + " " * indent + "elif ", i + 1)
+    return "\n".join(l for l in src[i:j].splitlines() if not l.lstrip().startswith("#"))
+
+
 class TestEveryPathIsScoped(unittest.TestCase):
 
     def test_each_velociraptor_path_asks_only_for_mappable_artifacts(self):
@@ -157,13 +167,9 @@ class TestYaraWebshellIsUsable(unittest.TestCase):
 
     def setUp(self):
         self.src = read("services/fusion/mappers/agentic.py")
-        i = self.src.index('elif "yara" in an:')
-        # to the next sibling branch (12-space `elif`), not a fixed char window —
-        # the branch grew when memory scans were added and a window truncated it.
-        j = self.src.index("\n            elif ", i + 1)
-        self.branch = self.src[i:j]
-        self.code = "\n".join(l for l in self.branch.splitlines()
-                              if not l.lstrip().startswith("#"))
+        # to the next sibling branch, not a fixed char window — the branch grew
+        # when memory scans were added and a window truncated it.
+        self.code = branch(self.src, 'elif "yara" in an:')
 
     def test_the_webshell_artifact_is_admitted(self):
         self.assertIn("detectraptor.generic.detection.yarawebshell", self.src)
@@ -190,6 +196,7 @@ class TestYaraWebshellIsUsable(unittest.TestCase):
 class TestSimulatedDetectionsAreAdmittedAndUsable(unittest.TestCase):
     """Five empty DetectRaptor artifacts were triggered on a live Windows host
     (DESKTOP-566AT85) and mapped; three needed wiring beyond an allowlist line.
+    (MFT.Erasing.Tools was dropped again later, TASK-12666 -- see below.)
 
     Live results, min_severity=informational:
         MFT.Erasing.Tools  6 rows -> 6 dated MEDIUM findings (Criticality)
@@ -210,10 +217,14 @@ class TestSimulatedDetectionsAreAdmittedAndUsable(unittest.TestCase):
     def setUp(self):
         self.src = read("services/fusion/mappers/agentic.py")
 
-    def test_the_two_new_artifacts_are_admitted(self):
-        for base in ("detectraptor.windows.detection.powershell.iseautosave",
-                     "detectraptor.windows.detection.mft.erasing.tools"):
-            self.assertIn(base, self.src)
+    def test_iseautosave_is_admitted(self):
+        self.assertIn('"detectraptor.windows.detection.powershell.iseautosave"', self.src)
+
+    def test_erasing_tools_is_not_fused(self):
+        """Dropped by 883437a7 (TASK-12666): it only says a wiping tool's file sits
+        on disk -- not that it ran, nor when -- so no Timeline row, no report line."""
+        self.assertNotIn('"detectraptor.windows.detection.mft.erasing.tools"', self.src)
+        self.assertNotIn('flags=["detection"]', branch(self.src, 'elif "mft" in an and "detection" in an'))
 
     def test_the_rejected_artifacts_are_not_admitted(self):
         """YaraProcessWin (undated + noisy, the YaraFile failure mode) and LolRMM
@@ -221,25 +232,15 @@ class TestSimulatedDetectionsAreAdmittedAndUsable(unittest.TestCase):
         self.assertNotIn("detectraptor.windows.detection.yaraprocesswin", self.src)
         self.assertNotIn("detectraptor.windows.detection.lolrmm", self.src)
 
-    def _branch(self, head):
-        i = self.src.index(head)
-        j = self.src.index("\n            elif ", i + 1)
-        return "\n".join(l for l in self.src[i:j].splitlines()
-                         if not l.lstrip().startswith("#"))
-
     def test_iseautosave_takes_its_timestamp_from_fileinfo(self):
         """The date is nested in FileInfo.Mtime; first_ts()'s top-level spec
         misses it, so the branch must read it explicitly or land undated."""
-        code = self._branch('elif "iseautosave" in an')
+        code = branch(self.src, 'elif "iseautosave" in an')
         self.assertIn('r.get("FileInfo")', code)
         self.assertIn("Mtime", code)
         self.assertIn("keys.norm_ts", code)
         self.assertIn('flags=["detection"]', code)
 
-    def test_erasing_tools_promote_to_the_timeline(self):
-        """Anti-forensic tooling is the deliberate exception to the MFT branch's
-        BAU rule: it gets the 'detection' flag; the general MFT artifact does
-        not (its rules fire on routine files like OneDrive uploads)."""
-        code = self._branch('elif "mft" in an and ("detection" in an or "erasing" in an)')
-        self.assertIn('erasing = "erasing" in an', code)
-        self.assertIn('flags=["detection"] if erasing else ["mft_detection"]', code)
+
+if __name__ == "__main__":
+    unittest.main()

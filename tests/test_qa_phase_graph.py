@@ -134,3 +134,7 @@ class ThePhaseGraphMustResolve(unittest.TestCase):
             self.assertIn(name, required,
                           f"{name} is not in the coverage floor, so a silent "
                           f"skip would still pass")
+
+
+if __name__ == "__main__":
+    unittest.main()

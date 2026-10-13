@@ -151,3 +151,7 @@ class TestTheToggleIsWiredUp(unittest.TestCase):
         looks like an empty artifact list."""
         self.assertEqual(self.js.count("if (selOnly) selOnly.checked = false;"), 2,
                          "both modal-open paths must reset the toggle")
+
+
+if __name__ == "__main__":
+    unittest.main()

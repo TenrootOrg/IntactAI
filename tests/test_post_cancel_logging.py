@@ -129,3 +129,7 @@ class TestEveryOtherStatusIsUnaffected(unittest.TestCase):
         STATE["wf"] = None
         add_log_to_run("r1", "hello", force=True)          # must not raise
         self.assertIsNone(STATE["wf"])
+
+
+if __name__ == "__main__":
+    unittest.main()

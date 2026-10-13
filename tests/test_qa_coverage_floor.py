@@ -156,3 +156,7 @@ class TheAuditMustNotFailOnItself(unittest.TestCase):
         del results["pipelines"]
         gaps, _ = self.cov.audit(results, "cli")
         self.assertIn("pipelines", [n for n, _ in gaps])
+
+
+if __name__ == "__main__":
+    unittest.main()

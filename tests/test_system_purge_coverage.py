@@ -196,3 +196,7 @@ class EverySectionHoldingDataMustSayWhat(unittest.TestCase):
         """'nothing staged' and '0 files' mean different things to an operator."""
         body = _src().split("def _dir_detail")[1].split("\ndef ")[0]
         self.assertIn("nothing staged", body)
+
+
+if __name__ == "__main__":
+    unittest.main()

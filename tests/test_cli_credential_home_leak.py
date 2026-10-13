@@ -124,3 +124,7 @@ class TheContainerMustHaveRoomForAFanOut(unittest.TestCase):
         self.assertIs(self.backend.get("init"), True,
                       "without an init, codex's orphaned child stays a zombie "
                       "holding the credential dir open and tmpfs leaks per run")
+
+
+if __name__ == "__main__":
+    unittest.main()
