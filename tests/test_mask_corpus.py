@@ -75,6 +75,9 @@ class PathSegmentsAreNotIdentities(unittest.TestCase):
         m = _mask(_ent("account", "GALIL\\dana.levi"),
                   _ent("event", "gpo", {"details": "\\\\galil.local\\SysVol\\galil.local\\Policies\\{31B2F340}\\scripts\\x.ps1"}),
                   _ent("event", "ccm", {"details": "C:\\\\Windows\\\\CCM\\\\ServiceData\\\\Messaging D:\\\\Staging\\\\a.zip"}))
+        m2 = _mask(_ent("account", "GALIL\\dana.levi"),
+                   _ent("event", "gpo2", {"details": "C:\\WINDOWS\\SYSVOL\\sysvol | Path: galil.local\\Policies\\{3E1}\\x"}))
+        self.assertNotIn("policies", {k.lower() for k in m2.mapping}, sorted(m2.mapping))
         keys = {k.lower() for k in m.mapping}
         for seg in ("sysvol", "policies", "scripts", "servicedata", "ccm", "staging", "messaging"):
             self.assertNotIn(seg, keys, sorted(m.mapping))

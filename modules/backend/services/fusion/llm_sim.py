@@ -1046,7 +1046,9 @@ _UPN_RE = re.compile(r"\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 #  Insecure Level", a rule title, went out as "Change PowerShell SAM24 ..."), and a
 #  JSON-escaped local path "C:\\Windows\\CCM\\ServiceData\\" read as \\HOST\ made
 #  ServiceData/Staging/LocalPayload fake hosts.
-_DOMUSER_RE = re.compile(r"(?<![\\A-Za-z0-9._-])([A-Za-z0-9][A-Za-z0-9._-]+)\\([A-Za-z0-9._$-]+)")
+#  And it must END the token: "Path: AdatumLab.local\Policies\{3E19...}" (a SYSVOL
+#  path) still made Policies an account -- a real DOMAIN\user never continues "\...".
+_DOMUSER_RE = re.compile(r"(?<![\\A-Za-z0-9._-])([A-Za-z0-9][A-Za-z0-9._-]+)\\([A-Za-z0-9._$-]+)(?![\\A-Za-z0-9._$-])")
 _UNC_RE = re.compile(r"(?<![A-Za-z0-9._$:-])\\\\([A-Za-z0-9][A-Za-z0-9._-]+)\\")
 # An FQDN under an internal-only suffix names the customer's own network -- it has
 # no public meaning, so it is always an identifier. A lab case's script text carried
