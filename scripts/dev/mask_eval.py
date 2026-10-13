@@ -26,8 +26,15 @@ was reported masked but leaked, and one person got two identity numbers.
           threat actors, versions shaped like IPs). Scores leaks AND over-masking per
           category, deterministic layer alone and with Presidio. Nothing is written.
 
+  roundtrip  Mask the corpus and revert it the way production does (parse, then
+          revert each string); then revert each pseudonym after the rewrites a model
+          makes (bold, possessive, re-cased, spaced, plural) and check that evidence
+          already holding a pseudonym-shaped string ("Domain1 Policy") is not
+          "restored" into a real value.
+
     docker cp scripts/dev/mask_eval.py intact_backend:/tmp/mask_eval.py
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py corpus'
+    docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py roundtrip'
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py probe'
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py cases <case_id>...'
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py leaks <case_id>'
@@ -378,9 +385,58 @@ def corpus():
             print("  mapping:", NL + NL.join(f"    {k!r} = {v}" for k, v in sorted(m.mapping.items(), key=lambda x: x[1])))
 
 
+def roundtrip():
+    """The operator must get the REAL report back. Mask the corpus, then revert it
+    unchanged and after the rewrites a model actually makes to a pseudonym."""
+    import re
+    from services.fusion import llm_sim
+    g = _corpus_graph()
+    m = DataAnonymizer()
+    m._ner = True
+    m._logfn = lambda *a, **k: None
+    llm_sim._build_mask_mapping(g, m)
+    lines = [t for t, _, _ in CORPUS]
+    pay = json.dumps({"findings": [{"summary": t} for t in lines], "notes": NL.join(lines)})
+    masked = llm_sim._apply_mask(pay, m)
+    from services.fusion.investigate import _revert_obj      # production: parse, then revert
+    back = _revert_obj(json.loads(masked), m)
+    exact = case = 0
+    for a, b in zip(lines + lines, [f["summary"] for f in back["findings"]] + back["notes"].split(NL)):
+        if a == b:
+            exact += 1
+        elif a.lower() == b.lower():
+            case += 1
+        else:
+            print(f"  NOT RESTORED: {a!r}{NL}            -> {b!r}")
+    print(f"unchanged round trip: {exact} exact, {case} only re-cased (a value comes back in its "
+          f"canonical spelling), {2 * len(lines) - exact - case} wrong, of {2 * len(lines)}")
+    pseudos = sorted(m.reverse_mapping)
+    rewrites = {"as written": lambda p: p, "possessive": lambda p: p + "'s", "bold": lambda p: f"**{p}**",
+                "code": lambda p: f"`{p}`", "in parens": lambda p: f"({p})", "plural": lambda p: p + "s",
+                "lowercase": str.lower, "UPPERCASE": str.upper,
+                "spaced number": lambda p: re.sub(r"^([A-Za-z_]+)(\d+)", r"\1 \2", p),
+                "after JSON \\n": lambda p: json.dumps("x\n" + p)[1:-1]}
+    print(f"{len(pseudos)} pseudonyms; restored after each rewrite a model makes:")
+    for name, f in rewrites.items():
+        # restored = the REAL value is back (a pseudonym merely gone could be mangled)
+        left = [p for p in pseudos if m.reverse_mapping[p].lower() not in
+                llm_sim._revert_mask(" ; " + f(p) + " ; ", m).lower()]
+        print(f"  {name:15} {len(pseudos) - len(left):3}/{len(pseudos)}" + (f"   left: {left[:6]}" if left else ""))
+    # Evidence that already CONTAINS a pseudonym-shaped string ("Domain1 Policy",
+    # an account literally named user1) must not be "restored" into a real value.
+    lits = ["GPO Domain1 Policy", "SAM1 hive", "Hostname2 placeholder", "Credential1", "NAME1", "Email1 template"]
+    bad = [(t, r) for t in lits for r in [llm_sim._revert_mask(json.loads(llm_sim._apply_mask(json.dumps(t), m)), m)]
+           if r != t]
+    print(f"pseudonym-shaped literals in the evidence changed by the round trip: {len(bad)}/{len(lits)}")
+    for t, r in bad:
+        print(f"  {t!r} -> {r!r}")
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "corpus":
         corpus()
+    elif len(sys.argv) > 1 and sys.argv[1] == "roundtrip":
+        roundtrip()
     elif len(sys.argv) > 1 and sys.argv[1] == "cases":
         cases(sys.argv[2:])
     elif len(sys.argv) > 2 and sys.argv[1] == "leaks":
