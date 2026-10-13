@@ -1518,10 +1518,11 @@
                                              :title="$store.settings.velo.summary.not_upgradable.filter(g => g.key !== 'unknown_version').map(g => g.label + ': ' + g.n).join('\n')"
                                              x-text="'+ ' + $store.settings.velo.summary.not_upgradable.filter(g => g.key !== 'unknown_version').reduce((t, g) => t + g.n, 0) + ' can\'t upgrade here'"></div>
                                     </div>
-                                    <div class="px-6 py-4 border-l border-gray-700" title="No agent version reported. Usually offline-collection imports (no agent runs there); a real agent reports after Refresh client info.">
+                                    <div class="px-6 py-4 border-l border-gray-700" title="Agents that have not reported a version yet; they report after 'ask clients to report again' or their next restart. Offline-collection imports (no agent runs there) are counted apart and are not part of the fleet.">
                                         <div class="text-xs uppercase tracking-wide text-gray-500">Version unknown</div>
                                         <div class="text-3xl font-bold leading-none mt-2 text-gray-400" x-text="$store.settings.velo.summary.counts.unknown.toLocaleString()"></div>
-                                        <div class="text-xs text-gray-500 mt-1">usually offline collections</div>
+                                        <div class="text-xs text-gray-500 mt-1"
+                                             x-text="$store.settings.velo.summary.counts.imported ? '+ ' + $store.settings.velo.summary.counts.imported.toLocaleString() + ' offline collections (no agent)' : 'agents that have not reported yet'"></div>
                                         <button @click="$store.settings.refreshVeloClientInfo()" :disabled="$store.settings.veloRefreshing"
                                                 title="Sends a Generic.Client.Info hunt: every client reports its version again. Offline clients answer when they are next seen (the hunt stays open 7 days). Clients also report by themselves whenever they restart."
                                                 class="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50 mt-2"
@@ -1537,8 +1538,8 @@
                                     <input type="search" placeholder="Search host or client ID" :value="$store.settings.veloFilter.q"
                                            @input.debounce.400ms="$store.settings.setVeloFilter({q: $event.target.value})"
                                            class="bg-gray-900 text-white border border-gray-700 rounded px-2 py-1" style="width:16rem">
-                                    <button x-show="$store.settings.velo.summary.counts.unknown" @click="$store.settings.toggleVeloUnknown()" class="text-xs text-blue-400 hover:text-blue-300"
-                                            x-text="$store.settings.veloShowUnknown ? 'Hide the ' + $store.settings.velo.summary.counts.unknown + ' with unknown version' : 'Show ' + $store.settings.velo.summary.counts.unknown + ' with unknown version (usually offline collections)'"></button>
+                                    <button x-show="$store.settings.velo.summary.counts.unknown + ($store.settings.velo.summary.counts.imported || 0)" @click="$store.settings.toggleVeloUnknown()" class="text-xs text-blue-400 hover:text-blue-300"
+                                            x-text="($n => $store.settings.veloShowUnknown ? 'Hide the ' + $n + ' with no version or no agent' : 'Show ' + $n + ' with no version or no agent (offline collections)')($store.settings.velo.summary.counts.unknown + ($store.settings.velo.summary.counts.imported || 0))"></button>
                                     <span class="ml-auto text-xs text-gray-400"
                                           x-text="$store.settings.velo.filtered ? (($store.settings.velo.page - 1) * $store.settings.velo.per + 1).toLocaleString() + '–' + Math.min($store.settings.velo.page * $store.settings.velo.per, $store.settings.velo.filtered).toLocaleString() + ' of ' + $store.settings.velo.filtered.toLocaleString() : 'no client matches'"></span>
                                 </div>

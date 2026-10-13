@@ -48,7 +48,7 @@ class Versions(unittest.TestCase):
         self.assertTrue(by["C.1"]["online"])
         self.assertFalse(by["C.2"]["online"])
         self.assertIsNone(by["C.3"]["last_seen"])
-        self.assertEqual(out["counts"], {"current": 1, "behind": 1, "ahead": 1, "unknown": 1, "online": 2})
+        self.assertEqual(out["counts"], {"current": 1, "behind": 1, "ahead": 1, "unknown": 1, "imported": 0, "online": 2})
         self.assertEqual(out["clients"][0]["client_id"], "C.1")          # behind first
         self.assertEqual(out["server_version"], "0.77.2")
 
@@ -58,6 +58,31 @@ class Versions(unittest.TestCase):
 
 
 CA = "-----BEGIN CERTIFICATE-----\nMIIabc\n-----END CERTIFICATE-----\n"
+
+
+class OfflineCollectionImports(unittest.TestCase):
+    """The record an offline-collection import leaves (no agent name, never
+    interrogated, no version) read as "version unknown" and was counted in the fleet."""
+    def test_imports_are_apart_from_agents(self):
+        from services.velociraptor_clients import classify, eligibility, filter_clients
+        rows = [{"client_id": "C.1", "hostname": "VM", "version": "0.77.2", "agent": "velociraptor",
+                 "interrogated": "F.1", "last_seen_at": NOW * 1e6},
+                {"client_id": "C.2", "hostname": "NEW", "version": "", "agent": "velociraptor",
+                 "interrogated": ""},
+                {"client_id": "C.3", "hostname": "ALDC02", "version": "", "agent": "", "interrogated": ""}]
+        st = classify(rows, "0.77.2", now=NOW)
+        by = {c["client_id"]: c["state"] for c in st["clients"]}
+        self.assertEqual({"C.1": "current", "C.2": "unknown", "C.3": "imported"}, by)
+        self.assertEqual(2, st["total"])                          # imports are not the fleet
+        self.assertEqual((1, 1), (st["counts"]["unknown"], st["counts"]["imported"]))
+        imp = next(c for c in st["clients"] if c["state"] == "imported")
+        self.assertEqual("imported", eligibility(imp)[0])         # never upgraded
+        self.assertEqual(["C.1"], [c["client_id"] for c in filter_clients(st, hide_unknown=True)])
+
+    def test_rows_without_agent_fields_keep_the_old_meaning(self):
+        from services.velociraptor_clients import classify
+        st = classify([{"client_id": "C.9", "version": ""}], "0.77.2", now=NOW)
+        self.assertEqual("unknown", st["clients"][0]["state"])
 
 
 class Safety(unittest.TestCase):

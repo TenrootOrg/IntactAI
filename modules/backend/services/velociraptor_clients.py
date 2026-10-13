@@ -31,14 +31,21 @@ def version_key(v):
 
 def classify(rows, server_version, now=None):
     """Rows from clients() -> the status payload. Each client is current, behind,
-    ahead or unknown (no version reported), and online or not."""
+    ahead, unknown (an agent that reported no version) or imported, and online or not.
+
+    "imported" is the record an offline-collection import leaves: no agent name,
+    never interrogated, no version. No agent runs there, so it is not part of the
+    fleet (left out of `total`), never asked to report and never upgraded -- the 9
+    AdatumLab hosts read as "version unknown" though nothing could ever answer."""
     now = time.time() if now is None else now
     server = version_key(server_version)
-    clients, counts = [], {"current": 0, "behind": 0, "ahead": 0, "unknown": 0, "online": 0}
+    clients, counts = [], {"current": 0, "behind": 0, "ahead": 0, "unknown": 0, "imported": 0, "online": 0}
     for r in rows:
         v = (r.get("version") or "").strip()
         key = version_key(v)
-        if key is None or server is None:
+        if "agent" in r and not r.get("agent") and not r.get("interrogated") and not v:
+            state = "imported"
+        elif key is None or server is None:
             state = "unknown"
         elif key == server:
             state = "current"
@@ -54,10 +61,10 @@ def classify(rows, server_version, now=None):
                         "labels": list(r.get("labels") or []),
                         "version": v, "state": state, "online": online,
                         "last_seen": int(seen_s) if seen_s else None})
-    order = {"behind": 0, "unknown": 1, "ahead": 2, "current": 3}
+    order = {"behind": 0, "unknown": 1, "ahead": 2, "current": 3, "imported": 4}
     clients.sort(key=lambda c: (order[c["state"]], not c["online"], c["hostname"].lower()))
     return {"server_version": server_version or "", "clients": clients, "counts": counts,
-            "total": len(clients)}
+            "total": len(clients) - counts["imported"]}
 
 
 def _query(vql, timeout=120):
@@ -79,7 +86,8 @@ def client_versions():
     """The running server's version and every client's, classified (offline ones too)."""
     server = (_query("SELECT version.version AS v FROM config") or [{}])[0].get("v") or ""
     rows = _query("SELECT client_id, os_info.hostname AS hostname, os_info.system AS os, "
-                  "os_info.release AS release, agent_information.version AS version, labels, last_seen_at "
+                  "os_info.release AS release, agent_information.version AS version, labels, last_seen_at, "
+                  "agent_information.name AS agent, last_interrogate_flow_id AS interrogated "
                   "FROM clients() WHERE client_id != 'server'")
     return classify(rows, server)
 
@@ -365,6 +373,8 @@ NOT_UPGRADABLE = {
 
 def eligibility(c):
     """(key, why) -- key is None when the client may be upgraded from here."""
+    if c["state"] == "imported":
+        return "imported", "an offline-collection import -- no agent runs there"
     if c["state"] == "current":
         return "current", "on the server's version"
     if c["state"] == "ahead":
@@ -410,7 +420,7 @@ def filter_clients(status, state=None, os=None, version=None, online=None, q=Non
     q = (q or "").strip().lower()
     out = []
     for c in status["clients"]:
-        if hide_unknown and c["state"] == "unknown":
+        if hide_unknown and c["state"] in ("unknown", "imported"):
             continue
         if state and c["state"] != state:
             continue
@@ -440,6 +450,8 @@ def upgrade_status(c):
         return "up_to_date", "up to date"
     if key == "ahead":
         return "newer", "newer than the server"
+    if key == "imported":
+        return "no_version", "offline collection (no agent)"
     if key in ("unknown_version", "unknown_release"):
         return "no_version", "no version" if key == "unknown_version" else "Windows release unknown"
     short = {"old_windows": (c.get("release") or "old Windows").replace("Microsoft ", ""),

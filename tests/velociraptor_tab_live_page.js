@@ -65,7 +65,9 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   check('updated = current / clients that reported a version', cols[0].startsWith(`Updated ${sm.counts.current} / ${reported} on ${sm.server_version}`), cols[0]);
   check('the bar shows updated of reported', $('div.grid.grid-cols-3.rounded-lg div.h-2 > div').style.width === Math.round(100 * sm.counts.current / Math.max(1, reported)) + '%', '');
   check('upgradeable count', cols[1].startsWith(`Upgradeable ${sm.eligible}`), cols[1]);
-  check('version unknown count, "usually offline collections"', cols[2].startsWith(`Version unknown ${sm.counts.unknown} usually offline collections`), cols[2]);
+  // Offline-collection imports are counted apart from agents that did not report.
+  check('version unknown counts agents only; imports apart', cols[2].startsWith(`Version unknown ${sm.counts.unknown} ` +
+        (sm.counts.imported ? `+ ${sm.counts.imported} offline collections (no agent)` : 'agents that have not reported yet')), cols[2]);
   check('table shows one page, unknown versions collapsed', rows() === Math.min(50, sm.total - sm.counts.unknown)
         && $$('tbody tr').every(r => !/unknown/.test(r.textContent)), rows());
   if (sm.counts.unknown) {
