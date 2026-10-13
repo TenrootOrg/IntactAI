@@ -32,9 +32,14 @@ was reported masked but leaked, and one person got two identity numbers.
           already holding a pseudonym-shaped string ("Domain1 Policy") is not
           "restored" into a real value.
 
+  limits  Where masking stops holding: 2,300 keys over a 0.3 MB payload (time and
+          pseudonym reuse past 999), Hebrew/accented names in JSON text, the case's
+          custom patterns, the NER engine failing, masking off. ~5 s.
+
     docker cp scripts/dev/mask_eval.py intact_backend:/tmp/mask_eval.py
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py corpus'
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py roundtrip'
+    docker exec intact_backend sh -lc 'cd /app && timeout 120 python3 /tmp/mask_eval.py limits'
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py probe'
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py cases <case_id>...'
     docker exec intact_backend sh -lc 'cd /app && python3 /tmp/mask_eval.py leaks <case_id>'
@@ -432,8 +437,90 @@ def roundtrip():
         print(f"  {t!r} -> {r!r}")
 
 
+def limits():
+    """Where does masking stop holding? Fleet scale, non-ASCII names, the case's own
+    custom patterns, the NER engine failing, and masking switched off."""
+    import time
+    from services.fusion import llm_sim
+    from services.fusion.schema import Entity, FusionGraph
+
+    # 1. Scale: 300 hosts, 300 users in three forms, 1,100 internal IPs (past the 999 pool).
+    g = FusionGraph(case_id="scale")
+    def add(t, label, attrs=None):
+        g.entities[f"{t}:{len(g.entities)}"] = Entity(id=f"{t}:{len(g.entities)}", type=t, label=label, attrs=attrs or {})
+    hosts = [f"GL-WS-{i:04d}" for i in range(300)]
+    users = [f"user{i:04d}x" for i in range(300)]
+    ips = [f"10.{i // 250}.{i % 250}.{7 + i % 3}" for i in range(1100)]   # > the 999 pool
+    for h in hosts:
+        add("asset", h)
+    for u in users:
+        add("account", f"GALIL\\{u}")
+        add("account", f"{u}@galil.co.il")
+    for ip in ips:
+        add("netconn", ip)
+    m = DataAnonymizer()
+    t0 = time.time()
+    llm_sim._build_mask_mapping(g, m)
+    t_build = time.time() - t0
+    rows = [{"title": f"Logon by GALIL\\{users[i % 300]} on {hosts[i % 300]} from {ips[i % 1100]}",
+             "detail": "x" * 120} for i in range(1500)]
+    payload = json.dumps({"findings": rows})
+    t0 = time.time()
+    out = llm_sim._apply_mask(payload, m, ner=False)
+    t_apply = time.time() - t0
+    groups = {}
+    for k, v in m.mapping.items():
+        groups.setdefault(v, set()).add(k.lower())
+    shared = {v: ks for v, ks in groups.items() if len(ks) > 1 and not v.startswith(("USER", "UPN", "SAM", "NAME"))}
+    leaked = sum(1 for x in hosts + ips if x in out)
+    print(f"1 SCALE  {len(m.mapping):,} keys; build {t_build:.1f}s; apply on {len(payload) / 1e6:.1f} MB "
+          f"{t_apply:.1f}s; identifiers visible {leaked}; pseudonyms shared by >1 real value: {len(shared)}"
+          + (f"  e.g. {next(iter(shared.items()))}" if shared else ""))
+
+    # 2. Non-ASCII names: json.dumps writes them as \\uXXXX.
+    g2 = FusionGraph(case_id="u")
+    for t, lbl in (("account", "GALIL\\דנה"), ("asset", "JOSÉ-PC"), ("account", "GALIL\\zoë.müller")):
+        g2.entities[lbl] = Entity(id=lbl, type=t, label=lbl)
+    m2 = DataAnonymizer()
+    llm_sim._build_mask_mapping(g2, m2)
+    text = "GALIL\\דנה logged on to JOSÉ-PC; zoë.müller too"
+    o_json = json.loads(llm_sim._apply_mask(json.dumps({"v": text}), m2, ner=False))["v"]
+    o_plain = llm_sim._apply_mask(text, m2, ner=False)
+    for name, o in (("json", o_json), ("plain", o_plain)):
+        vis = [x for x in ("דנה", "JOSÉ", "zoë.müller") if x.lower() in o.lower()]
+        print(f"2 NON-ASCII {name:5} visible: {vis}  -> {o!r}")
+
+    # 3. The case's own custom patterns ("always mask these").
+    m3 = DataAnonymizer(custom_patterns=["ProjectFalcon", "*.galil-secret.com", "/ACME-\\d{4}/", "Orion|Vega"])
+    llm_sim._build_mask_mapping(FusionGraph(case_id="p"), m3)
+    text = "ProjectFalcon data sent to vpn.galil-secret.com; ticket ACME-1234; codenames Orion and Vega"
+    o3 = json.loads(llm_sim._apply_mask(json.dumps({"v": text}), m3, ner=False))["v"]
+    vis = [x for x in ("ProjectFalcon", "galil-secret", "ACME-1234", "Orion", "Vega") if x in o3]
+    print(f"3 CUSTOM PATTERNS visible: {vis}  -> {o3!r}")
+
+    # 4. NER enabled but the engine fails: what is sent, and is it said?
+    m4 = DataAnonymizer()
+    m4._ner = True
+    said = []
+    m4._logfn = lambda msg, lvl="info": said.append((lvl, msg))
+    llm_sim._build_mask_mapping(_corpus_graph(), m4)
+    real = pm._detect_chunk
+    pm._detect_chunk = lambda *a, **k: None
+    try:
+        o4 = llm_sim._apply_mask("Escalated by Yossi Cohen; GALIL\\dana.levi on GL-WS-014", m4)
+    finally:
+        pm._detect_chunk = real
+    print(f"4 NER DOWN  sent: {o4!r}{NL}            log: {[l for l, _ in said]} {said[-1][1][:110] if said else ''}")
+
+    # 5. Masking off.
+    t5 = "GALIL\\dana.levi"
+    print(f"5 OFF       unchanged: {llm_sim._apply_mask(t5, None) == t5}")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "corpus":
+    if len(sys.argv) > 1 and sys.argv[1] == "limits":
+        limits()
+    elif len(sys.argv) > 1 and sys.argv[1] == "corpus":
         corpus()
     elif len(sys.argv) > 1 and sys.argv[1] == "roundtrip":
         roundtrip()
