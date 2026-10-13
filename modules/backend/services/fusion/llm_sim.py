@@ -3021,12 +3021,18 @@ def _chat_tool_call(ans):
     if t.startswith("```"):
         t = t.strip("`").split("\n", 1)[-1] if "\n" in t else t.strip("`")
         t = t.rsplit("```", 1)[0].strip()
-    if not (t.startswith("{") and t.endswith("}")):
+    if not t.startswith("{"):
         return None
     try:
-        o = json.loads(t)
+        # raw_decode, not loads: a live APT29 chat answer was the tool request
+        # followed by one stray non-text character, failed the endswith("}")
+        # test, and the operator was shown the raw {"tool": ...} JSON as the
+        # answer. Trailing junk without letters or digits is ignored.
+        o, end = json.JSONDecoder().raw_decode(t)
     except Exception:
         return None
+    if any(ch.isalnum() for ch in t[end:]):
+        return None                                   # JSON followed by prose: an answer
     if isinstance(o, dict) and isinstance(o.get("tool"), str):
         return {"tool": o["tool"], "args": o.get("args") if isinstance(o.get("args"), dict) else {}}
     return None

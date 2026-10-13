@@ -96,5 +96,19 @@ class Fetch(unittest.TestCase):
         self.assertTrue(ans.startswith("On WS1"))                        # the analyst reads real names
 
 
+
+class AToolRequestIsNeverShownAsTheAnswer(unittest.TestCase):
+    """A live chat answer read: {"tool":"search","args":{...}} plus one stray
+    character -- the request was not recognised and shown to the operator."""
+    def test_trailing_junk_is_tolerated_prose_is_not(self):
+        f = llm_sim._chat_tool_call
+        req = '{"tool":"search","args":{"query":"initial access"}}'
+        self.assertEqual("search", f(req + "\U0004e7d4")["tool"])
+        self.assertEqual("search", f(req + " \n")["tool"])
+        self.assertEqual("search", f("```json\n" + req + "\n```")["tool"])
+        self.assertIsNone(f(req + " The attacker used RDP."))
+        self.assertIsNone(f("The answer is {not json}"))
+
+
 if __name__ == "__main__":
     unittest.main()
