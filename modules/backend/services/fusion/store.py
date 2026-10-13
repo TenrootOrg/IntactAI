@@ -595,9 +595,15 @@ def _raw_payload_size(run) -> int:
             or det.get("timeline_events") or det.get("findings") or det.get("sigma_findings"))
     if not blob and run.get("automation_type") in ("velociraptor_collection", "velociraptor_upload"):
         # Agentic / offline-import runs persist their rows to disk
-        # (/data/downloads/<rid>/raw_results.json), not into details — read them
-        # back so the raw-vs-fusion token A/B reflects the real input size.
-        blob = _agentic_collected_data(run.get("run_id"), det) or None
+        # (/data/downloads/<rid>/raw_results.json), not into details. The file IS
+        # the JSON, so its size is what approx_tokens would measure. It used to be
+        # loaded and re-serialized for this one number: 12 x 568 MB on a 108-host
+        # case, ~200 s of a 493 s fuse, for a headline figure.
+        fp = _raw_results_path(run.get("run_id"), det)
+        if fp:
+            import os
+            return (os.path.getsize(fp) + 3) // 4          # = budget.approx_tokens
+        return 0
     return budget.approx_tokens(blob) if blob else 0
 
 
@@ -1353,19 +1359,27 @@ def _agentic_collected_data(rid, det, log=None):
     if cd:
         return cd
     import json
+    fp = _raw_results_path(rid, det)
+    if fp:
+        if _payload_too_big(fp, log=log):
+            return {}
+        try:
+            with open(fp) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _raw_results_path(rid, det):
+    """Where a run's persisted rows live (raw_results.json), or "" if nowhere."""
     import os
     for base in (f"/app/data/downloads/{rid}", f"/data/downloads/{rid}",
                  det.get("output_dir") or ""):
         fp = os.path.join(base, "raw_results.json") if base else ""
         if fp and os.path.exists(fp):
-            if _payload_too_big(fp, log=log):
-                return {}
-            try:
-                with open(fp) as f:
-                    return json.load(f)
-            except Exception:
-                return {}
-    return {}
+            return fp
+    return ""
 
 
 def get_evidence_rows(case_id, finding_id, *, max_rows=10):
