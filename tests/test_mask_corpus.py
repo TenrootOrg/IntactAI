@@ -90,5 +90,46 @@ class PathSegmentsAreNotIdentities(unittest.TestCase):
         self.assertTrue(m.mapping.get("GALIL\\amit.cohen", "").startswith("USER"), m.mapping)
 
 
+class OrdinaryWordNamesOnlyWhereTheyAreNames(unittest.TestCase):
+    """Accounts will/mark/scan and hosts BACKUP/WEB were replaced in every sentence:
+    "we SAM3 monitor", "Veeam Hostname5", "Mark-of-the-Hostname6"."""
+    def setUp(self):
+        self.m = _mask(_ent("account", "GALIL\\will"), _ent("account", "GALIL\\mark"),
+                       _ent("account", "GALIL\\scan"), _ent("asset", "BACKUP"), _ent("asset", "WEB"),
+                       _ent("account", "GALIL\\almogs"),
+                       _ent("event", "r", {"title": "Suspicious Backup Deletion via Wbadmin"}, ["sigma"]))
+
+    def test_prose_survives(self):
+        for text in ("The attacker will likely return, so we will monitor.",
+                     "Mark-of-the-Web was stripped; mark the file as malicious.",
+                     "Backup job failed; Veeam Backup stopped.",
+                     "A port scan preceded the web shell upload to the IIS web server.",
+                     "Rule: Suspicious Backup Deletion via Wbadmin"):
+            self.assertEqual(text, _json_masked(self.m, text))
+            self.assertEqual(text, llm_sim._apply_mask(text, self.m, ner=False))
+
+    def test_identifier_positions_masked(self):
+        for text, gone in (("will", "will"), ("C:\\Users\\will\\Desktop", "will"), ("User: will", "will"),
+                           ("logon by will", "will"), ("Account Name:\t\tscan", "scan"),
+                           ("\\\\backup\\share", "backup"), ("WEB$ authenticated", "WEB"),
+                           ("Suspicious login on BACKUP", "BACKUP"), ("user=mark", "mark"),
+                           ("GALIL\\will logged on", "will")):
+            out = _json_masked(self.m, text)
+            self.assertNotIn(gone, out, (text, out))
+            # every form of the name gets the identity's number, never a stray word
+            self.assertRegex(out, r"(SAM|USER|Hostname)\d", (text, out))
+
+    def test_names_with_a_digit_or_separator_mask_everywhere(self):
+        m = _mask(_ent("asset", "ALClient04"), _ent("account", "GALIL\\dana.levi"))
+        out = _json_masked(m, "files copied from alclient04 by Dana.Levi today")
+        self.assertNotIn("alclient04", out.lower())
+        self.assertNotIn("dana.levi", out.lower())
+
+    def test_a_real_username_in_prose_is_a_known_gap(self):
+        # Documented ceiling: a one-word name in running prose, outside any identifier
+        # position, is left alone -- the same rule that keeps "will" readable.
+        self.assertIn("almogs", _json_masked(self.m, "then almogs ran it"))
+
+
 if __name__ == "__main__":
     unittest.main()

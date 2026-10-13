@@ -1333,6 +1333,33 @@ def _mask_pattern(token: str, ignorecase: bool, host: bool = False):
                       rf"{esc}(?![{_MASK_BOUNDARY}])", flags)
 
 
+# A one-word account or host name ("will", "mark", "scan", "backup", "web") is also
+# an ordinary word, and replacing it everywhere rewrote the evidence: "we will
+# monitor" -> "we SAM3 monitor", "Veeam Backup" -> "Veeam Hostname5", "Mark-of-the-Web"
+# -> "Mark-of-the-Hostname6", and the rule title "Suspicious Backup Deletion via
+# Wbadmin" lost its meaning. On a real 9-host case every bare username sat in an
+# identifier POSITION (a whole JSON value, a path part, after "User: "), never in
+# prose, so such a name is masked there -- and anywhere in a casing prose never uses
+# (BACKUP, GiladT). A name with a digit or separator (ALClient04, dana.levi) is
+# unambiguous and is still masked everywhere, in any case.
+_WORD_KEY = re.compile(r"[A-Za-z]+")
+_ID_LABEL = re.compile(
+    r"(?i)(?:\b(?:user(?:name)?|account|owner|logon|login|principal|member|subject|"
+    r"host(?:name)?|computer|workstation|machine|device|client|by)|\bname)\W{1,3}$")
+
+
+def _ident_position(m, orig) -> bool:
+    t, s, e = m.string, m.start(), m.end()
+    if m.group(0) == orig and not (orig.islower() or orig.istitle()):
+        return True                               # BACKUP / GiladT: not a prose casing
+    a, b = t[s - 1:s], t[e:e + 1]
+    if a == b == '"' or a in ("\\", "/", "@", "=", ":", "\t") or b in ("\\", "/", "@", "$"):
+        return True                               # JSON value, path, DOMAIN\x, HOST$, user=x
+    if t[s - 2:s] == "\\t":
+        return True                               # tab-separated field in JSON text
+    return bool(_ID_LABEL.search(t[max(0, s - 24):s]))   # "User: srv", "logon by will"
+
+
 def _apply_mask(text, mask, ner=True):
     """Replace originals→pseudonyms (longest-first), CASE-INSENSITIVE and identifier-
     boundary aware (see _MASK_BOUNDARY), so lowercase/uppercase/FQDN/path variants
@@ -1342,8 +1369,11 @@ def _apply_mask(text, mask, ner=True):
     mapping = getattr(mask, "mapping", {}) or {}
     for orig in sorted((k for k in mapping if k), key=len, reverse=True):
         ps = mapping[orig]
-        text = _mask_pattern(orig, True, host=str(ps).startswith("Hostname")).sub(
-            lambda _m, _p=ps: _p, text)
+        pat = _mask_pattern(orig, True, host=str(ps).startswith("Hostname"))
+        if _WORD_KEY.fullmatch(orig) and str(ps).startswith(("SAM", "Hostname")):
+            text = pat.sub(lambda _m, _p=ps, _o=orig: _p if _ident_position(_m, _o) else _m.group(0), text)
+        else:
+            text = pat.sub(lambda _m, _p=ps: _p, text)
     # Optional NER second pass: scrub free-text leftovers the deterministic layer
     # cannot catch (person/company names in notes, docs, scriptblocks). No-op
     # unless the case enabled it (mask._ner) AND Presidio + a spaCy model are
