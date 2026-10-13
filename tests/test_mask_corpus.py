@@ -173,6 +173,8 @@ class CommandLinePasswords(unittest.TestCase):
         out = _json_masked(m, cmd + " -- the password spray used Winter2026!")
         for secret in ("Winter2026!", "S3cr3t#9"):
             self.assertNotIn(secret, out)
+        m2 = _mask(_ent("event", "r", {"ev_cmdline": "Rubeus.exe asktgt /user:dc01$ /certificate:Shadow_x$.pfx /ptt"}))
+        self.assertFalse([k for k in m2.mapping if "certificate" in k.lower()], m2.mapping)
         for kept in ("445", "(ConvertTo-SecureString", "-p password", "the password spray"):
             self.assertIn(kept, out)
         self.assertEqual(out.count("Credential1"), 2, out)   # same secret, same pseudonym

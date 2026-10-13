@@ -1303,7 +1303,9 @@ def _build_mask_mapping(graph, mask):
         # and not a plain word: it would then be masked in every sentence.
         for mc in _CRED_FLAG_RE.finditer(text):
             sec = mc.group("secret")
-            if len(sec) >= 4 and sec[0] not in "($%-*" and not sec.isdigit() and not sec.isalpha():
+            # Nor the NEXT FLAG: "Rubeus asktgt /user:X /certificate:ShadowMark_sac2$.pfx"
+            # masked the certificate argument -- the shadow-credentials evidence.
+            if len(sec) >= 4 and sec[0] not in "($%-*/" and not sec.isdigit() and not sec.isalpha():
                 mask._get_or_create_pseudo(sec, "credential")
         for dom, usr in _DOMUSER_RE.findall(text):
             if _norm_domain(dom).split(".", 1)[0] in org_roots:   # gate vs benign paths
