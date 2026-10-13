@@ -1483,7 +1483,7 @@ _FILE_EXT = {"png", "jpg", "jpeg", "gif", "svg", "ico", "exe", "dll", "sys", "ps
 
 
 def _mask_free_emails(text, mask, mapping):
-    if not hasattr(mask, "counters") or "@" not in text:
+    if not isinstance(getattr(mask, "counters", None), dict) or "@" not in text:
         return
     known = {k.lower() for k in mapping}
     for m in _EMAIL_RE.finditer(text):
@@ -1521,7 +1521,8 @@ def _mask_custom_patterns(text, mask, mapping):
     (mask_eval limits, 0 of 5). Each value found becomes Custom<n>."""
     pats = mask.__dict__.get("_free_patterns")
     if pats is None:
-        pats = [r for r in map(_custom_pattern_re, getattr(mask, "custom_patterns", None) or []) if r]
+        raw = getattr(mask, "custom_patterns", None)
+        pats = [r for r in map(_custom_pattern_re, raw if isinstance(raw, (list, tuple)) else []) if r]
         mask.__dict__["_free_patterns"] = pats
     if not pats or not hasattr(mask, "_get_or_create_pseudo"):
         return
@@ -1543,7 +1544,7 @@ _SID_RE = re.compile(r"(?<![\w-])S-1-5-21-(\d{1,10}-\d{1,10}-\d{1,10})(?:-(\d{1,
 
 
 def _mask_sids(text, mask, mapping):
-    if "-21-" not in text or not hasattr(mask, "reverse_mapping"):
+    if "-21-" not in text or not isinstance(getattr(mask, "reverse_mapping", None), dict):
         return
     doms = mask.__dict__.setdefault("_sid_domains", {})
     for m in _SID_RE.finditer(text):
