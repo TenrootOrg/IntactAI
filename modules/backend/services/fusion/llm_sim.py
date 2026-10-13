@@ -1390,6 +1390,32 @@ def _ident_position(m, orig) -> bool:
     return bool(_ID_LABEL.search(t[max(0, s - 24):s]))   # "User: srv", "logon by will"
 
 
+# An address only in free text (analyst notes, manual events) is no graph entity,
+# so nothing masked it: "Mail from yossi.mizrahi@partner-law.co.il" went out as is.
+# The PERSON part is hidden and the domain kept -- a phishing sender's domain is
+# threat intel the model needs -- unless the domain is the org's, which gets its
+# Domain pseudonym. Anchored at a token start: a long base64 run cannot backtrack.
+_EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,24})\b")
+_FILE_EXT = {"png", "jpg", "jpeg", "gif", "svg", "ico", "exe", "dll", "sys", "ps1", "bat", "zip",
+             "txt", "log", "json", "xml", "js", "css", "htm", "html"}   # icon@2x.png is a file
+
+
+def _mask_free_emails(text, mask, mapping):
+    if not hasattr(mask, "counters") or "@" not in text:
+        return
+    known = {k.lower() for k in mapping}
+    for m in _EMAIL_RE.finditer(text):
+        addr, dom = m.group(0), m.group(1).lower()
+        if addr.lower() in known or dom.rsplit(".", 1)[-1] in _FILE_EXT:
+            continue
+        mask.counters["email"] = mask.counters.get("email", 0) + 1
+        org = next((mapping[d] for d in (dom, dom.split(".", 1)[-1]) if d in mapping), None)
+        ps = f"Email{mask.counters['email']}@{org or dom}"
+        mapping[addr] = ps
+        mask.reverse_mapping[ps] = addr
+        known.add(addr.lower())
+
+
 def _apply_mask(text, mask, ner=True):
     """Replace originals→pseudonyms (longest-first), CASE-INSENSITIVE and identifier-
     boundary aware (see _MASK_BOUNDARY), so lowercase/uppercase/FQDN/path variants
@@ -1397,6 +1423,7 @@ def _apply_mask(text, mask, ner=True):
     if not mask:
         return text
     mapping = getattr(mask, "mapping", {}) or {}
+    _mask_free_emails(text, mask, mapping)
     for orig in sorted((k for k in mapping if k), key=len, reverse=True):
         ps = mapping[orig]
         pat = _mask_pattern(orig, True, host=str(ps).startswith("Hostname"))
@@ -1469,6 +1496,8 @@ def _log_mask_audit(run_id, mask, text=None):
     of what was masked, not the whole graph's identity table."""
     if not run_id or not mask:
         return
+    if text:
+        _mask_free_emails(text, mask, getattr(mask, "mapping", {}))   # list them too
     mapping = getattr(mask, "mapping", {}) or {}
     if text is not None:                         # report only what really appears in the payload
         mapping = {k: v for k, v in mapping.items()

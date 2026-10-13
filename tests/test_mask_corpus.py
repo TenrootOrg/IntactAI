@@ -175,5 +175,27 @@ class CommandLinePasswords(unittest.TestCase):
         self.assertEqual(out.count("Credential1"), 2, out)   # same secret, same pseudonym
 
 
+class FreeTextEmails(unittest.TestCase):
+    def test_person_hidden_domain_kept_and_reverts(self):
+        m = _mask(_ent("account", "dana.levi@galil-dyn.co.il"))
+        text = ("Mail from yossi.mizrahi@partner-law.co.il and billing@evil-invoice.com; "
+                "cc noa@galil-dyn.co.il and dana.levi@galil-dyn.co.il; icon@2x.png")
+        masked = llm_sim._apply_mask(json.dumps({"v": text}), m, ner=False)
+        out = json.loads(masked)["v"]
+        for gone in ("yossi.mizrahi", "billing@", "noa@", "dana.levi", "galil-dyn"):
+            self.assertNotIn(gone, out, out)
+        for kept in ("@partner-law.co.il", "@evil-invoice.com", "icon@2x.png"):
+            self.assertIn(kept, out, out)
+        self.assertEqual(text, json.loads(llm_sim._revert_mask(masked, m))["v"])
+
+    def test_long_blob_is_linear(self):
+        import time
+        m = _mask(_ent("account", "GALIL\\dana.levi"))
+        blob = "A" * 200000 + " x@y.com"
+        t = time.time()
+        llm_sim._apply_mask(blob, m, ner=False)
+        self.assertLess(time.time() - t, 2.0)
+
+
 if __name__ == "__main__":
     unittest.main()
