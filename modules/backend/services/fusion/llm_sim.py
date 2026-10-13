@@ -1320,7 +1320,12 @@ def _mask_pattern(token: str, ignorecase: bool, host: bool = False):
     # PAExec's service is "PAExec-<pid>-<HOST>", which sent "PAExec-7032-ALDC01" in
     # clear. Left side only: the right side still binds, so WS-01 stays out of WS-011.
     left = _MASK_BOUNDARY.replace("-", "") if host else _MASK_BOUNDARY
-    return re.compile(rf"(?<![{left}]){esc}(?![{_MASK_BOUNDARY}])", flags)
+    # An ESCAPE ends a token even though its last character is a letter/digit. The
+    # payload is masked as json.dumps text, so a value starting a line is "\ndana",
+    # a Hebrew letter glued on is "לdana" and a URL-encoded backslash "%5Cdana":
+    # the plain boundary saw the 'n' / 'c' / 'C' and all three went out in clear.
+    return re.compile(rf"(?:(?<![{left}])|(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{{4}})|(?<=%[0-9A-Fa-f]{{2}}))"
+                      rf"{esc}(?![{_MASK_BOUNDARY}])", flags)
 
 
 def _apply_mask(text, mask, ner=True):
