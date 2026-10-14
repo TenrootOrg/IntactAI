@@ -503,12 +503,15 @@ def start_multi_client_timesketch():
         timesketch_processing_timeout  = data.get('timesketch_processing_timeout', 259200)
 
         hostnames_list = [c['client_name'] for c in clients]
-        hostnames_str  = ', '.join(hostnames_list)
+        # The name and first log line used to join EVERY hostname: at 1,000
+        # clients that is a ~15 KB run name in every list view.
+        hostnames_str  = ', '.join(hostnames_list[:3]) + (f" … (+{len(clients) - 3} more)" if len(clients) > 3 else "")
+        run_label = f"{len(clients)} clients ({hostnames_str})" if len(clients) <= 3 else f"{len(clients)} clients"
 
         # ONE parent run for the whole multi-client pipeline.
         run_id = create_automation_run(
             automation_type="timesketch",
-            name=f"TimeSketch Automation - {len(clients)} clients ({hostnames_str})",
+            name=f"TimeSketch Automation - {run_label}",
             details={
                 "multi_client": True,
                 "client_count": len(clients),
@@ -537,53 +540,13 @@ def start_multi_client_timesketch():
             return jsonify({"error": f"Prerequisites failed: {validation_msg}"}), 500
         add_log_to_run(run_id, f"✓ {validation_msg}", "success")
 
-        # Kick off KAPE for every client up-front (gRPC calls return instantly
-        # with a flow_id; the actual collection runs on the endpoint).
-        for c in clients:
-            flow_id = run_kape_collection_grpc(
-                c['client_id'], kape_target, timeout_seconds, cpu_limit,
-                max_rows=flow_max_rows, max_logs=flow_max_logs,
-                max_upload_mb=flow_max_upload_mb,
-                max_file_size=kape_max_file_size,
-                max_hash_size=kape_max_hash_size,
-                collection_policy=kape_collection_policy,
-            )
-            if not flow_id:
-                add_log_to_run(run_id, f"✗ Failed to start KAPE on {c['client_name']} ({c['client_id']})", "error")
-                c['flow_id'] = None
-                continue
-
-            c['flow_id'] = flow_id
-            c['kape_started_at'] = time.time()
-            add_log_to_run(run_id, f"[KAPE] Started on {c['client_name']} → flow {flow_id}", "info")
-
-            # Register in jobs dict so the flow is visible/cancellable elsewhere,
-            # but the canonical state lives on the parent run_id.
-            add_job(flow_id, {
-                "flow_id": flow_id,
-                "client_id": c['client_id'],
-                "client_name": c['client_name'],
-                "artifact_id": "kape",
-                "artifact_name": "KAPE Collection",
-                "kape_target": kape_target,
-                "timeout_seconds": timeout_seconds,
-                "cpu_limit": cpu_limit,
-                "status": "collecting",
-                "started_at": int(time.time()),
-                "phase": "KAPE Collection (multi-client)",
-                "run_id": run_id,
-                "parent_multi": True,
-            })
-
-        # Drop clients whose KAPE didn't even start.
-        live_clients = [c for c in clients if c.get('flow_id')]
-        if not live_clients:
-            update_run_status(run_id, "failed", progress=0, error="No KAPE collections could be started")
-            return jsonify({"run_id": run_id, "error": "No KAPE collections could be started"}), 500
-
         # Register cancel event so the Stop button affects this run.
         from services.workflow_service import register_cancel_event, unregister_cancel, is_cancelled
         cancel_event = register_cancel_event(run_id)
+
+        # Filled by _dispatch() in the background: the clients whose KAPE
+        # flow actually started.
+        live_clients = []
 
         # --- The orchestrator -----------------------------------------------
         # N parallel threads each monitor their KAPE + export ZIP, then push
@@ -596,7 +559,7 @@ def start_multi_client_timesketch():
         # plaso_in_flight: 0 or 1 — whether the consumer is currently mid-Plaso.
         # Used so the "queued behind X" log line reflects reality (Queue.qsize()
         # alone does NOT count the item currently being processed).
-        state = {'kape_done': 0, 'plaso_done': 0, 'plaso_in_flight': 0, 'total': len(live_clients)}
+        state = {'kape_done': 0, 'plaso_done': 0, 'plaso_in_flight': 0, 'total': 0}
         state_lock = threading.Lock()
 
         # KAPE typically wraps in 1–5 min for RegistryHives, up to 15+ min
@@ -619,7 +582,7 @@ def start_multi_client_timesketch():
                 kape_units = sum(min(1.0, c.get('kape_frac', 0)) for c in live_clients)
                 plaso_units = sum(min(1.0, c.get('plaso_frac', 0)) for c in live_clients)
             done_units = kape_units * 0.4 + plaso_units * 0.6
-            pct = int(5 + (done_units / state['total']) * 95)
+            pct = int(5 + (done_units / max(state['total'], 1)) * 95)
             update_run_status(run_id, "running", progress=min(pct, 99))
 
         def _heartbeat():
@@ -786,8 +749,65 @@ def start_multi_client_timesketch():
                     _bump_progress()
                     plaso_queue.task_done()
 
+        def _dispatch():
+            """Start KAPE on every client. This ran inside the HTTP request:
+            one gRPC call + docker exec + log write per client is 5-8 min at
+            1,000 clients, past nginx's 300 s, so the browser got a 504 while
+            the loop kept going -- and a retry dispatched everything again."""
+            for c in clients:
+                if cancel_event.is_set():
+                    return
+                flow_id = run_kape_collection_grpc(
+                    c['client_id'], kape_target, timeout_seconds, cpu_limit,
+                    max_rows=flow_max_rows, max_logs=flow_max_logs,
+                    max_upload_mb=flow_max_upload_mb,
+                    max_file_size=kape_max_file_size,
+                    max_hash_size=kape_max_hash_size,
+                    collection_policy=kape_collection_policy,
+                )
+                if not flow_id:
+                    add_log_to_run(run_id, f"✗ Failed to start KAPE on {c['client_name']} ({c['client_id']})", "error")
+                    c['flow_id'] = None
+                    continue
+
+                c['flow_id'] = flow_id
+                c['kape_started_at'] = time.time()
+                add_log_to_run(run_id, f"[KAPE] Started on {c['client_name']} → flow {flow_id}", "info")
+
+                # Register in jobs dict so the flow is visible/cancellable elsewhere,
+                # but the canonical state lives on the parent run_id.
+                add_job(flow_id, {
+                    "flow_id": flow_id,
+                    "client_id": c['client_id'],
+                    "client_name": c['client_name'],
+                    "artifact_id": "kape",
+                    "artifact_name": "KAPE Collection",
+                    "kape_target": kape_target,
+                    "timeout_seconds": timeout_seconds,
+                    "cpu_limit": cpu_limit,
+                    "status": "collecting",
+                    "started_at": int(time.time()),
+                    "phase": "KAPE Collection (multi-client)",
+                    "run_id": run_id,
+                    "parent_multi": True,
+                })
+                with state_lock:
+                    live_clients.append(c)
+                    state['total'] = len(live_clients)
+
         def _orchestrator():
             try:
+                _dispatch()
+                if cancel_event.is_set():
+                    add_log_to_run(run_id, "Pipeline cancelled by user", "warning")
+                    update_run_status(run_id, "cancelled", progress=0)
+                    return
+                if not live_clients:
+                    add_log_to_run(run_id, "✗ No KAPE collections could be started", "error")
+                    update_run_status(run_id, "failed", progress=0, error="No KAPE collections could be started")
+                    return
+                add_log_to_run(run_id, f"KAPE started on {len(live_clients)}/{len(clients)} clients", "info")
+
                 # Spawn one collector thread per client + the single consumer
                 # + a heartbeat that smooths progress mid-phase so the bar
                 # isn't stuck at 2% for the whole KAPE+Plaso runtime.
@@ -819,11 +839,13 @@ def start_multi_client_timesketch():
 
         threading.Thread(target=_orchestrator, daemon=True).start()
 
+        # Same shape as before; flow_id is null now because KAPE starts in
+        # the background (js/timesketch.js reads only response.ok / error).
         return jsonify({
             "status": "processing",
             "run_id": run_id,
-            "clients": [{"client_id": c['client_id'], "client_name": c['client_name'], "flow_id": c.get('flow_id')} for c in clients],
-            "message": f"Multi-client TimeSketch pipeline started for {len(live_clients)}/{len(clients)} clients."
+            "clients": [{"client_id": c['client_id'], "client_name": c['client_name'], "flow_id": None} for c in clients],
+            "message": f"Multi-client TimeSketch pipeline started for {len(clients)} clients."
         })
 
     except Exception as e:
