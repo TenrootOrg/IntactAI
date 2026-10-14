@@ -97,7 +97,8 @@ def _env_int(name, default, minimum=0):
 # per host and exported every finished ZIP at once into /tmp/plaso while Plaso
 # drained them one by one, which fills the root filesystem.
 # Clients whose KAPE flow is monitored/exported at the same time.
-TIMESKETCH_MAX_COLLECTORS = _env_int('TIMESKETCH_MAX_COLLECTORS', 8, minimum=1)
+# 1 by operator decision (2026-10-14): hosts go one after another.
+TIMESKETCH_MAX_COLLECTORS = _env_int('TIMESKETCH_MAX_COLLECTORS', 1, minimum=1)
 # Plaso (extract + log2timeline + pinfo) jobs at the same time, across EVERY
 # caller: start-multi, single import, scheduled runs and ZIP uploads.
 PLASO_MAX_CONCURRENT = _env_int('PLASO_MAX_CONCURRENT', 1, minimum=1)

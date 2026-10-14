@@ -609,7 +609,8 @@ def _persist_fusion_payload(run_id, client, evidence_id, log) -> None:
 #
 # A counter under a Condition rather than a Semaphore so the limit is re-read
 # while runs wait: a Settings change applies without a backend restart.
-MAX_CONCURRENT_RUNS_DEFAULT = 2
+# 1 by operator decision (2026-10-14): memory runs go one after another.
+MAX_CONCURRENT_RUNS_DEFAULT = 1
 _RUN_SLOTS = threading.Condition()
 _runs_active = 0
 # (read at, value). Every queued run re-checks the limit each few seconds, and
@@ -646,7 +647,7 @@ def _take_run_slot(cancel, log) -> None:
     lock: a log write can sit on SQLite's busy timeout, and a finishing run
     must never wait on that to hand its slot over."""
     global _runs_active
-    told = False
+    told_at = None
     while True:
         if cancel():
             raise RuntimeError("cancelled while queued")
@@ -655,15 +656,17 @@ def _take_run_slot(cancel, log) -> None:
             if limit <= 0 or _runs_active < limit:
                 _runs_active += 1
                 break
-            if told:
+            # Said again once an hour: a run silent for 10 h is failed by the
+            # orphan sweep, and with one run at a time a wait can be that long.
+            if told_at is not None and time.time() - told_at < 3600:
                 _RUN_SLOTS.wait(timeout=5)
                 continue
             active = _runs_active
         log(f"pipeline: queued — {active} memory run(s) already in progress "
             f"(limit {limit}, setting memory.max_concurrent_runs); this run starts "
             f"when one finishes", "info")
-        told = True
-    if told:
+        told_at = time.time()
+    if told_at is not None:
         log("pipeline: a slot is free — starting", "info")
 
 

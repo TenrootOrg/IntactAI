@@ -402,7 +402,35 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
                 pass
 
 
+# One Timesketch run on the appliance at a time, and inside a run one host at a
+# time by default (TIMESKETCH_MAX_COLLECTORS=1). Operator decision 2026-10-14:
+# memory and Timesketch work goes one after another, never side by side. A run
+# waiting here has started nothing yet; it says so once an hour, which also
+# keeps the 10 h orphan sweep from failing it while it waits.
+_ONE_TIMESKETCH_RUN = threading.Lock()
+
+
 def run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monitor_timeout, cancel_event):
+    """Wait for any other Timesketch run to finish, then run this one."""
+    got, said_at = _ONE_TIMESKETCH_RUN.acquire(blocking=False), None
+    while not got:
+        if cancel_event.is_set():
+            add_log_to_run(run_id, "Pipeline cancelled while queued", "warning")
+            update_run_status(run_id, "cancelled", progress=0)
+            unregister_cancel(run_id)
+            return
+        if said_at is None or time.time() - said_at >= 3600:
+            add_log_to_run(run_id, "Queued — another Timesketch run is in progress; "
+                                   "this one starts when it finishes")
+            said_at = time.time()
+        got = _ONE_TIMESKETCH_RUN.acquire(timeout=1)
+    try:
+        _run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monitor_timeout, cancel_event)
+    finally:
+        _ONE_TIMESKETCH_RUN.release()
+
+
+def _run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monitor_timeout, cancel_event):
     """KAPE on many clients -> ZIP export -> Plaso -> Timesketch, under ONE run.
 
     Shared by POST /api/timesketch/start-multi and scheduled Timesketch jobs.
@@ -418,9 +446,11 @@ def run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monito
     and export every finished collection at once into PLASO_OUTPUT_DIR (on the
     root filesystem, ~2 GB each) while one consumer ran Plaso AND waited for
     Timesketch indexing, one host at a time.
-      * KAPE is still started on every client up front, so the endpoints
-        collect in parallel as before;
-      * at most TIMESKETCH_MAX_COLLECTORS flows are monitored/exported at once;
+      * KAPE is started per client as a collector slot frees, so at most
+        TIMESKETCH_MAX_COLLECTORS flows are collecting/exported at once (all
+        clients up front landed every triage upload on the Velociraptor server
+        at the same time); with 1, the next host collects while the previous
+        one is in Plaso;
       * a flow is exported only when Plaso can take it: at most
         PLASO_MAX_CONCURRENT + 1 of this run's ZIPs exist at a time, and only
         with TIMESKETCH_EXPORT_MIN_FREE_GB free;
@@ -513,38 +543,33 @@ def run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monito
             if time.time() >= deadline or cancel_event.wait(60):
                 return False
 
-    def _dispatch():
-        for c in clients:
-            if cancel_event.is_set():
-                return
-            flow_id = run_kape_collection_grpc(c['client_id'], **kape_args)
-            if not flow_id:
-                log(f"✗ Failed to start KAPE on {c['client_name']} ({c['client_id']})", "error")
-                c['flow_id'] = None
-                continue
-            c['flow_id'] = flow_id
-            c['kape_started_at'] = time.time()
-            log(f"[KAPE] Started on {c['client_name']} → flow {flow_id}")
-            # Register in jobs dict so the flow is visible/cancellable elsewhere,
-            # but the canonical state lives on the parent run_id.
-            add_job(flow_id, {
-                "flow_id": flow_id,
-                "client_id": c['client_id'],
-                "client_name": c['client_name'],
-                "artifact_id": "kape",
-                "artifact_name": "KAPE Collection",
-                "kape_target": kape_args.get('kape_target'),
-                "timeout_seconds": kape_args.get('timeout_seconds'),
-                "cpu_limit": kape_args.get('cpu_limit'),
-                "status": "collecting",
-                "started_at": int(time.time()),
-                "phase": "KAPE Collection (multi-client)",
-                "run_id": run_id,
-                "parent_multi": True,
-            })
-            with lock:
-                live.append(c)
-                state['total'] = len(live)
+    def _dispatch_one(c):
+        flow_id = run_kape_collection_grpc(c['client_id'], **kape_args)
+        if not flow_id:
+            log(f"✗ Failed to start KAPE on {c['client_name']} ({c['client_id']})", "error")
+            c['flow_id'] = None
+            return False
+        c['flow_id'] = flow_id
+        c['kape_started_at'] = time.time()
+        log(f"[KAPE] Started on {c['client_name']} → flow {flow_id}")
+        # Register in jobs dict so the flow is visible/cancellable elsewhere,
+        # but the canonical state lives on the parent run_id.
+        add_job(flow_id, {
+            "flow_id": flow_id,
+            "client_id": c['client_id'],
+            "client_name": c['client_name'],
+            "artifact_id": "kape",
+            "artifact_name": "KAPE Collection",
+            "kape_target": kape_args.get('kape_target'),
+            "timeout_seconds": kape_args.get('timeout_seconds'),
+            "cpu_limit": kape_args.get('cpu_limit'),
+            "status": "collecting",
+            "started_at": int(time.time()),
+            "phase": "KAPE Collection (multi-client)",
+            "run_id": run_id,
+            "parent_multi": True,
+        })
+        return True
 
     def _process(c, zip_path):
         """Plaso + Timesketch for one client, in its own thread."""
@@ -602,7 +627,7 @@ def run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monito
         name = c['client_name']
         handed_off = False
         try:
-            if cancel_event.is_set():
+            if cancel_event.is_set() or not _dispatch_one(c):
                 return
             log(f"[KAPE/{name}] Monitoring flow {c['flow_id']}...")
             flow_state = monitor_flow_completion(
@@ -653,16 +678,10 @@ def run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monito
             _bump_progress()
 
     try:
-        _dispatch()
-        if cancel_event.is_set():
-            log("Pipeline cancelled by user", "warning")
-            update_run_status(run_id, "cancelled", progress=0)
-            return
-        if not live:
-            log("✗ No KAPE collections could be started", "error")
-            update_run_status(run_id, "failed", progress=0, error="No KAPE collections could be started")
-            return
-        log(f"KAPE started on {len(live)}/{len(clients)} clients; monitoring {TIMESKETCH_MAX_COLLECTORS} at a time "
+        with lock:
+            live.extend(clients)
+            state['total'] = len(live)
+        log(f"{len(clients)} clients: KAPE + export {TIMESKETCH_MAX_COLLECTORS} at a time "
             f"(TIMESKETCH_MAX_COLLECTORS), Plaso {PLASO_MAX_CONCURRENT} at a time (PLASO_MAX_CONCURRENT)")
 
         threading.Thread(target=_heartbeat, daemon=True).start()
@@ -676,6 +695,10 @@ def run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monito
         if cancel_event.is_set():
             log("Pipeline cancelled by user", "warning")
             update_run_status(run_id, "cancelled", progress=state['plaso_done'] * 100 // max(state['total'], 1))
+            return
+        if not any(c.get('flow_id') for c in live):
+            log("✗ No KAPE collections could be started", "error")
+            update_run_status(run_id, "failed", progress=0, error="No KAPE collections could be started")
             return
         log(f"✓✓✓ Multi-client pipeline complete: KAPE {state['kape_done']}/{state['total']}, "
             f"Plaso {state['plaso_done']}/{state['total']}", "success")

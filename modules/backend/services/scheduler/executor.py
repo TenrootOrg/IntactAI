@@ -470,9 +470,11 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
     """Dispatch a memory-forensics run from a scheduled blueprint.
 
     Memory acquisition is per-host (4-16 GB transient .raw, three
-    concurrent copies during pipeline). Each client becomes its own
-    workflow row and its own thread; how many actually capture and
-    analyse at once is bounded inside run_memory_pipeline, not here.
+    concurrent copies during pipeline), and the hosts go ONE AFTER ANOTHER
+    (operator decision 2026-10-14). One "memory_batch" run walks the list in a
+    single thread; each host gets its own memory run when its turn comes, so
+    no host row sits idle for hours (the orphan sweep fails a run silent for
+    10 h). Stopping the batch stops it after the current host.
 
     options: {include_yara (bool), case_name, acquire_flow_timeout_s,
     plugin_timeout_s, yarascan_timeout_s} — the same per-run controls the
@@ -511,30 +513,59 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
         except (TypeError, ValueError):
             pass
 
-    for cid in client_ids:
-        run_id = create_automation_run(
-            automation_type="memory",
-            name=f"Memory ({mode}) — scheduled: {cid}",
-            details={
-                "trigger": "scheduled",
-                "scheduled_job_id": job_meta.get("id"),
-                "mode": mode,
-                "client_id": cid,
-                "blueprint_id": blueprint_id or None,
-                "case_name": case_name,
-            },
-        )
-        add_log_to_run(run_id, f"scheduler: memory dispatch client={cid} mode={mode}", "info")
-        update_run_status(run_id, "running", progress=1)
-        threading.Thread(
-            target=run_memory_pipeline,
-            kwargs={
-                "run_id": run_id,
-                "client_id": cid,
-                "mode": mode,
-                "case_name": case_name,
-                "blueprint": blueprint,
-                "timeouts": timeouts or None,
-            },
-            daemon=True,
-        ).start()
+    from services.workflow_service import register_cancel_event, unregister_cancel
+
+    batch_id = create_automation_run(
+        automation_type="memory_batch",
+        name=f"Memory ({mode}) — scheduled: {len(client_ids)} host(s), one after another",
+        details={
+            "trigger": "scheduled",
+            "scheduled_job_id": job_meta.get("id"),
+            "mode": mode,
+            "client_ids": list(client_ids),
+            "blueprint_id": blueprint_id or None,
+            "case_name": case_name,
+        },
+    )
+    stop = register_cancel_event(batch_id)
+    update_run_status(batch_id, "running", progress=1)
+
+    def _one_after_another():
+        total, done = len(client_ids), 0
+        try:
+            for n, cid in enumerate(client_ids, 1):
+                if stop.is_set():
+                    add_log_to_run(batch_id, f"stopped — {total - n + 1} host(s) not started", "warning")
+                    update_run_status(batch_id, "cancelled", progress=(n - 1) * 100 // total)
+                    return
+                run_id = create_automation_run(
+                    automation_type="memory",
+                    name=f"Memory ({mode}) — scheduled: {cid}",
+                    details={
+                        "trigger": "scheduled",
+                        "scheduled_job_id": job_meta.get("id"),
+                        "batch_run_id": batch_id,
+                        "mode": mode,
+                        "client_id": cid,
+                        "blueprint_id": blueprint_id or None,
+                        "case_name": case_name,
+                    },
+                )
+                add_log_to_run(batch_id, f"host {n}/{total}: {cid} → run {run_id}")
+                add_log_to_run(run_id, f"scheduler: memory dispatch client={cid} mode={mode} "
+                                       f"(host {n}/{total} of batch {batch_id})", "info")
+                update_run_status(run_id, "running", progress=1)
+                run_memory_pipeline(run_id=run_id, client_id=cid, mode=mode, case_name=case_name,
+                                    blueprint=blueprint, timeouts=timeouts or None)
+                done += 1
+                if not stop.is_set():   # a Stop mid-host must not be flipped back to running
+                    update_run_status(batch_id, "running", progress=max(1, done * 100 // total - 1))
+            add_log_to_run(batch_id, f"all {total} host(s) done", "success")
+            update_run_status(batch_id, "completed", progress=100)
+        except Exception as e:
+            add_log_to_run(batch_id, f"batch stopped by an error after {done}/{total}: {e}", "error")
+            update_run_status(batch_id, "failed", error=str(e))
+        finally:
+            unregister_cancel(batch_id)
+
+    threading.Thread(target=_one_after_another, daemon=True).start()
