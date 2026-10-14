@@ -86,8 +86,11 @@ class StartMultiReturnsImmediately(unittest.TestCase):
             mock.patch.object(tr, "create_automation_run", create_run),
             mock.patch.object(tr, "add_log_to_run", lambda *a, **k: None),
             mock.patch.object(tr, "update_run_status", status),
-            mock.patch.object(tr, "add_job", lambda *a, **k: None),
-            mock.patch.object(tr, "run_kape_collection_grpc", slow_dispatch),
+            # The background pipeline lives in kape_service (shared with scheduled runs).
+            mock.patch.object(kape_service, "add_log_to_run", lambda *a, **k: None),
+            mock.patch.object(kape_service, "update_run_status", status),
+            mock.patch.object(kape_service, "add_job", lambda *a, **k: None),
+            mock.patch.object(kape_service, "unregister_cancel", lambda *a: None),
             mock.patch.object(kape_service, "run_kape_collection_grpc", slow_dispatch),
         ]
         for p in patches:

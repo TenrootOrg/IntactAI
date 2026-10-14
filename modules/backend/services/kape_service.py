@@ -4,15 +4,23 @@ KAPE Service - KAPE collection functions
 """
 
 import json
+import os
+import shutil
+import threading
 import time
 import grpc
 import traceback
 import sys
+from datetime import datetime
 from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
 
-from services.velociraptor_service import setup_velociraptor_connection, cancel_flow
-from services.workflow_service import get_cancel_event, register_cleanup
+from config import (PLASO_OUTPUT_DIR, PLASO_MAX_CONCURRENT, TIMESKETCH_MAX_COLLECTORS,
+                    TIMESKETCH_EXPORT_MIN_FREE_GB)
+from services.velociraptor_service import (setup_velociraptor_connection, cancel_flow,
+                                           export_flow_to_zip, cleanup_flow_export)
+from services.workflow_service import (get_cancel_event, register_cleanup, add_log_to_run,
+                                       update_run_status, add_job, update_job, unregister_cancel)
 from services.vql_safety import is_valid_client_id, is_valid_flow_id
 
 def run_kape_collection_grpc(
@@ -392,3 +400,290 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
                 channel.close()
             except Exception:
                 pass
+
+
+def run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monitor_timeout, cancel_event):
+    """KAPE on many clients -> ZIP export -> Plaso -> Timesketch, under ONE run.
+
+    Shared by POST /api/timesketch/start-multi and scheduled Timesketch jobs.
+    Blocks the calling (background) thread until every client is done, sets
+    the run's final status and unregisters its cancel event.
+
+    clients: [{'client_id', 'client_name'}], mutated with flow_id/progress.
+    kape_args: run_kape_collection_grpc keyword arguments.
+    ts_settings: process_kape_upload settings minus client_name/timeline_name.
+
+    Bounded so a 1,000-client run neither floods Velociraptor nor fills the
+    disk. It used to start one monitor thread per client (~200 VQL queries/s)
+    and export every finished collection at once into PLASO_OUTPUT_DIR (on the
+    root filesystem, ~2 GB each) while one consumer ran Plaso AND waited for
+    Timesketch indexing, one host at a time.
+      * KAPE is still started on every client up front, so the endpoints
+        collect in parallel as before;
+      * at most TIMESKETCH_MAX_COLLECTORS flows are monitored/exported at once;
+      * a flow is exported only when Plaso can take it: at most
+        PLASO_MAX_CONCURRENT + 1 of this run's ZIPs exist at a time, and only
+        with TIMESKETCH_EXPORT_MIN_FREE_GB free;
+      * Plaso itself is limited process-wide inside process_kape_upload;
+      * the Timesketch indexing wait runs in the client's own thread holding
+        no slot, so the next Plaso job starts as soon as one finishes.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from services.kape_upload_service import process_kape_upload
+
+    def log(msg, level='info'):
+        add_log_to_run(run_id, msg, level)
+
+    live = []
+    lock = threading.Lock()
+    state = {'kape_done': 0, 'plaso_done': 0, 'total': 0}
+    staged = threading.BoundedSemaphore(PLASO_MAX_CONCURRENT + 1)
+    plaso_threads = []
+    finished = threading.Event()
+
+    # KAPE typically wraps in 1–5 min for RegistryHives, up to 15+ min
+    # for _KapeTriage. Plaso + Timesketch import on a triage zip is
+    # usually 3–10 min. We don't get a real percentage from either, so
+    # the heartbeat asymptotes per-client fractional progress to 0.85
+    # over these soft deadlines — the final 0.15 fills in when the
+    # phase actually completes. Without this the bar sits at 2% (or
+    # 5%) for the entire KAPE+Plaso runtime and only jumps to 100%
+    # at the very end.
+    KAPE_SOFT_DEADLINE = 300.0
+    PLASO_SOFT_DEADLINE = 600.0
+
+    def _bump_progress():
+        # KAPE phase weighted 40%, Plaso phase weighted 60%.
+        with lock:
+            kape_units = sum(min(1.0, c.get('kape_frac', 0)) for c in live)
+            plaso_units = sum(min(1.0, c.get('plaso_frac', 0)) for c in live)
+            total = max(state['total'], 1)
+        pct = int(5 + ((kape_units * 0.4 + plaso_units * 0.6) / total) * 95)
+        update_run_status(run_id, "running", progress=min(pct, 99))
+
+    def _heartbeat():
+        # Ends on `finished`, not on "every client counted done": a client
+        # whose KAPE failed never reached the Plaso count, so the old loop
+        # never ended.
+        while not finished.wait(10):
+            now = time.time()
+            changed = False
+            with lock:
+                for c in live:
+                    for key, start, deadline in (('kape_frac', 'kape_started_at', KAPE_SOFT_DEADLINE),
+                                                 ('plaso_frac', 'plaso_started_at', PLASO_SOFT_DEADLINE)):
+                        if start in c and c.get(key, 0) < 1.0:
+                            est = min(0.85, (now - c[start]) / deadline)
+                            if est > c.get(key, 0):
+                                c[key] = est
+                                changed = True
+            if changed:
+                _bump_progress()
+
+    def _acquire(sem):
+        """Block on sem, but give up when the run is stopped."""
+        while not sem.acquire(timeout=5):
+            if cancel_event.is_set():
+                return False
+        if cancel_event.is_set():
+            sem.release()
+            return False
+        return True
+
+    def _room_to_export(name):
+        """PLASO_OUTPUT_DIR is on the root filesystem; a full disk takes the
+        whole appliance down, not just this run. Wait up to 30 min for this
+        or another run's Plaso stage to free space, then skip the host."""
+        need = TIMESKETCH_EXPORT_MIN_FREE_GB * 1024 ** 3
+        deadline = time.time() + 1800
+        warned = False
+        while True:
+            try:
+                os.makedirs(PLASO_OUTPUT_DIR, exist_ok=True)
+                free = shutil.disk_usage(PLASO_OUTPUT_DIR).free
+            except OSError:
+                return True     # cannot measure: let the export fail on its own
+            if free >= need:
+                return True
+            if not warned:
+                log(f"[ZIP/{name}] Only {free / 1024 ** 3:.1f} GB free in {PLASO_OUTPUT_DIR} "
+                    f"(need {TIMESKETCH_EXPORT_MIN_FREE_GB} GB, TIMESKETCH_EXPORT_MIN_FREE_GB) "
+                    f"— waiting up to 30 min for space", "warning")
+                warned = True
+            if time.time() >= deadline or cancel_event.wait(60):
+                return False
+
+    def _dispatch():
+        for c in clients:
+            if cancel_event.is_set():
+                return
+            flow_id = run_kape_collection_grpc(c['client_id'], **kape_args)
+            if not flow_id:
+                log(f"✗ Failed to start KAPE on {c['client_name']} ({c['client_id']})", "error")
+                c['flow_id'] = None
+                continue
+            c['flow_id'] = flow_id
+            c['kape_started_at'] = time.time()
+            log(f"[KAPE] Started on {c['client_name']} → flow {flow_id}")
+            # Register in jobs dict so the flow is visible/cancellable elsewhere,
+            # but the canonical state lives on the parent run_id.
+            add_job(flow_id, {
+                "flow_id": flow_id,
+                "client_id": c['client_id'],
+                "client_name": c['client_name'],
+                "artifact_id": "kape",
+                "artifact_name": "KAPE Collection",
+                "kape_target": kape_args.get('kape_target'),
+                "timeout_seconds": kape_args.get('timeout_seconds'),
+                "cpu_limit": kape_args.get('cpu_limit'),
+                "status": "collecting",
+                "started_at": int(time.time()),
+                "phase": "KAPE Collection (multi-client)",
+                "run_id": run_id,
+                "parent_multi": True,
+            })
+            with lock:
+                live.append(c)
+                state['total'] = len(live)
+
+    def _process(c, zip_path):
+        """Plaso + Timesketch for one client, in its own thread."""
+        name = c['client_name']
+        released = []
+
+        def plaso_done():
+            if not released:
+                released.append(True)
+                staged.release()
+        try:
+            with lock:
+                c['plaso_started_at'] = time.time()
+            update_job(c['flow_id'], {'phase': 'Processing with Plaso + Timesketch import'})
+            log(f"[Plaso/{name}] === Starting Plaso + Timesketch upload ===")
+            settings = dict(ts_settings, client_name=name,
+                            timeline_name=f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            result = process_kape_upload(
+                zip_path=zip_path,
+                original_filename=os.path.basename(zip_path),
+                settings=settings,
+                run_id=run_id,
+                cleanup_zip=True,
+                # This function owns the parent run's progress + status.
+                # Otherwise each per-client call would overwrite the bar with
+                # its own 5→70→100% and briefly mark the whole run "completed"
+                # after the first.
+                suppress_status_writes=True,
+                on_plaso_done=plaso_done,
+            )
+            cleanup_flow_export(c['client_id'], c['flow_id'], logger=log)
+            status = (result or {}).get('status')
+            if status == 'completed':
+                log(f"[Plaso/{name}] ✓ Imported (sketch {result.get('sketch_id')}, timeline {result.get('timeline_id')})", "success")
+                update_job(c['flow_id'], {'status': 'completed', 'phase': 'Completed', 'sketch_id': result.get('sketch_id'), 'timeline_id': result.get('timeline_id')})
+            elif status == 'no_events':
+                log(f"[Plaso/{name}] Completed — no events to import", "warning")
+                update_job(c['flow_id'], {'status': 'completed', 'phase': 'Completed (no events)'})
+            elif status != 'cancelled':
+                err = (result or {}).get('error', 'unknown error')
+                log(f"[Plaso/{name}] ✗ Failed: {err}", "error")
+                update_job(c['flow_id'], {'status': 'failed', 'phase': 'Plaso/Timesketch failed', 'error': err})
+        except Exception as e:
+            log(f"[Plaso/{name}] Exception: {e}", "error")
+            traceback.print_exc()
+        finally:
+            plaso_done()
+            with lock:
+                state['plaso_done'] += 1
+                c['plaso_frac'] = 1.0
+            _bump_progress()
+
+    def _collect(c):
+        """Monitor KAPE on one client, then export its ZIP once Plaso can take it."""
+        name = c['client_name']
+        handed_off = False
+        try:
+            if cancel_event.is_set():
+                return
+            log(f"[KAPE/{name}] Monitoring flow {c['flow_id']}...")
+            flow_state = monitor_flow_completion(
+                c['client_id'], c['flow_id'],
+                timeout_seconds=monitor_timeout,
+                logger=lambda m, l='info': log(f"[KAPE/{name}] {m}", l),
+                run_id=run_id,
+            )
+            if cancel_event.is_set():
+                return
+            if flow_state != "FINISHED":
+                log(f"[KAPE/{name}] ✗ Flow did not finish (state={flow_state})", "error")
+                update_job(c['flow_id'], {'status': 'failed', 'phase': 'KAPE failed', 'error': f'state={flow_state}'})
+                return
+
+            log(f"[KAPE/{name}] ✓ Collection complete — exporting when Plaso is ready for it", "success")
+            if not _acquire(staged):
+                return
+            try:
+                if not _room_to_export(name):
+                    if not cancel_event.is_set():
+                        log(f"[ZIP/{name}] ✗ Skipped: not enough free space in {PLASO_OUTPUT_DIR} to export", "error")
+                        update_job(c['flow_id'], {'status': 'failed', 'phase': 'Not enough disk space to export'})
+                    return
+                zip_path = os.path.join(PLASO_OUTPUT_DIR, f"flow_{c['flow_id']}_{run_id}.zip")
+                if not export_flow_to_zip(c['client_id'], c['flow_id'], zip_path,
+                                          logger=lambda m, l='info': log(f"[ZIP/{name}] {m}", l)):
+                    log(f"[ZIP/{name}] ✗ Export failed", "error")
+                    update_job(c['flow_id'], {'status': 'failed', 'phase': 'ZIP export failed'})
+                    return
+                t = threading.Thread(target=_process, args=(c, zip_path), daemon=True)
+                with lock:
+                    plaso_threads.append(t)
+                t.start()
+                handed_off = True
+            finally:
+                if not handed_off:
+                    staged.release()
+        except Exception as e:
+            log(f"[KAPE/{name}] Exception: {e}", "error")
+            traceback.print_exc()
+        finally:
+            with lock:
+                state['kape_done'] += 1
+                c['kape_frac'] = 1.0
+                if not handed_off:
+                    c['plaso_frac'] = 1.0   # nothing more will happen for this host
+            _bump_progress()
+
+    try:
+        _dispatch()
+        if cancel_event.is_set():
+            log("Pipeline cancelled by user", "warning")
+            update_run_status(run_id, "cancelled", progress=0)
+            return
+        if not live:
+            log("✗ No KAPE collections could be started", "error")
+            update_run_status(run_id, "failed", progress=0, error="No KAPE collections could be started")
+            return
+        log(f"KAPE started on {len(live)}/{len(clients)} clients; monitoring {TIMESKETCH_MAX_COLLECTORS} at a time "
+            f"(TIMESKETCH_MAX_COLLECTORS), Plaso {PLASO_MAX_CONCURRENT} at a time (PLASO_MAX_CONCURRENT)")
+
+        threading.Thread(target=_heartbeat, daemon=True).start()
+        with ThreadPoolExecutor(max_workers=TIMESKETCH_MAX_COLLECTORS) as pool:
+            list(pool.map(_collect, live))
+        # ponytail: indexing waits are one sleeping thread each, unbounded;
+        # they only pile up if Timesketch indexes slower than Plaso produces.
+        for t in list(plaso_threads):
+            t.join()
+
+        if cancel_event.is_set():
+            log("Pipeline cancelled by user", "warning")
+            update_run_status(run_id, "cancelled", progress=state['plaso_done'] * 100 // max(state['total'], 1))
+            return
+        log(f"✓✓✓ Multi-client pipeline complete: KAPE {state['kape_done']}/{state['total']}, "
+            f"Plaso {state['plaso_done']}/{state['total']}", "success")
+        update_run_status(run_id, "completed", progress=100)
+    except Exception as e:
+        log(f"Orchestrator exception: {e}", "error")
+        traceback.print_exc()
+        update_run_status(run_id, "failed", progress=0, error=str(e))
+    finally:
+        finished.set()
+        unregister_cancel(run_id)

@@ -8,11 +8,17 @@ which properly triggers Timesketch's Celery workers to process all parsers.
 
 import os
 import sys
+import threading
 import time
 import traceback
 import warnings
 
 from services.workflow_service import get_cancel_event
+
+# Find-or-create of a sketch by name is check-then-act. With the Timesketch
+# indexing wait no longer serialized behind Plaso, several imports into the
+# same sketch name can reach it together and each create a duplicate sketch.
+_SKETCH_LOCK = threading.Lock()
 
 # Disable SSL warnings for self-signed certificates. Certificate verification
 # itself is disabled per-call via verify=False when constructing the
@@ -492,28 +498,29 @@ def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_conf
 
         sketch = None
 
-        # If no sketch_id provided, search for existing sketch with same name
-        if not sketch_id:
-            log("Checking for existing sketch with same name...")
-            sketches = api.list_sketches()
-            for s in sketches:
-                if s.name == sketch_name:
-                    sketch_id = s.id
-                    sketch = s
-                    log(f"Found existing sketch '{sketch_name}' with ID: {sketch_id}")
-                    break
+        with _SKETCH_LOCK:
+            # If no sketch_id provided, search for existing sketch with same name
+            if not sketch_id:
+                log("Checking for existing sketch with same name...")
+                sketches = api.list_sketches()
+                for s in sketches:
+                    if s.name == sketch_name:
+                        sketch_id = s.id
+                        sketch = s
+                        log(f"Found existing sketch '{sketch_name}' with ID: {sketch_id}")
+                        break
 
-        if sketch_id and not sketch:
-            # Get the sketch by ID
-            sketch = api.get_sketch(sketch_id)
-            log(f"Using existing sketch with ID: {sketch_id}")
+            if sketch_id and not sketch:
+                # Get the sketch by ID
+                sketch = api.get_sketch(sketch_id)
+                log(f"Using existing sketch with ID: {sketch_id}")
 
-        if not sketch:
-            # Create new sketch
-            log(f"Creating new sketch: {sketch_name}")
-            sketch = api.create_sketch(sketch_name)
-            sketch_id = sketch.id
-            log(f"✓ Created new sketch with ID: {sketch_id}")
+            if not sketch:
+                # Create new sketch
+                log(f"Creating new sketch: {sketch_name}")
+                sketch = api.create_sketch(sketch_name)
+                sketch_id = sketch.id
+                log(f"✓ Created new sketch with ID: {sketch_id}")
 
         log("=" * 40)
 
