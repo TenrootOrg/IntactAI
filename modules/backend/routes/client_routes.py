@@ -33,6 +33,10 @@ def get_clients():
     try:
         include_offline = request.args.get('include_offline', '').lower() in ('true', '1', 'yes')
         clients = get_clients_from_snapshot(include_offline=include_offline)
+        # Offline-collection imports are not agents: nothing can be sent to them,
+        # so they are neither pickable nor counted (see _is_import).
+        imported = sum(1 for c in clients if c.get('imported'))
+        clients = [c for c in clients if not c.get('imported')]
         total = len(clients)
 
         # Smart filter: match the term against hostname, OS (+ version), or any
@@ -60,7 +64,8 @@ def get_clients():
         return jsonify({
             "items": clients,
             "total": total,
-            "filtered": filtered
+            "filtered": filtered,
+            "imported": imported,
         })
 
     except Exception as e:

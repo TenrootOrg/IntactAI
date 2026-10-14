@@ -65,6 +65,9 @@ def get_clients_from_snapshot(include_offline=False):
                labels AS labels,
                last_seen_at,
                last_ip,
+               agent_information.name AS agent,
+               agent_information.version AS version,
+               last_interrogate_flow_id AS interrogated,
                timestamp(epoch=now()) AS current_time
         FROM clients()
         WHERE client_id != 'server'{liveness_clause}
@@ -109,7 +112,8 @@ def get_clients_from_snapshot(include_offline=False):
                                     "os_version": item.get('os_version', ''),
                                     "labels": [str(l) for l in _labels if l],
                                     "last_seen_at": last_seen,
-                                    "last_ip": item.get('last_ip', '')
+                                    "last_ip": item.get('last_ip', ''),
+                                    "imported": _is_import(item),
                                 })
                 except json.JSONDecodeError as e:
                     print(f"[CLIENT-LIST] Error parsing VQL response: {e}", flush=True)
@@ -129,6 +133,16 @@ def get_clients_from_snapshot(include_offline=False):
         # where channel is falsy anyway) leaked the gRPC channel.
         if channel:
             channel.close()
+
+
+def _is_import(row):
+    """An offline-collection import, not an agent: Velociraptor keeps a client record
+    for it (no agent name, never interrogated, no version). It showed in every picker
+    and the dashboard count as a client nothing could ever be sent to. Same
+    predicate as Settings → Velociraptor (velociraptor_clients.classify), reused so
+    the two can't disagree. Callers that only map host -> OS keep these rows."""
+    from services.velociraptor_clients import classify
+    return classify([row], None)["counts"]["imported"] == 1
 
 
 def get_clients_from_snapshot_file(include_offline=True):
