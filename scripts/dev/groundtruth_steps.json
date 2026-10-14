@@ -1,0 +1,94 @@
+{
+  "_about": "Key attack steps per public dataset, from the 2026-10-14 ground-truth audits (simulations/audit/). rx must match the fused findings; report_rx (default rx) the report. traps = known-false claims the report must not make.",
+  "szechuan": {
+    "steps": [
+      {"id": "A.brute_force", "what": "RDP brute force: ~95 failed logons then success", "rx": "brute|password guess|failed logon[^\\n]{0,200}(succe|followed)|(9[0-9]|1[0-9]{2}) failed (logon|log-on|sign)"},
+      {"id": "A.ext_rdp_ip", "what": "external RDP logon from 194.61.24.102", "rx": "194\\.61\\.24\\.102"},
+      {"id": "A.getsystem_dc", "what": "getsystem service outmgo on the DC", "rx": "outmgo"},
+      {"id": "A.reescalation", "what": "later DC re-escalations mszhao / pmhrio", "rx": "mszhao|pmhrio"},
+      {"id": "A.getsystem_desk", "what": "getsystem service nehgye on the desktop", "rx": "nehgye"},
+      {"id": "A.malware_svc", "what": "coreupdater installed as a service (both hosts)", "rx": "coreupdat"},
+      {"id": "A.spoolsv_inject", "what": "migration into spoolsv.exe / spooler crash", "rx": "spoolsv[^\\n]{0,120}(crash|inject|migrat)|(crash|inject|migrat)[^\\n]{0,120}spoolsv"},
+      {"id": "A.lateral_rdp", "what": "RDP hop DC -> DESKTOP-SDN1RPT", "rx": "(rdp|remote desktop|termsrv|type 10|remoteinteractive)[^\\n]{0,200}desktop-sdn1rpt[^\\n]{0,200}(citadel|10\\.42\\.85\\.10)|(citadel-dc01|10\\.42\\.85\\.10)[^\\n]{0,200}(rdp|remote desktop|termsrv)[^\\n]{0,200}desktop-sdn1rpt"},
+      {"id": "A.defender_off", "what": "Defender real-time protection disabled on the desktop", "rx": "(real[- ]?time protection|defender)[^\\n]{0,120}(disabl|turned off|off)"},
+      {"id": "A.runkey", "what": "registry Run-key PowerShell persistence (both hosts)", "rx": "run[- ]?key|currentversion\\\\\\\\run|9seocawv|q9z1bssi|registry[^\\n]{0,60}persist"},
+      {"id": "A.last_session", "what": "attacker's last RDP session 03:56-03:57", "rx": "03:5[67]"},
+      {"id": "A.dc_role", "what": "CITADEL-DC01 named as the domain controller", "rx": "citadel-dc01[^\\n]{0,120}domain controller|domain controller[^\\n]{0,80}citadel-dc01"}
+    ],
+    "traps": [
+      {"id": "A.vector_unknown", "what": "says initial access is undetermined/unknown", "rx": "initial[- ]access[^\\n.]{0,80}(undetermined|unknown|not (been )?(established|determined|identified))"},
+      {"id": "A.dcshadow", "what": "calls the DC promotion/rename 'DC Shadow'", "rx": "dc ?shadow"},
+      {"id": "A.machine_lateral", "what": "machine account cross-host use called lateral movement", "rx": "desktop-sdn1rpt\\$[^\\n]{0,200}lateral"},
+      {"id": "A.ntlmv1", "what": "NTLMv1 recommendation from a benign event", "rx": "ntlm ?v1"}
+    ]
+  },
+  "apt29_day1": {
+    "steps": [
+      {"id": "1.rtlo_scr", "what": "user runs RTLO-disguised cod.3aka3.scr", "rx": "3aka3"},
+      {"id": "1.user_exec", "what": "initial access = user execution of the .scr", "rx": "3aka3", "report_rx": "(user|double[- ]click|explorer)[^\\n]{0,160}(3aka3|\\.scr)|(3aka3|\\.scr)[^\\n]{0,160}(user execution|double[- ]click|launched by explorer|explorer\\.exe)"},
+      {"id": "1.monkey_png", "what": "stego loader monkey.png", "rx": "monkey\\.png"},
+      {"id": "1.uac_sdclt", "what": "UAC bypass via sdclt", "rx": "sdclt"},
+      {"id": "1.javamtsup", "what": "javamtsup service persistence", "rx": "javamtsup"},
+      {"id": "1.hostui_lnk", "what": "hostui.lnk Startup persistence", "rx": "hostui"},
+      {"id": "1.lsass", "what": "credential dumping from LSASS", "rx": "lsass"},
+      {"id": "1.keylog", "what": "keystroke logging", "rx": "keystroke|keylog"},
+      {"id": "1.screen", "what": "screen capture (CopyFromScreen)", "rx": "screen ?(capture|shot)|copyfromscreen"},
+      {"id": "1.clipboard", "what": "clipboard capture", "rx": "clipboard"},
+      {"id": "1.cert_export", "what": "private keys exported (PFX)", "rx": "pfx|certificate export|private key"},
+      {"id": "1.stage_7z", "what": "password 7z archive OfficeSupplies.7z", "rx": "officesupplies|\\.7z\\b"},
+      {"id": "1.webdav_exfil", "what": "exfil to \\\\192.168.0.4\\webdav", "rx": "192\\.168\\.0\\.4[^\\n]{0,80}webdav|webdav[^\\n]{0,120}192\\.168\\.0\\.4"},
+      {"id": "1.winrm_nashua", "what": "WinRM to NASHUA", "rx": "winrm|invoke-command|wsmprovhost"},
+      {"id": "1.psexec", "what": "PsExec lateral movement", "rx": "psexe"},
+      {"id": "1.rar_pw", "what": "password RAR on NASHUA", "rx": "rar\\.exe|\\brar\\b[^\\n]{0,40}(-hp|password)|password[^\\n]{0,40}\\brar\\b"},
+      {"id": "1.sdelete", "what": "SDelete anti-forensics", "rx": "sdelete"},
+      {"id": "1.discovery", "what": "host/domain discovery bundle (Invoke-Discovery)", "rx": "invoke-discovery|antivirusproduct|firewallproduct|netusergetgroups|host (and|/) domain discovery|reconnaissance"}
+    ],
+    "traps": [
+      {"id": "1.utica_host", "what": "UTICA called an affected host on Day 1", "rx": "utica[^\\n]{0,200}(fourth|affected|compromis|isolate)"},
+      {"id": "1.sysmon_tamper", "what": "cloud telemetry agent called Sysmon tampering", "rx": "sysmonente|sysmon (tamper|access)"},
+      {"id": "1.defender_self", "what": "Defender's own boot writes called 'Defender disabled'", "rx": "defender[^\\n]{0,80}(disabled|exclusion)"},
+      {"id": "1.no_destination", "what": "says no exfil destination when it is in the rows", "rx": "no (outbound transfer|destination)|destination (is|was) not (provided|identified)"},
+      {"id": "1.cred_misuse_root", "what": "root cause = credential misuse (it was user execution)", "rx": "root cause[^\\n]{0,200}credential (misuse|compromise)"}
+    ]
+  },
+  "apt29_day2": {
+    "steps": [
+      {"id": "2.ads_launch", "what": "payload run from an alternate data stream (.lnk -> -Stream schemas | IEX)", "rx": "stream schemas|alternate data stream[^\\n]{0,200}utica|utica[^\\n]{0,200}alternate data stream"},
+      {"id": "2.certutil", "what": "certutil decode -> kxwn.lock", "rx": "certutil|kxwn"},
+      {"id": "2.runkey", "what": "Run key WebCache -> rundll32 kxwn.lock", "rx": "webcache|run key"},
+      {"id": "2.timestomp_utica", "what": "timestomp of kxwn.lock on UTICA", "rx": "timestomp"},
+      {"id": "2.uac", "what": "UAC bypass (sdclt / DelegateExecute)", "rx": "sdclt|delegateexecute"},
+      {"id": "2.mimikatz", "what": "Mimikatz logonpasswords", "rx": "mimikatz|sekurlsa|logonpasswords"},
+      {"id": "2.wmi_persist", "what": "WMI subscription WindowsParentalControlMigration", "rx": "windowsparentalcontrolmigration[^\\n]{0,80}(wmi|subscription|consumer)|wmi[^\\n]{0,80}(subscription|consumer)"},
+      {"id": "2.powerview", "what": "PowerView domain-controller discovery", "rx": "powerview|netdomaincontroller"},
+      {"id": "2.krbtgt", "what": "krbtgt dump on the DC", "rx": "krbtgt"},
+      {"id": "2.dc_role", "what": "NEWYORK named as the domain controller", "rx": "newyork[^\\n]{0,120}domain controller|domain controller[^\\n]{0,80}newyork"},
+      {"id": "2.email", "what": "Outlook email collection", "rx": "e-?mail|outlook"},
+      {"id": "2.stage_archive", "what": "staging + zip with GIF header (WindowsParentalControlMigration.tmp)", "rx": "windowsparentalcontrolmigration\\.tmp|gif (header|magic)|staged[^\\n]{0,80}(zip|archive)"},
+      {"id": "2.webdav", "what": "OneDrive WebDAV mount (net use y:)", "rx": "d\\.docs\\.live\\.net|onedrive"},
+      {"id": "2.exfil_copy", "what": "archive copied to the WebDAV drive", "rx": "(cop(y|ied)|exfiltrat|upload)[^\\n]{0,120}(y:|onedrive|webdav)"},
+      {"id": "2.sdelete", "what": "SDelete wipes m.exe / .tmp / .html", "rx": "sdelete|secure[- ]delet|wip(e|ed)"},
+      {"id": "2.reboot", "what": "reboot, then persistence fires", "rx": "reboot|restart(ed)?[^\\n]{0,40}(host|computer|system)"},
+      {"id": "2.golden_ticket", "what": "golden ticket / pass-the-ticket as kmalone", "rx": "golden[- ]ticket|kerberos::golden|/ptt\\b|pass[- ]the[- ]ticket"},
+      {"id": "2.toby", "what": "local account 'toby' created on SCRANTON", "rx": "\\btoby\\b"}
+    ],
+    "traps": [
+      {"id": "2.sysmon_tamper", "what": "cloud telemetry agent called SysmonEnte/Sysmon tampering", "rx": "sysmonente|sysmon (tamper|access)"},
+      {"id": "2.defender_self", "what": "Defender's own writes called 'Defender disabled'", "rx": "defender[^\\n]{0,80}(disabled|exclusion)"},
+      {"id": "2.nashua_day2", "what": "NASHUA treated as compromised in Day 2", "rx": "nashua[^\\n]{0,200}(compromis|high-privilege|elevated|lsass)"},
+      {"id": "2.reset_kmalone", "what": "'reset kmalone' advice for a forged identity", "rx": "reset[^\\n]{0,40}kmalone"},
+      {"id": "2.parent_unknown", "what": "says the parent process is unknown", "rx": "(does not|doesn't|not) identify[^\\n]{0,40}parent"}
+    ]
+  },
+  "apt29_both": {
+    "include": ["apt29_day1", "apt29_day2"],
+    "steps": [],
+    "traps": [
+      {"id": "B.pivot", "what": "invents a pbeesly -> dschrute credential pivot between the two intrusions", "rx": "pbeesly[^\\n]{0,250}(later|then|followed)[^\\n]{0,80}dschrute"},
+      {"id": "B.rar_webdav", "what": "merges Day 1's rar with Day 2's WebDAV", "rx": "password-protected archive[^\\n]{0,80}webdav"},
+      {"id": "B.sysmon_tamper", "what": "cloud telemetry agent called Sysmon tampering", "rx": "sysmonente|sysmon (tamper|access)"},
+      {"id": "B.defender_self", "what": "Defender's own writes called 'Defender disabled'", "rx": "defender[^\\n]{0,80}(disabled|exclusion)"},
+      {"id": "B.reset_kmalone", "what": "'reset kmalone' advice for a forged identity", "rx": "reset[^\\n]{0,40}kmalone"}
+    ]
+  }
+}
