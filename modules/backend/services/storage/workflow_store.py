@@ -32,44 +32,58 @@ def save_workflow(workflow_data: Dict[str, Any]) -> bool:
     lost-log race the per-run lock used to paper over. The embedded `logs`
     column now only holds what runs created before workflow_logs carry (and
     rows inserted whole, e.g. an imported case bundle)."""
-    try:
-        conn = get_connection()
-        conn.execute(
-            """INSERT INTO workflows
-               (run_id, automation_type, name, details, status, progress, logs, phase, error,
-                created_at, updated_at, phase_timings, llm_metrics, sigma_rule_tally, error_count,
-                case_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(run_id) DO UPDATE SET
-                automation_type = excluded.automation_type, name = excluded.name,
-                details = excluded.details, status = excluded.status,
-                progress = excluded.progress, phase = excluded.phase,
-                error = excluded.error, created_at = excluded.created_at,
-                updated_at = excluded.updated_at, phase_timings = excluded.phase_timings,
-                llm_metrics = excluded.llm_metrics,
-                sigma_rule_tally = excluded.sigma_rule_tally, case_id = excluded.case_id""",
-            (workflow_data.get('run_id'),
-             workflow_data.get('automation_type'),
-             workflow_data.get('name'),
-             _json_or_default(workflow_data.get('details'), None),
-             workflow_data.get('status'),
-             workflow_data.get('progress', 0),
-             _json_or_default(workflow_data.get('logs'), '[]'),
-             workflow_data.get('phase'),
-             workflow_data.get('error'),
-             workflow_data.get('created_at'),
-             workflow_data.get('updated_at'),
-             _json_or_default(workflow_data.get('phase_timings'), None),
-             _json_or_default(workflow_data.get('llm_metrics'), None),
-             _json_or_default(workflow_data.get('sigma_rule_tally'), None),
-             int(workflow_data.get('error_count') or 0),
-             workflow_data.get('case_id'))
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error saving workflow: {e}", flush=True)
-        return False
+    for attempt in range(3):
+        try:
+            conn = get_connection()
+            conn.execute(
+                """INSERT INTO workflows
+                   (run_id, automation_type, name, details, status, progress, logs, phase, error,
+                    created_at, updated_at, phase_timings, llm_metrics, sigma_rule_tally, error_count,
+                    case_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                    automation_type = excluded.automation_type, name = excluded.name,
+                    details = excluded.details, status = excluded.status,
+                    progress = excluded.progress, phase = excluded.phase,
+                    error = excluded.error, created_at = excluded.created_at,
+                    updated_at = excluded.updated_at, phase_timings = excluded.phase_timings,
+                    llm_metrics = excluded.llm_metrics,
+                    sigma_rule_tally = excluded.sigma_rule_tally, case_id = excluded.case_id""",
+                (workflow_data.get('run_id'),
+                 workflow_data.get('automation_type'),
+                 workflow_data.get('name'),
+                 _json_or_default(workflow_data.get('details'), None),
+                 workflow_data.get('status'),
+                 workflow_data.get('progress', 0),
+                 _json_or_default(workflow_data.get('logs'), '[]'),
+                 workflow_data.get('phase'),
+                 workflow_data.get('error'),
+                 workflow_data.get('created_at'),
+                 workflow_data.get('updated_at'),
+                 _json_or_default(workflow_data.get('phase_timings'), None),
+                 _json_or_default(workflow_data.get('llm_metrics'), None),
+                 _json_or_default(workflow_data.get('sigma_rule_tally'), None),
+                 int(workflow_data.get('error_count') or 0),
+                 workflow_data.get('case_id'))
+            )
+            conn.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            # "database is locked" after the 5 s busy_timeout, under heavy log
+            # writing. A dropped save can be a run's 'completed' status -- the run
+            # then sits 'running' until the orphan sweep fails it and fusion skips
+            # it -- so retry like append_workflow_log does.
+            try:
+                get_connection().rollback()
+            except Exception:
+                pass
+            if attempt == 2 or "locked" not in str(e):
+                print(f"[STORAGE] Error saving workflow: {e}", flush=True)
+                return False
+            time.sleep(0.2)
+        except Exception as e:
+            print(f"[STORAGE] Error saving workflow: {e}", flush=True)
+            return False
 
 
 def _log_entry(ts, level, msg) -> Dict[str, Any]:

@@ -98,6 +98,34 @@ class AppendIsOneInsert(unittest.TestCase):
         self.assertEqual(run["error_count"], 1)
         self.assertEqual(run["phase"], "Exporting")
 
+    def test_a_locked_database_does_not_drop_a_status_save(self):
+        """Under heavy log writing a save can hit "database is locked" past the
+        busy timeout. Dropping it lost a run's 'completed' status (the run then
+        sat 'running' until the orphan sweep failed it), so it is retried."""
+        import sqlite3
+        from unittest import mock
+        from services.storage import workflow_store
+        rid = _mk("running", "c1")
+        real, tries = get_connection(), []
+
+        class Busy:
+            def execute(self, sql, *a):
+                if sql.lstrip().startswith("INSERT INTO workflows") and not tries:
+                    tries.append(1)
+                    raise sqlite3.OperationalError("database is locked")
+                return real.execute(sql, *a)
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        run = get_workflow(rid)
+        run["status"] = "completed"
+        with mock.patch.object(workflow_store, "get_connection", return_value=Busy()), \
+                mock.patch.object(workflow_store.time, "sleep"):
+            self.assertTrue(save_workflow(run))
+        self.assertEqual(tries, [1])
+        self.assertEqual(get_workflow(rid)["status"], "completed")
+
     def test_error_lines_count_and_auto_fail_still_works(self):
         rid = _mk("running", "c1")
         ws.add_log_to_run(rid, "fatal", "error")
