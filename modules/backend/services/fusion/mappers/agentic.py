@@ -195,6 +195,45 @@ _HAYABUSA_ANOM = {"critical": 100, "crit": 100, "high": 50, "medium": 15, "med":
 
 _WIDS_CAP = 2000
 
+# DISTINCT ACTIVITY INSIDE ONE FOLD. A rule's hits on a host fold into one entity per
+# episode, and only the loudest row's details were kept -- so a tool run again later with
+# different arguments became "+1 occurrence": on APT29 Day 2 a golden-ticket command at
+# 08:16 vanished into the 07:58 "Mimikatz Use" finding. The hits are now split where the
+# rule went quiet for far longer than its own rhythm (relative to this fold's median gap,
+# never a fixed time picked for a dataset), and each cluster's strongest row is kept as a
+# variant. Nothing is split into new findings: ids, verdicts and timeline rows stay.
+VARIANT_GAP_RATIO = 10        # a gap this many times the fold's median gap starts a cluster
+VARIANT_MIN_GAP_S = 120       # ... and never less than this, so a steady rule is not shredded
+VARIANT_CAP = 8               # clusters kept per fold: the first half and the last half
+VARIANT_CHARS = 400
+
+
+def _variants(hits) -> list:
+    """[{ts, n, text}] for each burst of a fold's hits, or [] when it is one burst."""
+    dated = sorted((h for h in hits if h[0]), key=lambda h: h[0])
+    times = [keys.to_utc_dt(h[0]) for h in dated]
+    if len(dated) < 2 or None in times:
+        return []
+    gaps = [(b - a).total_seconds() for a, b in zip(times, times[1:])]
+    cut = max(VARIANT_MIN_GAP_S, VARIANT_GAP_RATIO * sorted(gaps)[len(gaps) // 2])
+    clusters = [[dated[0]]]
+    for h, g in zip(dated[1:], gaps):
+        if g > cut:
+            clusters.append([h])
+        else:
+            clusters[-1].append(h)
+    if len(clusters) < 2:
+        return []
+    if len(clusters) > VARIANT_CAP:
+        clusters = clusters[:VARIANT_CAP // 2] + clusters[-(VARIANT_CAP - VARIANT_CAP // 2):]
+    out = []
+    for c in clusters:
+        top = max(c, key=lambda h: h[1])
+        raw = str(F.get(top[3], "Details", "Message", default=""))
+        text = DET.cmdline(DET.parse_details(raw)) or " ".join(raw.split())
+        out.append({"ts": c[0][0], "n": len(c), "text": str(text)[:VARIANT_CHARS]})
+    return out
+
 
 def _level_anomaly(level) -> int:
     return _HAYABUSA_ANOM.get(str(level or "").strip().lower(), 1)
@@ -1465,7 +1504,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     "last": max((h[0] for h in dated), default=None),
                     "anom": top[1], "level": top[2], "row": top[3], "loc": top[4],
                     "run_id": agg["run_id"], "artifact": agg["artifact"],
-                    "wids": wids, "first_wids": first_wids}, i))
+                    "wids": wids, "first_wids": first_wids, "variants": _variants(ep)}, i))
         except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
             map_skip("Hayabusa/Sigma rule folding", _x)
             continue
@@ -1497,7 +1536,8 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                       ev_tgtip=DET.tgtip(pd),
                       ev_sha256=_hh.get("sha256"), ev_md5=_hh.get("md5"),
                       win_ids=sorted(agg["wids"]) or None,
-                      win_ids_first=sorted(agg["first_wids"]) or None)
+                      win_ids_first=sorted(agg["first_wids"]) or None,
+                      variants=agg.get("variants") or None)
             ev.severity = from_string(str(agg["level"]))   # true SIGMA level
             ev.last_seen = agg["last"]
             ents.append(ev)

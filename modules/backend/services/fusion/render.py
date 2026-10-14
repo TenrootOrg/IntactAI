@@ -1144,7 +1144,7 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
         x = ("" if x is None else str(x)).strip()
         return "" if x.lower() in ("", "unknown", "-", "n/a", "none") else x
 
-    lines = []
+    lines, variants = [], []
     for eid in (f.entity_ids or []):
         e = graph.entities.get(eid)
         if not e or e.type != "event":
@@ -1219,9 +1219,22 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
             s = s[:cap_chars - 1] + "…"
         if s and s not in lines:
             lines.append(s)
+        # The same rule firing again later with other arguments is folded into this
+        # entity (mappers/agentic._variants) -- APT29 Day 2's golden-ticket command at
+        # 08:16 inside the 07:58 Mimikatz finding. Each later burst gets its own line,
+        # but only for a high/critical rule (a named tool or technique; a routine medium
+        # rule repeats for ordinary reasons) and AFTER every detection's own line: shown
+        # inline they filled a burst's six slots with "Process Ran With High Privilege"
+        # repeats and pushed its screen-capture and WebDAV lines out (APT29 Day 1).
+        if sev.at_least(e.severity or "informational", "high"):
+            for v in (a.get("variants") or []):
+                t = " ".join(str(v.get("text") or "").split()).replace("`", "'")
+                if t and t[:60] not in s:
+                    vl = f"Also at {v.get('ts')} ({v.get('n', 1)} hit(s)): {t}"
+                    variants.append(vl if len(vl) <= cap_chars else vl[:cap_chars - 1] + "…")
         if len(lines) >= cap_events:
             break
-    return lines
+    return lines + [v for v in dict.fromkeys(variants) if v not in lines][:cap_events]
 
 
 def _known_identities(graph, limit=5000):
