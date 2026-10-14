@@ -225,12 +225,14 @@ document.addEventListener('alpine:initialized', () => {
             }
         });
 
-        // Fast refresh for workflows (1 second)
+        // Workflows list refresh. 5 s, not 1 s: each poll is a page of run
+        // summaries, and run status/progress move on a scale of seconds to hours.
+        // An open log window follows its own run at 1 s (workflows.js).
         setInterval(() => {
-            if (Alpine.store('app').currentTab === 'workflows') {
+            if (Alpine.store('app').currentTab === 'workflows' && !document.hidden) {
                 Alpine.store('workflows').load();
             }
-        }, 1000);
+        }, 5000);
 
         // Slower refresh for services and clients (10 seconds)
         setInterval(() => {

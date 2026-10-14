@@ -31,6 +31,7 @@ from .workflow_store import (
     delete_workflow,
     append_workflow_log,
     get_workflow_logs,
+    list_workflow_summaries,
 )
 
 # Blueprint operations

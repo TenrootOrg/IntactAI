@@ -130,6 +130,47 @@ def get_workflows_by_case(case_id: str, with_logs: bool = True) -> List[Dict[str
         return []
 
 
+# The only `details` keys the Workflows list reads (partials/workflows.html,
+# js/stores/workflows.js stopWorkflow) plus hunt_id for the hunt reconcile.
+# details can be huge (a fleet run's client_ids, a case's whole state), so the
+# list pulls just these out in SQL instead of shipping the blob.
+_SUMMARY_DETAIL_KEYS = ("blueprint", "blueprint_id", "file_id", "bundle_path",
+                        "bundle_size_mb", "case_name", "upload_id", "hunt_id")
+
+
+def list_workflow_summaries(case_id: Optional[str] = None, automation_type: Optional[str] = None,
+                            limit: int = 200, offset: int = 0):
+    """One page of runs for the Workflows list, newest first, without logs and
+    with only the details keys the list shows. Returns (runs, total)."""
+    where, params = [], []
+    if case_id:
+        where.append("case_id = ?")
+        params.append(case_id)
+    if automation_type:
+        where.append("automation_type = ?")
+        params.append(automation_type)
+    w = ("WHERE " + " AND ".join(where)) if where else ""
+    pairs = ", ".join(f"'{k}', json_extract(details, '$.{k}')" for k in _SUMMARY_DETAIL_KEYS)
+    try:
+        conn = get_connection()
+        total = conn.execute(f"SELECT COUNT(*) FROM workflows {w}", params).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT run_id, automation_type, name, status, progress, phase, error, "
+            f"created_at, updated_at, error_count, case_id, phase_timings, llm_metrics, "
+            f"sigma_rule_tally, CASE WHEN json_valid(details) THEN json_object({pairs}) END "
+            f"AS details FROM workflows {w} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*params, int(limit), int(offset))).fetchall()
+    except Exception as e:
+        print(f"[STORAGE] Error listing workflows: {e}", flush=True)
+        return [], 0
+    runs = []
+    for r in rows:
+        d = row_to_dict(r, ['details', 'phase_timings', 'llm_metrics', 'sigma_rule_tally'])
+        d["details"] = {k: v for k, v in (d.get("details") or {}).items() if v is not None}
+        runs.append(d)
+    return runs, total
+
+
 def reassign_null_case(case_id: str, automation_types: List[str]) -> int:
     """One-time backfill: tag legacy analysis runs that have no case to `case_id`.
     Returns the number of rows updated. Idempotent (only touches NULL case_id)."""

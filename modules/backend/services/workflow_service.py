@@ -713,7 +713,15 @@ def record_sigma_rule_tally(run_id, tally):
         workflow["updated_at"] = datetime.now().isoformat()
         save_workflow(workflow)
 
-def cleanup_orphan_workflows():
+# cleanup_orphan_workflows ran on EVERY call of get_all_automation_runs -- and
+# so on every 1 s poll of the Workflows tab and most fusion paths. Its unit is
+# hours (max_idle_hours), so once a minute is plenty.
+_ORPHAN_SWEEP_EVERY = 60.0
+_last_orphan_sweep = [0.0]
+_orphan_sweep_lock = threading.Lock()
+
+
+def cleanup_orphan_workflows(force=False):
     """Mark workflows as failed if they look orphaned — `running`/`pending`
     with no activity (no log lines, no status updates) for more than the
     idle threshold.
@@ -726,7 +734,13 @@ def cleanup_orphan_workflows():
     as a second-best fallback) so the semantics is "stale", not "old".
     A genuinely orphaned crash still has an ancient `updated_at` and
     still gets caught.
+
+    Runs at most once per _ORPHAN_SWEEP_EVERY seconds; force=True always runs.
     """
+    with _orphan_sweep_lock:
+        if not force and time.time() - _last_orphan_sweep[0] < _ORPHAN_SWEEP_EVERY:
+            return
+        _last_orphan_sweep[0] = time.time()
     now = datetime.now()
     max_idle_hours = 10
 

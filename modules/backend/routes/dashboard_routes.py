@@ -7,10 +7,7 @@ import threading
 
 from flask import Blueprint, jsonify
 
-from services import (
-    get_all_automation_runs,
-    get_automation_run
-)
+from services import get_automation_run
 
 dashboard_bp = Blueprint('dashboard', __name__)
 
@@ -53,19 +50,31 @@ def get_all_automations():
     (upgrade/maintenance/purge/support-bundle/settings/…) always run as the
     built-in System workspace, so they appear only there — switch to the
     System workspace then Workflows to see them. They must NOT leak into an
-    investigation workspace like Default."""
-    from flask import g
-    automation_runs = get_all_automation_runs()
-    case_id = getattr(g, "case_id", None)
-    if case_id:
-        automation_runs = [r for r in automation_runs if r.get("case_id") == case_id]
-    for run in automation_runs:
+    investigation workspace like Default.
+
+    Summary rows, one page at a time (?limit=&offset=&type=), filtered in SQL.
+    This used to load every run of every case WITH every log line, filter in
+    Python and return it all -- once a second per open tab. Logs come from
+    /automation/<id>/logs; `total` is the count before paging. Elasticsearch-only
+    runs (never case-tagged, so never shown in a workspace) are not listed."""
+    from flask import g, request
+    from services.storage import list_workflow_summaries
+    from services.workflow_service import cleanup_orphan_workflows
+    cleanup_orphan_workflows()        # throttled: at most once a minute
+    try:
+        limit = max(1, min(int(request.args.get("limit", 200)), 1000))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"error": "limit and offset must be integers"}), 400
+    runs, total = list_workflow_summaries(getattr(g, "case_id", None) or None,
+                                          request.args.get("type") or None, limit, offset)
+    transformed = []
+    for run in runs:
         _reconcile_velociraptor_hunt(run)
-    transformed = [_transform_run(run) for run in automation_runs]
-    return jsonify({
-        "runs": transformed,
-        "total": len(transformed)
-    })
+        t = _transform_run(run)
+        t.pop("logs", None)
+        transformed.append(t)
+    return jsonify({"runs": transformed, "total": total, "limit": limit, "offset": offset})
 
 def _run_visible_in_active_workspace(run):
     """Mirror get_all_automations()' workspace scoping for single-resource

@@ -3,7 +3,6 @@ document.addEventListener('alpine:init', () => {
     // Workflows store
     Alpine.store('workflows', {
         runs: [],
-        allRuns: [],
         typeFilter: '',
         loading: true,
         selectedRun: null,
@@ -37,26 +36,42 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        // The list is one server-side page: summary rows only (no logs), filtered
+        // by workspace and type in SQL. It used to be every run of every case
+        // with every log line, once a second, JSON.stringify-compared here --
+        // megabytes per poll at fleet scale, and the tab froze.
+        PAGE_SIZE: 200,
+        limit: 200,
+        total: 0,
+        _sig: '',
+
         async load() {
             // Only show loading spinner on initial load
             if (this.initialLoad) this.loading = true;
 
+            const query = `limit=${this.limit}` +
+                (this.typeFilter ? `&type=${encodeURIComponent(this.typeFilter)}` : '');
             try {
-                const response = await fetch('/api/dashboard/automations');
+                const response = await fetch('/api/dashboard/automations?' + query);
                 if (!response.ok) throw new Error('HTTP ' + response.status);
                 const data = await response.json();
+                // The filter or page size changed while this was in flight: a
+                // newer load() owns the list.
+                const now = `limit=${this.limit}` +
+                    (this.typeFilter ? `&type=${encodeURIComponent(this.typeFilter)}` : '');
+                if (now !== query) return;
                 const newRuns = data.runs || [];
+                this.total = data.total || newRuns.length;
 
-                // Only reassign allRuns when the data actually changed (avoids
-                // flicker). But ALWAYS re-derive the visible `runs` from allRuns:
-                // a prior transient error clears `runs` (below), and if we gated
-                // applyFilter() on "data changed" the unchanged next poll would
-                // skip it and leave the list permanently empty.
-                if (this.initialLoad || JSON.stringify(this.allRuns) !== JSON.stringify(newRuns)) {
-                    this.allRuns = newRuns;
+                // Only reassign when something the table shows changed (avoids
+                // flicker). A short per-row signature, not a stringify of it all.
+                const sig = newRuns.map(r =>
+                    `${r.id}|${r.status}|${r.progress}|${r.updated_at}|${r.error_count}`).join(',');
+                if (this.initialLoad || sig !== this._sig || this.runs.length !== newRuns.length) {
+                    this.runs = newRuns;
+                    this._sig = sig;
                 }
                 const wasFirst = this.initialLoad;
-                this.applyFilter();
                 this.initialLoad = false;
                 // First listing after a (re)load — including the one that
                 // follows the mid-upgrade sign-out. If a run is still in
@@ -66,17 +81,20 @@ document.addEventListener('alpine:init', () => {
                 console.error('Failed to load workflows:', e);
                 // Only blank the list on the very first load. On a transient poll
                 // error keep the last-known-good list rather than flashing empty.
-                if (this.initialLoad) { this.allRuns = []; this.runs = []; }
+                if (this.initialLoad) { this.runs = []; this._sig = ''; }
             }
             this.loading = false;
         },
 
+        // The type filter is applied server-side now; start again from page one.
         applyFilter() {
-            if (!this.typeFilter) {
-                this.runs = this.allRuns;
-            } else {
-                this.runs = this.allRuns.filter(run => run.type === this.typeFilter);
-            }
+            this.limit = this.PAGE_SIZE;
+            this.load();
+        },
+
+        showMore() {
+            this.limit += this.PAGE_SIZE;
+            this.load();
         },
 
         recollecting: null,
