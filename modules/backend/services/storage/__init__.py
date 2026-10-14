@@ -32,6 +32,7 @@ from .workflow_store import (
     append_workflow_log,
     get_workflow_logs,
     list_workflow_summaries,
+    purge_finished_workflows,
 )
 
 # Blueprint operations

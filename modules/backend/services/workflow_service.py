@@ -897,6 +897,73 @@ def get_automation_run(run_id, with_logs=True):
 
     return None
 
+
+# Finished-run retention. Run history had none: scheduled per-client jobs add a
+# row per host per firing, deleted only by hand. config.yaml
+# options.workflow_retention_days (default 90; 0 = keep forever) -- read on each
+# sweep, so a change applies within the hour without a restart.
+_RETENTION_DEFAULT_DAYS = 90
+
+
+def _retention_days():
+    try:
+        from config import get_installation_options
+        v = (get_installation_options() or {}).get("workflow_retention_days")
+        return _RETENTION_DEFAULT_DAYS if v is None else max(0, int(v))
+    except Exception as e:      # noqa: BLE001 -- a bad value must not delete anything
+        print(f"[WORKFLOW] workflow_retention_days unreadable ({e}); retention skipped", flush=True)
+        return 0
+
+
+def purge_old_runs():
+    """Delete finished runs older than the retention window, with their logs.
+    Case containers and case-member runs are never aged out (see
+    storage.purge_finished_workflows); they go when their case is deleted."""
+    days = _retention_days()
+    if not days:
+        return []
+    from services.storage import purge_finished_workflows
+    gone = purge_finished_workflows(days, AGENTIC_TYPES | INTERNAL_CASE_TYPES)
+    if gone:
+        print(f"[WORKFLOW] Retention: deleted {len(gone)} finished run(s) older than {days} day(s)",
+              flush=True)
+        # get_all_automation_runs merges Elasticsearch rows missing from SQLite,
+        # so a run deleted here only would come back from there.
+        if _elk_enabled():
+            try:
+                from services import elasticsearch_service as _es
+                for rid in gone:
+                    _es.delete_workflow_run(rid)
+            except Exception as e:      # noqa: BLE001
+                print(f"[WORKFLOW] Retention: ES copies not deleted: {e}", flush=True)
+    return gone
+
+
+_HOUSEKEEPING_STARTED = [False]
+
+
+def start_housekeeping(every=60.0, purge_every=3600.0):
+    """One daemon thread: the orphan sweep each minute, retention each hour.
+    Idempotent."""
+    if _HOUSEKEEPING_STARTED[0]:
+        return
+    _HOUSEKEEPING_STARTED[0] = True
+
+    def _loop():
+        last_purge = 0.0
+        while True:
+            time.sleep(every)
+            try:
+                cleanup_orphan_workflows(force=True)
+                if time.time() - last_purge >= purge_every:
+                    last_purge = time.time()
+                    purge_old_runs()
+            except Exception as e:      # noqa: BLE001 -- keep the loop alive
+                print(f"[WORKFLOW] housekeeping error: {e}", flush=True)
+
+    threading.Thread(target=_loop, daemon=True, name="workflow-housekeeping").start()
+
+
 def get_jobs():
     """Get all jobs"""
     return jobs

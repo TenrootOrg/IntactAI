@@ -171,6 +171,40 @@ def list_workflow_summaries(case_id: Optional[str] = None, automation_type: Opti
     return runs, total
 
 
+def purge_finished_workflows(days: int, keep_types,
+                             terminal=("completed", "success", "failed", "cancelled")) -> List[str]:
+    """Delete finished runs last touched more than `days` ago, with their log
+    lines. Returns the deleted run ids.
+
+    Never touched: a run that is not finished (running/pending), a row with no
+    timestamp, any type in `keep_types` (the caller passes case containers and
+    case-member types), and any run a case lists in its legacy member_run_ids.
+    Those are a case's evidence -- fusion reads every member, failed and
+    cancelled included -- and they go when their case is deleted, not by age.
+    Also sweeps log lines whose run no longer exists (a delete path that
+    missed them)."""
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    keep = tuple(sorted(keep_types)) or ("",)
+    conn = get_connection()
+    ids = [r[0] for r in conn.execute(
+        f"SELECT run_id FROM workflows WHERE status IN ({','.join('?' * len(terminal))}) "
+        f"AND COALESCE(updated_at, created_at) < ? "
+        f"AND automation_type NOT IN ({','.join('?' * len(keep))}) "
+        f"AND run_id NOT IN (SELECT j.value FROM workflows c, json_each("
+        f"CASE WHEN json_valid(c.details) THEN json_extract(c.details, '$.member_run_ids') END) j "
+        f"WHERE c.automation_type = 'case' AND j.value IS NOT NULL)",
+        (*terminal, cutoff, *keep))]
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        # Status re-checked: a run can be put back to 'running' (a re-run)
+        # between the SELECT and here.
+        conn.execute(f"DELETE FROM workflows WHERE run_id IN ({','.join('?' * len(chunk))}) "
+                     f"AND status IN ({','.join('?' * len(terminal))})", (*chunk, *terminal))
+    conn.execute("DELETE FROM workflow_logs WHERE run_id NOT IN (SELECT run_id FROM workflows)")
+    conn.commit()
+    return ids
+
+
 def reassign_null_case(case_id: str, automation_types: List[str]) -> int:
     """One-time backfill: tag legacy analysis runs that have no case to `case_id`.
     Returns the number of rows updated. Idempotent (only touches NULL case_id)."""

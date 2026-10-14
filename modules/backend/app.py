@@ -624,5 +624,9 @@ if __name__ == '__main__':
     init_thread.daemon = True
     init_thread.start()
 
+    # Orphan-run sweep (each minute) and finished-run retention (each hour).
+    from services.workflow_service import start_housekeeping
+    start_housekeeping()
+
     # Run Flask without debug/reloader
     app.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False, threaded=True)
