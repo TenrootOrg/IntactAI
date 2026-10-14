@@ -1094,6 +1094,11 @@ function patchReportStatus(info){
 // and time then come from the event). Added there or here (+ Add evidence), edited
 // and removed here. The case's switch puts it in the report; the model never gets
 // it -- what it shows is already in the Timeline the model reads.
+// LOG DATA (a SIEM / firewall / EDR / IdP / proxy export) is the exception to "the
+// model never gets it": it is parsed into the case and fused like a collection
+// (services/fusion/external_logs.py); its "Use in analysis" switch takes it in or out.
+const EV_LOGTYPES=[['siem','SIEM export'],['firewall','Firewall'],['edr','EDR alerts'],['idp','Identity provider (Okta, Entra…)'],['proxy','Proxy / DNS'],['other','Other logs']];
+const EV_VIA={parser:'read by the parser',llm:"read by the case's model (each value checked against its line)",indicators:'kept as lines with an IP, account, hash or domain'};
 const EV_SOURCES=[['timeline','Timeline'],['timesketch','TimeSketch'],['kibana','Kibana'],['iris','IRIS'],['velociraptor','Velociraptor'],['memory','Volatile Memory'],['other','Other']];
 function _evSize(n){ n=+n||0; return n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?Math.round(n/1024)+' KB':n+' B'; }
 function _evList(){ return Array.isArray(curInfo&&curInfo.case_files)?curInfo.case_files.filter(x=>x&&x.id&&x.name):[]; }
@@ -1101,6 +1106,7 @@ function _evSrc(k, other){ return (k==='other'||!EV_SOURCES.some(([x])=>x===k)) 
 function _evFields(pre, v, withFile, linked){
   const o=(k,l,cur)=>`<option value="${k}" ${cur===k?'selected':''}>${l}</option>`;
   return `${withFile?`<label>File <span style="color:var(--muted);font-weight:400">— or paste a picture (Ctrl+V)</span></label><input type="file" id="${pre}-file" onchange="window._evPasted=null;const n=document.getElementById('${pre}-pasted');if(n)n.textContent=''"/><div id="${pre}-pasted" style="font-size:11px;color:#3fb950"></div>`:''}
+    ${withFile&&!linked?`<label>What is it</label><select id="${pre}-dtype"><option value="">Evidence — a picture, e-mail or document (report only)</option>${EV_LOGTYPES.map(([k,l])=>`<option value="${k}">Log data — ${l}: read and used in the analysis</option>`).join('')}</select>`:''}
     <label>Name ${linked&&withFile?'<span style="color:var(--muted);font-weight:400">— optional; made from the event if empty</span>':'<span style="color:var(--crit)">*</span> <span style="color:var(--muted);font-weight:400">— what it is; the report uses it</span>'}</label>
     <input id="${pre}-name" maxlength="200" value="${esc(v.name||'')}" placeholder="${linked&&withFile?'e.g. “Mimikatz Execution via PowerShell — screenshot”':'e.g. AnyDesk silent-install prompt on the desktop'}"/>
     <label>Description ${linked?'<span style="color:var(--muted);font-weight:400">— optional</span>':'<span style="color:var(--crit)">*</span>'}</label>
@@ -1125,6 +1131,36 @@ function _evThumb(x){
   return `<a href="${u}" target="_blank" rel="noopener" title="Open full size" style="flex:0 0 auto">
     <img src="${u}" alt="${esc(x.name)}" loading="lazy" style="width:120px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--bd);display:block;background:var(--panel2)"></a>`;
 }
+function _evLog(x){
+  if(!x.data_type) return '';
+  const L=x.log||{}, t=(EV_LOGTYPES.find(([k])=>k===x.data_type)||[,'Logs'])[1];
+  const busy=L.status==='running'||L.status==='pending';
+  const st=busy?'<span style="color:var(--muted)">reading the file…</span>'
+    :L.status==='failed'?`<span style="color:var(--crit)">could not be read: ${esc(L.error||'')}</span>`
+    :L.status==='completed'?`${(+L.rows||0).toLocaleString()} row(s)${L.alerts?` · <b>${(+L.alerts).toLocaleString()} alert(s)</b>`:''} · ${esc(EV_VIA[L.via]||L.via||'')}${L.first_ts?` · ${esc(String(L.first_ts).slice(0,16))} → ${esc(String(L.last_ts||'').slice(0,16))}`:''}`
+    :'<span style="color:var(--muted)">not parsed</span>';
+  return `<div style="font-size:12px;margin:3px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <span style="border:1px solid var(--bd);border-radius:10px;padding:0 7px;font-size:11px" title="Log data: parsed into the case and fused like a collection">Log data · ${esc(t)}</span><span>${st}</span>
+    <label style="margin-left:auto;font-size:12px" title="In: the next Refusion fuses it and chat can search it. Out: kept, but not used."><input type="checkbox" style="width:auto" ${x.ai?'checked':''} onchange="evUseInAnalysis('${esc(x.id)}',this.checked)"/> Use in analysis</label></div>`;
+}
+function evUseInAnalysis(id, on){
+  fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({ai:!!on})})
+    .then(_evJson).then(()=>{ _evRefresh(L=>L.map(x=>x.id===id?{...x,ai:!!on}:x)); toast(on?'Log data in — run Refusion to add it.':'Log data out — run Refusion to take it out.'); })
+    .catch(e=>toast('Not saved: '+e.message));
+}
+// While a log file is being read, follow it: only the attachment list is
+// refreshed, never the whole case under the operator.
+function _evFollow(){
+  clearTimeout(window._evFollowT);
+  const busy=_evList().some(x=>x.data_type&&x.log&&(x.log.status==='running'||x.log.status==='pending'));
+  if(!busy||!curInfo) return;
+  const cid=curInfo.case_id;
+  window._evFollowT=setTimeout(()=>api('/api/cases/'+cid).then(info=>{
+    if(!curInfo||curInfo.case_id!==cid||!info) return;
+    curInfo.case_files=info.case_files||[];
+    if(tab==='evidence' && !window._evAdd && !window._evEdit) renderEvidence(curInfo); else _evFollow();
+  }).catch(()=>{}),4000);
+}
 function _evItem(x){
   const edit=window._evEdit===x.id, lab=x.finding_title||'';
   return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;margin:6px 0;display:flex;gap:12px;align-items:flex-start">
@@ -1138,6 +1174,7 @@ function _evItem(x){
         <span style="color:var(--muted);cursor:pointer" title="Delete" onclick="evDel('${esc(x.id)}')">✕</span></span>
     </div>
     <div style="font-size:12.5px;margin:3px 0">${esc(x.description||'')||'<span style="color:var(--muted)">no description</span>'}</div>
+    ${_evLog(x)}
     <div style="font-size:11px;color:var(--muted)"><a href="/api/cases/${esc(curInfo.case_id)}/files/${esc(x.id)}">${esc(x.file_name||x.name)}</a> · ${x.kind==='image'?'picture':x.kind==='text'?'text':'file'} · ${_evSize(x.size)} · <span title="SHA-256 ${esc(x.sha256||'')}">SHA-256 ${esc(String(x.sha256||'').slice(0,16))}…</span></div>
     ${edit?`<div class="cfgcol" style="margin-top:6px">${_evFields('eve',x,false,!!x.finding_id)}
       ${x.finding_id?`<label style="margin-top:6px"><input type="checkbox" id="eve-unlink" style="width:auto"/> Unlink from the Timeline event</label>`:''}
@@ -1155,7 +1192,8 @@ function renderEvidence(info){
       +groups[h].sort((a,b)=>String(a.time||'').localeCompare(String(b.time||''))).map(_evItem).join('')).join('');
   const fl=f?(all.find(x=>x.finding_id===f)||{}).finding_title||'this event':'';
   $('#tabc').innerHTML=`<datalist id="ev-hosts">${(window._evHosts||[]).map(h=>`<option value="${esc(h)}">`).join('')}</datalist>
-    <p class="ent-cap">Evidence for this case — screenshots, e-mails, logs, exports from TimeSketch, Kibana or IRIS. Attach from a Timeline event (open it → <b>📎 Attach evidence</b>) and it is linked to that event and its host; or add it here. It goes into the report (with its pictures, also in the PDF and HTML) only when <b>Include evidence in the report</b> is on — on the Analysis tab${info.include_evidence?' (<span style="color:#3fb950">on</span>)':' (off)'}.</p>
+    <p class="ent-cap">Evidence for this case — screenshots, e-mails, logs, exports from TimeSketch, Kibana or IRIS. Attach from a Timeline event (open it → <b>📎 Attach evidence</b>) and it is linked to that event and its host; or add it here. It goes into the report (with its pictures, also in the PDF and HTML) only when <b>Include evidence in the report</b> is on — on the Analysis tab${info.include_evidence?' (<span style="color:#3fb950">on</span>)':' (off)'}.
+    <b>Log data</b> (a SIEM, firewall, EDR, identity-provider or proxy export, any vendor) is different: choose <i>Log data</i> when adding it and it is read into the case — its alerts reach the Timeline, the hosts, accounts and addresses it shares with the case are joined, and chat can search every row. Run <b>Refusion</b> after adding one.</p>
     ${f?`<div class="agnote">Evidence for: <b>${esc(fl)}</b> · <span class="elink" onclick="window._evFilter='';renderEvidence(curInfo)">show all</span></div>`:''}
     <div class="row" style="gap:8px;margin:6px 0"><button onclick="window._evAdd=!window._evAdd;renderEvidence(curInfo)">${window._evAdd?'Close':'+ Add evidence'}</button>
       <span style="color:var(--muted);font-size:12px">${all.length} item(s) · up to 100 MB each</span></div>
@@ -1163,6 +1201,7 @@ function renderEvidence(info){
       <div class="row" style="margin-top:6px"><button onclick="evSubmit('evn','')">Add</button></div></div>`:''}
     ${body||'<div class="empty">No evidence yet.</div>'}`;
   _evPickers();
+  _evFollow();
 }
 function evToggleInclude(cid, on){
   fetch('/api/cases/'+encodeURIComponent(cid),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_evidence:!!on})})
@@ -1197,13 +1236,13 @@ function evSubmit(pre, findingId){
   if(!file){ toast('Choose a file or paste a picture.'); return; }
   if(file.size>100*1024*1024){ toast('The file is larger than 100 MB.'); return; }
   if(!findingId && (!v('name').trim()||!v('desc').trim())){ toast('Give the evidence a name and a description.'); return; }
-  if(!findingId && v('src')==='other' && !v('srcother').trim()){ toast('Say which source it came from.'); return; }
+  if(!findingId && !v('dtype') && v('src')==='other' && !v('srcother').trim()){ toast('Say which source it came from.'); return; }
   const fd=new FormData(); fd.append('file',file); fd.append('name',v('name')); fd.append('description',v('desc'));
-  if(findingId) fd.append('finding_id',findingId); else { fd.append('host',v('host')); fd.append('time',v('time')); fd.append('source',v('src')); fd.append('source_other',v('srcother').trim()); }
+  if(findingId) fd.append('finding_id',findingId); else { fd.append('host',v('host')); fd.append('time',v('time')); fd.append('source',v('src')); fd.append('source_other',v('srcother').trim()); if(v('dtype')) fd.append('data_type',v('dtype')); }
   toast('Uploading '+file.name+'…');
   fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
     .then(item=>{ window._evAdd=false; window._evPasted=null; const box=$('#ev-attach'); if(box) box.innerHTML='<div class="agnote">Attached: <b>'+esc(item.name)+'</b></div>';
-      _evRefresh(L=>L.concat([item])); toast('Evidence added.'); })
+      _evRefresh(L=>L.concat([item])); toast(item.data_type?'Log data added — reading it now; run Refusion when it is done.':'Evidence added.'); if(item.data_type) _evFollow(); })
     .catch(e=>toast('Not added: '+e.message));
 }
 function evPatch(id, body){

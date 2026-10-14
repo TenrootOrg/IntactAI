@@ -180,7 +180,7 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
                       f"{name} — {fname} ({size:,} bytes) · SHA-256 {item['sha256']}"
                       + (f" · linked to {item['finding_title']}" if link else "")
                       + (f" · log data, parsing in run {item['run_id']}" if data_type else ""))
-    return next(x for x in listing({"case_files": [item]}))
+    return with_log_status([next(x for x in listing({"case_files": [item]}))])[0]
 
 
 def update(case_id, file_id, fields) -> dict:
