@@ -31,16 +31,61 @@ class FakeVelociraptor:
     flows: {(client_id, flow_id): {source: [rows]}}; every other client is
     enrolled but owns nothing. `queries` is the gRPC cost under test."""
 
-    def __init__(self, n_clients, flows, hostnames=None):
+    def __init__(self, n_clients, flows, hostnames=None, hunts=None, batched="works"):
         self.clients = [f"C.{i:04d}" for i in range(n_clients)]
         self.flows = flows
         self.hostnames = hostnames or {}
+        self.hunts = hunts or {}         # hunt_id -> [client_id, ...] (flow F.<id>.H each)
+        self.batched = batched           # "works" | "empty" (unresolved vars) | "raises"
         self.queries = []
+
+    def _hunt_flows(self, vql):
+        m = re.search(r"hunt_flows\(hunt_id='([^']+)'\)( WHERE ClientId IN \(([^)]*)\))?", vql)
+        hid = m.group(1)
+        cids = self.hunts.get(hid, [])
+        if m.group(2):
+            keep = set(re.findall(r"'([^']+)'", m.group(3)))
+            cids = [c for c in cids if c in keep]
+        return [(c, "F." + hid[2:] + ".H") for c in cids]
+
+    def _enumerate(self, cid, fid):
+        rows = [{"Type": "Upload", "Data": {"VFSPath": f"/clients/{cid}/collections/{fid}/uploads/x"}}]
+        for src in self.flows.get((cid, fid), {}):
+            art, _, sub = src.partition("/")
+            tail = f"{fid}/{sub}.json" if sub else f"{fid}.json"
+            rows.append({"Type": "Result", "Data": {"VFSPath": f"/clients/{cid}/artifacts/{art}/{tail}"}})
+        return rows
+
+    def _foreach(self, vql):
+        if self.batched == "raises":
+            raise RuntimeError("Symbol IntactCid not found")
+        if self.batched == "empty":
+            return []
+        out = []
+        for cid, fid in self._hunt_flows(vql):
+            if "FROM enumerate_flow(" in vql:
+                out += [dict(r, IntactCid=cid, IntactFid=fid)
+                        for r in self._enumerate(cid, fid) if r["Type"] == "Result"]
+            else:
+                art = re.search(r"artifact='([^']+)'", vql).group(1)
+                out += [dict(r, IntactCid=cid, IntactFid=fid)
+                        for r in self.flows.get((cid, fid), {}).get(art, [])]
+        return out
 
     def _host(self, cid):
         return self.hostnames.get(cid, cid.lower())
 
     def _answer(self, vql):
+        if "row={SELECT ClientId AS IntactCid" in vql:
+            return self._foreach(vql)
+        if vql.startswith("SELECT ClientId, FlowId FROM hunt_flows("):
+            return [{"ClientId": c, "FlowId": f} for c, f in self._hunt_flows(vql)]
+        m = re.search(r"enumerate_flow\(client_id='([^']+)', flow_id='([^']+)'\)", vql)
+        if m:
+            return self._enumerate(m.group(1), m.group(2))
+        if "os_info.hostname as Hostname" in vql:
+            keep = re.findall(r"'([^']+)'", vql)
+            return [{"client_id": c, "Hostname": self._host(c)} for c in self.clients if c in keep]
         m = re.search(r"FROM clients\(\)( WHERE client_id IN \(([^)]*)\))?\}, "
                       r"query=\{SELECT LocCid, LocHost FROM flows\(client_id=LocCid, flow_id='([^']+)'\)", vql)
         if m:
@@ -165,6 +210,105 @@ class TestFlowLocation(_Harness):
         self.assertEqual(list(client_info), ["C.0001", "C.0099"])
         self.assertEqual([r["_client_id"] for r in all_results["Windows.EventLogs.RDPAuth"]],
                          ["C.0001", "C.0001", "C.0099", "C.0099"])
+
+
+def _hunt_fleet(n=40):
+    """n clients in hunt H.HUNT; varied sources so ORDER is exercised: a source
+    present but empty on one client, a sub-source, an unmapped artifact, and
+    clients with nothing at all."""
+    flows, cids = {}, [f"C.{i:04d}" for i in range(n)]
+    for i, cid in enumerate(cids):
+        if i % 7 == 3:
+            continue                              # in the hunt, no results yet
+        srcs = {}
+        if i % 2:
+            srcs["Windows.Forensics.SAM/Parsed"] = [{"User": f"u{i}"}]
+        srcs["Windows.EventLogs.RDPAuth"] = [] if i == 0 else [{"EventID": 4624, "n": i},
+                                                               {"EventID": 4625, "n": i}]
+        srcs["Windows.NTFS.MFT"] = [{"FileName": f"f{i}"}]
+        flows[(cid, "F.HUNT.H")] = srcs
+    return flows, {"H.HUNT": cids}
+
+
+def _hunt_velo(n, **kw):
+    flows, hunts = _hunt_fleet(n)
+    return FakeVelociraptor(n, flows, hunts=hunts, **kw)
+
+
+class TestHuntFetch(_Harness):
+    """F9: a hunt was read per client per source (enumerate_flow + source() per
+    source per flow, ~9-16k sequential calls for 1,000 hosts) on every fuse."""
+    ONLY = {"windows.eventlogs.rdpauth", "windows.forensics.sam"}
+
+    def fetch(self, velo, **kw):
+        self.use(velo)
+        return _base.get_existing_collection_results("run_1", hunt_id="H.HUNT", **kw)
+
+    def test_the_return_shape_is_unchanged(self):
+        flows, hunts = _hunt_fleet(4)
+        all_results, artifacts, client_info = self.fetch(
+            FakeVelociraptor(4, flows, {"C.0001": "WKS-1"}, hunts), only_artifacts=self.ONLY)
+        # C.0000's RDPAuth is present but empty, so SAM (first seen on C.0001)
+        # comes first only if the per-flow order is kept.
+        self.assertEqual(artifacts, ["Windows.Forensics.SAM/Parsed", "Windows.EventLogs.RDPAuth"])
+        self.assertEqual(list(all_results), artifacts)
+        self.assertEqual(all_results["Windows.Forensics.SAM/Parsed"],
+                         [{"User": "u1", "_client_id": "C.0001", "_hostname": "WKS-1"}])
+        self.assertEqual(all_results["Windows.EventLogs.RDPAuth"], [
+            {"EventID": 4624, "n": 1, "_client_id": "C.0001", "_hostname": "WKS-1"},
+            {"EventID": 4625, "n": 1, "_client_id": "C.0001", "_hostname": "WKS-1"},
+            {"EventID": 4624, "n": 2, "_client_id": "C.0002", "_hostname": "c.0002"},
+            {"EventID": 4625, "n": 2, "_client_id": "C.0002", "_hostname": "c.0002"}])
+        # Every client in the hunt is listed, including the one with no results.
+        self.assertEqual(client_info, {
+            c: {"client_id": c, "hostname": h, "os": "Unknown"}
+            for c, h in (("C.0000", "c.0000"), ("C.0001", "WKS-1"),
+                         ("C.0002", "c.0002"), ("C.0003", "c.0003"))})
+
+    def test_query_count_is_per_source_not_per_client(self):
+        for n in (8, 600):
+            with self.subTest(clients=n):
+                velo = _hunt_velo(n)
+                all_results, _a, _ci = self.fetch(velo, only_artifacts=self.ONLY)
+                self.assertEqual(2, len(all_results))
+                # hunt_flows + hostnames + source listing + one per wanted source
+                self.assertEqual(5, len(velo.queries), velo.queries)
+
+    def test_one_log_line_per_artifact_not_per_client(self):
+        self.fetch(_hunt_velo(300), only_artifacts=self.ONLY)
+        self.assertLess(len(self.logs), 10, self.logs)
+
+    def test_the_added_owner_columns_never_reach_a_row(self):
+        all_results, _a, _ci = self.fetch(_hunt_velo(20))
+        self.assertEqual(3, len(all_results))
+        for rows in all_results.values():
+            for r in rows:
+                self.assertFalse({"IntactCid", "IntactFid"} & set(r), r)
+
+    def test_client_scope_is_kept(self):
+        velo = _hunt_velo(20)
+        _r, _a, client_info = self.fetch(velo, client_ids=["C.0001", "C.0002"],
+                                         only_artifacts=self.ONLY)
+        self.assertEqual(list(client_info), ["C.0001", "C.0002"])
+        self.assertTrue(all("WHERE ClientId IN ('C.0001', 'C.0002')" in q
+                            for q in velo.queries if "hunt_flows(" in q))
+
+    def test_a_broken_batched_query_falls_back_to_the_same_answer(self):
+        good = self.fetch(_hunt_velo(15), only_artifacts=self.ONLY)
+        for mode in ("empty", "raises"):
+            with self.subTest(batched=mode):
+                errors = []
+                got = self.fetch(_hunt_velo(15, batched=mode),
+                                 only_artifacts=self.ONLY, errors=errors)
+                self.assertEqual(json.dumps(good), json.dumps(got))
+                self.assertEqual([], errors)
+
+    def test_a_hunt_nobody_has_answered_is_empty_not_a_fallback_storm(self):
+        cids = [f"C.{i:04d}" for i in range(50)]
+        velo = FakeVelociraptor(50, {}, hunts={"H.HUNT": cids})
+        self.assertEqual(({}, [], {c: {"client_id": c, "hostname": c.lower(), "os": "Unknown"}
+                                   for c in cids}), self.fetch(velo))
+        self.assertLessEqual(len(velo.queries), 4, velo.queries)
 
 
 if __name__ == "__main__":
