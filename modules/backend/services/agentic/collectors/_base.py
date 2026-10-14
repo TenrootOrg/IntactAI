@@ -658,6 +658,65 @@ def cancel_collections(run_id, collection_results):
     add_log_to_run(run_id, f"[Velociraptor] Cancelled {cancelled} collection(s)", "info")
 
 
+def _run_client_ids(run_id):
+    """The clients a run says it collected from (details.client_ids / client_id).
+
+    Only a HINT for _locate_flow_client: a multi-client collection stores its
+    flow ids as a bare list with no owner per flow, so this is the narrowest set
+    the run itself can name. Any failure is just "no hint"."""
+    try:
+        from services.workflow_service import get_automation_run
+        d = (get_automation_run(run_id) or {}).get('details') or {}
+        ids = list(d.get('client_ids') or []) + [d.get('client_id')]
+        return [c for c in ids if c and is_valid_client_id(c)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _locate_flow_client(stub, run_id, fid, client_ids=None):
+    """(client_id, hostname) owning flow `fid`, or (None, "Unknown").
+
+    The search runs ON THE SERVER: one foreach over clients() -> flows() per
+    attempt, not one gRPC round trip (and one log line) per enrolled client.
+    That loop was 1,000 flows x ~500 clients = ~500,000 queries for a fleet
+    Fetch, which never finished. Attempts, narrowest first: the caller's
+    client_ids, the run's own recorded clients, then every client. Each is a
+    hint only -- a miss falls through to the next, so a wrong hint costs one
+    query and never a lost flow.
+    """
+    def scopes():                    # lazy: a hit on the first skips the run-row read
+        yield client_ids or []
+        yield _run_client_ids(run_id)
+        yield None                   # every client
+
+    tried = set()
+    for scope in scopes():
+        if scope is None:
+            where = ""
+        else:
+            scope = [c for c in scope if is_valid_client_id(c) and c not in tried]
+            if not scope:
+                continue
+            tried.update(scope)
+            where = " WHERE client_id IN (" + ", ".join(f"'{c}'" for c in scope) + ")"
+        query = (
+            "SELECT * FROM foreach("
+            f"row={{SELECT client_id AS LocCid, os_info.hostname AS LocHost FROM clients(){where}}}, "
+            f"query={{SELECT LocCid, LocHost FROM flows(client_id=LocCid, flow_id='{fid}')}}) LIMIT 1"
+        )
+        req = api_pb2.VQLCollectorArgs(max_wait=30, max_row=10,
+                                       Query=[api_pb2.VQLRequest(VQL=query)])
+        try:
+            for response in stub.Query(req, timeout=VELO_QUERY_TIMEOUT_SECONDS):
+                if response.Response:
+                    for row in json.loads(response.Response) or []:
+                        if row.get('LocCid'):
+                            return row['LocCid'], row.get('LocHost', 'Unknown')
+        except Exception as e:  # noqa: BLE001
+            add_log_to_run(run_id, f"[Velociraptor] Locating flow {fid} failed: {e}", "warning")
+    return None, "Unknown"
+
+
 def _wanted_source(source_name, only_artifacts):
     """Should this result source be fetched at all?
 
@@ -712,7 +771,8 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
         client_ids: Optional list of Velociraptor client IDs to scope a hunt
             to. When non-empty, the hunt-flows enumeration query gets a
             ``WHERE ClientId IN (...)`` filter so only those clients' rows
-            reach analysis. Ignored on the single-flow path.
+            reach analysis. On the flow path it is only a hint for where to
+            look first (a miss still searches every client), never a filter.
 
     Returns:
         (all_results, artifacts, client_info)
@@ -778,66 +838,18 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     "info",
                 )
 
-            # Enumerate all clients ONCE (per-flow location lookup reuses this)
-            clients_query = "SELECT client_id, os_info.hostname AS hostname FROM clients()"
-            request_obj = api_pb2.VQLCollectorArgs(
-                max_wait=30,
-                max_row=1000,
-                Query=[api_pb2.VQLRequest(VQL=clients_query)]
-            )
-            all_clients = []
-            for response in stub.Query(request_obj, timeout=60):
-                if response.Response:
-                    try:
-                        resp_data = json.loads(response.Response)
-                        all_clients.extend(resp_data)
-                    except Exception as e:
-                        add_log_to_run(run_id, f"[Velociraptor] Error parsing clients response: {e}", "warning")
-                if response.log:
-                    add_log_to_run(run_id, f"[Velociraptor] Server log: {response.log}", "debug")
-            add_log_to_run(run_id, f"[Velociraptor] Found {len(all_clients)} clients to search", "info")
-
             # ---- Per-flow loop (mirrors the hunt-flows loop further down) ---
             for fid in flow_ids:
-                located_client_id = None
-                located_hostname = "Unknown"
-
-                # Search each client for this flow
-                for client in all_clients:
-                    cid = client.get('client_id')
-                    if not cid:
-                        continue
-
-                    flow_check_query = f"SELECT session_id FROM flows(client_id='{cid}', flow_id='{fid}')"
-                    check_req = api_pb2.VQLCollectorArgs(
-                        max_wait=10,
-                        max_row=1,
-                        Query=[api_pb2.VQLRequest(VQL=flow_check_query)]
+                # client_ids is a lookup hint here, never a filter: the flow is
+                # found wherever it lives (see _locate_flow_client).
+                located_client_id, located_hostname = _locate_flow_client(
+                    stub, run_id, fid, client_ids)
+                if located_client_id:
+                    add_log_to_run(
+                        run_id,
+                        f"[Velociraptor] Found flow {fid} on client: {located_client_id} ({located_hostname})",
+                        "info",
                     )
-                    try:
-                        for response in stub.Query(check_req, timeout=30):
-                            if response.log:
-                                add_log_to_run(run_id, f"[Velociraptor] Query log for {cid}: {response.log.strip()}", "debug")
-                            if response.Response:
-                                try:
-                                    resp_data = json.loads(response.Response)
-                                    add_log_to_run(run_id, f"[Velociraptor] Query result for {cid}: {len(resp_data)} rows", "debug")
-                                    if resp_data and len(resp_data) > 0:
-                                        located_client_id = cid
-                                        located_hostname = client.get('hostname', 'Unknown')
-                                        add_log_to_run(
-                                            run_id,
-                                            f"[Velociraptor] Found flow {fid} on client: {cid} ({located_hostname})",
-                                            "info",
-                                        )
-                                        break
-                                except Exception as e:
-                                    add_log_to_run(run_id, f"[Velociraptor] Error parsing flow check for {cid}: {e}", "warning")
-                    except Exception as e:
-                        add_log_to_run(run_id, f"[Velociraptor] Error querying client {cid}: {e}", "warning")
-                        continue
-                    if located_client_id:
-                        break
 
                 # Fallback: check server flows
                 if not located_client_id:
@@ -864,7 +876,7 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     # hunt path's "skip empty flow" tolerance.
                     add_log_to_run(
                         run_id,
-                        f"[Velociraptor] Flow {fid} not found on any of {len(all_clients)} clients or server",
+                        f"[Velociraptor] Flow {fid} not found on any client or the server",
                         "warning",
                     )
                     continue
