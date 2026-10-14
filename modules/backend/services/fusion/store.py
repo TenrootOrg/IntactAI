@@ -1527,13 +1527,40 @@ def _resnapshot_without_losing_rows(rid, det, fetched):
     collected on purpose and can still download. The refreshed sources are merged
     OVER the existing ones and everything else is left alone.
     """
+    # An existing snapshot that cannot be read IN FULL is never rewritten (fleet audit
+    # F1): _agentic_collected_data answers {} both for "no file" and for "too big to
+    # load / unreadable", and merging fetched rows over that {} replaced a 100+ host
+    # hunt's whole raw_results.json with the few sources fusion fetched -- MFT, USN and
+    # every other artifact gone, silently. The fetched rows still fuse this time (the
+    # callers use them in memory); the snapshot stays as collected.
+    import json
+    fp = "" if det.get("collected_data") else _raw_results_path(rid, det)
+    existing = None
+    if fp:
+        why = None
+        if _payload_too_big(fp):
+            why = "too big to load safely"
+        else:
+            try:
+                with open(fp) as f:
+                    existing = json.load(f)
+                if not isinstance(existing, dict):
+                    why = "not a dict of artifacts"
+            except Exception as e:                       # noqa: BLE001
+                why = f"unreadable ({type(e).__name__})"
+        if why:
+            print(f"[FUSION] {rid}: raw_results.json {why} -- kept as collected, not re-snapshotted; "
+                  f"the {len(fetched or {})} refetched source(s) fuse from memory this time", flush=True)
+            return
+    else:
+        existing = _agentic_collected_data(rid, det) or {}
     try:
         from services.agentic.collectors import persist_pipeline_artifacts
-        merged = dict(_agentic_collected_data(rid, det) or {})
+        merged = dict(existing or {})
         merged.update(fetched or {})
         persist_pipeline_artifacts(rid, merged)
-    except Exception:
-        pass
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[FUSION] {rid}: re-snapshot failed: {type(e).__name__}: {e}", flush=True)
 
 
 def _refetch_agentic_rows(rid, det, log=None):
