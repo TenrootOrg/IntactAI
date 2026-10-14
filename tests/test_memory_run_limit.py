@@ -145,5 +145,26 @@ class DiskReservation(unittest.TestCase):
         self.assertNotIn("r3", acq._DISK_RESERVED)
 
 
+
+class ClientRam(unittest.TestCase):
+    """The pipeline preflight used to look for os_info.total_memory_bytes in a
+    fleet snapshot that has no os_info, so it always assumed 4 GiB."""
+
+    def test_the_preflight_reads_the_clients_real_ram(self):
+        seen = []
+
+        def fake_query(vql, timeout=30):
+            seen.append(vql)
+            if "FROM clients(client_id='C.0123456789abcdef')" in vql:
+                return [{"f": "F.INTERROGATE"}]
+            if "Generic.Client.Info/WindowsInfo" in vql and "F.INTERROGATE" in vql:
+                return [{"Computer Info": {"TotalPhysicalMemory": 16 * GiB}}]
+            return []
+        with mock.patch.object(acq, "_velo_query", fake_query):
+            self.assertEqual(pm._estimate_client_memory_bytes("C.0123456789abcdef"), 16 * GiB)
+            self.assertIsNone(pm._estimate_client_memory_bytes("C.1' OR 1=1"))
+        self.assertEqual(len(seen), 2, "a malformed id must never reach VQL")
+
+
 if __name__ == "__main__":
     unittest.main()

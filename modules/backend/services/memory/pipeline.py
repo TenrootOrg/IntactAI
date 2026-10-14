@@ -368,12 +368,12 @@ def _disk_preflight(
     """Refuse to dispatch if there isn't enough headroom for three
     transient copies of the dump.
 
-    ``mem_bytes_estimate`` is best-effort: the Velociraptor client
-    record's ``os_info.total_memory_bytes`` (when present) is the
-    cleanest signal. Falls back to 8 GiB (a typical Win10 desktop)
-    when unknown — preflight is a safety net, not a hard SLA.
+    ``mem_bytes_estimate`` is best-effort: the client's physical RAM
+    from its last interrogation (see _estimate_client_memory_bytes).
+    Falls back to 4 GiB when unknown — preflight is a safety net, not
+    a hard SLA.
     """
-    # Default 4 GiB if Velociraptor doesn't expose total_memory_bytes.
+    # Default 4 GiB when the client's RAM is unknown (no interrogation yet).
     # Most observed in-prod dumps run 3-5 GB on Win10/11 clients with
     # 4-8 GB RAM; using 4 GiB as the assumption keeps preflight from
     # rejecting installs with ~10 GB free disk while still catching
@@ -412,18 +412,20 @@ def _disk_preflight(
 
 
 def _estimate_client_memory_bytes(client_id: str) -> int | None:
-    """Look up ``os_info.total_memory_bytes`` for a client via the
-    existing snapshot reader. Returns ``None`` if missing."""
-    try:
-        from services.velociraptor_service import get_clients_from_snapshot
-        for c in get_clients_from_snapshot(include_offline=True) or []:
-            if c.get("client_id") == client_id:
-                info = c.get("os_info") or {}
-                v = info.get("total_memory_bytes") or info.get("ram_bytes")
-                return int(v) if v else None
-    except Exception:
-        pass
-    return None
+    """The client's physical RAM in bytes, or ``None`` if unknown.
+
+    This used to look for ``os_info.total_memory_bytes`` in the fleet client
+    snapshot — which returns flattened rows with no ``os_info`` at all, and
+    Velociraptor's client record carries no RAM figure anyway. So it always
+    returned None and the preflight always assumed 4 GiB, whatever the host
+    (while walking the whole fleet list once per run to find out). The RAM is
+    in the client's cached interrogation; acquire's preflight already reads
+    it from there, so both checks now size the same image."""
+    from services.vql_safety import is_valid_client_id
+    if not is_valid_client_id(client_id):   # interpolated into VQL below
+        return None
+    from .acquire import _client_total_ram
+    return _client_total_ram(client_id)
 
 
 def _build_extraction_only_report(
