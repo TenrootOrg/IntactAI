@@ -9,6 +9,7 @@ import json
 import time
 import shlex
 import subprocess
+import uuid
 import zipfile
 
 from services.offline_collector.constants import VELOCIRAPTOR_CONTAINER, get_velo_client_path
@@ -251,6 +252,7 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
     from pyvelociraptor import api_pb2, api_pb2_grpc
     from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
 
+    container_path = None
     try:
         # Use existing run_id or create new one
         if not run_id:
@@ -313,7 +315,10 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
 
         # Step 1: Copy ZIP to Velociraptor container
         add_log_to_run(run_id, "Copying ZIP to Velociraptor server...")
-        container_path = f"/tmp/offline_import_{int(time.time())}.zip"
+        # uuid, not the clock: two imports started in the same second (two
+        # operators, or a tus upload racing the API route) got the same
+        # second-resolution name and copied over each other's ZIP.
+        container_path = f"/tmp/offline_import_{uuid.uuid4().hex}.zip"
 
         # shlex.quote the host path — uploaded filenames routinely contain spaces
         # (e.g. "tenroot org hunt cross.zip"); unquoted they split the docker-cp args.
@@ -643,10 +648,9 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
                 traceback.print_exc()
                 add_log_to_run(run_id, f"Warning: Could not get flow details: {str(e)}")
 
-        # Step 5: Cleanup container file
+        # Step 5: Cleanup. The container copy goes in `finally`, so a failed
+        # import no longer leaves a hunt-export-sized ZIP in Velociraptor's /tmp.
         add_log_to_run(run_id, "Cleaning up temporary files...")
-        cleanup_cmd = f"docker exec {VELOCIRAPTOR_CONTAINER} rm -f {container_path}"
-        subprocess.run(cleanup_cmd, shell=True, capture_output=True)
 
         # Cleanup uploaded file
         try:
@@ -754,3 +758,11 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
             pass
 
         return {"success": False, "run_id": run_id, "error": error_msg}
+
+    finally:
+        if container_path:
+            try:
+                subprocess.run(["docker", "exec", VELOCIRAPTOR_CONTAINER, "rm", "-f", container_path],
+                               capture_output=True, timeout=30)
+            except Exception as e:  # noqa: BLE001 -- never mask the import's own result
+                print(f"[OFFLINE] Could not remove {container_path} from Velociraptor: {e}", flush=True)

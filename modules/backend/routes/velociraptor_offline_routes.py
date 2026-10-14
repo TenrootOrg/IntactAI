@@ -387,7 +387,15 @@ def download_offline_collector(file_id):
 
 @velociraptor_offline_bp.route('/api/velociraptor/offline/import', methods=['POST'])
 def import_offline_results():
-    """Import offline collection results from ZIP file"""
+    """Import offline collection results from ZIP file (single multipart POST).
+
+    The UI does not come through here: it uploads with tus (/api/uploads/,
+    purpose=velociraptor), which has no size cap and imports + fuses in the
+    background. This route is for scripts. It answers 202 with a run_id at once
+    and imports in a thread -- importing inline ran past nginx's 300 s on any
+    real hunt export (the importer alone may wait 900 s for the flow) and the
+    caller got a 504 for an import that was still running. Follow the run in
+    Workflows or /api/dashboard/automation/<run_id>."""
     try:
         if 'file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
@@ -400,13 +408,17 @@ def import_offline_results():
         if not file.filename.endswith('.zip'):
             return jsonify({"error": "File must be a ZIP archive"}), 400
 
-        # Check file size (limit to 500MB)
+        # 500 MB is nginx's client_max_body_size for /api/, so a larger cap here
+        # would only be reachable from loopback. Bigger collections (a hunt
+        # export from a large fleet) go through the resumable tus upload.
         file.seek(0, 2)
         file_size = file.tell()
         file.seek(0)
 
         if file_size > 500 * 1024 * 1024:
-            return jsonify({"error": "File too large (max 500MB)"}), 413
+            return jsonify({"error": "File too large for a single POST (max 500MB). Use the resumable "
+                                     "upload: Forensics → Offline → Import Results in the UI, or tus at "
+                                     "/api/uploads/ with metadata purpose=velociraptor."}), 413
 
         # Save uploaded file temporarily. secure_filename() strips path
         # separators and traversal sequences — an absolute or "../"-laden
@@ -423,9 +435,34 @@ def import_offline_results():
         # or the recovered session password for X509/PGP).
         import_password = request.form.get('password') or None
 
-        result = import_results(temp_path, safe_filename, password=import_password)
+        # Created here, inside the request, so the run is tagged to the
+        # browser's active case (X-Case-Id) exactly as before.
+        run_id = create_automation_run(
+            "velociraptor_offline_import",
+            f"Import: {safe_filename}",
+            {"filename": safe_filename, "path": temp_path},
+        )
+        add_log_to_run(run_id, f"Starting import of {safe_filename}")
+        update_run_status(run_id, "running", progress=10)
 
-        return jsonify(result)
+        def do_import():
+            import shutil
+            try:
+                # import_results owns the run's terminal state (completed/failed).
+                import_results(temp_path, safe_filename, run_id=run_id, password=import_password)
+            except Exception as e:
+                traceback.print_exc()
+                add_log_to_run(run_id, f"Import failed: {e}", "error")
+                update_run_status(run_id, "failed", progress=0, error=str(e))
+            finally:
+                # The importer deletes the ZIP it imported, but not the dir, and
+                # not the original upload when it imported a decrypted copy.
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+        threading.Thread(target=do_import, daemon=True).start()
+
+        return jsonify({"success": True, "run_id": run_id,
+                        "message": f"Import started for {safe_filename}"}), 202
     except Exception as e:
         print(f"[OFFLINE] Error importing results: {e}", flush=True)
         traceback.print_exc()
