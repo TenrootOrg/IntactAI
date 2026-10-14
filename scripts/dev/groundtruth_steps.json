@@ -647,5 +647,124 @@
     ],
     "traps": [],
     "_holdout": true
+  },
+  "benign": {
+    "_about": "A clean environment: no attack steps, only the claims its report must NOT make.",
+    "steps": [],
+    "traps": [
+      {
+        "id": "N.risk_high",
+        "what": "a clean environment rated HIGH or CRITICAL",
+        "rx": "\\*\\*Risk:\\**\\s*(HIGH|CRITICAL)\\b"
+      },
+      {
+        "id": "N.intrusion",
+        "what": "a clean environment called an intrusion / compromise",
+        "rx": "(hands-on-keyboard intrusion|uncontained|confirmed (intrusion|compromise)|(was|were|is|are|been) compromised|threat actor|the adversary (gained|used|moved|established))",
+        "unless": "\\b(whether|if|cannot|can ?not|not (been )?(established|confirmed|shown|identified)|no evidence|unclear|unconfirmed|not corroborated)\\b"
+      }
+    ]
+  },
+  "lockbit_activemq": {
+    "steps": [
+      {
+        "id": "lb.activemq_exploit",
+        "what": "initial access: ActiveMQ 5.18.1 OpenWire exploit (CVE-2023-46604) on EC2AMAZ-I41BETP; inbound 10.0.2.13 -> :61616 at 09:19:48, java.exe spawns cmd/certutil 09:20:01",
+        "rx": "cve-2023-46604|openwire|61616|activemq[^\\n]{0,80}(exploit|vulnerab|rce|remote code|compromis)|(exploit|vulnerab|rce)[^\\n]{0,80}activemq|java\\.exe[^\\n]{0,80}(cmd\\.exe|certutil)"
+      },
+      {
+        "id": "lb.attacker_ip",
+        "what": "attacker host 10.0.2.13 (exploit source, payload on :8080, Meterpreter C2 on :4444)",
+        "rx": "10\\.0\\.2\\.13"
+      },
+      {
+        "id": "lb.stager",
+        "what": "certutil -urlcache downloads Metasploit stager qSwUwejx.exe to %TEMP% and starts it (09:20:01)",
+        "rx": "qswuwejx|certutil[^\\n]{0,80}urlcache"
+      },
+      {
+        "id": "lb.getsystem",
+        "what": "privilege escalation to SYSTEM: Meterpreter getsystem service kwayzc 'cmd.exe /c echo kwayzc > \\\\.\\pipe\\kwayzc' (09:49:09)",
+        "rx": "kwayzc|getsystem|named[- ]pipe impersonation"
+      },
+      {
+        "id": "lb.anydesk",
+        "what": "persistence/remote access: AnyDesk downloaded (certutil, then Invoke-WebRequest), installed --start-with-win as an auto-start service, --set-password 123456 (09:26-09:43)",
+        "rx": "anydesk"
+      },
+      {
+        "id": "lb.rdp_bat",
+        "what": "rdp.bat dropped by the stager in C:\\Windows\\Temp: RDP PortNumber 3389, netsh rule 'RDP Port 3389', TermService restart (09:56:43)",
+        "rx": "rdp\\.bat|portnumber|rdp port 3389|termservice|(firewall|netsh)[^\\n]{0,80}3389|3389[^\\n]{0,80}(firewall|netsh)"
+      },
+      {
+        "id": "lb.log_clear",
+        "what": "log clearing: wevtutil cl System/Application/Security (09:56:51, from rdp.bat) and a second Security 1102 by LB3.exe (10:32:36)",
+        "rx": "wevtutil|1102|logs?[^\\n]{0,40}clear|clear[^\\n]{0,40}(event )?logs?"
+      },
+      {
+        "id": "lb.discovery",
+        "what": "discovery from the SYSTEM shell (10:02-10:30): net user, net group \"Admins Domain\" /domain, netstat -t, net view, ipconfig",
+        "rx": "net (user|group|view)\\b|netstat|admins domain|domain admins"
+      },
+      {
+        "id": "lb.ip_scanner",
+        "what": "Advanced IP Scanner downloaded to C:\\Windows\\Temp\\advanced_ip_scanner.exe via Invoke-WebRequest (10:05:41; never executed)",
+        "rx": "advanced[_ ]?ip[_ ]?scanner"
+      },
+      {
+        "id": "lb.radmin",
+        "what": "second remote-access tool: Radmin Server 3.5.2.1 downloaded, unzipped and silently installed (RServer3 service, firewall rule) 10:08-10:11",
+        "rx": "radmin|rserver3"
+      },
+      {
+        "id": "lb.builder",
+        "what": "LockBit 3.0 builder staged in C:\\Intel by the stager (builder.exe, keygen.exe, Build.bat) and run 10:30:08 to make LB3.exe, LB3_pass.exe, DLLs and LB3Decryptor.exe",
+        "rx": "builder\\.exe|keygen\\.exe|build\\.bat|c:\\\\intel|lb3decryptor|lb3_rundll32"
+      },
+      {
+        "id": "lb.ransomware",
+        "what": "LockBit executed interactively from Explorer (RDP session from 10.0.1.10): LB3_pass.exe 10:31:57 (crashes without password), LB3.exe 10:32:10",
+        "rx": "lb3(_pass)?\\.exe|lockbit"
+      },
+      {
+        "id": "lb.ransom_note",
+        "what": "ransom note 7duXYi3SC.README.txt written to 183 directories by LB3.exe",
+        "rx": "7duxyi3sc|readme\\.txt|ransom note"
+      },
+      {
+        "id": "lb.evtlog_disable",
+        "what": "LB3.exe disables event-log channels (HKLM\\...\\WINEVT\\Channels\\*\\Enabled = 0, ~2,000 registry writes)",
+        "rx": "winevt|(event[- ]?log|channels?)[^\\n]{0,60}disabl|disabl[^\\n]{0,60}(event[- ]?log|channels?)"
+      },
+      {
+        "id": "lb.lockbit_creds",
+        "what": "LB3.exe tries embedded credentials at 10:32: local 4625 for Administrator/Admin2/ad.lab, 4768/4771 at DC EC2AMAZ-TLJH2O4, then 4 NTLM network logons as Administrator from 10.0.2.12 to the DC",
+        "rx": "admin2|ad\\.lab|4771|tljh2o4[^\\n]{0,120}(administrator|ntlm|logon)|(administrator|ntlm|logon)[^\\n]{0,120}tljh2o4"
+      }
+    ],
+    "traps": [
+      {
+        "id": "lb.trap_writeup_iocs",
+        "what": "cites IOCs from the public write-up that are NOT in these logs (stager uFSyLszKsuR, C2 166.62.100.x, service kesknq, netscan.exe, AnyDesk ID 1148037084, SystemSettingsAdminFlows)",
+        "rx": "ufsylszksur|166\\.62\\.100|kesknq|netscan\\.exe|1148037084|systemsettingsadminflows"
+      },
+      {
+        "id": "lb.trap_cred_tools",
+        "what": "names a credential-dumping tool; there is no LSASS access (no Sysmon 10) and none of these ran",
+        "rx": "mimikatz|procdump|comsvcs|nanodump|sekurlsa"
+      },
+      {
+        "id": "lb.trap_dc_encrypted",
+        "what": "says the DC EC2AMAZ-TLJH2O4 was encrypted; it has no LockBit process and no ransom note",
+        "rx": "tljh2o4[^\\n]{0,60}(was|were|got|been) (encrypted|ransomed)|(encrypted|ransomed) (hosts?|servers?|dc|domain controller)[^\\n]{0,20}tljh2o4"
+      },
+      {
+        "id": "lb.trap_setup_accounts",
+        "what": "treats the 06:34 DC promotion (krbtgt / WDAGUtilityAccount created, Administrator added to Domain Admins by ANONYMOUS LOGON) as attacker activity",
+        "rx": "(krbtgt|wdagutilityaccount)[^\\n]{0,80}(creat|add)|(creat|add)[^\\n]{0,80}(krbtgt|wdagutilityaccount)"
+      }
+    ],
+    "_holdout": true
   }
 }

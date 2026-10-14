@@ -42,9 +42,12 @@ def main():
         if kind in ("tune", "holdout"):
             ds, cid = rest.split("=", 1)
             r = groundtruth_eval.score(ds, cid)
-            out[kind][ds] = {k: r[k] for k in ("case", "steps", "in_graph", "in_report", "traps", "traps_hit")}
+            out[kind][ds] = {k: r[k] for k in ("case", "steps", "in_graph", "in_report", "traps", "traps_hit", "risk")}
         else:
             out[kind][rest] = noise(rest)
+            if kind == "benign":                 # the REPORT on a clean box must not cry wolf
+                r = groundtruth_eval.score("benign", rest)
+                out[kind][rest].update({"risk": r["risk"], "traps_hit": r["traps_hit"]})
     out["fixtures"] = {k: {m: v[m] for m in ("precision", "recall")}
                        for k, v in calibrate.evaluate(verbose=False).items() if isinstance(v, dict)}
     prev = None
@@ -71,12 +74,15 @@ def main():
             print(f"  {kind:<8} {ds:<12} graph {cell(r['in_graph'], was(kind, ds, 'in_graph'))}/{r['steps']}  "
                   f"report {cell(r['in_report'], was(kind, ds, 'in_report'))}/{r['steps']}  "
                   f"false claims {cell(len(r['traps_hit']), len(was(kind, ds, 'traps_hit') or []) if prev else None)}"
-                  f"/{r['traps']}")
+                  f"/{r['traps']}  risk {cell(r.get('risk'), was(kind, ds, 'risk'))}")
     for kind in ("benign", "scale"):
         for cid, r in out[kind].items():
             print(f"  {kind:<8} {cid:<22} {r['hosts']} hosts  findings/host "
                   f"{cell(r['per_host'], was(kind, cid, 'per_host'))}  high/host "
-                  f"{cell(r['high_per_host'], was(kind, cid, 'high_per_host'))}")
+                  f"{cell(r['high_per_host'], was(kind, cid, 'high_per_host'))}"
+                  + (f"  report risk {cell(r.get('risk'), was(kind, cid, 'risk'))}  false claims "
+                     f"{cell(len(r.get('traps_hit') or []), len(was(kind, cid, 'traps_hit') or []) if prev else None)}"
+                     if kind == "benign" else ""))
     for k, v in out["fixtures"].items():
         print(f"  fixture  {k:<12} P={v['precision']} R={v['recall']}")
 

@@ -1467,6 +1467,9 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         # This states every host once, with its weight, so no host can be skipped
         # silently and the model can see which are infrastructure.
         "host_coverage": _host_coverage(graph, assets, findings),
+        # The deterministic verdict (case_verdict): the report's Risk is held to it in
+        # code, and the model is told so it does not argue the other way.
+        "assessment": {k: v for k, v in case_verdict(graph, findings).items() if k in ("level", "reasons")},
         # hash -> filename, so the narrative can cite any hash it sees WITH its file
         # (e.g. cross-host shared-binary hashes). Built from the source_name captured at
         # fuse time; generic, resolves custom/unknown binaries too. Keeps the report
@@ -2117,6 +2120,76 @@ def _join_nat(items) -> str:
     return ", ".join(items[:-1]) + f", and {items[-1]}"
 
 
+# ---- the case VERDICT: is this an intrusion? ----------------------------------------
+# 2026-10-14: a clean Server 2022 domain controller and a clean Windows 10 client (no
+# attack) were both reported "Risk: HIGH", their admin and setup activity told as an
+# uncontained compromise -- while by finding COUNTS they look like real one-step attacks
+# (a lone DCSync is one high finding). Counts cannot tell them apart; what the detections
+# ARE can. Deterministic, so it holds with no model and whatever a model writes.
+VERDICT_IMPACT_TACTICS = ("Credential Access", "Lateral Movement", "Exfiltration", "Impact")
+# ponytail: breadth as a technique count -- an intrusion chain (entry, execution,
+# persistence, one more) reaches it, one admin task rarely does; a kill-chain model
+# (ordered stages per host) is the upgrade if a case lands on the wrong side of it.
+VERDICT_BREADTH_TECHNIQUES = 4
+_TOOL_RULE = _tf_re.compile(r"\bhack ?tool\b", _tf_re.I)
+
+
+def case_verdict(graph, findings) -> dict:
+    """{level, ceiling, reasons, line} for the findings a report covers.
+
+    corroborated  -- a critical finding, or a high one that is high-impact on its own
+                     (credential access, lateral movement, exfiltration, impact) or names
+                     an offensive tool, or spans hosts (machine accounts are not cross-host
+                     findings any more), or high findings spanning several techniques.
+                     Risk follows the findings.
+    suspicious    -- high detections that map to an attack technique, none of the above:
+                     one admin change or a cleared log looks like this, and so does a
+                     one-step attack. Risk is held at MEDIUM and the report says review.
+    none          -- no high detection maps to any attack technique. Risk is held at LOW.
+    Activity from a host's earlier name (provisioning) never counts."""
+    def counts(f):
+        try:
+            return not graph.before_current_name(f)
+        except Exception:                                   # noqa: BLE001
+            return True
+    hi = [f for f in findings if sev.at_least(f.severity, "high") and counts(f)]
+    crit = [f for f in hi if f.severity == "critical"]
+    impact = [f for f in hi if _phase(f) in VERDICT_IMPACT_TACTICS]
+    tools = [f for f in hi if _TOOL_RULE.search(f.title or "")]
+    spread = [f for f in hi if f.kind == "cross_host"]
+    techs = sorted({str(t).upper().split(".")[0] for f in hi for t in (f.mitre or [])})
+    mapped = [f for f in hi if f.mitre or _phase(f) != "Unclassified"]
+
+    def names(fs):
+        return _join_nat([_clean_det(f.title)[:60] for f in fs[:3]]) + (f" (+{len(fs) - 3})" if len(fs) > 3 else "")
+    reasons = []
+    if crit:
+        reasons.append(f"{len(crit)} critical finding(s): {names(crit)}")
+    if impact:
+        reasons.append(f"high-impact activity on its own: {names(impact)}")
+    if tools:
+        reasons.append(f"offensive tooling: {names(tools)}")
+    if spread:
+        reasons.append(f"{len(spread)} high finding(s) spanning hosts: {names(spread)}")
+    if len(techs) >= VERDICT_BREADTH_TECHNIQUES:
+        reasons.append(f"{len(techs)} distinct attack techniques across the high findings")
+    if reasons:
+        return {"level": "corroborated", "ceiling": None, "reasons": reasons,
+                "line": "**Assessment:** corroborated attacker activity -- " + "; ".join(reasons) + "."}
+    if mapped:
+        why = (f"{len(mapped)} high detection(s) map to attack techniques ({names(mapped)}), but none is "
+               f"high-impact on its own, none is critical and they span fewer than "
+               f"{VERDICT_BREADTH_TECHNIQUES} techniques -- ordinary administration can look like this, "
+               f"and so can a single attack step")
+        return {"level": "suspicious", "ceiling": "medium", "reasons": [why],
+                "line": f"**Assessment:** suspicious activity, not corroborated as an intrusion -- {why}. "
+                        f"Review these detections before treating the environment as compromised."}
+    why = ("no high-severity detection maps to an attack technique" if hi else
+           "no high-severity detection in scope")
+    return {"level": "none", "ceiling": "low", "reasons": [why],
+            "line": f"**Assessment:** no attack evidence -- {why}; what remains reads as routine activity."}
+
+
 def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) -> str:
     """A plain-language, story-telling executive summary: what happened in the
     organization, how the adversary operated, how far it spread, and the bottom line.
@@ -2149,7 +2222,12 @@ def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) 
     last_ts = _ends[-1] if _ends else None
 
     bits = []
+    verdict = case_verdict(graph, findings)
     sev_word = "critical" if crit else ("high" if high else "moderate")
+    if verdict["ceiling"] == "medium" and sev_word in ("critical", "high"):
+        sev_word = "moderate"
+    elif verdict["ceiling"] == "low":
+        sev_word = "low"
     bits.append(
         f"This investigation correlated suspicious activity across "
         f"**{len(affected) or len(assets)} of {len(assets)} host(s)** and surfaced "
@@ -2166,7 +2244,7 @@ def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) 
         did = _join_nat([_TACTIC_VERB.get(l, l.lower()) for l in objectives])
         bits.append(f"Across the environment the adversary {did} — consistent with a "
                     f"hands-on-keyboard intrusion rather than isolated, unrelated alerts."
-                    if (crit or high) else
+                    if (crit or high) and verdict["level"] == "corroborated" else
                     f"Across the environment the observed activity involved {did}.")
     if hosts:
         w = hosts[0]
@@ -2180,11 +2258,11 @@ def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) 
         bits.append(f"Critically, **{len(xh)} finding(s)** correlate across multiple hosts — "
                     f"evidence the activity spread laterally or shares adversary infrastructure, "
                     f"so this should be treated as an environment-wide event, not single-host alerts.")
-    if crit or high:
+    if (crit or high) and verdict["level"] == "corroborated":
         bits.append("**Bottom line:** immediate containment of the priority hosts and a "
                     "deeper forensic review (memory, full timeline) are recommended before "
                     "the adversary consolidates access further.")
-    return " ".join(bits)
+    return verdict["line"] + "\n\n" + " ".join(bits)
 
 
 

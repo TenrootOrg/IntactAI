@@ -55,8 +55,18 @@ def score(ds, cid) -> dict:
         ng += in_g
         nr += in_r
         rows.append((s["id"], s["what"], in_g, in_r))
-    hits = [(t["id"], t["what"]) for t in traps if re.search(t["rx"], rep, re.I | re.S)]
+    # A trap with `unless` is judged per sentence: "cannot establish whether X was
+    # compromised" is a hedge, not the claim the trap is about.
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", rep)
+
+    def hit(t):
+        if not t.get("unless"):
+            return re.search(t["rx"], rep, re.I | re.S)
+        return any(re.search(t["rx"], x, re.I) and not re.search(t["unless"], x, re.I) for x in sentences)
+    hits = [(t["id"], t["what"]) for t in traps if hit(t)]
+    risk = re.search(r"\*\*Risk:\**\s*(CRITICAL|HIGH|MEDIUM|LOW)", rep, re.I)
     return {"dataset": ds, "case": cid, "findings": len(g.findings), "report_chars": len(rep),
+            "risk": risk.group(1).upper() if risk else None,
             "steps": len(steps), "in_graph": ng, "in_report": nr, "traps": len(traps),
             "traps_hit": [h[0] for h in hits], "trap_text": dict(hits), "rows": rows}
 

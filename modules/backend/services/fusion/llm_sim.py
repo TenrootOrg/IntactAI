@@ -301,7 +301,10 @@ REPORT_SYSTEM_PROMPT_FOCUSED = (
     "PAYLOAD (JSON) keys: scope; assets; findings (summary, hosts[], mitre, ts, kind — "
     "kind=='cross_host' spans hosts; evidence[] = the real event lines; members[] = every detection inside a burst / related group, each with its own evidence -- each member is a step of what happened, so narrate it, never just the group title); timeline (real timestamps only); top_entities "
     "(accounts/processes/IOCs + anomaly/flags); identities (one identity = one person's "
-    "accounts across hosts); file_hashes (hash -> filename lookup; use it to name any hash you cite). host_coverage (each host once; role_hint with role_evidence comes from the logs "
+    "accounts across hosts); assessment (the deterministic verdict -- corroborated / suspicious / none -- "
+    "the case Risk is held to it in code and the Executive Summary opens with it: never describe a "
+    "suspicious or none case as a confirmed or uncontained intrusion); "
+    "file_hashes (hash -> filename lookup; use it to name any hash you cite). host_coverage (each host once; role_hint with role_evidence comes from the logs "
     "(e.g. other hosts' computer accounts log on there) -- state it with that evidence; a role_hint "
     "without role_evidence is inferred from the hostname — a lead to confirm, never an established role).\n"
     "NAME HISTORY — host_coverage.name_history lists names a host's own logs recorded before its current name, in order. A finding with before_current_name=true happened while the machine had an EARLIER name (usually the image it was built from, or provisioning). Report such findings in a short separate paragraph, never as part of this incident or as an earlier compromise, unless the evidence itself links them to it.\n"
@@ -1878,7 +1881,7 @@ def _scope_max_severity(graph, window, min_severity) -> str | None:
 _SEV_WORD = re.compile(r"(\*\*(?:Risk|Severity):\*\*\s*|\*\*Risk:\s*)(critical|high|medium|low)\b", re.I)
 
 
-def _cap_severity_word(text, ceiling, what) -> str:
+def _cap_severity_word(text, ceiling, what, why=None) -> str:
     """Hold a model-written "**Risk:** X" / "**Severity:** X" to `ceiling`, the
     strongest finding it describes, and say so when it had to. WEIGHTING_RULE asks;
     this enforces (2026-10-07: "Severity: Critical" on phases with no critical
@@ -1892,9 +1895,40 @@ def _cap_severity_word(text, ceiling, what) -> str:
         if sev.rank(said.lower()) <= sev.rank(cap):
             return m.group(0)
         word = cap.upper() if said.isupper() else cap.capitalize()
+        if why:
+            return f"{m.group(1)}{word} _(the model said {said}; held by {why})_"
         return (f"{m.group(1)}{word} _(the model said {said}; held to the strongest "
                 f"finding in this {what}, which is {ceiling})_")
     return _SEV_WORD.sub(fix, text)
+
+
+def _apply_verdict(narrative, graph, window, min_severity) -> str:
+    """Hold the case Risk to render.case_verdict and open the Executive Summary with it.
+
+    2026-10-14: a clean domain controller and a clean Windows 10 client were reported
+    "Risk: HIGH" as uncontained intrusions. The verdict is deterministic; asking the model
+    to respect it did not move the numbers (prompt rules were measured and rejected), so
+    the Risk word is capped and the assessment line is written in, whatever the model said."""
+    strongest = _scope_max_severity(graph, window, min_severity)
+    if not (narrative or "").strip():
+        return narrative
+    try:
+        _assets, findings = render.scope(graph, window=window, min_severity=min_severity)
+        v = render.case_verdict(graph, findings)
+    except Exception:                                         # noqa: BLE001 -- never lose the report
+        return _cap_severity_word(narrative, strongest, "case")
+    # ONE cap, with the reason that binds: the strongest finding, or the verdict when it
+    # is lower (two caps in a row stacked two notes on one Risk word).
+    if v.get("ceiling") and (not strongest or sev.rank(v["ceiling"]) < sev.rank(strongest)):
+        label = {"suspicious": "the case assessment (suspicious, not corroborated as an intrusion)",
+                 "none": "the case assessment (no attack evidence)"}.get(v["level"], "the case assessment")
+        narrative = _cap_severity_word(narrative, v["ceiling"], "case", why=label)
+    else:
+        narrative = _cap_severity_word(narrative, strongest, "case")
+    m = re.search(r"^## Executive Summary[^\n]*\n", narrative, re.M)
+    if m:
+        return narrative[:m.end()] + "\n" + v["line"] + "\n" + narrative[m.end():]
+    return v["line"] + "\n\n" + narrative
 
 
 def _with_deadline(fn, seconds, what):
@@ -2308,7 +2342,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             except Exception as _se:                     # noqa: BLE001
                 narrative = _keep_phases(_se)
             narrative = _revert_mask(narrative, mask)   # un-mask the LLM's output
-            narrative = _cap_severity_word(narrative, _scope_max_severity(graph, window, min_severity), "case")
+            narrative = _apply_verdict(narrative, graph, window, min_severity)
             # AN EMPTY NARRATIVE IS A FAILED CALL, NOT A REPORT.
             #
             # A reasoning model draws its thinking from the same output allowance as
