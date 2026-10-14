@@ -106,8 +106,39 @@ def random_label(domain) -> bool:
     return len(letters) >= 8 and sum(c in _VOWELS for c in letters) / len(letters) < 0.25
 
 
+# Registry path parts too common to name a product.
+_GENERIC_KEY_PARTS = frozenset((
+    "hklm", "hkcu", "hku", "hkcr", "registry", "machine", "user", "software", "wow6432node",
+    "policies", "microsoft", "windows", "windows nt", "currentversion", "system",
+    "currentcontrolset", "controlset001", "controlset002", "services", "parameters",
+    "features", "classes", "settings", "config"))
+
+
+def writes_own_settings(proc, details) -> bool:
+    """The process changing a settings key runs from a folder named after the product
+    that key belongs to: C:\\Program Files\\<Product>\\x.exe writing ...\\<Product>\\...
+    -- a program updating or protecting itself. A clean Nextron domain controller and
+    APT29's boxes carried "Defender functionalities disabled" findings that were
+    Defender's own service writing its own key. A shell, reg.exe or PowerShell run from
+    System32 never matches, so tampering by anything else keeps its severity."""
+    m = re.search(r"(?:RegKey|TgtObj|TargetObject)\s*:\s*([^¦]+)", str(details or ""), re.I)
+    folders = {p.strip().lower() for p in re.split(r"[\\/]", str(proc or ""))[:-1] if p.strip()}
+    if not m or not folders:
+        return False
+    parts = {p.strip().lower() for p in m.group(1).split("\\") if p.strip()}
+    return any(len(p) >= 4 and p not in _GENERIC_KEY_PARTS and p in folders for p in parts)
+
+
+def no_content(details) -> bool:
+    """Every "Key: value" the detection carries is empty or n/a -- it fired on an event
+    that recorded nothing (WMI Persistence with nine n/a fields)."""
+    vals = [p.split(":", 1)[1].strip().lower() for p in str(details or "").split("¦") if ":" in p]
+    return bool(vals) and all(v in ("", "n/a", "-", "none", "null") for v in vals)
+
+
 CHECKS = {"same_program": same_program, "installer_of_same_program": installer_of_same_program,
-          "local_ip": local_ip, "random_label": random_label}
+          "local_ip": local_ip, "random_label": random_label,
+          "writes_own_settings": writes_own_settings, "no_content": no_content}
 
 
 def pattern(name):
@@ -226,6 +257,10 @@ def apply_entity(e, rules=None, errors=None):
             new_anom, new_sev = e.anomaly, str(then.get("severity") or e.severity)
         if before == "critical" and sev.rank(new_sev) < sev.rank(before) \
                 and not rule.get("allow_lower_critical"):
+            return e
+        # A rule that explains ordinary activity only ever LOWERS: one that set
+        # anomaly 1 lifted an informational "WinRM session created" to low.
+        if then.get("only_lower") and sev.rank(new_sev) > sev.rank(before):
             return e
         e.anomaly, e.severity = new_anom, new_sev
         flags = [f for f in e.flags or [] if f not in set(then.get("remove_flags") or [])]

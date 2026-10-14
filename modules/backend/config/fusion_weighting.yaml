@@ -131,6 +131,135 @@ entity_rules:
       # a specific technique the heuristic rule must NOT touch (stays medium):
       - {type: event, flags: [sigma], anomaly: 15, attrs: {title: "WMI Persistence"}, expect: medium}
 
+  # ---- a program changing its OWN settings / Windows running its own services ----
+  # Origin 2026-10-14: a clean Nextron domain controller (Server 2022, no attack) raised
+  # 8 high findings; APT29's reports turned the same patterns into "Defender disabled"
+  # and "ADS / timestomping on the DC". Each rule is a shape, not a product.
+  - id: program-writes-own-settings
+    reason: "the process changing this settings key runs from the folder of the product the key belongs to -- the program updating or protecting itself, not tampering"
+    when: {type: [event], flags_any: [sigma], check: writes_own_settings, args: [ev_proc, details]}
+    then: {anomaly: 1, only_lower: true}
+    examples:
+      - {type: event, flags: [sigma], anomaly: 30,
+         attrs: {title: "Disable Windows Defender Functionalities Via Registry Keys",
+                 ev_proc: 'C:\Program Files\Windows Defender\MsMpEng.exe',
+                 details: 'EventType: SetValue ¦ RegKey: HKLM\SOFTWARE\Microsoft\Windows Defender\Features\TamperProtection ¦ Details: DWORD (0x00000000)'},
+         expect: low}
+      # the same key written by anything else keeps its severity:
+      - {type: event, flags: [sigma], anomaly: 30,
+         attrs: {title: "Disable Windows Defender Functionalities Via Registry Keys",
+                 ev_proc: 'C:\Windows\System32\reg.exe',
+                 details: 'EventType: SetValue ¦ RegKey: HKLM\SOFTWARE\Microsoft\Windows Defender\Features\TamperProtection ¦ Details: DWORD (0x00000000)'},
+         expect: high}
+      - {type: event, flags: [sigma], anomaly: 30,
+         attrs: {title: "Disable Windows Defender Functionalities Via Registry Keys",
+                 ev_proc: 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
+                 details: 'RegKey: HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\DisableAntiSpyware'},
+         expect: high}
+
+  - id: shared-service-host
+    reason: "a 'suspicious service path' that is the system's shared service host with a -k group -- how Windows runs its built-in services"
+    when: {type: [event], flags_any: [sigma], attr_words: {title: [suspicious service path]},
+           attr_regex: {details: 'path:\s*(%systemroot%|c:\\windows)\\system32\\svchost\.exe\s+-k\s+\w+\s*($|¦)'}}
+    then: {anomaly: 1, only_lower: true}
+    examples:
+      - {type: event, flags: [sigma], anomaly: 30,
+         attrs: {title: "Suspicious Service Path", details: 'Svc: Printer Extensions and Notifications ¦ Path: %SystemRoot%\system32\svchost.exe -k print'},
+         expect: low}
+      - {type: event, flags: [sigma], anomaly: 30,
+         attrs: {title: "Suspicious Service Path", details: 'Svc: updater ¦ Path: C:\Users\Public\svchost.exe -k netsvcs'},
+         expect: high}
+      - {type: event, flags: [sigma], anomaly: 30,
+         attrs: {title: "Suspicious Service Path", details: 'Svc: x ¦ Path: cmd.exe /c powershell -enc AAA'},
+         expect: high}
+
+  - id: remoting-copy-helpers
+    reason: "PowerShell's own Copy-Item -ToSession helper functions, run in the remote session -- a file copy, not ADS abuse or timestomping (the copy itself is judged by its own rule)"
+    when: {type: [event], flags_any: [sigma], attr_words: {title: [alternate data stream, timestomp]},
+           attr_regex: {details: 'pstargetsupportsalternatestreams|pssetfilemetadata|psgetfilemetadata|pscopyfiletoremotesession|pscopytosessionhelper|pscopyfromsessionhelper'}}
+    then: {anomaly: 1, only_lower: true}
+    examples:
+      - {type: event, flags: [sigma], anomaly: 30,
+         attrs: {title: "NTFS Alternate Data Stream", details: 'ScriptBlock: function PSTargetSupportsAlternateStreams { param([string]$targetPath) ... }'},
+         expect: low}
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Powershell Timestomp", details: 'ScriptBlock: function PSSetFileMetadata { ... }'},
+         expect: low}
+      # a real timestomp script keeps its severity:
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Powershell Timestomp", details: 'ScriptBlock: $f=Get-Item .\kx.lock; $f.CreationTime=(Get-Item C:\Windows\System32\cmd.exe).CreationTime'},
+         expect: medium}
+
+  # ---- detections that recorded nothing, or describe the OS doing its own work ----
+  # Origin 2026-10-14: with its bursts gone, a clean domain controller showed 18 medium
+  # rows of exactly these shapes (and a clean Windows 10 client the same ones).
+  - id: sigma-no-content
+    reason: "the detection recorded no content -- every field it names is empty or n/a, so there is nothing to act on"
+    when: {type: [event], flags_any: [sigma], check: no_content, args: [details]}
+    then: {anomaly: 1, only_lower: true}
+    examples:
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "WMI Persistence", details: "Namespace: n/a ¦ Query: n/a ¦ SID: n/a ¦ PID: n/a ¦ Provider: n/a ¦ PossibleCause: n/a"},
+         expect: low}
+      - {type: event, flags: [sigma], anomaly: 15, attrs: {title: "WMI Persistence", details: "Message: n/a"}, expect: low}
+      # only lowers: an informational row with no content stays informational
+      - {type: event, flags: [sigma], anomaly: 0, attrs: {title: "Win RM Session Created", details: "Message: n/a"}, expect: informational}
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Powershell WMI Persistence", details: "ScriptBlock: function wmi { $FilterArgs = @{name='x'; Query='SELECT * FROM __InstanceCreationEvent'} }"},
+         expect: medium}
+
+  - id: os-raw-disk-read
+    reason: "a raw disk read by the kernel or a Windows system binary -- indexing, backup and telemetry do this all day"
+    when: {type: [event], flags_any: [sigma], attr_words: {title: [raw access read]},
+           attr_regex: {details: '(?i)(^|¦)\s*(proc:\s*(<unknown process>|c:\\windows\\system32\\[^\\¦]+\.exe)\s*(¦|$))'}}
+    then: {anomaly: 1, only_lower: true}
+    examples:
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Raw Access Read", details: 'Proc: C:\Windows\System32\CompatTelRunner.exe ¦ Device: \Device\HarddiskVolume3 ¦ PID: 5196'}, expect: low}
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Raw Access Read", details: 'Proc: <unknown process> ¦ Device: \Device\HarddiskVolume3 ¦ PID: 4'}, expect: low}
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Raw Access Read", details: 'Proc: C:\Users\bob\AppData\Local\Temp\x.exe ¦ Device: \Device\HarddiskVolume3'}, expect: medium}
+
+  - id: image-locked-not-replaced
+    reason: "Sysmon process tampering of type 'image is locked for access' -- routine; hollowing reads 'image is replaced'"
+    when: {type: [event], flags_any: [sigma], attr_words: {title: [proc tampering], details: [image is locked for access]}}
+    then: {anomaly: 1, only_lower: true}
+    examples:
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Proc Tampering", details: 'Proc: C:\Windows\System32\wbem\WMIADAP.exe ¦ Type: Image is locked for access'}, expect: low}
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Proc Tampering", details: 'Proc: C:\Users\a\x.exe ¦ Type: Image is replaced'}, expect: medium}
+
+  - id: deletion-rule-on-a-create
+    reason: "a rule about a DELETION that fired on a key CREATION -- the event contradicts the rule"
+    when: {type: [event], flags_any: [sigma], attr_words: {title: [deletion], details: ["eventtype: createkey"]}}
+    then: {anomaly: 1, only_lower: true}
+    examples:
+      - {type: event, flags: [sigma], anomaly: 30,
+         attrs: {title: "RunMRU Registry Key Deletion - Registry", details: 'EventType: CreateKey ¦ TgtObj: HKU\S-1-5-21-1-500\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU'}, expect: low}
+      - {type: event, flags: [sigma], anomaly: 30,
+         attrs: {title: "RunMRU Registry Key Deletion - Registry", details: 'EventType: DeleteKey ¦ TgtObj: HKU\S-1-5-21-1-500\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU'}, expect: high}
+
+  - id: os-servicing-helper
+    reason: "the Windows servicing helper started from its own per-run folder under Windows\\Temp -- component installs and updates"
+    when: {type: [event], flags_any: [sigma], attr_regex: {ev_proc: '(?i)\\windows\\temp\\[0-9a-f-]{36}\\dismhost\.exe$'}}
+    then: {anomaly: 1, only_lower: true}
+    examples:
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "WmiPrvSE Spawned A Process", ev_proc: 'C:\Windows\Temp\877306D1-C5B7-46FA-841E-4FBA6346B328\DismHost.exe'}, expect: low}
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "WmiPrvSE Spawned A Process", ev_proc: 'C:\Windows\Temp\dismhost.exe'}, expect: medium}
+
+  - id: app-package-provisioning
+    reason: "an app package added to the deployment pipeline -- store and OS apps being provisioned"
+    when: {type: [event], flags_any: [sigma], attr_words: {title: [appx located in uncommon directory added to deployment pipeline]}}
+    then: {anomaly: 1, only_lower: true}
+    examples:
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "AppX Located in Uncommon Directory Added to Deployment Pipeline"}, expect: low}
+      - {type: event, flags: [sigma], anomaly: 15, attrs: {title: "AppX Package Installation From Suspicious Location"}, expect: medium}
+
 pattern_rules:
 
   - id: recurring-maintenance
