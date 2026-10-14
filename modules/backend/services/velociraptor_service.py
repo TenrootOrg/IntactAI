@@ -246,7 +246,7 @@ def get_clients_from_snapshot_file(include_offline=True):
             if undecodable <= 3:
                 print(f"[CLIENT-LIST] Error parsing client record: {e}", flush=True)
             continue
-        agent = {k: info.get(k, '') for k in ('agent', 'version', 'interrogated')}
+        agent = {k: info.get(k, '') for k in ('agent', 'version', 'interrogated', 'last_ip')}
         clients.append({
             "client_id": client_id,
             "hostname": info.get("hostname", ""),

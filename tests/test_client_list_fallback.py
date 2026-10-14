@@ -82,6 +82,11 @@ class SnapshotFallbackDecodesClientInfo(SnapshotFallback):
         self.serve({"client_id": "C.4", "info": client_info(client_id="C.4", hostname="ADATUM-DC").hex()})
         self.assertTrue(vs.get_clients_from_snapshot_file()[0]["imported"])
 
+    def test_an_enrolled_agent_not_yet_interrogated_is_not_an_import(self):
+        self.serve({"client_id": "C.7", "info": client_info(
+            client_id="C.7", hostname="NEW-PC", ip_address="10.0.0.7").hex()})
+        self.assertFalse(vs.get_clients_from_snapshot_file()[0]["imported"])
+
     def test_undecodable_snapshot_is_an_error_not_unknown_rows(self):
         self.serve(*({"client_id": f"C.{i}", "info": "C.1 PC windows".encode().hex()} for i in range(5)))
         with self.assertRaisesRegex(RuntimeError, "could not be decoded"):

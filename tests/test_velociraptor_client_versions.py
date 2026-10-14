@@ -79,6 +79,21 @@ class OfflineCollectionImports(unittest.TestCase):
         self.assertEqual("imported", eligibility(imp)[0])         # never upgraded
         self.assertEqual(["C.1"], [c["client_id"] for c in filter_clients(st, hide_unknown=True)])
 
+    def test_an_agent_not_yet_interrogated_is_not_an_import(self):
+        """A freshly enrolled agent (or one whose interrogation failed) has no
+        name, version or interrogation yet, like an import, but it has connected:
+        it has an IP. An import also gets last_seen_at, so that cannot tell them
+        apart (lab box, 2026-10-14)."""
+        from services.velociraptor_clients import classify
+        rows = [{"client_id": "C.9", "hostname": "NEW-PC", "version": "", "agent": "",
+                 "interrogated": "", "last_ip": "10.0.0.9:51000", "last_seen_at": NOW * 1e6},
+                {"client_id": "C.3", "hostname": "ALDC02", "version": "", "agent": "",
+                 "interrogated": "", "last_ip": "", "last_seen_at": (NOW - 9e5) * 1e6}]
+        st = classify(rows, "0.77.2", now=NOW)
+        self.assertEqual({"C.9": "unknown", "C.3": "imported"},
+                         {c["client_id"]: c["state"] for c in st["clients"]})
+        self.assertEqual(1, st["total"])
+
     def test_rows_without_agent_fields_keep_the_old_meaning(self):
         from services.velociraptor_clients import classify
         st = classify([{"client_id": "C.9", "version": ""}], "0.77.2", now=NOW)
