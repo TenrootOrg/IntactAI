@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 from pyvelociraptor import api_pb2
@@ -15,6 +16,16 @@ from pyvelociraptor import api_pb2_grpc
 from services.velociraptor_service import setup_velociraptor_connection
 from services.workflow_service import add_log_to_run
 from services.agentic.collectors._base import *  # noqa: F401,F403
+
+
+# Flows polled at once. A poll used to walk every flow in turn (enumerate, a
+# fetch per source, a status check), so at 1,000 flows one 30 s poll took
+# minutes and a 30-minute window got about three polls. gRPC channels are
+# thread-safe; 1 restores the old one-at-a-time behaviour.
+POLL_WORKERS = max(1, int(os.environ.get("VELO_POLL_WORKERS", "8")))
+# Above this many clients the heartbeat gives counts, not one entry per client:
+# a 1,000-name line was ~25 KB, written to the run row every minute.
+PER_CLIENT_DETAIL_MAX = 20
 
 
 def _keep_source(name, only_artifacts):
@@ -157,7 +168,67 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     # (479,334 -> 455,315 in a real run): rows are appended now, never replaced,
     # so a short read can no longer delete rows we already had.
     fetched_offsets = {}     # (client_id, source_name) -> int
+    # Flows that FINISHED and have had their one fetch after that: never polled
+    # again (see the poll below).
+    drained = set()
 
+    def _fetch_new(col, known=()):
+        """(sources listed now, [(source, new rows)]) for one flow. Runs on the
+        pool, so it only READS shared state; _merge writes it on this thread."""
+        client_id = col.get('client_id')
+        flow_id = col.get('flow_id')
+        # Enumerate all available sources in this flow (includes sub-artifacts)
+        # and just track them — no per-source log; see the heartbeat comment
+        # above for why.
+        listed = enumerate_flow_sources(stub, client_id, flow_id)
+        got = []
+        for source_name in set(known) | set(listed):
+            if only_artifacts and not _keep_source(source_name, only_artifacts):
+                continue          # no mapper for it — do not pull it
+            rows = query_artifact_results(stub, client_id, flow_id, source_name,
+                                          start_row=fetched_offsets.get((client_id, source_name), 0))
+            if rows:
+                got.append((source_name, rows))
+        return listed, got
+
+    def _poll(col, known, check):
+        listed, got = _fetch_new(col, known)
+        status = (check_flow_status(stub, col.get('client_id'), col.get('flow_id'))
+                  if check else (None, None))
+        return listed, got, status
+
+    def _merge(client_id, got, final=False):
+        client_hostname = _name(client_id)
+        for source_name, rows in got:
+            _key = (client_id, source_name)
+            _seen = fetched_offsets.get(_key, 0)
+            fetched_offsets[_key] = _seen + len(rows)
+
+            # Tag every row with _client_id + _hostname — the multi-client merge
+            # relies on this to keep each client's rows distinct. Without it, one
+            # client's poll would wipe out another client's rows for the same
+            # source.
+            for r in rows:
+                if isinstance(r, dict):
+                    r.setdefault('_client_id', client_id)
+                    r.setdefault('_hostname', client_hostname)
+
+            # APPEND the tail. This used to rebuild the source by keeping other
+            # clients' rows and REPLACING this client's with its latest full
+            # fetch — which is why every poll had to re-download everything.
+            # With start_row the fetch returns only what is new, so it is added
+            # to what is already there.
+            all_results.setdefault(source_name, [])
+            all_results[source_name].extend(rows)
+            if final:
+                add_log_to_run(
+                    run_id,
+                    f"[Velociraptor] [{client_hostname}] Final: {source_name} "
+                    f"({len(rows)} new — total now {len(all_results[source_name])})",
+                    "info")
+
+    pool = ThreadPoolExecutor(max_workers=min(POLL_WORKERS, len(active_flows)),
+                              thread_name_prefix=f"velo-poll-{run_id}")
     try:
         while elapsed < total_seconds:
             # Check for cancellation
@@ -167,62 +238,27 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
             poll_count += 1
 
-            # Poll each flow for available data
-            for col in active_flows:
+            # Poll every flow that can still produce, on the pool, and merge in
+            # flow order. A flow that FINISHED gets one more fetch after the
+            # poll that saw it finish (rows can land between its fetch and its
+            # status check), then it is drained and never queried again:
+            # re-asking 1,000 finished flows for nothing every 30 s was most of
+            # a fleet poll's cost.
+            polled = [c for c in active_flows if c.get('flow_id') not in drained]
+            was_done = set(completed_flows)
+            results = list(pool.map(
+                _poll, polled,
+                [discovered_sources.get(c.get('flow_id'), set()) for c in polled],
+                [c.get('flow_id') not in was_done for c in polled]))
+
+            for col, (listed, got, (status, error_info)) in zip(polled, results):
                 client_id = col.get('client_id')
                 flow_id = col.get('flow_id')
-                if not flow_id:
-                    continue
+                discovered_sources.setdefault(flow_id, set()).update(listed)
+                _merge(client_id, got)
+                if flow_id in was_done:
+                    drained.add(flow_id)
 
-                # Enumerate all available sources in this flow (includes
-                # sub-artifacts) and just track them — no per-source log; see
-                # the heartbeat comment above for why.
-                discovered_sources.setdefault(flow_id, set())
-                discovered_sources[flow_id].update(enumerate_flow_sources(stub, client_id, flow_id))
-
-                # Query every discovered source and merge in whatever is
-                # available. No growth/stability bookkeeping: each poll just
-                # replaces THIS client's rows with its latest fetch, so a
-                # partial early fetch is naturally superseded by a fuller one
-                # next poll — nothing to track to get that for free.
-                client_hostname = _name(client_id)
-                for source_name in discovered_sources[flow_id]:
-                    if only_artifacts and not _keep_source(source_name, only_artifacts):
-                        continue          # no mapper for it — do not pull it
-                    _key = (client_id, source_name)
-                    _seen = fetched_offsets.get(_key, 0)
-                    rows = query_artifact_results(stub, client_id, flow_id,
-                                                  source_name, start_row=_seen)
-                    if not rows:
-                        continue
-                    fetched_offsets[_key] = _seen + len(rows)
-
-                    # Tag every row with _client_id + _hostname — the
-                    # multi-client merge below relies on this to keep each
-                    # client's rows distinct. Without it, one client's poll
-                    # would wipe out another client's rows for the same
-                    # source.
-                    for r in rows:
-                        if isinstance(r, dict):
-                            r.setdefault('_client_id', client_id)
-                            r.setdefault('_hostname', client_hostname)
-
-                    # APPEND the tail. This used to rebuild the source by
-                    # keeping other clients' rows and REPLACING this client's
-                    # with its latest full fetch — which is why every poll had to
-                    # re-download everything. With start_row the fetch returns
-                    # only what is new, so it is added to what is already there.
-                    all_results.setdefault(source_name, [])
-                    all_results[source_name].extend(rows)
-
-            # Check flow status
-            for col in active_flows:
-                client_id = col.get('client_id')
-                flow_id = col.get('flow_id')
-                if not flow_id or flow_id in completed_flows:
-                    continue
-
-                status, error_info = check_flow_status(stub, client_id, flow_id)
                 if status == 'FINISHED':
                     completed_flows.add(flow_id)
                     add_log_to_run(run_id, f"[Velociraptor] Flow completed on {_name(client_id)}", "info")
@@ -317,7 +353,16 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                 # Format chosen to avoid the trailing-ellipsis trap (`…`)
                 # which previous versions used — operators reported the
                 # heartbeat looked truncated mid-line.
-                if multi_client:
+                if multi_client and len(active_flows) > PER_CLIENT_DETAIL_MAX:
+                    n_err = sum(1 for f in errored_flows if f not in completed_flows)
+                    add_log_to_run(
+                        run_id,
+                        f"[Pipeline] Per-client: {len(completed_flows)} done, {n_err} errored "
+                        f"and still producing, {len(active_flows) - len(completed_flows) - n_err} "
+                        f"running ({len(active_flows)} clients)",
+                        "info",
+                    )
+                elif multi_client:
                     per_client_parts = []
                     for col in active_flows:
                         cid = col.get('client_id')
@@ -349,46 +394,21 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
         if update_phase_func:
             update_phase_func(run_id, "retrieving_results", 50)
 
-        for col in active_flows:
-            client_id = col.get('client_id')
-            flow_id = col.get('flow_id')
-            if not flow_id:
-                continue
-            client_hostname = _name(client_id)
-
-            # Get final list of all sources
-            final_sources = enumerate_flow_sources(stub, client_id, flow_id)
-            for source_name in final_sources:
-                # SAME SCOPE AS THE POLL LOOP. This closing pass is a second
-                # retrieval site, and scoping only the poll left it pulling
-                # everything: a live BestPractice collection still landed 25
-                # unmappable sources here after the poll had been filtered.
-                if only_artifacts and not _keep_source(source_name, only_artifacts):
-                    continue
-                # The TAIL, not the whole thing. This pass exists to pick up
-                # whatever landed after the last poll, and re-downloading every
-                # source in full to do that is what made the closing phase of a
-                # large collection take minutes per artifact — on a QA run the
-                # watchdog fired 32 seconds into it and destroyed the lot.
-                _key = (client_id, source_name)
-                _seen = fetched_offsets.get(_key, 0)
-                rows = query_artifact_results(stub, client_id, flow_id,
-                                              source_name, start_row=_seen)
-                if rows:
-                    fetched_offsets[_key] = _seen + len(rows)
-                    # Tag rows for per-client attribution (same as main poll loop)
-                    for r in rows:
-                        if isinstance(r, dict):
-                            r.setdefault('_client_id', client_id)
-                            r.setdefault('_hostname', client_hostname)
-
-                    all_results.setdefault(source_name, [])
-                    all_results[source_name].extend(rows)
-                    add_log_to_run(
-                        run_id,
-                        f"[Velociraptor] [{client_hostname}] Final: {source_name} "
-                        f"({len(rows)} new — total now {len(all_results[source_name])})",
-                        "info")
+        # SAME SCOPE AS THE POLL LOOP (_fetch_new is both). This closing pass is
+        # a second retrieval site, and scoping only the poll once left it
+        # pulling everything: a live BestPractice collection still landed 25
+        # unmappable sources here after the poll had been filtered.
+        #
+        # The TAIL, not the whole thing. This pass exists to pick up whatever
+        # landed after the last poll, and re-downloading every source in full
+        # to do that is what made the closing phase of a large collection take
+        # minutes per artifact — on a QA run the watchdog fired 32 seconds into
+        # it and destroyed the lot. A drained FINISHED flow has no tail left.
+        # An errored one that merely went quiet is still asked: it may not be.
+        final = [c for c in active_flows
+                 if not (c.get('flow_id') in drained and c.get('flow_id') not in errored_flows)]
+        for col, (_listed, got) in zip(final, list(pool.map(_fetch_new, final))):
+            _merge(col.get('client_id'), got, final=True)
 
         # Report what was RETRIEVED, and say plainly whether the flows had
         # actually finished. This used to log "Collection complete" in green
@@ -422,6 +442,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                 "success")
 
     finally:
+        pool.shutdown(wait=True)
         if channel:
             channel.close()
 
