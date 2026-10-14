@@ -104,6 +104,51 @@ class RunLimit(unittest.TestCase):
         self.assertTrue(any("cancelled while queued" in m for m in logs["r1"]), logs["r1"])
 
 
+class QueuedUploadIsReclaimed(unittest.TestCase):
+    """An uploaded image waits in the queue as a file on disk. Its path used to be
+    recorded only after the slot was taken, so a Stop (or a restart) during the
+    wait -- hours, with one run at a time -- cleaned up with host_path=None and
+    the multi-GB image stayed on disk for good."""
+
+    def _stop_while_queued(self, keep):
+        cleaned, persisted = [], {}
+
+        def queued(cancel, log):
+            raise RuntimeError("cancelled while queued")
+
+        def run_cleanup(rid, fn):
+            cleaned.append(fn)
+
+        fakes = {"add_log_to_run": lambda *a, **k: None,
+                 "update_run_status": lambda *a, **k: None,
+                 "mutate_run_details": lambda *a, **k: None,
+                 "register_cleanup": run_cleanup,
+                 "unregister_cancel": lambda *a, **k: None,
+                 "cleanup_after_run": lambda **k: cleaned.append(k),
+                 "register_cancel_event": lambda rid: threading.Event(),
+                 "_persist_cleanup_state": lambda rid, **f: persisted.update(f),
+                 "_take_run_slot": queued,
+                 "VolWebClient": _Client}
+        with mock.patch.multiple(pm, **fakes), mock.patch.object(pm.traceback, "print_exc"):
+            pm.run_memory_pipeline(run_id="u1", client_id="", mode="plugin",
+                                   from_upload_path="/data/memory_dumps/up.raw", keep_dump=keep)
+            for c in [c for c in cleaned if callable(c)]:
+                c()                                # what Stop / the failure path runs
+        return [c for c in cleaned if isinstance(c, dict)], persisted
+
+    def test_stopped_while_queued_cleans_up_the_upload(self):
+        calls, persisted = self._stop_while_queued(keep=False)
+        self.assertEqual("/data/memory_dumps/up.raw", persisted.get("host_path"),
+                         "the restart reaper replays cleanup from this")
+        self.assertTrue(calls and calls[-1]["host_path"] == "/data/memory_dumps/up.raw", calls)
+        self.assertFalse(calls[-1]["preserve_dump"])
+
+    def test_a_kept_upload_is_still_kept(self):
+        calls, persisted = self._stop_while_queued(keep=True)
+        self.assertEqual("operator", persisted.get("preserve_dump"))
+        self.assertTrue(calls and calls[-1]["preserve_dump"], calls)
+
+
 class DiskReservation(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

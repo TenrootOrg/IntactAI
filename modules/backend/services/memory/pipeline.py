@@ -806,9 +806,6 @@ def run_memory_pipeline(
         if mode not in ("yara", "plugin", "layered"):
             raise ValueError(f"invalid mode {mode!r}")
         log(f"pipeline: mode={mode} client={client_id} case={case_name!r}")
-        _take_run_slot(cancel, log)
-        holds_slot = True
-        started_at = time.time()   # "complete in Ns" is the work, not the queue
         _persist_cleanup_state(run_id, client_id=client_id or None)
         if keep_dump:
             # Persist the instruction, not just the intent: the boot reaper
@@ -821,6 +818,17 @@ def run_memory_pipeline(
                 "(one copy, in /data/memory_dumps)",
                 "info",
             )
+        if from_upload_path:
+            # Known BEFORE the queue: a run can wait hours for a slot, and a Stop
+            # or a restart in that wait must reclaim the uploaded multi-GB image
+            # (the upload routes hand it over and never delete it themselves).
+            # Written after the keep instruction above, so a crash between the
+            # two never leaves a kept image marked for deletion.
+            host_path = from_upload_path
+            _persist_cleanup_state(run_id, host_path=from_upload_path)
+        _take_run_slot(cancel, log)
+        holds_slot = True
+        started_at = time.time()   # "complete in Ns" is the work, not the queue
 
         # Whether to run the VolWeb yarascan at all. The "Include YARA" checkbox
         # in the UI maps to the analysis mode: plugin = plugins only (NO yara),
