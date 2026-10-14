@@ -418,6 +418,8 @@ CHAT_TOOLS_PROMPT = (
     "take the finding_id from search / list_findings).\n"
     "  pivot({\"value\":\"<account|host|process|ip>\"}) -> raw events mentioning that value.\n"
     "  clusters({}) -> the case's phases (host-cluster, time-window hotspots).\n"
+    "  logs({\"query\":\"<ip|account|host|hash|words>\"}) -> rows of the log data attached "
+    "to the case (SIEM / firewall / EDR / IdP exports), including rows not in the summary.\n"
     "Fetch only what the question needs — at most {n} fetches. When you answer, write it "
     "for the analyst in markdown (not JSON), and never mention the tools or ids."
 )
@@ -2872,7 +2874,7 @@ def _chat_tool_call(ans):
 
 
 _FETCH_LABEL = {"search": "search", "list_findings": "findings list", "evidence": "raw evidence",
-                "pivot": "pivot", "clusters": "phases"}
+                "pivot": "pivot", "clusters": "phases", "logs": "attached logs"}
 
 
 def _chat_fetch_loop(case_id, system, user, ans, *, mask=None, run_id=None, max_output_tokens=None):

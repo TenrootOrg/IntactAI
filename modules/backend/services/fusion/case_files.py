@@ -8,6 +8,11 @@ DATA_DIR/<case_id>/<id>; described in the case details under "case_files".
 
 The model never sees an item: what evidence shows is already in the Timeline it
 reads. The case's switch puts the items, pictures included, in the report only.
+
+LOG DATA is the exception (`data_type` set: a SIEM, firewall, EDR, IdP or proxy
+export). Its content is in no Timeline, so it is parsed into a case run
+(external_logs.start) and fused like a collection; the item's `ai` switch ("Use
+in analysis") takes it in or out of the next Refusion.
 """
 from __future__ import annotations
 
@@ -70,8 +75,23 @@ def listing(d) -> list:
                     "source_other": _s(x.get("source_other"), 100) if x.get("source") not in SOURCES
                     or x.get("source") == "other" else "",
                     "finding_id": _s(x.get("finding_id"), 100), "finding_title": _s(x.get("finding_title"), 300),
-                    "added_at": x.get("added_at")})
+                    "added_at": x.get("added_at"),
+                    "data_type": x.get("data_type") or "", "run_id": _s(x.get("run_id"), 100)})
     return out
+
+
+def with_log_status(items) -> list:
+    """Log-data items carry their parse run's state for the page: status, rows,
+    alerts, how it was read (parser / llm / indicators) and any error."""
+    from services.workflow_service import get_automation_run
+    for x in items:
+        if not x.get("run_id"):
+            continue
+        run = get_automation_run(x["run_id"], with_logs=False) or {}
+        det = run.get("details") or {}
+        x["log"] = {"status": run.get("status") or "missing", "error": run.get("error") or "",
+                    **{k: det.get(k) for k in ("format", "via", "rows", "alerts", "first_ts", "last_ts")}}
+    return items
 
 
 def path_of(case_id, file_id) -> str | None:
@@ -99,11 +119,16 @@ def _event(case_id, finding_id) -> dict | None:
 
 
 def add(case_id, stream, file_name, *, name, description, host="", time="", source="", finding_id="",
-        source_other="") -> dict:
-    """Save one evidence file; its SHA-256 is computed while it is written."""
+        source_other="", data_type="") -> dict:
+    """Save one evidence file; its SHA-256 is computed while it is written. With a
+    `data_type` it is log data: parsed in the background and used in the analysis."""
+    from . import external_logs
     st = _store()
     if not st.get_case(case_id):
         return {"error": "case not found"}
+    data_type = _s(data_type, 20)
+    if data_type and data_type not in external_logs.DATA_TYPES:
+        return {"error": f"data_type must be one of: {', '.join(external_logs.DATA_TYPES)}"}
     name, description = _s(name, 200), _s(description, 1000)
     link = {}
     if _s(finding_id, 100):
@@ -140,17 +165,21 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
         _unlink(tmp)
         return {"error": str(e)}
     item = {"id": fid, "name": name, "description": description, "file_name": fname, "size": size,
-            "sha256": h.hexdigest(), "kind": _kind(fname), "ai": False,
+            "sha256": h.hexdigest(), "kind": _kind(fname), "ai": bool(data_type),
             "host": link.get("host") or _s(host, 200), "time": link.get("time") or _s(time, 40),
             "source": "timeline" if link else (source if source in SOURCES else "other"),
             "source_other": "" if link or source in SOURCES and source != "other" else _s(source_other, 100),
             "finding_id": link.get("finding_id", ""), "finding_title": link.get("finding_title", ""),
             "added_at": st._now_iso()}
+    if data_type:
+        item["data_type"] = data_type
+        item["run_id"] = external_logs.start(case_id, item, data_type)
     st._mutate_list_field(case_id, "case_files", lambda v: (v if isinstance(v, list) else []) + [item])
     st._report_behind(case_id)
     st.log_case_event(case_id, "Evidence added", "info",
                       f"{name} — {fname} ({size:,} bytes) · SHA-256 {item['sha256']}"
-                      + (f" · linked to {item['finding_title']}" if link else ""))
+                      + (f" · linked to {item['finding_title']}" if link else "")
+                      + (f" · log data, parsing in run {item['run_id']}" if data_type else ""))
     return next(x for x in listing({"case_files": [item]}))
 
 
@@ -193,6 +222,8 @@ def update(case_id, file_id, fields) -> dict:
         return {"error": "no such evidence"}
     changed = [k for k in ("name", "description", "host", "time", "source", "source_other", "ai", "finding_id")
                if k in fields and old.get(k) != found.get(k)]
+    if "ai" in changed and found.get("run_id"):
+        _use_in_analysis(case_id, found["run_id"], bool(found.get("ai")))
     if changed:
         if [k for k in changed if k != "ai"]:
             st._report_behind(case_id)
@@ -218,10 +249,43 @@ def delete(case_id, file_id) -> dict:
     p = path_of(case_id, file_id)
     if p:
         _unlink(p)
+    if gone.get("run_id"):
+        _drop_log_run(case_id, gone["run_id"])
     st._report_behind(case_id)
     st.log_case_event(case_id, "Evidence deleted", "info",
                       f"{gone.get('name')} — {gone.get('file_name') or gone.get('name')} · SHA-256 {gone.get('sha256')}")
     return {"deleted": file_id}
+
+
+def _use_in_analysis(case_id, run_id, on) -> None:
+    """Log data switched in or out of the analysis. The run stays (its rows are kept);
+    fusion reads the flag. Forgetting the run among the fused ones makes the case
+    show "new data — Refusion" in either direction."""
+    from services.workflow_service import get_automation_run, update_run_status
+    run = get_automation_run(run_id) or {}
+    if run:
+        update_run_status(run_id, run.get("status") or "completed", details={"use_in_analysis": on},
+                          force=True)
+    _forget_fused(case_id, run_id)
+
+
+def _forget_fused(case_id, run_id) -> None:
+    st = _store()
+    if "fused_run_ids" in (st.get_case(case_id) or {}):
+        st._mutate_list_field(case_id, "fused_run_ids",
+                              lambda v: [x for x in (v if isinstance(v, list) else []) if x != run_id])
+
+
+def _drop_log_run(case_id, run_id) -> None:
+    """The log data's attachment was deleted: its parsed rows and run go too."""
+    from services.file_storage_service import delete_workflow
+    from . import external_logs
+    try:
+        delete_workflow(run_id)
+    except Exception as e:                                 # noqa: BLE001
+        print(f"[CASE-FILES] log run {run_id} not deleted: {e}", flush=True)
+    shutil.rmtree(external_logs.downloads_dir(run_id), ignore_errors=True)
+    _forget_fused(case_id, run_id)
 
 
 def delete_case_files(case_id) -> None:

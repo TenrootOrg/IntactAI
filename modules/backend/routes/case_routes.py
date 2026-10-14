@@ -415,7 +415,7 @@ def get_case(case_id):
                     "is_system": bool(d.get("is_system")
                                       or d.get("name") == store.SYSTEM_CASE_NAME),
                     **store.case_info(d),
-                    "case_files": _case_files.listing(d),
+                    "case_files": _case_files.with_log_status(_case_files.listing(d)),
                     "include_evidence": _case_files.included(d),
                     # the SELECTED scope's reports only: each scope has its own
                     "report_history": _report_history.history(d, scope=store._active_scope_id(d)),
@@ -569,8 +569,9 @@ def _cf_reply(res):
 @case_bp.route("/api/cases/<case_id>/files", methods=["POST"])
 def upload_case_file(case_id):
     """multipart: file, name, description (both required), host, time, source,
-    finding_id (a Timeline row: host / time / title are then taken from the case).
-    Up to 100 MB; SHA-256 recorded."""
+    finding_id (a Timeline row: host / time / title are then taken from the case),
+    data_type (log data: siem / firewall / edr / idp / proxy / other -- parsed and
+    used in the analysis). Up to 100 MB; SHA-256 recorded."""
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify({"error": "no file"}), 400
@@ -579,7 +580,8 @@ def upload_case_file(case_id):
                                      description=fm.get("description", ""), host=fm.get("host", ""),
                                      time=fm.get("time", ""), source=fm.get("source", ""),
                                      finding_id=fm.get("finding_id", ""),
-                                     source_other=fm.get("source_other", "")))
+                                     source_other=fm.get("source_other", ""),
+                                     data_type=fm.get("data_type", "")))
 
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["GET"])

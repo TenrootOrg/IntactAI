@@ -298,6 +298,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_exclude_hosts", lambda: _exclude_hosts(g, excluded_hosts))
     _guarded(_errs, "_infer_host_roles", lambda: _infer_host_roles(g))
     _guarded(_errs, "_bridge_hashes", lambda: _bridge_hashes(g))
+    _guarded(_errs, "_prune_external_only", lambda: _prune_external_only(g))
     _guarded(_errs, "_rollup_severity", lambda: _rollup_severity(g))
     _guarded(_errs, "_mark_previous_names", lambda: _mark_previous_names(g))                    # before findings are derived
     _guarded(_errs, "_flag_pid_reuse", lambda: _flag_pid_reuse(g))
@@ -844,6 +845,49 @@ def _resolve_host_assets(g: FusionGraph) -> None:
             fresh.append(r)
     g.relationships = fresh
     g.rebuild_indexes()                             # refresh src/dst/key indexes
+
+
+def _prune_external_only(g: FusionGraph) -> None:
+    """Attached log data (mappers/external.py) names every host, address, domain
+    and account it saw -- a day of firewall traffic is thousands of harmless
+    public addresses and every internal machine. Keep one only when it MEETS the
+    case: another source saw it too (the merge gave it a second source), or a
+    vendor alert in the log is about it. The rest stay searchable in chat (the
+    rows are kept), they just do not become nodes. A log-source anchor with
+    nothing left on it goes too. Runs after host and hash merging, before any
+    finding is derived."""
+    def only_external(e):
+        return bool(e.sources) and set(e.sources) == {"external"}
+    alert_ids = {e.id for e in g.by_type("event") if only_external(e)}
+    if not any(only_external(e) for e in g.entities.values()):
+        return
+    tied = set()
+    for r in g.relationships:
+        if r.src in alert_ids:
+            tied.add(r.dst)
+        if r.dst in alert_ids:
+            tied.add(r.src)
+    for eid in alert_ids:
+        tied.update(_assets_of(g.entities[eid]))
+    drop = {e.id for e in g.entities.values()
+            if e.type in ("asset", "ioc", "account") and only_external(e)
+            and not e.id.startswith("asset:log_source:") and e.id not in tied}
+    for e in g.entities.values():
+        if e.id in drop:
+            continue
+        al = (e.attrs or {}).get("_assets")
+        if al and any(a in drop for a in al):
+            e.attrs["_assets"] = [a for a in al if a not in drop]
+    used = {a for e in g.entities.values() if e.id not in drop
+            for a in ((e.attrs or {}).get("_assets") or []) if a != e.id}
+    drop |= {e.id for e in g.by_type("asset")
+             if e.id.startswith("asset:log_source:") and e.id not in used}
+    if not drop:
+        return
+    for eid in drop:
+        g.entities.pop(eid, None)
+    g.relationships = [r for r in g.relationships if r.src in g.entities and r.dst in g.entities]
+    g.rebuild_indexes()
 
 
 def _bridge_hashes(g: FusionGraph) -> None:

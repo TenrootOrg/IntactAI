@@ -34,6 +34,9 @@ INVESTIGATE_SYSTEM = (
     "  pivot({\"value\":\"<account|host|process|ip>\",\"window\":{\"start\":\"...\",\"end\":\"...\"}}) "
     "-> raw EVENTS mentioning that value across the case (the classic investigative "
     "pivot; window optional, ISO times).\n"
+    "  logs({\"query\":\"<ip|account|host|hash|words>\",\"window\":{...}}) -> rows of the "
+    "LOG DATA attached to the case (SIEM / firewall / EDR / IdP exports), including rows "
+    "that are not in the graph; total_matches is the real count.\n"
     "\n"
     "When `shown` is less than `total_matches`/`total_findings` you are seeing a SAMPLE, not the whole set: never state the sampled count as the true count, and say so if the question turns on how many.\n"
     "Investigate efficiently: start from list_findings or clusters, drill into the "
@@ -192,6 +195,12 @@ def _tool(case_id, name, args):
         total = len(hits)
         rows = [h for _, h in hits[:15]]
         return {"total_matches": total, "shown": len(rows), "events": rows}
+    if name == "logs":
+        from . import external_logs
+        win = args.get("window") or {}
+        return external_logs.search(case_id, args.get("query"),
+                                    keys.to_utc_dt(win.get("start")) if win.get("start") else None,
+                                    keys.to_utc_dt(win.get("end")) if win.get("end") else None)
     if name == "clusters":
         # The SAME cards the page shows (scope_cards + the report's names), so
         # "cluster 3" in chat is card 3 on screen. It called zoom_targets with its

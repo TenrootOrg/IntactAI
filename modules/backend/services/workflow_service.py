@@ -37,7 +37,10 @@ AGENTIC_TYPES = {"velociraptor_collection", "memory", "timesketch",
                  # other collection — listing it here makes the run a case member
                  # and lets the terminal-status hook below arm the fuse, which is
                  # the whole point of adopting it.
-                 "velociraptor_adopt"}
+                 "velociraptor_adopt",
+                 # Log data attached to a case (SIEM / firewall / EDR / IdP export):
+                 # parsed into a run of its own so it fuses like a collection.
+                 "external_log"}
 
 # Statuses that mean "this run's data is final and fuseable". Deliberately the
 # SAME pair fusion.store.stale_member_runs counts as members, so the auto-fuse

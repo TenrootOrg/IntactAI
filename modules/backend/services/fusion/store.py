@@ -174,6 +174,12 @@ def _run_passes_gate(run, d) -> bool:
     _enabled_run_types`) so an agentic HUNT now fuses under 'Velociraptor
     (Agentic)' and a non-agentic collection/import no longer does."""
     atype = run.get("automation_type")
+    if atype == "external_log":
+        # Log data attached to the case. Its own switch ("Use in analysis" on the
+        # attachment) decides, not the module picker: a case saved before this
+        # existed has an explicit module list without it, and would silently ignore
+        # the logs the analyst just attached.
+        return True
     mods = set(normalize_modules(d.get("fusion_modules")))
     if atype in _VELOCIRAPTOR_TYPES:
         # Any velociraptor run (collection / offline-collector import / hunt) fuses when a
@@ -1795,6 +1801,17 @@ def _contribution_for_run(run, log=None, refetch=False):
         if atype in ("aws_scan", "azure_scan"):
             prov = "aws" if atype == "aws_scan" else "azure"
             return _cloud_contribution(rid, det, prov)
+        if atype == "external_log":
+            if det.get("use_in_analysis") is False:
+                return [], []
+            fp = _raw_results_path(rid, det)
+            if not fp:
+                return [], []
+            from .mappers.external import map_external
+            return _cached_map(fp, det, lambda: _agentic_collected_data(rid, det, log=log),
+                               lambda rows: map_external(rows, run_id=rid,
+                                                         data_type=det.get("data_type") or "other",
+                                                         label=det.get("file_name") or rid))
     except Exception as e:  # never let one run break the fuse
         if log:
             log(f"fuse: run {rid} ({atype}) skipped: {e}", "warning")
