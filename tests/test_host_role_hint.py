@@ -24,11 +24,19 @@ class HostRoleHint(unittest.TestCase):
         self.assertEqual("certificate authority", r("ALCA01"))
         self.assertEqual("config manager / software distribution", r("ALMECM01.AdatumLab.local"))
         self.assertEqual("database server", r("SQL01.corp.local"))
+        self.assertEqual("certificate authority", r("SRV-CA"))
+        self.assertEqual("domain controller", r("DC"))
+        self.assertEqual("mail server", r("MAILEXCH01"))
+        self.assertEqual("mail server", r("EXCH-01"))
+        self.assertEqual("certificate authority", r("CA-01"))
 
     def test_the_domain_and_ordinary_words_are_not_roles(self):
         r = render._host_role
         for host in ("DESKTOP-SDN1RPT.C137.local", "SCRANTON.dmevals.local", "NASHUA.dmevals.local",
-                     "VACATION-PC", "ALClient04.AdatumLab.local"):
+                     "VACATION-PC", "ALClient04.AdatumLab.local",
+                     # a token that merely ENDS the name is part of a word
+                     "UTICA.dmevals.local", "AFRICA", "MONICA-LAPTOP", "JESSICA-PC",
+                     "NEWYORK.dmevals.local"):
             self.assertEqual("", r(host), host)
 
 

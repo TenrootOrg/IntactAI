@@ -1458,13 +1458,16 @@ _HOST_ROLE_HINTS = (
 def _host_role(label: str) -> str:
     """Best-effort role from the hostname. Naming is a convention, not a fact, so
     this is a HINT for the narrative to verify — never asserted as ground truth."""
-    # The SHORT name, and the token ending it or followed by a digit/-/_ (ALDC02,
-    # ALCA01, CITADEL-DC01, SQL01). A plain substring test on the FQDN found 'ca'
-    # in '.local', so every host of a .local domain was hinted to the model as a
-    # "certificate authority" (a Szechuan test-case chat called a desktop the CA).
+    # The SHORT name, and the token either glued to a number (ALDC02, ALCA01,
+    # CITADEL-DC01, SQL01) or a word of its own between separators (SRV-CA, CA-01,
+    # EXCH-01, DC). A plain substring test on the FQDN found 'ca' in '.local', so
+    # every host of a .local domain was hinted to the model as a "certificate
+    # authority" (a Szechuan test-case chat called a desktop the CA). A token that
+    # merely ends a word is not a role either: the APT29 workstation UTICA, and
+    # first-name machines like MONICA-LAPTOP or JESSICA-PC.
     short = (label or "").split(".", 1)[0].lower()
     for token, role in _HOST_ROLE_HINTS:
-        if re.search(rf"{token}(?=\d|-|_|$)", short):
+        if re.search(rf"{token}(?=\d)|(?:^|[-_]){token}(?=[-_\d]|$)", short):
             return role
     return ""
 
