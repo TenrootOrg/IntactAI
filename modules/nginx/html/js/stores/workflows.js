@@ -174,94 +174,69 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        // A run's log window. Same cursor pattern as viewSystemLog() below: the
+        // first read is the last RUN_LOG_KEEP lines, every poll after asks only
+        // for lines past the cursor and appends them, keeping the last
+        // RUN_LOG_KEEP. It used to refetch the WHOLE run every second, compare
+        // the arrays by JSON.stringify and re-render every line -- a fleet run's
+        // 3k-10k lines froze the tab. "Download Log" still gets the whole log.
+        RUN_LOG_KEEP: 5000,
         async viewLogs(runId) {
-            try {
-                const response = await fetch(`/api/dashboard/automation/${runId}`);
-                const data = await response.json();
-                // A 404/error response is still valid JSON (e.g. {"error": "..."})
-                // with none of a real run's fields — without this check it silently
-                // became the modal's default "UNKNOWN | UNKNOWN | 0% Complete" /
-                // "No logs available yet." with no indication anything went wrong.
-                this.selectedRun = response.ok ? data : {
-                    id: runId, name: 'Workflow Logs', logs: [],
-                    fetchError: data?.error || `HTTP ${response.status}`,
-                };
-                this.modalOpen = true;
-                this.currentRunId = runId;
-                if (response.ok) this.startAutoRefresh(runId);
-                this.scrollToBottom();
-            } catch (e) {
-                console.error('Failed to load logs:', e);
-                this.selectedRun = { id: runId, name: 'Workflow Logs', logs: [], fetchError: e.message };
-                this.modalOpen = true;
-                this.currentRunId = runId;
-            }
-        },
-
-        startAutoRefresh(runId) {
-            // Clear any existing interval
             this.stopAutoRefresh();
-
+            const url = `/api/dashboard/automation/${encodeURIComponent(runId)}/logs`;
+            this.selectedRun = { id: runId, name: 'Workflow Logs', logs: [] };
+            this.modalOpen = true;
+            this.currentRunId = runId;
             // Tolerate TRANSIENT failures. An offline upgrade RECREATES the
             // backend container mid-run, so these polls will briefly 502/timeout
-            // for tens of seconds. The old code killed polling on the very first
-            // failed fetch, freezing the log view on "Upload complete / Package
-            // path" until the operator manually refreshed. Instead: keep polling,
-            // show a reconnecting note, and only give up after a SUSTAINED outage
-            // (well past a normal backend swap). Recovery clears the note.
-            this._refreshFailures = 0;
+            // for tens of seconds. Killing polling on the first failed fetch froze
+            // the log view on "Upload complete / Package path" until the operator
+            // refreshed. Instead: keep polling, show a reconnecting note, and only
+            // give up after a SUSTAINED outage (well past a normal backend swap).
             const MAX_CONSECUTIVE_FAILURES = 120;   // ~120s of continuous failure
-
-            this.refreshInterval = setInterval(async () => {
-                if (!this.modalOpen) {
+            let cursor = null, busy = false, failures = 0;
+            const fail = (msg) => {
+                // A failed FIRST read (404, bad id) is an answer, not a blip: say
+                // so instead of the modal's default "UNKNOWN | 0% Complete" /
+                // "No logs available yet.".
+                if (cursor === null || ++failures >= MAX_CONSECUTIVE_FAILURES) {
+                    this.selectedRun = { ...this.selectedRun, reconnecting: false, fetchError: msg };
                     this.stopAutoRefresh();
-                    return;
-                }
-                if (document.hidden) return;     // a window left open in a background tab: no polling
+                } else this.selectedRun = { ...this.selectedRun, reconnecting: true };
+            };
+            const poll = async () => {
+                if (busy || document.hidden || !this.modalOpen || this.currentRunId !== runId) return;
+                busy = true;
                 try {
-                    const response = await fetch(`/api/dashboard/automation/${runId}`);
-                    if (!response.ok) {
-                        this._refreshFailures++;
-                        if (this._refreshFailures >= MAX_CONSECUTIVE_FAILURES) {
-                            const data = await response.json().catch(() => null);
-                            this.selectedRun = {
-                                ...this.selectedRun,
-                                reconnecting: false,
-                                fetchError: data?.error || `HTTP ${response.status}`,
-                            };
-                            this.stopAutoRefresh();
-                        } else {
-                            // transient (backend mid-swap) — keep trying
-                            this.selectedRun = { ...this.selectedRun, reconnecting: true };
-                        }
-                        return;
-                    }
-                    const newData = await response.json();
-                    this._refreshFailures = 0;
-                    newData.reconnecting = false;
-
-                    // Update if we're recovering from a blip OR the logs changed.
-                    const recovering = this.selectedRun?.reconnecting || this.selectedRun?.fetchError;
-                    if (recovering ||
-                        JSON.stringify(this.selectedRun?.logs) !== JSON.stringify(newData?.logs)) {
-                        this.selectedRun = newData;
-                        // Auto-scroll if enabled
-                        if (this.autoScroll) {
-                            this.scrollToBottom();
-                        }
+                    const r = await fetch(url + (cursor === null ? `?limit=${this.RUN_LOG_KEEP}`
+                                                                 : `?since=${cursor}&limit=${this.RUN_LOG_KEEP}`));
+                    const d = await r.json().catch(() => ({}));
+                    if (this.currentRunId !== runId) return;
+                    if (!r.ok) return fail(d.error || `HTTP ${r.status}`);
+                    failures = 0;
+                    const first = cursor === null, fresh = d.logs || [], prev = this.selectedRun;
+                    cursor = d.cursor ?? cursor ?? 0;
+                    if (first || fresh.length || prev.reconnecting || prev.status !== d.status ||
+                        prev.progress !== d.progress) {
+                        const all = first ? fresh : prev.logs.concat(fresh);
+                        this.selectedRun = {
+                            ...prev, name: d.name || prev.name, type: d.type, status: d.status,
+                            progress: d.progress, error: d.error, error_count: d.error_count,
+                            reconnecting: false, fetchError: undefined,
+                            truncated: (first ? d.truncated : prev.truncated) || all.length > this.RUN_LOG_KEEP,
+                            logs: all.slice(-this.RUN_LOG_KEEP),
+                        };
+                        if (this.autoScroll) this.scrollToBottom();
                     }
                 } catch (e) {
-                    this._refreshFailures++;
-                    if (this._refreshFailures >= MAX_CONSECUTIVE_FAILURES) {
-                        console.error('Failed to refresh logs:', e);
-                        this.selectedRun = { ...this.selectedRun, reconnecting: false, fetchError: e.message };
-                        this.stopAutoRefresh();
-                    } else {
-                        // transient network error while the backend restarts — keep trying
-                        this.selectedRun = { ...this.selectedRun, reconnecting: true };
-                    }
-                }
-            }, 1000);
+                    fail(e.message);
+                } finally { busy = false; }
+            };
+            await poll();
+            this.scrollToBottom();
+            if (this.modalOpen && this.currentRunId === runId && !this.selectedRun.fetchError) {
+                this.refreshInterval = setInterval(poll, 1000);
+            }
         },
 
         // Settings → Logs: a container's log in this same viewer. The first read is
@@ -332,7 +307,7 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        downloadLogs() {
+        async downloadLogs() {
             const run = this.selectedRun;
             // A container log: the server's longer tail (what a bundle holds), not
             // just the lines on screen.
@@ -341,9 +316,18 @@ document.addEventListener('alpine:init', () => {
                 return;
             }
             if (!run?.logs?.length) return;
+            // The window keeps only the last RUN_LOG_KEEP lines; the file gets
+            // the whole log.
+            let logs = run.logs;
+            if (run.truncated) {
+                try {
+                    const r = await fetch(`/api/dashboard/automation/${encodeURIComponent(run.id)}/logs`);
+                    if (r.ok) logs = (await r.json()).logs || logs;
+                } catch (e) { /* the lines on screen beat no file at all */ }
+            }
 
             const header = `# ${run.name || run.id} — workflow log\n# All times in UTC+00:00\n\n`;
-            const content = header + run.logs.map(log =>
+            const content = header + logs.map(log =>
                 `[${this.utcIso(log.timestamp)}] [${log.level.toUpperCase()}] ${log.message}`
             ).join('\n');
 

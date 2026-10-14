@@ -522,12 +522,40 @@ def stop_automation(run_id):
 
 @dashboard_bp.route('/api/dashboard/automation/<run_id>/logs')
 def get_automation_logs(run_id):
-    """Get logs for a specific automation run"""
-    run = get_automation_run(run_id)
-    if run and _run_visible_in_active_workspace(run):
-        return jsonify({
-            "id": run_id,
-            "logs": run["logs"]
-        })
+    """A run's log, for the log window that follows it.
 
-    return jsonify({"error": f"Automation run {run_id} not found"}), 404
+    No parameters: the whole log, as before. ?limit=N: only its last N lines.
+    ?since=<cursor>: only lines newer than that cursor (oldest first, at most
+    `limit`). Every answer carries `cursor` for the next poll, `truncated`, and
+    the run's status/progress, so a poll is one small request -- the window used
+    to refetch the WHOLE run every second and re-render thousands of lines."""
+    from flask import request
+    run = get_automation_run(run_id, with_logs=False)
+    if not run or not _run_visible_in_active_workspace(run):
+        return jsonify({"error": f"Automation run {run_id} not found"}), 404
+    try:
+        since = request.args.get("since")
+        since = int(since) if since not in (None, "") else None
+        limit = int(request.args.get("limit") or 0) or None
+    except ValueError:
+        return jsonify({"error": "since and limit must be integers"}), 400
+    _reconcile_velociraptor_hunt(run)
+    if "logs" in run:
+        # Elasticsearch-only run: nothing appends to those any more (new lines
+        # go to SQLite), so it is sent whole on the first read and never again.
+        lines = [] if since is not None else (run.get("logs") or [])
+        page = {"logs": lines[-limit:] if limit else lines, "cursor": 0,
+                "truncated": bool(limit) and len(lines) > limit}
+    else:
+        from services.storage import get_workflow_logs
+        page = get_workflow_logs(run_id, since, limit)
+    return jsonify({
+        "id": run_id,
+        **page,
+        "name": run.get("name"),
+        "type": run.get("automation_type", run.get("type")),
+        "status": run.get("status"),
+        "progress": run.get("progress", 0),
+        "error": run.get("error"),
+        "error_count": int(run.get("error_count") or 0),
+    })
