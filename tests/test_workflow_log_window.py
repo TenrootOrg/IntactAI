@@ -150,6 +150,13 @@ const tick = async () => { for (const t of timers) if (t) await t(); };
   await w.viewLogs('x');
   out.fetchError = w.selectedRun.fetchError;
   out.liveAfter404 = timers.filter(Boolean).length;
+  // A backend from before log paging (mid-upgrade): no cursor, whole log each poll.
+  w.closeModal(); await tick();
+  script.push({ body: { status: 'running', progress: 5, logs: [line('x'), line('y')] } });
+  await w.viewLogs('old');
+  script.push({ body: { status: 'running', progress: 6, logs: [line('x'), line('y')] } });
+  await tick();
+  out.oldBackend = w.selectedRun.logs.map(l => l.message);
   out.calls = calls;
   console.log(JSON.stringify(out));
 })();
@@ -173,6 +180,7 @@ class Page(unittest.TestCase):
         self.assertEqual(got["progress"], 20)
         self.assertTrue(got["unchangedKept"], "a poll with nothing new must not re-render")
         self.assertTrue(got["reconnecting"])
+        self.assertEqual(got["oldBackend"], ["x", "y"], "a cursorless backend's full log replaces, never repeats")
         self.assertTrue(got["recovered"])
         self.assertEqual(got["liveAfterClose"], 0)
         self.assertEqual(got["fetchError"], "Automation run x not found")

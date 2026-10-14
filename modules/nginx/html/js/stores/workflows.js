@@ -214,7 +214,11 @@ document.addEventListener('alpine:init', () => {
                     if (this.currentRunId !== runId) return;
                     if (!r.ok) return fail(d.error || `HTTP ${r.status}`);
                     failures = 0;
-                    const first = cursor === null, fresh = d.logs || [], prev = this.selectedRun;
+                    // No cursor = a backend from before log paging (the minute of an
+                    // upgrade): it ignores `since` and sends the whole log every time,
+                    // so replace, never append, or every line repeats each second.
+                    const first = cursor === null || d.cursor === undefined,
+                          fresh = d.logs || [], prev = this.selectedRun;
                     cursor = d.cursor ?? cursor ?? 0;
                     if (first || fresh.length || prev.reconnecting || prev.status !== d.status ||
                         prev.progress !== d.progress) {
