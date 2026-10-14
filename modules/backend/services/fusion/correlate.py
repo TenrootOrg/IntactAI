@@ -296,6 +296,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     # cross-host sighting or shape a risk score. Filtering only the views left it
     # in every derived number and let each new view forget to filter.
     _guarded(_errs, "_exclude_hosts", lambda: _exclude_hosts(g, excluded_hosts))
+    _guarded(_errs, "_infer_host_roles", lambda: _infer_host_roles(g))
     _guarded(_errs, "_bridge_hashes", lambda: _bridge_hashes(g))
     _guarded(_errs, "_rollup_severity", lambda: _rollup_severity(g))
     _guarded(_errs, "_mark_previous_names", lambda: _mark_previous_names(g))                    # before findings are derived
@@ -1028,6 +1029,50 @@ def _entity_ts(g: FusionGraph, e) -> "str | None":
         return None
 
 
+def _short_host(label) -> str:
+    return str(label or "").split(".", 1)[0].strip().lower()
+
+
+def _infer_host_roles(g: FusionGraph) -> None:
+    """A domain controller, from what the logs show rather than what it is called.
+
+    The role came only from the host NAME (render._host_role: DC01, ALDC02), so a DC
+    named NEWYORK or HFDC01 was never one and every report said "no domain controller
+    identified" (APT29, 2026-10-14 audit). A computer's own account (NAME$) logs on to
+    the domain controllers it talks to, so a host where the machine accounts of OTHER
+    hosts of this case log on is a DC. Counting only accounts named after another host
+    in the case keeps out setup leftovers (WORKGROUP/... local names, a host's own earlier name).
+    The bar is relative to the case: two other hosts, or the only other one in a
+    two-host case. The evidence is stored with the role; the name hint stays a fallback.
+    """
+    assets = {a.id: _short_host(_host_label(g, a.id)) for a in g.entities.values() if a.type == "asset"}
+    shorts = set(assets.values())
+    votes: dict = {}
+    for e in g.entities.values():
+        if e.type != "account":
+            continue
+        user = str(e.attrs.get("user") or e.label).split("\\")[-1].strip().lower()
+        if not user.endswith("$") or user[:-1] not in shorts:
+            continue
+        for a in _assets_of(e):
+            if assets.get(a) and assets[a] != user[:-1]:
+                votes.setdefault(a, set()).add(user[:-1])
+    need = min(2, max(1, len(assets) - 1))
+    for a, hosts in votes.items():
+        if len(hosts) >= need and a in g.entities:
+            g.entities[a].attrs["role"] = "domain controller"
+            g.entities[a].attrs["role_evidence"] = (
+                f"machine accounts of {len(hosts)} other host(s) in this case log on here: "
+                + ", ".join(sorted(hosts)[:5]))
+
+
+def _host_role_of(g: FusionGraph, asset_id) -> str:
+    """The role a host has: from its evidence (_infer_host_roles), else its name."""
+    from .render import _host_role
+    a = g.entities.get(asset_id)
+    return ((a.attrs or {}).get("role") if a else None) or _host_role(_host_label(g, asset_id))
+
+
 def _account_spread_severity(g: FusionGraph, accounts, assets) -> str:
     """ONE rule for "this account / person is on several hosts", whichever of the
     two findings reports it. They disagreed (jev_test): `kobia` on two workstations
@@ -1038,11 +1083,10 @@ def _account_spread_severity(g: FusionGraph, accounts, assets) -> str:
     Medium by default. High when a server-role host is involved (DC, CA, MECM…:
     render._host_role, a naming hint) or an account is itself at least medium —
     and never below what the accounts already carry."""
-    from .render import _host_role
     worst = max((a.severity for a in accounts if a.severity),
                 key=lambda s: sev.rank(s), default="informational")
     level = "medium"
-    if any(_host_role(_host_label(g, a)) for a in assets) or sev.at_least(worst, "medium"):
+    if any(_host_role_of(g, a) for a in assets) or sev.at_least(worst, "medium"):
         level = "high"
     return max(level, worst, key=lambda s: sev.rank(s))
 
@@ -1058,6 +1102,12 @@ def _cross_host_findings(g: FusionGraph) -> None:
         # cross-host signal (shared tooling / lateral tool transfer), so let hashes
         # through regardless of anomaly (severity is graded below).
         if e.type == "ioc" and e.anomaly < 1 and e.attrs.get("ioc_kind") != "hash":
+            continue
+        # A computer's own account (NAME$) logging on to its domain controllers and
+        # file servers is how a domain works, not lateral movement: APT29's reports
+        # carried four "scranton$ / nashua$ used across 2 hosts" findings for it.
+        # (identities._is_person already keeps these out of the identity variant.)
+        if e.type == "account" and str(e.attrs.get("user") or e.label).strip().endswith("$"):
             continue
         if "cross_host" not in e.flags:
             e.flags.append("cross_host")

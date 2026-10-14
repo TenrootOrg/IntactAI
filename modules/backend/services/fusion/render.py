@@ -1532,9 +1532,13 @@ def _host_coverage(graph, assets, findings) -> list:
             "last_activity": ts[-1] if ts else None,
             "cross_host_findings": sum(1 for f in fs if f.kind == "cross_host"),
         }
-        role = _host_role(label)
+        # From the evidence when fusion found it (correlate._infer_host_roles), else
+        # the naming hint; the evidence travels with it so the model can weigh it.
+        role = (a.attrs or {}).get("role") or _host_role(label)
         if role:
             row["role_hint"] = role
+            if (a.attrs or {}).get("role_evidence"):
+                row["role_evidence"] = a.attrs["role_evidence"]
         hist = (a.attrs or {}).get("name_history")
         if hist:
             row["name_history"] = hist

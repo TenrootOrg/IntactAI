@@ -66,12 +66,14 @@ _EVIDENCE_MAX_ROWS = 6
 _MIN_STEP_NUDGES = 2
 
 
-def _role_annot(label):
+def _role_annot(label, g=None):
     """A6: append the hostname's role hint (domain controller / CA / config manager)
     so tier-zero priority SURVIVES masking — the identifier 'ALDC02' is pseudonymized
     to 'Hostname7', but '(domain controller)' is not an identifier and passes through,
     so the model still knows which hosts matter. Role is a naming HINT, not asserted."""
-    r = render._host_role(label or "")
+    r = next(((e.attrs or {}).get("role") for e in (g.entities.values() if g is not None else ())
+              if e.type == "asset" and render._host_label(g, e.id) == label), None) \
+        or render._host_role(label or "")
     return f"{label} ({r})" if r else label
 
 
@@ -106,7 +108,7 @@ def _tool(case_id, name, args):
         fs = sorted(g.findings, key=lambda f: -sev.rank(f.severity))
         lim = min(40, int(args.get("limit") or 20))
         rows = [{"id": f.id, "title": f.title, "severity": f.severity,
-                 "hosts": [_role_annot(render._host_label(g, a))
+                 "hosts": [_role_annot(render._host_label(g, a), g)
                            for a in (f.asset_ids or [])][:6],
                  "ts": f.ts, "kind": f.kind} for f in fs[:lim]]
         # Report the TRUE total, not just what fits. Silent truncation made the model
@@ -135,7 +137,7 @@ def _tool(case_id, name, args):
                 scored.append((n / len(terms), sev.rank(f.severity), f))
         scored.sort(key=lambda x: (-x[0], -x[1]))
         rows = [{"id": f.id, "title": f.title, "severity": f.severity, "ts": f.ts,
-                 "hosts": [_role_annot(render._host_label(g, a))
+                 "hosts": [_role_annot(render._host_label(g, a), g)
                            for a in (f.asset_ids or [])][:6]}
                 for _, _, f in scored[:15]]
         return {"total_matches": len(scored), "shown": len(rows), "findings": rows}
@@ -184,7 +186,7 @@ def _tool(case_id, name, args):
             if (lo and t and t < lo) or (hi and t and t > hi):
                 continue
             hits.append((t, {"ts": e.first_seen or e.last_seen,
-                             "hosts": [_role_annot(x) for x in labels[:3]],
+                             "hosts": [_role_annot(x, g) for x in labels[:3]],
                              **{k: str(a[k])[:2000] for k in _EV_KEYS if a.get(k)}}))  # was 300: keep full cmd/path
         hits.sort(key=lambda x: (x[0] is None, x[0]))
         total = len(hits)
@@ -201,7 +203,7 @@ def _tool(case_id, name, args):
             cl = render.zoom_targets(g, window=store.view_window(d),
                                      min_severity=d.get("min_severity") or "informational")
         return [{"n": c.get("n"), "name": c.get("name"), "title": c["title"],
-                 "hosts": [_role_annot(lb) for lb in c["host_labels"]],
+                 "hosts": [_role_annot(lb, g) for lb in c["host_labels"]],
                  "window": c["window"], "finding_count": c["finding_count"],
                  "severity": c["severity"], "mitre": c["mitre"]} for c in cl]
     return {"error": f"unknown tool '{name}'"}
