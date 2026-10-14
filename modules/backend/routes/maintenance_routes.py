@@ -319,6 +319,8 @@ def _purge_runs_and_cases(c, run_id, include_system=False):
     params = (run_id, *sorted(keep))
     gone_ids = [r[0] for r in c.execute(f"SELECT run_id FROM workflows WHERE {where}", params)]
     c.execute(f"DELETE FROM workflows WHERE {where}", params)
+    # Their log lines live in their own table (workflow_logs) now.
+    c.execute("DELETE FROM workflow_logs WHERE run_id NOT IN (SELECT run_id FROM workflows)")
     for cid, d in builtin:
         c.execute("UPDATE workflows SET details = ? WHERE run_id = ?",
                   (_json.dumps(store.purged_details(d)), cid))
@@ -1228,6 +1230,8 @@ def _purge_system_workflows(run_id):
         f"DELETE FROM workflows WHERE automation_type IN ({ph}) AND run_id != ?",
         params,
     )
+    # Their log lines live in their own table (workflow_logs) now.
+    c.execute("DELETE FROM workflow_logs WHERE run_id NOT IN (SELECT run_id FROM workflows)")
     conn.commit()
     c.execute("VACUUM")
     conn.commit()

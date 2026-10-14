@@ -4,10 +4,13 @@ Client Routes - Client endpoints
 """
 
 import os
+import threading
+import time
 from flask import Blueprint, jsonify, send_file, request
 import traceback
 
 from services import get_clients_from_snapshot
+from services.velociraptor_clients import ONLINE_SECONDS
 from services.msi_generator_service import download_client_installer
 from services.legacy_velociraptor_service import (
     build_legacy_client,
@@ -16,6 +19,37 @@ from services.legacy_velociraptor_service import (
 )
 
 client_bp = Blueprint('client', __name__)
+
+
+def _online(c, now):
+    """Seen within the dashboard's window. last_seen_at is microseconds."""
+    seen = c.get('last_seen_at') or 0
+    return bool(seen) and now - seen / 1e6 < ONLINE_SECONDS
+
+
+# The whole fleet, as last fetched. Every open dashboard tab polled /api/clients
+# every 10 s -- a full fleet query (~200 KB at 1,000 clients) -- to show two numbers;
+# /api/clients/summary answers from this instead, at most SUMMARY_MAX_AGE old.
+# Any full /api/clients fetch refreshes it; the pickers' ↻ always fetches live.
+SUMMARY_MAX_AGE = 30
+_FLEET_CACHE = {"at": 0.0, "rows": None}
+_FLEET_LOCK = threading.Lock()   # summary misses only: N tabs missing together cost one query
+
+
+def _fetch_fleet():
+    """Every enrolled client (offline ones too), live; refreshes the cache."""
+    rows = get_clients_from_snapshot(include_offline=True)
+    _FLEET_CACHE.update(at=time.time(), rows=rows)
+    return rows
+
+
+def _cached_fleet():
+    """The fleet, at most SUMMARY_MAX_AGE old."""
+    with _FLEET_LOCK:
+        if _FLEET_CACHE["rows"] is not None and time.time() - _FLEET_CACHE["at"] < SUMMARY_MAX_AGE:
+            return _FLEET_CACHE["rows"]
+        return _fetch_fleet()
+
 
 @client_bp.route('/api/clients')
 def get_clients():
@@ -29,10 +63,18 @@ def get_clients():
             existing-flow analyzer flips this on for hunt-derived flows
             where data is already collected and offline endpoints are
             valid analysis targets.
+
+    Returns {items (online first, then hostname), total (agents), filtered
+    (matching `search`), truncated (true when `limit` cut items short of
+    filtered), imported (offline-collection imports left out)}.
     """
     try:
         include_offline = request.args.get('include_offline', '').lower() in ('true', '1', 'yes')
-        clients = get_clients_from_snapshot(include_offline=include_offline)
+        clients = _fetch_fleet() if include_offline else get_clients_from_snapshot(include_offline=False)
+        # Offline-collection imports are not agents: nothing can be sent to them,
+        # so they are neither pickable nor counted (see _is_import).
+        imported = sum(1 for c in clients if c.get('imported'))
+        clients = [c for c in clients if not c.get('imported')]
         total = len(clients)
 
         # Smart filter: match the term against hostname, OS (+ version), or any
@@ -52,7 +94,12 @@ def get_clients():
 
         filtered = len(clients)
 
-        # Apply limit
+        # Sorted BEFORE the limit (online first, then hostname): the pickers ask
+        # for limit=1000, and cut from the unsorted fleet an arbitrary subset --
+        # online hosts included -- silently disappeared above 1,000 clients.
+        now = time.time()
+        clients.sort(key=lambda c: (not _online(c, now), str(c.get('hostname') or '').lower(),
+                                    str(c.get('client_id') or '')))
         limit = request.args.get('limit', type=int)
         if limit and limit > 0:
             clients = clients[:limit]
@@ -60,13 +107,31 @@ def get_clients():
         return jsonify({
             "items": clients,
             "total": total,
-            "filtered": filtered
+            "filtered": filtered,
+            "truncated": len(clients) < filtered,
+            "imported": imported,
         })
 
     except Exception as e:
         print(f"API Error: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e), "items": [], "total": 0}), 500
+
+@client_bp.route('/api/clients/summary')
+def get_clients_summary():
+    """The dashboard's endpoint counter: {online, total, as_of}. total counts agents
+    (offline-collection imports excluded, as in /api/clients); online = seen in the
+    last ONLINE_SECONDS. Served from a fleet query at most SUMMARY_MAX_AGE old;
+    as_of is when that query ran (epoch seconds)."""
+    try:
+        clients = [c for c in _cached_fleet() if not c.get('imported')]
+        now = time.time()
+        return jsonify({"online": sum(1 for c in clients if _online(c, now)),
+                        "total": len(clients), "as_of": int(_FLEET_CACHE["at"])})
+    except Exception as e:
+        print(f"API Error: {e}")
+        return jsonify({"error": str(e), "online": 0, "total": 0}), 500
+
 
 @client_bp.route('/api/client/<client_id>')
 def get_client(client_id):

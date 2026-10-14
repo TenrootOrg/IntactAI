@@ -52,6 +52,10 @@ class Purge(unittest.TestCase):
                 ("r1", "velociraptor", {}), ("r2", "timesketch", {}),
                 ("up1", "upgrade", {}), ("purge_run", "system_purge", {})]
         c.executemany("INSERT INTO workflows VALUES (?,?,?)", [(a, b, json.dumps(d)) for a, b, d in rows])
+        # Run log lines live in their own table; a purged run's must go with it.
+        c.execute("CREATE TABLE workflow_logs (id INTEGER PRIMARY KEY, run_id TEXT, ts TEXT, level TEXT, msg TEXT)")
+        c.executemany("INSERT INTO workflow_logs (run_id, msg) VALUES (?, ?)",
+                      [("r1", "collected"), ("purge_run", "purging")])
         c.commit()
         c.close()
         self.deleted, self.cleaned = [], []
@@ -75,6 +79,7 @@ class Purge(unittest.TestCase):
         conn = sqlite3.connect(self.db)
         out = self.ns["_purge_runs_and_cases"](conn.cursor(), "purge_run", **kw)
         rows = {r: (t, json.loads(d)) for r, t, d in conn.execute("SELECT * FROM workflows")}
+        self.log_runs = sorted(r for (r,) in conn.execute("SELECT run_id FROM workflow_logs"))
         conn.close()
         return out, rows
 
@@ -95,6 +100,7 @@ class Purge(unittest.TestCase):
             self.assertNotIn(k, d, k)               # no data about purged evidence
         self.assertEqual((d["report_md"], d["chat_messages"], d["member_run_ids"]), ("", [], []))
         self.assertEqual(sorted(self.cleaned), ["case_def", "case_sys"])   # their files, graph, KB
+        self.assertEqual(self.log_runs, ["purge_run"])   # a purged run's log lines go too
 
     def test_the_system_history_section_still_goes_only_when_asked(self):
         _, rows = self._run(include_system=True)

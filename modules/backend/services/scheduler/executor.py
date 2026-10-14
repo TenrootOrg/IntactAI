@@ -322,179 +322,134 @@ def run_aws_scheduled(job_name: str, blueprint_id: str, options: dict = None):
     return run_id
 
 
+# Scheduled Timesketch job id -> run_id still in progress. A fleet run takes
+# days to weeks; a daily schedule must not stack a second pipeline on it.
+_TIMESKETCH_ACTIVE = {}
+_TIMESKETCH_ACTIVE_LOCK = threading.Lock()
+
+
 def run_timesketch_pipeline(job_meta: dict, client_ids: list):
-    """Execute a Timesketch automation pipeline for each client.
+    """Execute a scheduled Timesketch run: KAPE -> Plaso -> Timesketch import
+    for every client, as ONE workflow run through the same bounded pipeline as
+    POST /api/timesketch/start-multi (kape_service.run_kape_timesketch_pipeline).
 
-    This runs KAPE collection followed by Plaso processing and TimeSketch import.
+    This used to take each client through KAPE, wait, export and Plaso before
+    starting the next, inside the APScheduler thread: an offline host held the
+    queue for the full 10,000 s monitor timeout (300 offline hosts ~ 840 h), and
+    its Plaso ran outside the start-multi limit. Clients not seen for
+    TIMESKETCH_OFFLINE_SKIP_HOURS are skipped and named in the run log.
+    Returns once the pipeline thread is started.
     """
-    from services.kape_service import run_kape_collection_grpc, monitor_flow_completion
-    from services.velociraptor_service import export_flow_to_zip, cleanup_flow_export
-    from services.agentic.collectors._base import resolve_hostnames
-    from services.kape_upload_service import process_kape_upload
-    from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
+    from services.kape_service import run_kape_timesketch_pipeline
+    from services.velociraptor_service import get_clients_from_snapshot
+    from services.workflow_service import (create_automation_run, add_log_to_run, update_run_status,
+                                           register_cancel_event)
     from services.file_storage_service import get_timesketch_blueprint
-    from config import PLASO_OUTPUT_DIR
-    import os
+    from config import TIMESKETCH_OFFLINE_SKIP_HOURS
+    import time
 
+    job_id = job_meta.get('id')
     job_name = job_meta.get('name', 'Scheduled Timesketch')
+    with _TIMESKETCH_ACTIVE_LOCK:
+        active = _TIMESKETCH_ACTIVE.get(job_id) if job_id else None
+    if active:
+        add_log_to_run(active, f"Scheduled firing at {datetime.utcnow().isoformat()}Z skipped: "
+                               f"this run is still in progress", "warning")
+        print(f"[SCHEDULER] Timesketch job {job_id} still running as {active}; skipping this firing", flush=True)
+        return
+
     blueprint_id = job_meta.get('blueprint_id', '')
     sketch_name = job_meta.get('description', '') or f"Scheduled_{datetime.utcnow().strftime('%Y%m%d')}"
 
     # Load blueprint settings
     blueprint = get_timesketch_blueprint(blueprint_id) if blueprint_id else None
     settings = blueprint.get('settings', {}) if blueprint else {}
-
-    kape_target = settings.get('kape_target', '_KapeTriage')
+    blueprint_name = blueprint.get('name', blueprint_id) if blueprint else blueprint_id
     timeout_seconds = settings.get('collection_timeout', 10000)
-    cpu_limit = settings.get('cpu_limit', 50)
-    # KAPE artifact env params (passed into collect_client(env=dict(...))).
-    # Defaults match default_blueprints.yaml so even legacy DB rows that
-    # predate these keys still get the bumped ceilings.
-    kape_max_file_size       = settings.get('kape_max_file_size', 10737418240)
-    kape_max_hash_size       = settings.get('kape_max_hash_size', 0)
-    kape_collection_policy   = settings.get('kape_collection_policy', 'ExcludeSigned')
-    # Flow-level resource limits (passed as collect_client args).
-    flow_max_rows            = settings.get('flow_max_rows', 10000000)
-    flow_max_logs            = settings.get('flow_max_logs', 1000000)
-    flow_max_upload_mb       = settings.get('flow_max_upload_mb', 51200)
 
-    for client_id in client_ids:
+    # KAPE artifact env params and flow-level limits. Defaults match
+    # default_blueprints.yaml so even legacy DB rows that predate these keys
+    # still get the bumped ceilings.
+    kape_args = dict(
+        kape_target=settings.get('kape_target', '_KapeTriage'),
+        timeout_seconds=timeout_seconds,
+        cpu_limit=settings.get('cpu_limit', 50),
+        max_rows=settings.get('flow_max_rows', 10000000),
+        max_logs=settings.get('flow_max_logs', 1000000),
+        max_upload_mb=settings.get('flow_max_upload_mb', 51200),
+        max_file_size=settings.get('kape_max_file_size', 10737418240),
+        max_hash_size=settings.get('kape_max_hash_size', 0),
+        collection_policy=settings.get('kape_collection_policy', 'ExcludeSigned'),
+    )
+    ts_settings = {
+        'sketch_name': sketch_name,
+        'plaso_parser': settings.get('plaso_parser'),
+        'plaso_workers': settings.get('plaso_workers', 2),
+        'plaso_hasher': settings.get('plaso_hasher'),
+        'plaso_hasher_size': settings.get('plaso_hasher_size', 100),
+        # Propagate the per-blueprint TS-processing wait timeout so
+        # big collections aren't capped by the old hardcoded ~3 h.
+        'timesketch_processing_timeout': settings.get('timesketch_processing_timeout', 259200),
+    }
+
+    # One query for every client's hostname and last check-in. last_seen_at 0
+    # means unknown (API down -> snapshot fallback), which is not "offline".
+    known = {c.get('client_id'): c for c in (get_clients_from_snapshot(include_offline=True) or [])}
+    now_us = time.time() * 1e6
+    clients, skipped = [], []
+    for cid in client_ids:
+        info = known.get(cid) or {}
+        name = info.get('hostname') or cid
+        seen = info.get('last_seen_at') or 0
+        if TIMESKETCH_OFFLINE_SKIP_HOURS and seen and now_us - seen > TIMESKETCH_OFFLINE_SKIP_HOURS * 3600e6:
+            skipped.append(f"{name} ({(now_us - seen) / 3600e6:.0f} h)")
+        else:
+            clients.append({'client_id': cid, 'client_name': name})
+
+    label = (f"{len(clients)} clients ({', '.join(c['client_name'] for c in clients)})"
+             if 0 < len(clients) <= 3 else f"{len(clients)} clients")
+    run_id = create_automation_run(
+        automation_type="timesketch",
+        name=f"Scheduled: {job_name} - {label}",
+        details={
+            "multi_client": True,
+            "client_count": len(clients),
+            "clients": clients,
+            "skipped_offline": len(skipped),
+            "kape_target": kape_args['kape_target'],
+            "sketch_name": sketch_name,
+            "scheduled_job_id": job_id,
+            "blueprint_id": blueprint_id,
+            "blueprint": blueprint_name,
+        }
+    )
+    add_log_to_run(run_id, f"Starting scheduled Timesketch pipeline for {len(clients)} clients")
+    add_log_to_run(run_id, f"KAPE Target: {kape_args['kape_target']}")
+    if skipped:
+        shown = ', '.join(skipped[:20]) + (f", … (+{len(skipped) - 20} more)" if len(skipped) > 20 else "")
+        add_log_to_run(run_id, f"Skipped {len(skipped)} client(s) not seen for over {TIMESKETCH_OFFLINE_SKIP_HOURS} h "
+                               f"(TIMESKETCH_OFFLINE_SKIP_HOURS): {shown}", "warning")
+    if not clients:
+        update_run_status(run_id, "failed", progress=0, error="No client has been seen recently")
+        return
+
+    # Register a cancel event so the user can Stop a scheduled run from the
+    # dashboard; the pipeline wires it into Velociraptor CancelFlow.
+    cancel_event = register_cancel_event(run_id)
+    update_run_status(run_id, "running", progress=2)
+    if job_id:
+        with _TIMESKETCH_ACTIVE_LOCK:
+            _TIMESKETCH_ACTIVE[job_id] = run_id
+
+    def _worker():
         try:
-            # Get client hostname
-            client_name = resolve_hostnames([client_id]).get(client_id, client_id)
+            run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, timeout_seconds, cancel_event)
+        finally:
+            if job_id:
+                with _TIMESKETCH_ACTIVE_LOCK:
+                    _TIMESKETCH_ACTIVE.pop(job_id, None)
 
-            # Create automation run
-            blueprint_name = blueprint.get('name', blueprint_id) if blueprint else blueprint_id
-            run_id = create_automation_run(
-                automation_type="timesketch",
-                name=f"Scheduled: {job_name} - {client_name}",
-                details={
-                    "client_id": client_id,
-                    "client_name": client_name,
-                    "kape_target": kape_target,
-                    "sketch_name": sketch_name,
-                    "scheduled_job_id": job_meta.get('id'),
-                    "blueprint_id": blueprint_id,
-                    "blueprint": blueprint_name
-                }
-            )
-
-            # Register a cancel event so the user can Stop a scheduled run
-            # from the dashboard. Without this, the Velociraptor CancelFlow
-            # cleanup we wired into monitor_flow_completion has no event
-            # to attach to, and the run is uninterruptible until KAPE
-            # finishes naturally.
-            from services.workflow_service import register_cancel_event
-            register_cancel_event(run_id)
-
-            def workflow_logger(message, level="info"):
-                add_log_to_run(run_id, message, level)
-
-            workflow_logger(f"Starting scheduled Timesketch pipeline for {client_name}")
-            workflow_logger(f"KAPE Target: {kape_target}")
-
-            # Step 1: Run KAPE collection
-            workflow_logger("=== PHASE 1: Starting KAPE Collection ===")
-            flow_id = run_kape_collection_grpc(
-                client_id=client_id,
-                kape_target=kape_target,
-                timeout_seconds=timeout_seconds,
-                cpu_limit=cpu_limit,
-                max_rows=flow_max_rows,
-                max_logs=flow_max_logs,
-                max_upload_mb=flow_max_upload_mb,
-                max_file_size=kape_max_file_size,
-                max_hash_size=kape_max_hash_size,
-                collection_policy=kape_collection_policy,
-            )
-
-            if not flow_id:
-                workflow_logger("Failed to start KAPE collection", "error")
-                update_run_status(run_id, "failed")
-                continue
-
-            workflow_logger(f"KAPE collection started: flow_id={flow_id}")
-            update_run_status(run_id, "running", progress=10)
-
-            # Step 2: Monitor flow completion
-            workflow_logger("=== PHASE 2: Monitoring KAPE Collection ===")
-            flow_state = monitor_flow_completion(
-                client_id=client_id,
-                flow_id=flow_id,
-                timeout_seconds=timeout_seconds,
-                logger=workflow_logger,
-                run_id=run_id,  # wire workflow Stop into the Velociraptor CancelFlow
-            )
-
-            if flow_state == "CANCELLED":
-                workflow_logger("KAPE collection cancelled by user", "warning")
-                continue
-
-            if flow_state != "FINISHED":
-                workflow_logger(f"KAPE collection failed: {flow_state}", "error")
-                update_run_status(run_id, "failed")
-                continue
-
-            workflow_logger("KAPE collection completed successfully", "success")
-            update_run_status(run_id, "running", progress=40)
-
-            # Step 3: Export flow as ZIP, then process via shared upload path.
-            # This avoids the live-filesystem 1 MiB chunk-truncation bug.
-            workflow_logger("=== PHASE 3: Exporting Velociraptor flow as ZIP ===")
-            zip_path = os.path.join(PLASO_OUTPUT_DIR, f"flow_{flow_id}_{run_id}.zip")
-            export_ok = export_flow_to_zip(client_id, flow_id, zip_path, logger=workflow_logger)
-            if not export_ok:
-                workflow_logger("Velociraptor ZIP export failed", "error")
-                update_run_status(run_id, "failed")
-                cleanup_flow_export(client_id, flow_id, logger=workflow_logger)
-                continue
-
-            update_run_status(run_id, "running", progress=55)
-
-            # Step 4: Process ZIP via the same pipeline as Upload Existing
-            workflow_logger("=== PHASE 4: Processing ZIP with Plaso + Timesketch ===")
-            timeline_name = f"{client_name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-
-            result = process_kape_upload(
-                zip_path=zip_path,
-                original_filename=os.path.basename(zip_path),
-                settings={
-                    'sketch_name': sketch_name,
-                    'timeline_name': timeline_name,
-                    'client_name': client_name,  # we already know the real hostname
-                    'plaso_parser': settings.get('plaso_parser'),
-                    'plaso_workers': settings.get('plaso_workers', 2),
-                    'plaso_hasher': settings.get('plaso_hasher'),
-                    'plaso_hasher_size': settings.get('plaso_hasher_size', 100),
-                    # Propagate the per-blueprint TS-processing wait timeout so
-                    # big collections aren't capped by the old hardcoded ~3 h.
-                    'timesketch_processing_timeout': settings.get(
-                        'timesketch_processing_timeout', 259200
-                    ),
-                },
-                run_id=run_id,
-                cleanup_zip=True,
-            )
-
-            # Clean up the Velociraptor-side export dir regardless of outcome
-            cleanup_flow_export(client_id, flow_id, logger=workflow_logger)
-
-            if result and result.get('status') == 'completed':
-                workflow_logger("Timesketch import completed successfully", "success")
-                workflow_logger(f"Sketch ID: {result.get('sketch_id')}", "success")
-                workflow_logger(f"Timeline ID: {result.get('timeline_id')}", "success")
-            elif result and result.get('status') == 'no_events':
-                workflow_logger("No events to import (parser mismatch)", "warning")
-                # process_kape_upload already set status to completed
-            else:
-                err = (result or {}).get('error', 'Unknown error')
-                workflow_logger(f"Pipeline failed: {err}", "error")
-                # process_kape_upload already set status to failed
-
-        except Exception as e:
-            print(f"[SCHEDULER] Timesketch pipeline error for {client_id}: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def update_job_run_stats(job_id: str):
@@ -515,9 +470,11 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
     """Dispatch a memory-forensics run from a scheduled blueprint.
 
     Memory acquisition is per-host (4-16 GB transient .raw, three
-    concurrent copies during pipeline), so the scheduler runs ONE
-    client per job firing. If the operator scheduled multi-client,
-    we iterate them serially — each becomes its own workflow row.
+    concurrent copies during pipeline), and the hosts go ONE AFTER ANOTHER
+    (operator decision 2026-10-14). One "memory_batch" run walks the list in a
+    single thread; each host gets its own memory run when its turn comes, so
+    no host row sits idle for hours (the orphan sweep fails a run silent for
+    10 h). Stopping the batch stops it after the current host.
 
     options: {include_yara (bool), case_name, acquire_flow_timeout_s,
     plugin_timeout_s, yarascan_timeout_s} — the same per-run controls the
@@ -556,30 +513,59 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
         except (TypeError, ValueError):
             pass
 
-    for cid in client_ids:
-        run_id = create_automation_run(
-            automation_type="memory",
-            name=f"Memory ({mode}) — scheduled: {cid}",
-            details={
-                "trigger": "scheduled",
-                "scheduled_job_id": job_meta.get("id"),
-                "mode": mode,
-                "client_id": cid,
-                "blueprint_id": blueprint_id or None,
-                "case_name": case_name,
-            },
-        )
-        add_log_to_run(run_id, f"scheduler: memory dispatch client={cid} mode={mode}", "info")
-        update_run_status(run_id, "running", progress=1)
-        threading.Thread(
-            target=run_memory_pipeline,
-            kwargs={
-                "run_id": run_id,
-                "client_id": cid,
-                "mode": mode,
-                "case_name": case_name,
-                "blueprint": blueprint,
-                "timeouts": timeouts or None,
-            },
-            daemon=True,
-        ).start()
+    from services.workflow_service import register_cancel_event, unregister_cancel
+
+    batch_id = create_automation_run(
+        automation_type="memory_batch",
+        name=f"Memory ({mode}) — scheduled: {len(client_ids)} host(s), one after another",
+        details={
+            "trigger": "scheduled",
+            "scheduled_job_id": job_meta.get("id"),
+            "mode": mode,
+            "client_ids": list(client_ids),
+            "blueprint_id": blueprint_id or None,
+            "case_name": case_name,
+        },
+    )
+    stop = register_cancel_event(batch_id)
+    update_run_status(batch_id, "running", progress=1)
+
+    def _one_after_another():
+        total, done = len(client_ids), 0
+        try:
+            for n, cid in enumerate(client_ids, 1):
+                if stop.is_set():
+                    add_log_to_run(batch_id, f"stopped — {total - n + 1} host(s) not started", "warning")
+                    update_run_status(batch_id, "cancelled", progress=(n - 1) * 100 // total)
+                    return
+                run_id = create_automation_run(
+                    automation_type="memory",
+                    name=f"Memory ({mode}) — scheduled: {cid}",
+                    details={
+                        "trigger": "scheduled",
+                        "scheduled_job_id": job_meta.get("id"),
+                        "batch_run_id": batch_id,
+                        "mode": mode,
+                        "client_id": cid,
+                        "blueprint_id": blueprint_id or None,
+                        "case_name": case_name,
+                    },
+                )
+                add_log_to_run(batch_id, f"host {n}/{total}: {cid} → run {run_id}")
+                add_log_to_run(run_id, f"scheduler: memory dispatch client={cid} mode={mode} "
+                                       f"(host {n}/{total} of batch {batch_id})", "info")
+                update_run_status(run_id, "running", progress=1)
+                run_memory_pipeline(run_id=run_id, client_id=cid, mode=mode, case_name=case_name,
+                                    blueprint=blueprint, timeouts=timeouts or None)
+                done += 1
+                if not stop.is_set():   # a Stop mid-host must not be flipped back to running
+                    update_run_status(batch_id, "running", progress=max(1, done * 100 // total - 1))
+            add_log_to_run(batch_id, f"all {total} host(s) done", "success")
+            update_run_status(batch_id, "completed", progress=100)
+        except Exception as e:
+            add_log_to_run(batch_id, f"batch stopped by an error after {done}/{total}: {e}", "error")
+            update_run_status(batch_id, "failed", error=str(e))
+        finally:
+            unregister_cancel(batch_id)
+
+    threading.Thread(target=_one_after_another, daemon=True).start()

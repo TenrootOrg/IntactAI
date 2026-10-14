@@ -3,6 +3,7 @@
 Velociraptor Service - gRPC connection, VQL queries, client operations
 """
 
+import base64
 import subprocess
 import json
 import shlex
@@ -12,14 +13,19 @@ import os
 import grpc
 import traceback
 import sys
+import threading
 from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
 
 from config import VELOCIRAPTOR_CONTAINER, VELOCIRAPTOR_API_CONFIG_PATH, VELOCIRAPTOR_SNAPSHOT_PATH
 from services.vql_safety import is_valid_client_id, is_valid_flow_id
 
-# Cached API configuration
+# Parsed api.config.yaml, see load_velociraptor_api_config()
 velociraptor_api_config = None
+_api_config_lock = threading.Lock()
+_API_CONFIG_KEYS = ("ca_certificate", "client_private_key", "client_cert", "api_connection_string")
+_SHARED_CONFIG_COPY = "/tmp/api.config.yaml"
+_CONNECT_CHECK_SECONDS = 5
 
 def get_clients_from_snapshot(include_offline=False):
     """Get clients directly from Velociraptor API using VQL query (real-time data).
@@ -32,16 +38,14 @@ def get_clients_from_snapshot(include_offline=False):
             existing-flow analysis where the data is already collected and
             client liveness is irrelevant.
     """
-    channel = None
+    print(f"[CLIENT-LIST] Querying clients via VQL API (real-time, include_offline={include_offline})...", flush=True)
+    # Outside the try: the fallback raises when the snapshot can't be decoded, and
+    # the except below would read it a second time.
+    channel = setup_velociraptor_connection()
+    if not channel:
+        print("[CLIENT-LIST] Failed to setup connection, falling back to snapshot file", flush=True)
+        return get_clients_from_snapshot_file(include_offline)
     try:
-        print(f"[CLIENT-LIST] Querying clients via VQL API (real-time, include_offline={include_offline})...", flush=True)
-
-        # Setup gRPC connection
-        channel = setup_velociraptor_connection()
-        if not channel:
-            print("[CLIENT-LIST] Failed to setup connection, falling back to snapshot file", flush=True)
-            return get_clients_from_snapshot_file(include_offline)
-
         stub = api_pb2_grpc.APIStub(channel)
 
         # VQL query to get clients with their info. Online filter only
@@ -60,6 +64,9 @@ def get_clients_from_snapshot(include_offline=False):
                labels AS labels,
                last_seen_at,
                last_ip,
+               agent_information.name AS agent,
+               agent_information.version AS version,
+               last_interrogate_flow_id AS interrogated,
                timestamp(epoch=now()) AS current_time
         FROM clients()
         WHERE client_id != 'server'{liveness_clause}
@@ -104,7 +111,8 @@ def get_clients_from_snapshot(include_offline=False):
                                     "os_version": item.get('os_version', ''),
                                     "labels": [str(l) for l in _labels if l],
                                     "last_seen_at": last_seen,
-                                    "last_ip": item.get('last_ip', '')
+                                    "last_ip": item.get('last_ip', ''),
+                                    "imported": _is_import(item),
                                 })
                 except json.JSONDecodeError as e:
                     print(f"[CLIENT-LIST] Error parsing VQL response: {e}", flush=True)
@@ -126,168 +134,230 @@ def get_clients_from_snapshot(include_offline=False):
             channel.close()
 
 
+def _is_import(row):
+    """An offline-collection import, not an agent: Velociraptor keeps a client record
+    for it (no agent name, never interrogated, no version). It showed in every picker
+    and the dashboard count as a client nothing could ever be sent to. Same
+    predicate as Settings → Velociraptor (velociraptor_clients.classify), reused so
+    the two can't disagree. Callers that only map host -> OS keep these rows."""
+    from services.velociraptor_clients import classify
+    return classify([row], None)["counts"]["imported"] == 1
+
+
+# actions_proto.ClientInfo field numbers -- what each snapshot record's `info` blob
+# is. Read from the protobuf descriptor embedded in the v0.77.1 server binary
+# (2026-10-14), not guessed: wire-format numbers are stable across versions.
+_CLIENT_INFO_FIELDS = {1: "client_id", 3: "hostname", 5: "os", 6: "os_version", 10: "last_ip",
+                       12: "version", 13: "agent", 15: "labels", 16: "interrogated"}
+
+
+def _client_info_strings(blob):
+    """The string fields of a serialized ClientInfo (protobuf wire format)."""
+    out, i = {"labels": []}, 0
+
+    def varint():
+        nonlocal i
+        n = shift = 0
+        while True:
+            b = blob[i]
+            i += 1
+            n |= (b & 0x7f) << shift
+            shift += 7
+            if b < 0x80:
+                return n
+    while i < len(blob):
+        key = varint()
+        num, wire = key >> 3, key & 7
+        if wire == 0:
+            varint()
+        elif wire == 1:
+            i += 8
+        elif wire == 5:
+            i += 4
+        elif wire == 2:
+            n = varint()
+            val, i = blob[i:i + n], i + n
+            if i > len(blob):
+                raise ValueError("truncated record")
+            name = _CLIENT_INFO_FIELDS.get(num)
+            if name == "labels":
+                out["labels"].append(val.decode("utf-8", "replace"))
+            elif name:
+                out[name] = val.decode("utf-8", "replace")
+        else:
+            raise ValueError(f"wire type {wire}")
+    return out
+
+
+def _decode_client_info(info, client_id):
+    """A snapshot record's `info` -> its ClientInfo strings. Hex is what this code
+    has always read; base64 is how Go's encoder writes []byte, so both are tried.
+    The decoded client_id must match the record's, so a wrong guess can't pass."""
+    for decode in (bytes.fromhex, base64.b64decode):
+        try:
+            got = _client_info_strings(decode(info))
+        except (ValueError, IndexError):        # binascii.Error is a ValueError
+            continue
+        if got.get("client_id") == client_id:
+            return got
+    raise ValueError(f"{client_id}: info is not a ClientInfo record")
+
+
 def get_clients_from_snapshot_file(include_offline=True):
     """Read clients from Velociraptor snapshot file (fallback method only).
 
-    The file says nothing about when a client was last seen. This used to stamp
-    every client "seen now", so with the API down the whole fleet showed online and
-    the pickers pre-selected all of it. Liveness is unknown here: clients are
-    listed as not seen (last_seen_at 0), and an online-only request gets none."""
+    This used to stamp every client "seen now", so with the API down the whole fleet
+    showed online and the pickers pre-selected all of it. The record's ping is only
+    as fresh as the last snapshot flush, and with the API down nothing can be sent
+    anyway: clients are listed as not seen (last_seen_at 0), and an online-only
+    request gets none.
+
+    Hostnames used to be guessed by searching the raw bytes for "DESKTOP-", so every
+    other host became "Unknown" -- at 1,000 hosts, 1,000 indistinguishable rows. Each
+    record is now decoded as the ClientInfo protobuf it is. If the snapshot has
+    records and none decode, this raises instead of listing a fleet of "Unknown"."""
     if not include_offline:
         print("[CLIENT-LIST] Snapshot fallback cannot tell who is online -- returning none", flush=True)
         return []
     try:
         print("[CLIENT-LIST] Using fallback snapshot file method...", flush=True)
-        cmd = [
+        result = subprocess.run([
             "docker", "exec", VELOCIRAPTOR_CONTAINER,
             "cat", VELOCIRAPTOR_SNAPSHOT_PATH
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            clients = []
-            for line in result.stdout.strip().split('\n'):
-                if line.strip():
-                    try:
-                        data = json.loads(line)
-
-                        # Get client_id from JSON (should be present directly)
-                        client_id = data.get('client_id', '')
-
-                        # Skip server and non-client entries
-                        if not client_id or client_id == 'server' or not client_id.startswith('C.'):
-                            continue
-
-                        # Decode the hex-encoded info field
-                        if 'info' in data:
-                            info_hex = data['info']
-                            info_bytes = bytes.fromhex(info_hex)
-                            info_str = info_bytes.decode('utf-8', errors='ignore')
-
-                            # Extract hostname (appears after client_id)
-                            hostname = "Unknown"
-                            if "DESKTOP-" in info_str:
-                                # Find DESKTOP- pattern
-                                idx = info_str.find("DESKTOP-")
-                                if idx != -1:
-                                    # Extract until next non-alphanumeric
-                                    hostname = ""
-                                    for char in info_str[idx:]:
-                                        if char.isalnum() or char in ['-', '_']:
-                                            hostname += char
-                                        else:
-                                            break
-
-                            # Extract OS (windows/linux/mac appears in the data)
-                            os_system = "Unknown"
-                            if "windows" in info_str.lower():
-                                os_system = "Windows"
-                            elif "linux" in info_str.lower():
-                                os_system = "Linux"
-                            elif "darwin" in info_str.lower() or "mac" in info_str.lower():
-                                os_system = "macOS"
-
-                            # Extract IP (looks for pattern like 192.168.1.29)
-                            last_ip = ""
-                            import re
-                            ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', info_str)
-                            if ip_match:
-                                last_ip = ip_match.group(1)
-
-                            last_seen_at = 0        # unknown -- never claim "online"
-
-                            clients.append({
-                                "client_id": client_id,
-                                "hostname": hostname,
-                                "os": os_system,
-                                "os_version": "",
-                                "last_seen_at": last_seen_at,
-                                "last_ip": last_ip
-                            })
-                    except Exception as e:
-                        print(f"[CLIENT-LIST] Error parsing client record: {e}", flush=True)
-                        continue
-            print(f"[CLIENT-LIST] Found {len(clients)} clients from snapshot file", flush=True)
-            return clients
-        return []
+        ], capture_output=True, text=True, timeout=10)
     except Exception as e:
         print(f"[CLIENT-LIST] Error reading snapshot: {e}", flush=True)
         return []
+    if result.returncode != 0:
+        return []
+    clients, undecodable = [], 0
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+            client_id = data.get('client_id') or ''
+            # Skip server and non-client entries
+            if not client_id.startswith('C.'):
+                continue
+            info = _decode_client_info(data.get('info') or '', client_id)
+        except Exception as e:
+            undecodable += 1
+            if undecodable <= 3:
+                print(f"[CLIENT-LIST] Error parsing client record: {e}", flush=True)
+            continue
+        agent = {k: info.get(k, '') for k in ('agent', 'version', 'interrogated', 'last_ip')}
+        clients.append({
+            "client_id": client_id,
+            "hostname": info.get("hostname", ""),
+            "os": info.get("os", ""),
+            "os_version": info.get("os_version", ""),
+            "labels": [l for l in info["labels"] if l],
+            "last_seen_at": 0,      # unknown -- never claim "online"
+            "last_ip": info.get("last_ip", ""),
+            "imported": _is_import(agent),
+        })
+    if undecodable:
+        print(f"[CLIENT-LIST] {undecodable} snapshot record(s) could not be decoded", flush=True)
+        if not clients:
+            raise RuntimeError("The Velociraptor API is unreachable and its client snapshot "
+                               "could not be decoded; the client list is unavailable until "
+                               "the API answers again")
+    print(f"[CLIENT-LIST] Found {len(clients)} clients from snapshot file", flush=True)
+    return clients
 
-def load_velociraptor_api_config():
-    """Load Velociraptor API configuration from container"""
+def load_velociraptor_api_config(stale=None):
+    """The parsed API config (api.config.yaml), read from the Velociraptor container
+    once and then served from memory.
+
+    It used to be re-read on EVERY gRPC call: a `docker exec cat` whose output was
+    written to a shared /tmp/api.config.yaml and read back. Concurrent threads (one
+    per client at fleet scale) read it while another had just truncated it,
+    yaml.safe_load returned None, and that host's start or status check was reported
+    as failed. Now nothing reads a file: stdout is parsed directly, under a lock.
+
+    Pass `stale` = the config a connection just failed with: it is re-read then (a
+    changed hostname must not break every later call), unless another thread has
+    already replaced it, so a burst of failures costs one re-read, not one each.
+    Returns None when the config cannot be read."""
     global velociraptor_api_config
-
-    if velociraptor_api_config:
-        print("[CONFIG] Using cached API configuration")
-        return velociraptor_api_config
-
-    try:
-        print("[CONFIG] Loading Velociraptor API configuration from container...")
-        # Copy api.config.yaml from Velociraptor container
-        cmd = [
-            "docker", "exec", VELOCIRAPTOR_CONTAINER,
-            "cat", VELOCIRAPTOR_API_CONFIG_PATH
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-
-        if result.returncode == 0:
-            velociraptor_api_config = yaml.safe_load(result.stdout)
-            print("[CONFIG] ✓ Successfully loaded Velociraptor API configuration")
-            print(f"[CONFIG] Has client_cert: {bool(velociraptor_api_config.get('client_cert'))}")
-            print(f"[CONFIG] Has client_private_key: {bool(velociraptor_api_config.get('client_private_key'))}")
-            print(f"[CONFIG] Has ca_certificate: {bool(velociraptor_api_config.get('ca_certificate'))}")
+    with _api_config_lock:
+        if velociraptor_api_config is not None and velociraptor_api_config is not stale:
             return velociraptor_api_config
-        else:
-            print(f"[CONFIG] ✗ Failed to load API config: {result.stderr}")
+        try:
+            print("[CONFIG] Loading Velociraptor API configuration from container...", flush=True)
+            result = subprocess.run([
+                "docker", "exec", VELOCIRAPTOR_CONTAINER,
+                "cat", VELOCIRAPTOR_API_CONFIG_PATH
+            ], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                print(f"[CONFIG] ✗ Failed to load API config: {result.stderr}", flush=True)
+                return None
+            config = yaml.safe_load(result.stdout)
+            if not isinstance(config, dict) or not all(config.get(k) for k in _API_CONFIG_KEYS):
+                print("[CONFIG] ✗ API config is incomplete", flush=True)
+                return None
+            velociraptor_api_config = config
+            _refresh_shared_config_copy(result.stdout)
+            return config
+        except Exception as e:
+            print(f"[CONFIG] ✗ Exception loading API config: {e}", flush=True)
             return None
-    except Exception as e:
-        print(f"[CONFIG] ✗ Exception loading API config: {e}")
-        traceback.print_exc()
-        return None
+
+
+def _refresh_shared_config_copy(text):
+    """tools_download_service and msi_generator_service still read their own copy
+    of /tmp/api.config.yaml (written by them only when missing), so keep it current
+    -- replaced atomically, never truncated in place, so a reader can't see it half
+    written. ponytail: drop once both use setup_velociraptor_connection()."""
+    try:
+        tmp = _SHARED_CONFIG_COPY + ".new"
+        with open(tmp, "w") as f:
+            f.write(text)
+        os.replace(tmp, _SHARED_CONFIG_COPY)
+    except OSError as e:
+        print(f"[CONFIG] Could not refresh {_SHARED_CONFIG_COPY}: {e}", flush=True)
+
+
+def _secure_channel(config):
+    creds = grpc.ssl_channel_credentials(
+        root_certificates=config["ca_certificate"].encode("utf8"),
+        private_key=config["client_private_key"].encode("utf8"),
+        certificate_chain=config["client_cert"].encode("utf8"),
+    )
+    # Set gRPC options - increase message size for large artifacts like Hayabusa
+    # Default is 4MB, but forensic artifacts can return 30MB+
+    max_message_size = 100 * 1024 * 1024  # 100MB
+    options = (
+        ("grpc.ssl_target_name_override", "VelociraptorServer"),
+        ("grpc.max_receive_message_length", max_message_size),
+        ("grpc.max_send_message_length", max_message_size),
+    )
+    return grpc.secure_channel(config["api_connection_string"], creds, options)
+
 
 def setup_velociraptor_connection():
     """Setup gRPC connection to Velociraptor API"""
     try:
-        # Always re-copy the API config from the Velociraptor container rather
-        # than caching: a stale /tmp/api.config.yaml with an out-of-date hostname
-        # breaks every subsequent gRPC call. The copy is a cheap `docker exec
-        # cat` of a small YAML.
-        config_path = "/tmp/api.config.yaml"
-        print("[GRPC] Copying API config from Velociraptor container...", flush=True)
-        result = subprocess.run([
-            "docker", "exec", VELOCIRAPTOR_CONTAINER,
-            "cat", VELOCIRAPTOR_API_CONFIG_PATH
-        ], capture_output=True, text=True, timeout=5)
-
-        if result.returncode != 0:
-            print(f"[GRPC] Failed to copy config: {result.stderr}", flush=True)
+        config = load_velociraptor_api_config()
+        if not config:
             return None
-
-        with open(config_path, 'w') as f:
-            f.write(result.stdout)
-
-        # Load the YAML configuration
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-
-        # Prepare the credentials for the gRPC connection
-        creds = grpc.ssl_channel_credentials(
-            root_certificates=config["ca_certificate"].encode("utf8"),
-            private_key=config["client_private_key"].encode("utf8"),
-            certificate_chain=config["client_cert"].encode("utf8"),
-        )
-
-        # Set gRPC options - increase message size for large artifacts like Hayabusa
-        # Default is 4MB, but forensic artifacts can return 30MB+
-        max_message_size = 100 * 1024 * 1024  # 100MB
-        options = (
-            ("grpc.ssl_target_name_override", "VelociraptorServer"),
-            ("grpc.max_receive_message_length", max_message_size),
-            ("grpc.max_send_message_length", max_message_size),
-        )
-
-        # Establish the secure channel
-        channel = grpc.secure_channel(config["api_connection_string"], creds, options)
+        channel = _secure_channel(config)
+        # The config is cached, so a stale one (an out-of-date hostname after an IP
+        # or domain change) would break every later call. grpc channels are lazy, so
+        # connect now: if that fails, re-read the config and build the channel from
+        # it. A server that is simply down fails the same way the caller's own RPC
+        # always did; it only costs this wait and one re-read.
+        ready = grpc.channel_ready_future(channel)
+        try:
+            ready.result(timeout=_CONNECT_CHECK_SECONDS)
+        except Exception:
+            ready.cancel()
+            fresh = load_velociraptor_api_config(stale=config)
+            if fresh and fresh != config:
+                print("[GRPC] API config changed -- reconnecting with the new one", flush=True)
+                channel.close()
+                config, channel = fresh, _secure_channel(fresh)
         print(f"[GRPC] Secure channel established to {config['api_connection_string']}", flush=True)
         return channel
 
@@ -949,22 +1019,26 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         out["errors"].append("no connection")
         return out
 
-    def _run(vql, timeout):
+    def _count(vql, timeout):
+        """Rows the query produced (each one a deletion), counted as they stream.
+        This used to keep every row in a list only to take len() of it -- millions
+        of dicts on a fleet -- and max_row=2,000,000 let one response carry them all
+        as a single JSON string. max_row is a batch size, not a cap."""
         stub = api_pb2_grpc.APIStub(channel)
         req = api_pb2.VQLCollectorArgs(
-            max_wait=10, max_row=2000000,
+            max_wait=10, max_row=10000,
             Query=[api_pb2.VQLRequest(VQL=vql)],
         )
-        rows = []
+        n = 0
         for resp in stub.Query(req, timeout=timeout):
             if resp.Response:
                 try:
                     r = json.loads(resp.Response)
                     if isinstance(r, list):
-                        rows.extend(r)
+                        n += len(r)
                 except json.JSONDecodeError:
                     pass
-        return rows
+        return n
 
     try:
         # 1. Live hunts — hunt_delete also removes their per-client collected
@@ -972,13 +1046,13 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         if delete_hunts:
             try:
                 log("Deleting hunts…")
-                rows = _run(
+                n = _count(
                     "SELECT hunt_id, "
                     "hunt_delete(hunt_id=hunt_id, really_do_it=true) AS deleted "
                     "FROM hunts()",
                     timeout=600,
                 )
-                out["hunts"] = len(rows)
+                out["hunts"] = n
                 log(f"Deleted {out['hunts']} hunt(s)", "success")
             except Exception as e:
                 log(f"Hunt deletion error: {e}", "warning")
@@ -988,7 +1062,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         if delete_flows:
             try:
                 log("Deleting tracked flows…")
-                rows = _run(
+                n = _count(
                     "SELECT client_id, session_id, "
                     "flow_delete(client_id=client_id, flow_id=session_id, really_do_it=true) AS deleted "
                     "FROM foreach("
@@ -997,7 +1071,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
                     "workers=10)",
                     timeout=1800,
                 )
-                out["flows"] = len(rows)
+                out["flows"] = n
                 log(f"Deleted {out['flows']} tracked flow(s)", "success")
             except Exception as e:
                 log(f"Flow deletion error: {e}", "warning")
@@ -1013,7 +1087,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
             #    NOT an rm -rf. Client identity is untouched.
             try:
                 log("Sweeping residual collected-result files…")
-                rows = _run(
+                n = _count(
                     "SELECT OSPath, file_store_delete(path=OSPath) AS deleted "
                     "FROM foreach("
                     "row={ SELECT client_id FROM clients() WHERE client_id != 'server' }, "
@@ -1023,7 +1097,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
                     "workers=10)",
                     timeout=1800,
                 )
-                out["data_files"] = len(rows)
+                out["data_files"] = n
                 log(f"Removed {out['data_files']} residual result file(s)", "success")
             except Exception as e:
                 log(f"Residual sweep error: {e}", "warning")
@@ -1033,7 +1107,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         if delete_monitoring:
             try:
                 log("Deleting client monitoring data…")
-                rows = _run(
+                n = _count(
                     "SELECT OSPath, file_store_delete(path=OSPath) AS deleted "
                     "FROM foreach("
                     "row={ SELECT client_id FROM clients() WHERE client_id != 'server' }, "
@@ -1043,7 +1117,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
                     "workers=10)",
                     timeout=1800,
                 )
-                out["monitoring"] = len(rows)
+                out["monitoring"] = n
                 log(f"Deleted {out['monitoring']} monitoring file(s)", "success")
             except Exception as e:
                 log(f"Monitoring deletion error: {e}", "warning")

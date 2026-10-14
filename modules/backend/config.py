@@ -81,6 +81,34 @@ PLASO_CPUS = "2"
 PLASO_MEMORY = "4g"
 
 
+def _env_int(name, default, minimum=0):
+    """Int tunable from the environment (modules/backend/.env). A typo there
+    must not stop the backend importing, so a bad value falls back loudly."""
+    raw = os.environ.get(name, '')
+    try:
+        return max(minimum, int(raw)) if raw.strip() else default
+    except ValueError:
+        print(f"[CONFIG] {name}={raw!r} is not an integer; using {default}", flush=True)
+        return default
+
+
+# Fleet-scale limits for the KAPE -> Plaso -> Timesketch pipeline (start-multi
+# and scheduled runs). At 1,000 clients the old code ran one monitor thread
+# per host and exported every finished ZIP at once into /tmp/plaso while Plaso
+# drained them one by one, which fills the root filesystem.
+# Clients whose KAPE flow is monitored/exported at the same time.
+# 1 by operator decision (2026-10-14): hosts go one after another.
+TIMESKETCH_MAX_COLLECTORS = _env_int('TIMESKETCH_MAX_COLLECTORS', 1, minimum=1)
+# Plaso (extract + log2timeline + pinfo) jobs at the same time, across EVERY
+# caller: start-multi, single import, scheduled runs and ZIP uploads.
+PLASO_MAX_CONCURRENT = _env_int('PLASO_MAX_CONCURRENT', 1, minimum=1)
+# Free space PLASO_OUTPUT_DIR must have before a flow is exported into it.
+TIMESKETCH_EXPORT_MIN_FREE_GB = _env_int('TIMESKETCH_EXPORT_MIN_FREE_GB', 5)
+# A scheduled run skips clients not seen for this long (0 = never skip): each
+# one would otherwise hold a collector slot for the full monitor timeout.
+TIMESKETCH_OFFLINE_SKIP_HOURS = _env_int('TIMESKETCH_OFFLINE_SKIP_HOURS', 24)
+
+
 def get_plaso_image():
     """Get Plaso image, reading fresh from .env if available.
 

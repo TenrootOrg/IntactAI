@@ -33,7 +33,9 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -61,6 +63,44 @@ SHARED_VOLUME_NAME = "intact_memory_dumps"
 
 class AcquisitionError(RuntimeError):
     """Raised on any acquisition failure the pipeline can't recover from."""
+
+
+# ---------------------------------------------------------------------------
+# Disk reservations shared by every memory run in this process
+# ---------------------------------------------------------------------------
+# A disk check that only reads free space passes N concurrent runs at once:
+# each sees the same empty disk, none of the images exist yet, and they all
+# land together (a scheduled capture starts every client in the same tick —
+# at 1,000 hosts that is TBs). So a run that passes the check RESERVES its
+# expected size here, and every later check subtracts what other runs hold.
+# Keyed by run_id: the pipeline's preflight and this module's both reserve
+# under the same key, so the larger estimate wins instead of adding up.
+# The pipeline releases the key when the run ends, however it ends.
+# ponytail: a run's image counts twice once it is on disk (as used space AND as
+# its reservation) — errs toward refusing; shrink the reservation by the bytes
+# written if that ever rejects runs that would have fit.
+_DISK_LOCK = threading.Lock()
+_DISK_RESERVED: dict[str, int] = {}
+
+
+def reserve_disk(run_id: str | None, path: str, need: int) -> tuple[int, int]:
+    """Check ``need`` bytes against ``path``'s free space minus what OTHER runs
+    have reserved, and reserve it for ``run_id`` when it fits. Returns
+    ``(free, held_by_others)``; the caller decides how to fail when
+    ``free - held_by_others < need``. Raises OSError if the disk can't be read.
+    The check and the reservation are one step under the lock, so two runs can
+    never both take the last free gigabytes. ``run_id=None`` checks only."""
+    with _DISK_LOCK:
+        free = shutil.disk_usage(path).free
+        others = sum(v for k, v in _DISK_RESERVED.items() if k != run_id)
+        if run_id and free - others >= need:
+            _DISK_RESERVED[run_id] = max(need, _DISK_RESERVED.get(run_id, 0))
+        return free, others
+
+
+def release_disk(run_id: str | None) -> None:
+    with _DISK_LOCK:
+        _DISK_RESERVED.pop(run_id, None)
 
 
 def _shared_volume_available(dumps_dir: str) -> bool:
@@ -176,18 +216,15 @@ def _client_total_ram(client_id: str) -> int | None:
         return None
 
 
-def _preflight_capacity(client_id: str, dumps_dir: str, cfg: dict, log) -> None:
+def _preflight_capacity(client_id: str, dumps_dir: str, cfg: dict, log,
+                        run_id: str | None = None) -> None:
     """Preflight a memory acquisition: read the client's RAM, then verify the
     server has room for the resulting raw image. Raises AcquisitionError BEFORE
     dispatching so we never half-fill the disk with a multi-GB upload. Best-effort
-    — if the client RAM can't be determined, it warns and proceeds."""
-    import shutil
+    — if the client RAM can't be determined, it warns and proceeds.
+    Space other running captures have reserved counts as used (see reserve_disk)."""
     g = 1024 ** 3
     ram = _client_total_ram(client_id)
-    try:
-        free = shutil.disk_usage(dumps_dir).free
-    except Exception:
-        free = None
 
     if not ram:
         log("acquire: preflight — could not read client RAM (no interrogation data); "
@@ -197,16 +234,22 @@ def _preflight_capacity(client_id: str, dumps_dir: str, cfg: dict, log) -> None:
     # The raw image can EXCEED physical RAM (it spans the full physical address
     # space incl. MMIO gaps) — observed ~1.3x — and is capped at max_bytes.
     est_dump = min(int(ram * 1.3), cfg.get("max_bytes") or int(ram * 1.3))
+    try:
+        free, held = reserve_disk(run_id, dumps_dir, est_dump)
+    except OSError:
+        free, held = None, 0
     free_txt = f"{free / g:.1f} GiB" if free is not None else "unknown"
+    held_txt = f", {held / g:.1f} GiB of it reserved by other memory runs" if held else ""
     log(f"acquire: preflight — client RAM ~{ram / g:.1f} GiB, est. image ~{est_dump / g:.1f} "
-        f"GiB, server free {free_txt} in {dumps_dir}", "info")
+        f"GiB, server free {free_txt} in {dumps_dir}{held_txt}", "info")
 
-    if free is not None and free < est_dump:
+    if free is not None and free - held < est_dump:
         raise AcquisitionError(
             f"insufficient server disk for memory acquisition: the raw image is "
             f"~{est_dump / g:.1f} GiB (client RAM ~{ram / g:.1f} GiB) but only "
-            f"{free / g:.1f} GiB is free in {dumps_dir}. Free up space or enable "
-            f"compression, then retry.")
+            f"{(free - held) / g:.1f} GiB is free in {dumps_dir}"
+            f"{f' once other memory runs take the {held / g:.1f} GiB they reserved' if held else ''}. "
+            f"Free up space, enable compression, or wait for the other runs, then retry.")
 
 
 def _dispatch_acquisition(
@@ -418,7 +461,7 @@ def acquire_memory_dump(
         raise AcquisitionError("cancelled before dispatch")
 
     # Preflight: client RAM -> enough room on the server before we acquire.
-    _preflight_capacity(client_id, dumps_dir, cfg, log)
+    _preflight_capacity(client_id, dumps_dir, cfg, log, run_id)
 
     if cancel_check and cancel_check():
         raise AcquisitionError("cancelled before dispatch")

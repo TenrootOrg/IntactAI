@@ -10,12 +10,15 @@ Handles:
 """
 
 import os
+import re
+import uuid
 import zipfile
 import json
 import shutil
 import shlex
 import tempfile
 import subprocess
+import threading
 import traceback
 from datetime import datetime
 
@@ -29,7 +32,16 @@ from services.workflow_service import (
 )
 from services.plaso_service import run_pinfo
 from services.timesketch_service import import_to_timesketch
-from config import PLASO_OUTPUT_DIR, get_plaso_image, PLASO_CPUS, PLASO_MEMORY, TIMESKETCH_CONFIG
+from config import (PLASO_OUTPUT_DIR, get_plaso_image, PLASO_CPUS, PLASO_MEMORY, TIMESKETCH_CONFIG,
+                    PLASO_MAX_CONCURRENT)
+
+# THE one Plaso limit. Every caller -- start-multi, single-client import,
+# scheduled runs, ZIP uploads -- comes through process_kape_upload, so the
+# slot is taken here. It used to be a semaphore in timesketch_routes that the
+# scheduler and the upload hook never took, so their Plaso runs went
+# alongside start-multi's; and it was held through the Timesketch indexing
+# wait (up to 3 days), so one slow timeline stalled every other host.
+_PLASO_SLOTS = threading.BoundedSemaphore(PLASO_MAX_CONCURRENT)
 
 
 def detect_kape_format(zip_path):
@@ -230,18 +242,15 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
     try:
         # Setup paths
         os.makedirs(PLASO_OUTPUT_DIR, exist_ok=True)
-        plaso_file = f"{PLASO_OUTPUT_DIR}/{client_name}_Artifacts.plaso"
-
-        # Remove only THIS client's previous .plaso output (Plaso refuses to
-        # overwrite an existing storage file). DO NOT wipe the whole dir —
-        # the multi-client Timesketch orchestrator stages other clients' ZIPs
-        # here while they wait their turn in the Plaso queue; wiping the dir
-        # deletes those queued ZIPs and breaks the next client's run.
-        if os.path.isfile(plaso_file):
-            try:
-                os.remove(plaso_file)
-            except Exception:
-                pass
+        # One fresh name per call. This was {client_name}_Artifacts.plaso and
+        # deleted any file already there (Plaso refuses to overwrite), so two
+        # pipelines for same-named hosts -- every unnamed one is 'Unknown' --
+        # deleted each other's output mid-run. The name is endpoint- or
+        # ZIP-supplied text, so it is also reduced to a safe file name before
+        # it lands in a host path that is bind-mounted into the container.
+        safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', str(client_name or 'Unknown')).strip('.')[:64] or 'Unknown'
+        plaso_name = f"{safe_name}_{uuid.uuid4().hex[:12]}_Artifacts.plaso"
+        plaso_file = f"{PLASO_OUTPUT_DIR}/{plaso_name}"
 
         # Build Plaso command
         num_workers = str(workers) if workers else PLASO_CPUS
@@ -290,7 +299,7 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
 
         # Add output file and source
         plaso_cmd.extend([
-            '--storage-file', f'/data/{client_name}_Artifacts.plaso',
+            '--storage-file', f'/data/{plaso_name}',
             '/source'
         ])
 
@@ -371,7 +380,8 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
         return None
 
 
-def process_kape_upload(zip_path, original_filename, settings, run_id=None, cleanup_zip=True, suppress_status_writes=False):
+def process_kape_upload(zip_path, original_filename, settings, run_id=None, cleanup_zip=True, suppress_status_writes=False,
+                        on_plaso_done=None):
     """Process uploaded KAPE file through Plaso and import to Timesketch
 
     Main entry point called by upload webhook handler and by the Timesketch
@@ -391,6 +401,11 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             log lines still flow. Used by the multi-client Timesketch
             orchestrator so per-client processing doesn't overwrite the
             parent run's progress %/status (which the orchestrator owns).
+        on_plaso_done: Optional callable, called once when the Plaso stage
+            (extract + log2timeline + pinfo) is over, whatever its outcome,
+            before the Timesketch upload and indexing wait. The fleet
+            pipeline uses it to export the next ZIP only when Plaso can
+            take it.
 
     Returns:
         Dict with result info or None on failure
@@ -403,6 +418,37 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             update_run_status(run_id, status, **kw)
     temp_dir = None
     plaso_file = None  # Track for cleanup
+    held = []          # [True] while this call holds a Plaso slot
+    stage_over = []    # end_plaso_stage() runs once
+
+    def end_plaso_stage():
+        """Free the slot and the stage's inputs as soon as Plaso is done.
+        The extracted tree and the source ZIP used to stay on disk until the
+        end of the Timesketch indexing wait -- days, for every host waiting."""
+        if stage_over:
+            return
+        stage_over.append(True)
+        if held:
+            held.clear()
+            _PLASO_SLOTS.release()
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            print(f"[KAPE] Cleaned up temp directory: {temp_dir}", flush=True)
+            if run_id:
+                add_log_to_run(run_id, "Temporary files cleaned up")
+        if cleanup_zip and zip_path and os.path.exists(zip_path):
+            try:
+                os.remove(zip_path)
+                print(f"[KAPE] Cleaned up uploaded file: {zip_path}", flush=True)
+                if run_id:
+                    add_log_to_run(run_id, "Upload file cleaned up")
+            except OSError:
+                pass
+        if on_plaso_done:
+            try:
+                on_plaso_done()
+            except Exception:
+                traceback.print_exc()
 
     try:
         # Use existing run_id or create new one
@@ -436,6 +482,18 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         client_name = settings.get('client_name') or extract_client_info(zip_path, format_type, original_filename)
         add_log_to_run(run_id, f"Client hostname: {client_name}")
         _status("running", progress=10)
+
+        # Wait for a Plaso slot before extracting: extraction is the first
+        # disk-heavy step, so queued uploads stay compressed until their turn.
+        if not _PLASO_SLOTS.acquire(blocking=False):
+            add_log_to_run(run_id, f"Waiting for a Plaso slot ({PLASO_MAX_CONCURRENT} at a time "
+                                   f"across all Timesketch runs; PLASO_MAX_CONCURRENT)")
+            cancel_event = get_cancel_event(run_id) if run_id else None
+            while not _PLASO_SLOTS.acquire(timeout=5):
+                if cancel_event and cancel_event.is_set():
+                    add_log_to_run(run_id, "Stopped by user while waiting for a Plaso slot", "warning")
+                    return {"run_id": run_id, "status": "cancelled"}
+        held.append(True)
 
         # Create temp directory for extraction inside PLASO_OUTPUT_DIR (shared with host via Docker volume)
         # Must be under /tmp/plaso/ so the Plaso Docker container can access the files
@@ -557,6 +615,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             else:
                 add_log_to_run(run_id, f"Plaso extracted {event_count} events", "success")
 
+        end_plaso_stage()
         _status("running", progress=70)
 
         # Import to Timesketch
@@ -606,25 +665,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         return {"run_id": run_id, "status": "failed", "error": error_msg}
 
     finally:
-        # Cleanup temp directory
-        if temp_dir and os.path.exists(temp_dir):
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                print(f"[KAPE] Cleaned up temp directory: {temp_dir}", flush=True)
-                if run_id:
-                    add_log_to_run(run_id, "Temporary files cleaned up")
-            except:
-                pass
-
-        # Cleanup source ZIP (skip when caller manages its own lifecycle)
-        if cleanup_zip and zip_path and os.path.exists(zip_path):
-            try:
-                os.remove(zip_path)
-                print(f"[KAPE] Cleaned up uploaded file: {zip_path}", flush=True)
-                if run_id:
-                    add_log_to_run(run_id, "Upload file cleaned up")
-            except:
-                pass
+        end_plaso_stage()
 
         # Cleanup plaso file (after Timesketch import, no longer needed)
         if plaso_file and os.path.exists(plaso_file):

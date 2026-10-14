@@ -29,6 +29,10 @@ from .workflow_store import (
     get_workflows_by_case,
     reassign_null_case,
     delete_workflow,
+    append_workflow_log,
+    get_workflow_logs,
+    list_workflow_summaries,
+    purge_finished_workflows,
 )
 
 # Blueprint operations

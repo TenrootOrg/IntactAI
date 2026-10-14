@@ -9,6 +9,7 @@ import signal
 import subprocess
 import time
 import threading
+import weakref
 from datetime import datetime
 from services.file_storage_service import (
     save_workflow,
@@ -16,6 +17,7 @@ from services.file_storage_service import (
     get_workflow as file_get_workflow,
     get_workflows_by_case,
 )
+from services.storage.workflow_store import append_workflow_log
 
 # Investigation run types that belong to a case (workspace) — these get tagged
 # with the active case and are shown ONLY in that workspace. System/admin runs
@@ -42,6 +44,8 @@ AGENTIC_TYPES = {"velociraptor_collection", "memory", "timesketch",
 # arms exactly when there is something new for it to fold in — arming on 'failed'
 # or 'cancelled' would schedule a fuse that finds nothing stale and does nothing.
 _TERMINAL_STATUSES = ("completed", "success")
+# Every status that ends a run (its in-memory per-run state can go).
+_FINISHED_STATUSES = ("completed", "success", "failed", "cancelled")
 
 # Settings-page / system-operation run types. These always run under the built-in
 # "System" workspace (regardless of the browser's active case) so they have a home
@@ -475,24 +479,42 @@ def get_automation_runs_by_case(case_id):
     runs.sort(key=lambda x: x.get('created_at', ''), reverse=True)
     return runs
 
-# Per-run mutex registry. add_log_to_run does load-modify-save against the
-# workflow row; without serialization, parallel worker threads (e.g. the
-# ThreadPoolExecutor in agentic.analyzers) race and silently lose log
-# entries — observed in run agentic_1777379525079 where 4 of 9 [Skill] /
-# "Analysis complete" lines vanished.  Per-run granularity (not a global
-# lock) lets independent runs continue writing in parallel.
-_RUN_LOG_LOCKS: dict = {}
+# Per-run mutex registry for the read-modify-write helpers below (status,
+# details, name, metrics): without it concurrent updates read a stale snapshot
+# and clobber each other. Log appends no longer need it -- they are one INSERT.
+#
+# Weak values: an entry lives exactly as long as some thread holds or waits on
+# its lock, then drops out by itself. A plain dict grew by one lock per run,
+# forever. Deleting entries when a run finishes would race: a thread already
+# waiting on the old lock and one that just created a new one would both get in.
+class _RunLock:
+    """threading.Lock cannot be weakly referenced; this wrapper can."""
+    __slots__ = ("_lock", "__weakref__")
+
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    def __enter__(self):
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._lock.release()
+
+
+_RUN_LOG_LOCKS = weakref.WeakValueDictionary()
 _RUN_LOG_LOCKS_GUARD = threading.Lock()
 
 
 def _get_run_log_lock(run_id):
     """Return the per-run lock, creating it on first use. The guard lock
-    only protects the dict-creation, never held during the actual log write.
+    only protects the dict-creation, never held during the actual write.
+    The caller's `with` keeps it alive for exactly as long as it is needed.
     """
     with _RUN_LOG_LOCKS_GUARD:
         lock = _RUN_LOG_LOCKS.get(run_id)
         if lock is None:
-            lock = threading.Lock()
+            lock = _RunLock()
             _RUN_LOG_LOCKS[run_id] = lock
         return lock
 
@@ -500,51 +522,31 @@ def _get_run_log_lock(run_id):
 def add_log_to_run(run_id, log_message, log_level="info", force=False):
     """Add a log entry to an automation run.
 
-    Thread-safe per run_id: load-modify-save is serialized so concurrent
-    worker threads do not silently overwrite each other's log appends.
+    One INSERT into workflow_logs (append_workflow_log). It used to reload and
+    re-save the whole run row per line under the run's lock: bytes written grew
+    with the square of the line count, every worker thread of a fleet run queued
+    on that lock, and a "database is locked" save was swallowed -- lines lost.
 
     Also auto-increments `error_count` when log_level == 'error'. The
     counter is read at terminal-status time so a pipeline that logs a
     fatal error mid-run can't accidentally end up marked 'completed'
     — see update_run_status() for the auto-flip rule.
 
-    `force=True` writes even to a cancelled run. Use it ONLY for work the
-    operator deliberately started after the cancel — see the guard below.
+    Once a workflow is in the terminal 'cancelled' state, the "[Pipeline] Stop
+    requested by user" warning is the last word. Any further logs are
+    race-condition residue: subprocess wrap-up that landed between when the
+    cancel event fired and when the background thread noticed. They are dropped
+    so the UI shows a clean "cancelled" timeline instead of confusing
+    "success/failed" lines after Stop.
+
+    But NOT everything after a cancel is residue. An operator can stop a
+    collection and then press Fetch on that same run to pull what Velociraptor
+    already has — a deliberate, later action whose whole output this guard was
+    swallowing. Reproduced on case 'test2': the fetch ran, wrote 481,253 rows
+    and updated the run's details, and logged NOTHING, so the button looked
+    dead. Callers that own a post-cancel operation pass force=True.
     """
-    with _get_run_log_lock(run_id):
-        workflow = file_get_workflow(run_id)
-        if workflow:
-            # Once a workflow is in the terminal 'cancelled' state,
-            # the "[Pipeline] Stop requested by user" warning is the
-            # last word. Any further logs are race-condition residue:
-            # subprocess wrap-up that landed between when the cancel
-            # event fired and when the background thread noticed.
-            # Drop them so the UI shows a clean "cancelled" timeline
-            # instead of confusing "success/failed" lines after Stop.
-            #
-            # But NOT everything after a cancel is residue. An operator can
-            # stop a collection and then press Fetch on that same run to pull
-            # what Velociraptor already has — a deliberate, later action whose
-            # whole output this guard was swallowing. Reproduced on case
-            # 'test2': the fetch ran, wrote 481,253 rows and updated the run's
-            # details, and logged NOTHING, so the button looked dead. Callers
-            # that own a post-cancel operation pass force=True.
-            if workflow.get("status") == "cancelled" and not force:
-                return
-
-            if "logs" not in workflow:
-                workflow["logs"] = []
-
-            workflow["logs"].append({
-                "timestamp": datetime.now().isoformat(),
-                "level": log_level,
-                "message": log_message
-            })
-            if log_level == "error":
-                workflow["error_count"] = int(workflow.get("error_count") or 0) + 1
-            workflow["updated_at"] = datetime.now().isoformat()
-
-            save_workflow(workflow)
+    append_workflow_log(run_id, log_message, log_level, force=force)
 
 
 
@@ -572,7 +574,7 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
     # clobber each other's details — which silently dropped the case activity
     # log / chat history when several actions (each re-fusing) overlapped.
     with _get_run_log_lock(run_id):
-        workflow = file_get_workflow(run_id)
+        workflow = file_get_workflow(run_id, with_logs=False)
         if not workflow:
             return False
         # Cancellation is terminal: once request_stop() flips a run to
@@ -598,12 +600,11 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
                     f"{'y was' if n_errors == 1 else 'ies were'} recorded "
                     f"during this run."
                 )
-                workflow["logs"] = workflow.get("logs") or []
-                workflow["logs"].append({
-                    "timestamp": datetime.now().isoformat(),
-                    "level": "error",
-                    "message": summary,
-                })
+                # Straight to the log table: save_workflow below no longer
+                # writes `logs`. Not counted -- it summarises the errors that
+                # were, it is not one more.
+                append_workflow_log(run_id, summary, "error", force=True,
+                                    count_error=False)
                 status = "failed"
                 if not error:
                     error = f"{n_errors} fatal error(s) logged during the run"
@@ -626,6 +627,13 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
         # callers logged "saved" over nothing. Whether the row landed is the
         # caller's business now.
         saved = save_workflow(workflow)
+
+        # A finished run's flow jobs (the Timesketch hand-off, keyed by flow id)
+        # are never read again; without this `jobs` grew by one entry per flow,
+        # forever.
+        if status in _FINISHED_STATUSES:
+            for fid in [f for f, j in list(jobs.items()) if j.get("run_id") == run_id]:
+                jobs.pop(fid, None)
 
         # A run that just reached a terminal state is new data for its case. Arm the
         # debounced auto-fuse -- ARM only. This runs inside the per-run lock, so it
@@ -653,7 +661,7 @@ def mutate_run_details(run_id, mutator):
     — doing get + modify + save across separate calls lets concurrent writers
     clobber each other. Only touches `details` + `updated_at`; never the status."""
     with _get_run_log_lock(run_id):
-        workflow = file_get_workflow(run_id)
+        workflow = file_get_workflow(run_id, with_logs=False)
         if not workflow:
             return False
         details = workflow.get("details") or {}
@@ -666,7 +674,7 @@ def mutate_run_details(run_id, mutator):
 def rename_run(run_id, name):
     """Change a run's display name (e.g. once the endpoint's hostname is known)."""
     with _get_run_log_lock(run_id):
-        workflow = file_get_workflow(run_id)
+        workflow = file_get_workflow(run_id, with_logs=False)
         if not workflow or not name:
             return False
         workflow["name"] = name
@@ -681,7 +689,7 @@ def record_phase_timing(run_id, phase, seconds):
     "Collection: 11m, Detection: 3m, Analysis: 5m" without re-parsing logs.
     """
     with _get_run_log_lock(run_id):
-        workflow = file_get_workflow(run_id)
+        workflow = file_get_workflow(run_id, with_logs=False)
         if not workflow:
             return
         timings = workflow.get("phase_timings") or {}
@@ -701,7 +709,7 @@ def record_llm_metrics(run_id, *, calls=0, input_tokens=0, output_tokens=0, cost
     (see analyzers.call_llm) so the final totals reflect the whole pipeline.
     """
     with _get_run_log_lock(run_id):
-        workflow = file_get_workflow(run_id)
+        workflow = file_get_workflow(run_id, with_logs=False)
         if not workflow:
             return
         m = workflow.get("llm_metrics") or {}
@@ -729,14 +737,22 @@ def record_sigma_rule_tally(run_id, tally):
     if not isinstance(tally, dict):
         return
     with _get_run_log_lock(run_id):
-        workflow = file_get_workflow(run_id)
+        workflow = file_get_workflow(run_id, with_logs=False)
         if not workflow:
             return
         workflow["sigma_rule_tally"] = tally
         workflow["updated_at"] = datetime.now().isoformat()
         save_workflow(workflow)
 
-def cleanup_orphan_workflows():
+# cleanup_orphan_workflows ran on EVERY call of get_all_automation_runs -- and
+# so on every 1 s poll of the Workflows tab and most fusion paths. Its unit is
+# hours (max_idle_hours), so once a minute is plenty.
+_ORPHAN_SWEEP_EVERY = 60.0
+_last_orphan_sweep = [0.0]
+_orphan_sweep_lock = threading.Lock()
+
+
+def cleanup_orphan_workflows(force=False):
     """Mark workflows as failed if they look orphaned — `running`/`pending`
     with no activity (no log lines, no status updates) for more than the
     idle threshold.
@@ -749,7 +765,13 @@ def cleanup_orphan_workflows():
     as a second-best fallback) so the semantics is "stale", not "old".
     A genuinely orphaned crash still has an ancient `updated_at` and
     still gets caught.
+
+    Runs at most once per _ORPHAN_SWEEP_EVERY seconds; force=True always runs.
     """
+    with _orphan_sweep_lock:
+        if not force and time.time() - _last_orphan_sweep[0] < _ORPHAN_SWEEP_EVERY:
+            return
+        _last_orphan_sweep[0] = time.time()
     now = datetime.now()
     max_idle_hours = 10
 
@@ -775,8 +797,11 @@ def cleanup_orphan_workflows():
                     pass
         return max(candidates) if candidates else None
 
-    # Clean up SQLite workflows
-    sqlite_workflows = load_workflows()
+    # Clean up SQLite workflows. Only the live rows, and without their logs: a
+    # log line bumps updated_at (at most 30 s late, append_workflow_log), so the
+    # last line's timestamp adds nothing here -- loading every line of every run
+    # did, at fleet scale, on each call.
+    sqlite_workflows = load_workflows(with_logs=False, statuses=('running', 'pending'))
     for workflow in sqlite_workflows:
         # A "case"/"fusion_baseline" row IS a workspace container, not a job —
         # it has no natural "completed" state and can legitimately sit
@@ -798,13 +823,10 @@ def cleanup_orphan_workflows():
                     workflow['error'] = f'Workflow idle for {idle_hours:.1f}h with no updates (max: {max_idle_hours}h)'
                     workflow['updated_at'] = now.isoformat()
 
-                    if 'logs' not in workflow:
-                        workflow['logs'] = []
-                    workflow['logs'].append({
-                        'timestamp': now.isoformat(),
-                        'level': 'error',
-                        'message': f'Workflow automatically marked as failed - idle for {idle_hours:.1f}h (max: {max_idle_hours}h)'
-                    })
+                    append_workflow_log(
+                        workflow['run_id'],
+                        f'Workflow automatically marked as failed - idle for {idle_hours:.1f}h (max: {max_idle_hours}h)',
+                        'error', force=True, count_error=False)
 
                     save_workflow(workflow)
                     print(f"[WORKFLOW] Marked SQLite orphan workflow as failed: {workflow.get('run_id')}", flush=True)
@@ -876,10 +898,11 @@ def get_all_automation_runs():
     all_workflows.sort(key=lambda x: x.get('created_at', ''), reverse=True)
     return all_workflows
 
-def get_automation_run(run_id):
-    """Get a specific automation run by ID (checks SQLite first, then Elasticsearch)"""
+def get_automation_run(run_id, with_logs=True):
+    """Get a specific automation run by ID (checks SQLite first, then Elasticsearch).
+    with_logs=False skips reading the run's log lines (an ES row has them anyway)."""
     # Try SQLite first
-    workflow = file_get_workflow(run_id)
+    workflow = file_get_workflow(run_id, with_logs=with_logs)
     if workflow:
         return workflow
 
@@ -904,6 +927,75 @@ def get_automation_run(run_id):
             print(f"[WORKFLOW] Error getting ES workflow {run_id}: {e}", flush=True)
 
     return None
+
+
+# Finished-run retention. Run history had none: scheduled per-client jobs add a
+# row per host per firing, deleted only by hand. config.yaml
+# options.workflow_retention_days (default 90; 0 = keep forever) -- read on each
+# sweep, so a change applies within the hour without a restart.
+_RETENTION_DEFAULT_DAYS = 90
+
+
+def _retention_days():
+    try:
+        from config import get_installation_options
+        v = (get_installation_options() or {}).get("workflow_retention_days")
+        return _RETENTION_DEFAULT_DAYS if v is None else max(0, int(v))
+    except Exception as e:      # noqa: BLE001 -- a bad value must not delete anything
+        print(f"[WORKFLOW] workflow_retention_days unreadable ({e}); retention skipped", flush=True)
+        return 0
+
+
+def purge_old_runs():
+    """Delete finished runs older than the retention window, with their logs.
+    Case containers, case-member runs and anything tagged to a live case are
+    never aged out (see storage.purge_finished_workflows); they go when their
+    case is deleted. Upgrade history is kept too -- a few rows a year."""
+    days = _retention_days()
+    if not days:
+        return []
+    from services.storage import purge_finished_workflows
+    gone = purge_finished_workflows(days, AGENTIC_TYPES | INTERNAL_CASE_TYPES
+                                    | {"upgrade", "online_upgrade"}, _system_case_id())
+    if gone:
+        print(f"[WORKFLOW] Retention: deleted {len(gone)} finished run(s) older than {days} day(s)",
+              flush=True)
+        # get_all_automation_runs merges Elasticsearch rows missing from SQLite,
+        # so a run deleted here only would come back from there.
+        if _elk_enabled():
+            try:
+                from services import elasticsearch_service as _es
+                for rid in gone:
+                    _es.delete_workflow_run(rid)
+            except Exception as e:      # noqa: BLE001
+                print(f"[WORKFLOW] Retention: ES copies not deleted: {e}", flush=True)
+    return gone
+
+
+_HOUSEKEEPING_STARTED = [False]
+
+
+def start_housekeeping(every=60.0, purge_every=3600.0):
+    """One daemon thread: the orphan sweep each minute, retention each hour.
+    Idempotent."""
+    if _HOUSEKEEPING_STARTED[0]:
+        return
+    _HOUSEKEEPING_STARTED[0] = True
+
+    def _loop():
+        last_purge = 0.0
+        while True:
+            time.sleep(every)
+            try:
+                cleanup_orphan_workflows(force=True)
+                if time.time() - last_purge >= purge_every:
+                    last_purge = time.time()
+                    purge_old_runs()
+            except Exception as e:      # noqa: BLE001 -- keep the loop alive
+                print(f"[WORKFLOW] housekeeping error: {e}", flush=True)
+
+    threading.Thread(target=_loop, daemon=True, name="workflow-housekeeping").start()
+
 
 def get_jobs():
     """Get all jobs"""

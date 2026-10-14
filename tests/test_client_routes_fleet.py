@@ -1,0 +1,188 @@
+"""/api/clients at fleet scale (audit 2026-10-14).
+
+F27: offline-collection imports (no agent name, never interrogated, no version)
+were listed as clients in every picker and counted on the dashboard.
+F31: the pickers' limit=1000 was cut from an UNSORTED fleet, so above 1,000 an
+arbitrary subset (online hosts included) silently disappeared.
+F36: every dashboard tab pulled the whole fleet every 10 s to show two numbers;
+/api/clients/summary answers {online, total} from a 30 s server-side cache.
+
+flask is a container dependency, so the route runs here against a minimal stand-in
+for the few flask names client_routes uses; the service runs for real against a
+scripted gRPC stub.
+"""
+import importlib.util
+import json
+import os
+import sys
+import time
+import types
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _p in (os.path.join(ROOT, "tests"), os.path.join(ROOT, "modules/backend")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import _optional_deps  # noqa: F401,E402
+
+
+class _Args(dict):
+    def get(self, key, default=None, type=None):
+        v = dict.get(self, key, default)
+        if type is not None and v is not None:
+            try:
+                return type(v)
+            except ValueError:
+                return default
+        return v
+
+
+def _fake_flask():
+    try:
+        import flask  # noqa: F401
+        return None                                    # the real one is here: use it
+    except ImportError:
+        pass
+
+    class Blueprint:
+        def __init__(self, *a, **k):
+            pass
+
+        def route(self, *a, **k):
+            return lambda fn: fn
+
+    mod = types.ModuleType("flask")
+    mod.Blueprint = Blueprint
+    mod.jsonify = lambda body=None, **k: body if body is not None else k
+    mod.send_file = lambda *a, **k: None
+    mod.request = types.SimpleNamespace(args=_Args())
+    sys.modules["flask"] = mod
+    return mod
+
+
+FAKE_FLASK = _fake_flask()
+from services import velociraptor_service as vs  # noqa: E402
+# routes/__init__.py imports every blueprint (and more of flask): load this one alone.
+_spec = importlib.util.spec_from_file_location(
+    "client_routes_under_test", os.path.join(ROOT, "modules/backend/routes/client_routes.py"))
+cr = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cr)
+
+NOW_US = int(time.time() * 1e6)
+
+
+def row(cid, host, agent="velociraptor", interrogated="F.1", version="0.77.1", seen_ago_s=30):
+    return {"client_id": cid, "hostname": host, "os": "windows", "os_version": "10",
+            "labels": [], "last_seen_at": NOW_US - int(seen_ago_s * 1e6), "last_ip": "",
+            "agent": agent, "version": version, "interrogated": interrogated}
+
+
+class _Stub:
+    def __init__(self, rows):
+        self.rows = rows
+        self.queries = 0
+
+    def Query(self, req, timeout=None):
+        self.queries += 1
+        yield types.SimpleNamespace(Response=json.dumps(self.rows))
+
+
+class FleetRouteCase(unittest.TestCase):
+    rows = []
+
+    def setUp(self):
+        if FAKE_FLASK is None:
+            self.skipTest("real flask present: this suite drives the route without an app")
+        self.stub = _Stub(self.rows)
+        self.saved = (vs.setup_velociraptor_connection, vs.api_pb2_grpc.APIStub)
+        vs.setup_velociraptor_connection = lambda: types.SimpleNamespace(close=lambda: None)
+        vs.api_pb2_grpc.APIStub = lambda ch: self.stub
+        reset = getattr(cr, "_FLEET_CACHE", None)
+        if reset is not None:
+            reset.update(at=0.0, rows=None)
+
+    def tearDown(self):
+        vs.setup_velociraptor_connection, vs.api_pb2_grpc.APIStub = self.saved
+        FAKE_FLASK.request.args = _Args()
+
+    def get(self, **args):
+        FAKE_FLASK.request.args = _Args({k: str(v) for k, v in args.items()})
+        return cr.get_clients()
+
+
+class ImportsAreNotClients(FleetRouteCase):
+    rows = [row("C.agent1", "PC-1"),
+            row("C.import1", "ADATUM-DC", agent="", interrogated="", version="", seen_ago_s=10**6),
+            # enrolled but not interrogated yet: still an agent (it has a name)
+            row("C.fresh", "PC-2", interrogated="", version="")]
+
+    def test_imports_left_out_of_items_and_total(self):
+        body = self.get(include_offline="true")
+        self.assertEqual({"C.agent1", "C.fresh"}, {c["client_id"] for c in body["items"]})
+        self.assertEqual(2, body["total"])
+        self.assertEqual(1, body["imported"])
+
+    def test_service_keeps_them_marked_for_os_mapping_callers(self):
+        got = {c["client_id"]: c["imported"] for c in vs.get_clients_from_snapshot(include_offline=True)}
+        self.assertEqual({"C.agent1": False, "C.import1": True, "C.fresh": False}, got)
+
+
+class LimitCutsASortedList(FleetRouteCase):
+    # 1,200 clients, deliberately out of order; every 4th is online.
+    rows = [row(f"C.{i:04d}", f"host-{(i * 7919) % 1200:04d}", seen_ago_s=30 if i % 4 == 0 else 10**5)
+            for i in range(1200)]
+
+    def test_online_first_then_hostname_and_says_it_was_cut(self):
+        body = self.get(include_offline="true", limit=1000)
+        items = body["items"]
+        self.assertEqual(1000, len(items))
+        self.assertEqual((1200, 1200, True), (body["total"], body["filtered"], body["truncated"]))
+        now = time.time()
+        online = [cr._online(c, now) for c in items]
+        self.assertEqual(300, sum(online), "every online client must survive the cut")
+        self.assertEqual(sorted(online, reverse=True), online)
+        for part in (items[:300], items[300:]):
+            names = [c["hostname"] for c in part]
+            self.assertEqual(sorted(names), names)
+
+    def test_not_truncated_under_the_limit(self):
+        body = self.get(include_offline="true", limit=5000, search="host-000")
+        self.assertEqual((10, False), (body["filtered"], body["truncated"]))
+
+
+class Summary(FleetRouteCase):
+    rows = [row("C.on1", "A"), row("C.on2", "B"), row("C.off", "C", seen_ago_s=3600),
+            row("C.imp", "D", agent="", interrogated="", version="", seen_ago_s=10**6)]
+
+    def test_counts_agents_and_online(self):
+        body = cr.get_clients_summary()
+        self.assertEqual((2, 3), (body["online"], body["total"]))
+
+    def test_cached_for_30s_then_refetched(self):
+        cr.get_clients_summary()
+        cr.get_clients_summary()
+        self.assertEqual(1, self.stub.queries, "a second tab within 30 s must not re-query")
+        cr._FLEET_CACHE["at"] -= cr.SUMMARY_MAX_AGE + 1  # 31 s later
+        cr.get_clients_summary()
+        self.assertEqual(2, self.stub.queries)
+
+    def test_picker_refresh_is_live_and_refreshes_the_cache(self):
+        cr.get_clients_summary()
+        self.get(include_offline="true")                 # the pickers' ↻: never from cache
+        self.assertEqual(2, self.stub.queries)
+        cr.get_clients_summary()
+        self.assertEqual(2, self.stub.queries)
+
+    def test_concurrent_misses_cost_one_query(self):
+        import threading
+        ts = [threading.Thread(target=cr.get_clients_summary) for _ in range(20)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        self.assertEqual(1, self.stub.queries)
+
+
+if __name__ == "__main__":
+    unittest.main()

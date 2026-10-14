@@ -493,6 +493,26 @@ SELECT * FROM collection
     return results
 
 
+def _result_source_name(row):
+    """Source name from one enumerate_flow() 'Result' row, or None.
+
+    VFSPath formats:
+    - artifacts/{artifact_name}/{flow_id}.json (main artifact)
+    - artifacts/{artifact_name}/{flow_id}/{sub_source}.json (sub-source)
+    """
+    vfs_path = row.get('Data', {}).get('VFSPath', '')
+    if '/artifacts/' not in vfs_path:
+        return None
+    path_parts = vfs_path.split('/artifacts/')[1].split('/')
+    if len(path_parts) < 2:
+        return None
+    artifact_name = path_parts[0]
+    # path_parts[1] is the flow_id; path_parts[2] would be a sub-source
+    if len(path_parts) >= 3 and path_parts[2].endswith('.json'):
+        artifact_name = f"{artifact_name}/{path_parts[2].replace('.json', '')}"
+    return artifact_name or None
+
+
 def enumerate_flow_sources(stub, client_id, flow_id):
     """Enumerate all available artifact sources in a flow. Returns list of source names."""
     try:
@@ -513,26 +533,10 @@ SELECT * FROM enumerate_flow(client_id='{client_id}', flow_id='{flow_id}')
                     if isinstance(resp_data, list):
                         for row in resp_data:
                             # enumerate_flow returns Type="Result" rows with Data.VFSPath containing artifact name
-                            # VFSPath formats:
-                            # - artifacts/{artifact_name}/{flow_id}.json (main artifact)
-                            # - artifacts/{artifact_name}/{flow_id}/{sub_source}.json (sub-source)
                             if row.get('Type') == 'Result':
-                                vfs_path = row.get('Data', {}).get('VFSPath', '')
-                                if '/artifacts/' in vfs_path:
-                                    # Extract artifact name from path
-                                    parts = vfs_path.split('/artifacts/')
-                                    if len(parts) > 1:
-                                        artifact_part = parts[1]
-                                        # Parse path components
-                                        path_parts = artifact_part.split('/')
-                                        if len(path_parts) >= 2:
-                                            artifact_name = path_parts[0]
-                                            # Check for sub-source (path_parts[1] is flow_id, path_parts[2] would be sub-source)
-                                            if len(path_parts) >= 3 and path_parts[2].endswith('.json'):
-                                                sub_source = path_parts[2].replace('.json', '')
-                                                artifact_name = f"{artifact_name}/{sub_source}"
-                                            if artifact_name and artifact_name not in sources:
-                                                sources.append(artifact_name)
+                                artifact_name = _result_source_name(row)
+                                if artifact_name and artifact_name not in sources:
+                                    sources.append(artifact_name)
                 except Exception:
                     pass
         return sources
@@ -658,6 +662,156 @@ def cancel_collections(run_id, collection_results):
     add_log_to_run(run_id, f"[Velociraptor] Cancelled {cancelled} collection(s)", "info")
 
 
+def _run_client_ids(run_id):
+    """The clients a run says it collected from (details.client_ids / client_id).
+
+    Only a HINT for _locate_flow_client: a multi-client collection stores its
+    flow ids as a bare list with no owner per flow, so this is the narrowest set
+    the run itself can name. Any failure is just "no hint"."""
+    try:
+        from services.workflow_service import get_automation_run
+        d = (get_automation_run(run_id) or {}).get('details') or {}
+        ids = list(d.get('client_ids') or []) + [d.get('client_id')]
+        return [c for c in ids if c and is_valid_client_id(c)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _locate_flow_client(stub, run_id, fid, client_ids=None):
+    """(client_id, hostname) owning flow `fid`, or (None, "Unknown").
+
+    The search runs ON THE SERVER: one foreach over clients() -> flows() per
+    attempt, not one gRPC round trip (and one log line) per enrolled client.
+    That loop was 1,000 flows x ~500 clients = ~500,000 queries for a fleet
+    Fetch, which never finished. Attempts, narrowest first: the caller's
+    client_ids, the run's own recorded clients, then every client. Each is a
+    hint only -- a miss falls through to the next, so a wrong hint costs one
+    query and never a lost flow.
+    """
+    def scopes():                    # lazy: a hit on the first skips the run-row read
+        yield client_ids or []
+        yield _run_client_ids(run_id)
+        yield None                   # every client
+
+    tried = set()
+    for scope in scopes():
+        if scope is None:
+            where = ""
+        else:
+            scope = [c for c in scope if is_valid_client_id(c) and c not in tried]
+            if not scope:
+                continue
+            tried.update(scope)
+            where = " WHERE client_id IN (" + ", ".join(f"'{c}'" for c in scope) + ")"
+        query = (
+            "SELECT * FROM foreach("
+            f"row={{SELECT client_id AS LocCid, os_info.hostname AS LocHost FROM clients(){where}}}, "
+            f"query={{SELECT LocCid, LocHost FROM flows(client_id=LocCid, flow_id='{fid}')}}) LIMIT 1"
+        )
+        req = api_pb2.VQLCollectorArgs(max_wait=30, max_row=10,
+                                       Query=[api_pb2.VQLRequest(VQL=query)])
+        try:
+            for response in stub.Query(req, timeout=VELO_QUERY_TIMEOUT_SECONDS):
+                if response.Response:
+                    for row in json.loads(response.Response) or []:
+                        if row.get('LocCid'):
+                            return row['LocCid'], row.get('LocHost', 'Unknown')
+        except Exception as e:  # noqa: BLE001
+            add_log_to_run(run_id, f"[Velociraptor] Locating flow {fid} failed: {e}", "warning")
+    return None, "Unknown"
+
+
+# ---- Hunt-wide reads -------------------------------------------------------
+# A hunt used to be read per client per source: enumerate_flow + one source()
+# per source per flow, ~9-16k sequential gRPC calls for a 1,000-host hunt, on
+# every fuse. These run the same plugins inside ONE server-side foreach over
+# hunt_flows(), so the server walks the flows and we pay one round trip.
+#
+# Not hunt_results(): it stamps ClientId/FlowId/Fqdn INTO every row,
+# overwriting an artifact's own column of that name (Generic.Client.Info has a
+# Fqdn), so its rows are not the rows source() returns and fusion maps. Here the
+# owner travels in two extra columns that are popped off again, leaving each
+# row exactly as source() produced it.
+#
+# Both helpers return None when the batched answer cannot be trusted (an error,
+# or nothing where a direct look finds something) and the caller then does the
+# old per-flow read: slower, never emptier.
+
+def _hunt_foreach(flows_vql, inner):
+    return ("SELECT * FROM foreach("
+            f"row={{SELECT ClientId AS IntactCid, FlowId AS IntactFid FROM {flows_vql}}}, "
+            f"query={{{inner}}})")
+
+
+def _query_rows(stub, query, timeout):
+    # The server-side limit is set to the same bound as the gRPC one: left at
+    # 0 the server applies its own default and may end a long hunt-wide stream
+    # early, which closes normally and looks complete.
+    req = api_pb2.VQLCollectorArgs(max_wait=10, max_row=VELO_FETCH_BATCH_ROWS, timeout=int(timeout),
+                                   Query=[api_pb2.VQLRequest(VQL=query)])
+    for response in stub.Query(req, timeout=timeout):
+        if response.Response:
+            yield from json.loads(response.Response)
+
+
+def _hunt_flow_sources(stub, flows_vql, flows):
+    """{(client_id, flow_id): [source, ...]} for every hunt flow, or None."""
+    out = {f: [] for f in flows}
+    seen = 0
+    q = _hunt_foreach(flows_vql, "SELECT IntactCid, IntactFid, Data FROM enumerate_flow("
+                                 "client_id=IntactCid, flow_id=IntactFid) WHERE Type = 'Result'")
+    for row in _query_rows(stub, q, 30 * max(1, len(flows))):
+        seen += 1
+        key = (row.get('IntactCid'), row.get('IntactFid'))
+        if key[0] is None:
+            return None                  # the foreach variables did not resolve
+        if key not in out:
+            continue                     # joined the hunt after we listed its flows
+        name = _result_source_name(row)
+        if name and name not in out[key]:
+            out[key].append(name)
+    # Nothing at all is normal for a hunt no client has answered yet, so check
+    # one flow directly before believing it.
+    if not seen and flows and enumerate_flow_sources(stub, *flows[0]):
+        return None
+    return out
+
+
+def _hunt_source_rows(stub, flows_vql, flows, source):
+    """{(client_id, flow_id): rows} of one source across the hunt, or None.
+
+    `flows` are the flows the enumeration says hold this source, so an empty
+    answer is a wrong answer, not an empty source. The caller re-reads every
+    flow missing from the answer: one in the middle is a failed source() (or a
+    result file with no rows); missing ones after the last flow read mean the
+    stream ended early (a server limit), so that last flow may be partial and is
+    left out too. foreach walks hunt_flows() in the order `flows` was listed."""
+    want = set(flows)
+    out = {}
+    last = None
+    q = _hunt_foreach(flows_vql, f"SELECT *, IntactCid, IntactFid FROM source(client_id=IntactCid, "
+                                 f"flow_id=IntactFid, artifact='{source}') "
+                                 f"LIMIT {VELO_MAX_ROWS_PER_ARTIFACT}")
+    for row in _query_rows(stub, q, VELO_QUERY_TIMEOUT_SECONDS * max(1, len(flows))):
+        key = (row.pop('IntactCid', None), row.pop('IntactFid', None))
+        if key[0] is None:
+            return None
+        if key in want:
+            out.setdefault(key, []).append(row)
+            last = key
+    if not out:
+        return None
+    if last is not None and any(f not in out for f in flows[flows.index(last) + 1:]):
+        out.pop(last)
+    for (cid, fid), rows in out.items():
+        if len(rows) >= VELO_MAX_ROWS_PER_ARTIFACT:
+            logger.warning(
+                "[Velociraptor] %s/%s on %s rows hit ceiling (%d) — analysis on "
+                "partial data; raise VELO_MAX_ROWS_PER_ARTIFACT to capture more",
+                source, fid, cid, VELO_MAX_ROWS_PER_ARTIFACT)
+    return out
+
+
 def _wanted_source(source_name, only_artifacts):
     """Should this result source be fetched at all?
 
@@ -712,7 +866,8 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
         client_ids: Optional list of Velociraptor client IDs to scope a hunt
             to. When non-empty, the hunt-flows enumeration query gets a
             ``WHERE ClientId IN (...)`` filter so only those clients' rows
-            reach analysis. Ignored on the single-flow path.
+            reach analysis. On the flow path it is only a hint for where to
+            look first (a miss still searches every client), never a filter.
 
     Returns:
         (all_results, artifacts, client_info)
@@ -778,66 +933,18 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     "info",
                 )
 
-            # Enumerate all clients ONCE (per-flow location lookup reuses this)
-            clients_query = "SELECT client_id, os_info.hostname AS hostname FROM clients()"
-            request_obj = api_pb2.VQLCollectorArgs(
-                max_wait=30,
-                max_row=1000,
-                Query=[api_pb2.VQLRequest(VQL=clients_query)]
-            )
-            all_clients = []
-            for response in stub.Query(request_obj, timeout=60):
-                if response.Response:
-                    try:
-                        resp_data = json.loads(response.Response)
-                        all_clients.extend(resp_data)
-                    except Exception as e:
-                        add_log_to_run(run_id, f"[Velociraptor] Error parsing clients response: {e}", "warning")
-                if response.log:
-                    add_log_to_run(run_id, f"[Velociraptor] Server log: {response.log}", "debug")
-            add_log_to_run(run_id, f"[Velociraptor] Found {len(all_clients)} clients to search", "info")
-
             # ---- Per-flow loop (mirrors the hunt-flows loop further down) ---
             for fid in flow_ids:
-                located_client_id = None
-                located_hostname = "Unknown"
-
-                # Search each client for this flow
-                for client in all_clients:
-                    cid = client.get('client_id')
-                    if not cid:
-                        continue
-
-                    flow_check_query = f"SELECT session_id FROM flows(client_id='{cid}', flow_id='{fid}')"
-                    check_req = api_pb2.VQLCollectorArgs(
-                        max_wait=10,
-                        max_row=1,
-                        Query=[api_pb2.VQLRequest(VQL=flow_check_query)]
+                # client_ids is a lookup hint here, never a filter: the flow is
+                # found wherever it lives (see _locate_flow_client).
+                located_client_id, located_hostname = _locate_flow_client(
+                    stub, run_id, fid, client_ids)
+                if located_client_id:
+                    add_log_to_run(
+                        run_id,
+                        f"[Velociraptor] Found flow {fid} on client: {located_client_id} ({located_hostname})",
+                        "info",
                     )
-                    try:
-                        for response in stub.Query(check_req, timeout=30):
-                            if response.log:
-                                add_log_to_run(run_id, f"[Velociraptor] Query log for {cid}: {response.log.strip()}", "debug")
-                            if response.Response:
-                                try:
-                                    resp_data = json.loads(response.Response)
-                                    add_log_to_run(run_id, f"[Velociraptor] Query result for {cid}: {len(resp_data)} rows", "debug")
-                                    if resp_data and len(resp_data) > 0:
-                                        located_client_id = cid
-                                        located_hostname = client.get('hostname', 'Unknown')
-                                        add_log_to_run(
-                                            run_id,
-                                            f"[Velociraptor] Found flow {fid} on client: {cid} ({located_hostname})",
-                                            "info",
-                                        )
-                                        break
-                                except Exception as e:
-                                    add_log_to_run(run_id, f"[Velociraptor] Error parsing flow check for {cid}: {e}", "warning")
-                    except Exception as e:
-                        add_log_to_run(run_id, f"[Velociraptor] Error querying client {cid}: {e}", "warning")
-                        continue
-                    if located_client_id:
-                        break
 
                 # Fallback: check server flows
                 if not located_client_id:
@@ -864,7 +971,7 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     # hunt path's "skip empty flow" tolerance.
                     add_log_to_run(
                         run_id,
-                        f"[Velociraptor] Flow {fid} not found on any of {len(all_clients)} clients or server",
+                        f"[Velociraptor] Flow {fid} not found on any client or the server",
                         "warning",
                     )
                     continue
@@ -1010,8 +1117,8 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                 # Velociraptor client IDs are alphanumerics + dot ('C.ABC123');
                 # still single-quote each one to keep the f-string safe.
                 quoted = ", ".join(f"'{cid}'" for cid in client_ids)
-                flows_query = (
-                    f"SELECT ClientId, FlowId FROM hunt_flows(hunt_id='{velo_hunt_id}') "
+                flows_vql = (
+                    f"hunt_flows(hunt_id='{velo_hunt_id}') "
                     f"WHERE ClientId IN ({quoted})"
                 )
                 add_log_to_run(
@@ -1020,7 +1127,8 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     "info",
                 )
             else:
-                flows_query = f"SELECT ClientId, FlowId FROM hunt_flows(hunt_id='{velo_hunt_id}')"
+                flows_vql = f"hunt_flows(hunt_id='{velo_hunt_id}')"
+            flows_query = f"SELECT ClientId, FlowId FROM {flows_vql}"
             request_obj = api_pb2.VQLCollectorArgs(
                 max_wait=60,
                 max_row=1000,
@@ -1074,17 +1182,65 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
             unique_hunt_client_ids = sorted({fi.get('ClientId') for fi in hunt_flows if fi.get('ClientId')})
             hunt_hostnames = get_client_hostnames(stub, unique_hunt_client_ids) if unique_hunt_client_ids else {}
 
-            # Now fetch results from each flow
-            for flow_info in hunt_flows:
-                flow_client_id = flow_info.get('ClientId')
-                flow_id = flow_info.get('FlowId')
-                if not flow_client_id or not flow_id:
-                    continue
-                resolved_hostname = hunt_hostnames.get(flow_client_id, flow_client_id)
+            flows = [(fi.get('ClientId'), fi.get('FlowId')) for fi in hunt_flows
+                     if fi.get('ClientId') and fi.get('FlowId')]
 
-                # Get available sources in this flow
-                sources = enumerate_flow_sources(stub, flow_client_id, flow_id)
-                add_log_to_run(run_id, f"[Velociraptor] Flow {flow_id} has {len(sources)} sources", "info")
+            # Sources of every flow, then each wanted source across the whole
+            # hunt: one query each (see _hunt_foreach), not one per client.
+            flow_sources = None
+            try:
+                flow_sources = _hunt_flow_sources(stub, flows_vql, flows)
+            except Exception as e:  # noqa: BLE001
+                add_log_to_run(run_id, f"[Velociraptor] Hunt-wide source listing failed ({e})", "warning")
+            if flow_sources is None:
+                add_log_to_run(run_id, "[Velociraptor] Listing sources per client instead", "info")
+                flow_sources = {f: enumerate_flow_sources(stub, *f) for f in flows}
+
+            union = []
+            for f in flows:
+                union.extend(x for x in flow_sources[f] if x not in union)
+            wanted = [x for x in union if _wanted_source(x, only_artifacts)]
+            add_log_to_run(run_id, f"[Velociraptor] {len(flows)} flow(s) hold {len(union)} distinct "
+                                   f"source(s)", "info")
+            if len(wanted) < len(union):
+                add_log_to_run(run_id, f"[Velociraptor] Skipping {len(union) - len(wanted)} source(s) "
+                                       f"this consumer does not use", "info")
+
+            fetched = {}                 # (client_id, flow_id, source) -> rows
+            for _done, source_name in enumerate(wanted, 1):
+                have = [f for f in flows if source_name in flow_sources[f]]
+                got = None
+                try:
+                    got = _hunt_source_rows(stub, flows_vql, have, source_name)
+                except Exception as e:  # noqa: BLE001
+                    add_log_to_run(run_id, f"[Velociraptor] Hunt-wide read of {source_name} "
+                                           f"failed ({e})", "warning")
+                if got is None:
+                    add_log_to_run(run_id, f"[Velociraptor] Reading {source_name} per client instead", "info")
+                    got = {}
+                missing = [f for f in have if f not in got]
+                if missing and len(missing) < len(have):
+                    add_log_to_run(run_id, f"[Velociraptor] Hunt-wide read of {source_name} came back "
+                                           f"without {len(missing)} of {len(have)} client(s); reading "
+                                           f"those per client", "warning")
+                for f in missing:
+                    got[f] = query_artifact_results(stub, f[0], f[1], source_name, start_iso, end_iso,
+                                                    errors=errors)
+                for f, rows in got.items():
+                    fetched[(f[0], f[1], source_name)] = rows
+                n_rows = sum(len(r or []) for r in got.values())
+                n_clients = sum(1 for r in got.values() if r)
+                add_log_to_run(
+                    run_id,
+                    (f"[Fetch] {_done}/{len(wanted)} " if progress_log else "[Velociraptor] ")
+                    + f"{source_name} — {n_rows:,} row(s) from {n_clients} client(s)",
+                    "info")
+
+            # Assemble in the order the per-flow loop produced, so all_results,
+            # artifacts and client_info come out exactly as they always have:
+            # fusion and every Fetch caller read this shape.
+            for flow_client_id, flow_id in flows:
+                resolved_hostname = hunt_hostnames.get(flow_client_id, flow_client_id)
 
                 # Track client info (with the real hostname this time).
                 if flow_client_id not in client_info:
@@ -1099,39 +1255,23 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     if client_info[flow_client_id].get("hostname") in (None, "", "Unknown"):
                         client_info[flow_client_id]["hostname"] = resolved_hostname
 
-                # Fetch results from each source with VQL time filtering
-                _skipped = [x for x in sources if not _wanted_source(x, only_artifacts)]
-                if _skipped:
-                    add_log_to_run(run_id, f"[Velociraptor] Skipping {len(_skipped)} source(s) "
-                                           f"this consumer does not use", "info")
-                _n_want = sum(1 for x in sources if _wanted_source(x, only_artifacts))
-                _done = 0
-                for source_name in sources:
+                for source_name in flow_sources[(flow_client_id, flow_id)]:
                     if not _wanted_source(source_name, only_artifacts):
                         continue
-                    rows = query_artifact_results(stub, flow_client_id, flow_id, source_name, start_iso, end_iso,
-                                                  errors=errors)
-                    _done += 1
-                    if progress_log:
-                        add_log_to_run(
-                            run_id,
-                            f"[Fetch] {resolved_hostname}: {_done}/{_n_want} "
-                            f"{source_name} — {len(rows or []):,} row(s)",
-                            "info")
+                    rows = fetched.get((flow_client_id, flow_id, source_name))
                     if rows:
                         if source_name not in artifacts:
                             artifacts.append(source_name)
                         if source_name not in all_results:
                             all_results[source_name] = []
                         # Tag every row with client_id AND hostname — see
-                        # the matching flow-id path at line 1253 for the
+                        # the matching flow-id path above for the
                         # reasoning (per-client report filter, IRIS, CVE
                         # Scan's HostName resolution all depend on this).
                         for row in rows:
                             row['_client_id'] = flow_client_id
                             row.setdefault('_hostname', resolved_hostname)
                         all_results[source_name].extend(rows)
-                        add_log_to_run(run_id, f"[Velociraptor] Retrieved {len(rows)} rows from {source_name}", "info")
 
             add_log_to_run(run_id, f"[Velociraptor] Hunt contained {len(artifacts)} artifacts from {len(client_info)} clients", "info")
 

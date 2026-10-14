@@ -181,6 +181,14 @@
                             </tbody>
                         </table>
                     </div>
+                    <!-- The list is paged server-side (newest first); a fleet
+                         workspace can hold thousands of runs. -->
+                    <div x-show="$store.workflows.total > $store.workflows.runs.length"
+                         class="flex items-center justify-between gap-3 px-6 py-3 border-t border-gray-700 text-sm text-gray-400">
+                        <span x-text="'Showing ' + $store.workflows.runs.length + ' of ' + $store.workflows.total + ' runs'"></span>
+                        <button @click="$store.workflows.showMore()" style="color:#fff;background-color:#475569;"
+                                class="hover:bg-slate-600 px-3 py-2 rounded-lg text-xs font-medium">Show more</button>
+                    </div>
                 </div>
 
                 <!-- Workflow Log Viewer Modal lives at body-level

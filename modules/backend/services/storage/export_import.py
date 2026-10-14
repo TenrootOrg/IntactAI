@@ -96,8 +96,14 @@ def export_db() -> Dict[str, Any]:
     }
 
     # Workflows
+    # Log lines live in workflow_logs now; the row only holds a pre-table run's.
+    # Merged here so a backup still carries every run's whole log.
+    from .workflow_store import _select_runs
+    merged = {r["run_id"]: r["logs"] for r in _select_runs()}
     for row in conn.execute("SELECT * FROM workflows").fetchall():
-        data["workflows"].append(row_to_dict(row, ['details', 'logs']))
+        wf = row_to_dict(row, ['details', 'logs'])
+        wf["logs"] = merged.get(wf["run_id"], [])
+        data["workflows"].append(wf)
 
     # Blueprints
     for row in conn.execute("SELECT * FROM blueprints_velociraptor").fetchall():
@@ -138,6 +144,9 @@ def import_db(data: Dict[str, Any]) -> bool:
                  wf.get('phase'), wf.get('error'),
                  wf.get('created_at'), wf.get('updated_at'))
             )
+            # The imported row carries the run's whole log (export_db merges
+            # them), so table lines left from the replaced run would repeat it.
+            conn.execute("DELETE FROM workflow_logs WHERE run_id = ?", (wf.get('run_id'),))
 
         # Import velociraptor blueprints
         for bp in data.get("blueprints_velociraptor", []):

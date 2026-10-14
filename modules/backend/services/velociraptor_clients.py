@@ -34,7 +34,12 @@ def classify(rows, server_version, now=None):
     ahead, unknown (an agent that reported no version) or imported, and online or not.
 
     "imported" is the record an offline-collection import leaves: no agent name,
-    never interrogated, no version. No agent runs there, so it is not part of the
+    never interrogated, no version, and no IP -- an import stamps last_seen_at
+    but nothing ever connected from anywhere, while a real agent has an IP from
+    its first check-in, before (or without) any successful interrogation. Without
+    the IP test, a freshly enrolled agent vanished from every picker and count
+    (checked on the lab box 2026-10-14: 29 imports, all last_ip '', the one agent
+    192.168.120.131). No agent runs there, so it is not part of the
     fleet (left out of `total`), never asked to report and never upgraded -- the 9
     AdatumLab hosts read as "version unknown" though nothing could ever answer."""
     now = time.time() if now is None else now
@@ -43,7 +48,8 @@ def classify(rows, server_version, now=None):
     for r in rows:
         v = (r.get("version") or "").strip()
         key = version_key(v)
-        if "agent" in r and not r.get("agent") and not r.get("interrogated") and not v:
+        if "agent" in r and not r.get("agent") and not r.get("interrogated") and not v \
+                and not r.get("last_ip"):
             state = "imported"
         elif key is None or server is None:
             state = "unknown"
@@ -86,7 +92,7 @@ def client_versions():
     """The running server's version and every client's, classified (offline ones too)."""
     server = (_query("SELECT version.version AS v FROM config") or [{}])[0].get("v") or ""
     rows = _query("SELECT client_id, os_info.hostname AS hostname, os_info.system AS os, "
-                  "os_info.release AS release, agent_information.version AS version, labels, last_seen_at, "
+                  "os_info.release AS release, agent_information.version AS version, labels, last_seen_at, last_ip, "
                   "agent_information.name AS agent, last_interrogate_flow_id AS interrogated "
                   "FROM clients() WHERE client_id != 'server'")
     return classify(rows, server)

@@ -96,6 +96,18 @@ document.addEventListener('alpine:init', () => {
 
         async loadClients() {
             try {
+                // Two numbers, not the fleet: every open tab polls this every 10 s,
+                // and the full list is ~200 KB+ (a docker exec + VQL) at 1,000 hosts.
+                const summary = await fetch('/api/clients/summary');
+                if (summary.ok) {
+                    const s = await summary.json();
+                    this.clientCount = s.total || 0;
+                    this.onlineClientCount = s.online || 0;
+                    return;
+                }
+                // 404 = a backend older than the summary route (mid-upgrade): fall
+                // back to counting the full list, as before.
+                if (summary.status !== 404) return;
                 // ALL enrolled clients: without include_offline the API returns only
                 // the ones seen in the last 10 minutes, so "total" was the online count.
                 const response = await fetch('/api/clients?include_offline=true');

@@ -144,9 +144,11 @@ async function loadExistingSketches() {
 
 // Run TimeSketch workflow
 async function runTimeSketchWorkflow() {
-    const selectedClients = Array.from(document.querySelectorAll('.timesketch-client-checkbox:checked'));
+    // The selection is the manager's Set, not the ticked boxes: a client hidden
+    // by a filter (or past the rendered page) used to be silently dropped.
+    const clientIds = timesketchClientManager.getSelected();
 
-    if (selectedClients.length === 0) {
+    if (clientIds.length === 0) {
         alert('Please select at least one client');
         return;
     }
@@ -170,12 +172,12 @@ async function runTimeSketchWorkflow() {
     const plasoHasher = blueprintSettings.plaso_hasher === 'none' ? '' : blueprintSettings.plaso_hasher;
     const plasoHasherSizeMb = blueprintSettings.plaso_hasher_size;
 
-    const clientIds = selectedClients.map(cb => cb.value);
-    const hostnames = selectedClients.map(cb => cb.dataset.hostname).join(', ');
-
     const blueprintName = document.getElementById('timesketch-blueprint-select').selectedOptions[0]?.text || 'Unknown';
 
-    if (!confirm(`Start triage collection and TimeSketch import for ${selectedClients.length} client(s)?\n\nBlueprint: ${blueprintName}\nClients: ${hostnames}\nTriage Target: ${kapeTarget}\nPlaso Parser: ${plasoParser}\nCollection Timeout: ${timeoutSeconds}s\nCPU Limit: ${cpuLimit}%\nSketch: ${sketchName}\n\nNote: If sketch already exists, timelines will be added to it.`)) {
+    // This dialog always asks, so it is the confirmMany guard too. It names the
+    // count and the first 10 hosts: listing all 1,000 (~15 KB) pushed the
+    // settings below off-screen.
+    if (!confirm(`Start triage collection and TimeSketch import for ${clientIds.length} client(s)?\n\nBlueprint: ${blueprintName}\nClients: ${timesketchClientManager.describeSelected()}\nTriage Target: ${kapeTarget}\nPlaso Parser: ${plasoParser}\nCollection Timeout: ${timeoutSeconds}s\nCPU Limit: ${cpuLimit}%\nSketch: ${sketchName}\n\nNote: If sketch already exists, timelines will be added to it.`)) {
         return;
     }
 
@@ -186,9 +188,9 @@ async function runTimeSketchWorkflow() {
         // endpoint creates a single run_id, kicks off KAPE on all clients in
         // parallel, and serializes Plaso + Timesketch upload in
         // first-finished-first-processed order.
-        const clientsPayload = selectedClients.map((cb, i) => ({
-            client_id: cb.value,
-            client_name: cb.dataset.hostname
+        const clientsPayload = clientIds.map(id => ({
+            client_id: id,
+            client_name: (timesketchClientManager.getClient(id) || {}).hostname || id
         }));
 
         const response = await fetch('/api/timesketch/start-multi', {

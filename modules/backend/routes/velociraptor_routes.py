@@ -4,6 +4,7 @@ Velociraptor Routes - Velociraptor endpoints
 """
 
 from flask import Blueprint, jsonify, request
+import threading
 import time
 import traceback
 import sys
@@ -1146,15 +1147,34 @@ def velociraptor_client_versions():
                     "filtered": len(rows), "page": page, "pages": pages, "per": per})
 
 
+# The pilot box asks on every keystroke, and client_versions() is two full-fleet
+# VQL queries plus classification: at 1,000 clients, typing a host name ran it
+# once per letter. Ten seconds is shorter than anyone takes to pick a pilot.
+_PILOT_FLEET_TTL = 10
+_pilot_fleet = {"data": None, "at": 0.0}
+_pilot_fleet_lock = threading.Lock()
+
+
+def _pilot_fleet_status():
+    from services.velociraptor_clients import client_versions
+    # Held across the fetch on purpose: keystrokes that land while it runs wait
+    # for that one answer instead of each starting their own fleet query.
+    with _pilot_fleet_lock:
+        if _pilot_fleet["data"] is None or time.time() - _pilot_fleet["at"] >= _PILOT_FLEET_TTL:
+            _pilot_fleet["data"] = client_versions()
+            _pilot_fleet["at"] = time.time()
+        return _pilot_fleet["data"]
+
+
 @velociraptor_bp.route('/api/velociraptor/clients/pilot-candidates', methods=['GET'])
 def velociraptor_pilot_candidates():
     """Autocomplete for the pilot box: every client matching ?q= (at most 20), the
     ones that may pilot (online, behind, upgradable) first. The others come back
     with `why` so the box can show them greyed -- typing a host name always finds
     it, and still can't pilot the wrong client."""
-    from services.velociraptor_clients import client_versions, filter_clients, eligibility
+    from services.velociraptor_clients import filter_clients, eligibility
     rows = []
-    for c in filter_clients(client_versions(), q=request.args.get("q", "")):
+    for c in filter_clients(_pilot_fleet_status(), q=request.args.get("q", "")):
         key, why = eligibility(c)
         if key is None and not c["online"]:
             key, why = "offline", "offline -- a pilot must be online"

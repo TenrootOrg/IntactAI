@@ -28,8 +28,9 @@ class ClientListRefresh(unittest.TestCase):
 
     @unittest.skipIf(shutil.which("node") is None, "node is not installed")
     def test_a_big_selection_asks_first_and_counts_hidden_clients(self):
-        """Every online client is pre-selected: on a 1,000-endpoint fleet one click
-        started a collection on all of them. Runs the real component in jsdom."""
+        """Every online client used to be pre-selected: on a 1,000-endpoint fleet one
+        click started a collection on all of them. Nothing is pre-selected now, and
+        "Select all" still asks first. Runs the real component in jsdom."""
         r = subprocess.run(["node", os.path.join(ROOT, "tests", "client_picker_confirm.js"), ROOT],
                            capture_output=True, text=True, timeout=60)
         if r.returncode == 77:

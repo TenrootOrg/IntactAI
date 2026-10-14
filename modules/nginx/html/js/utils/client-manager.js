@@ -3,9 +3,15 @@
  * target-client picker: scheduler, timesketch, velociraptor-collection, memory).
  *
  * Faceted filter: narrow the fleet by OS + Velociraptor label + online state +
- * name, then include/exclude the *filtered* set ("Select shown" / "Deselect
- * shown"). Selection is a Set model (source of truth) so a client stays
- * selected even while a facet hides its row.
+ * name, then include/exclude the *filtered* set ("Select all matching (N)" /
+ * "Deselect matching"). Selection is a Set model (source of truth) so a client
+ * stays selected even while a facet hides its row or it is past the rendered
+ * page.
+ *
+ * Built for 100-1,000 endpoints: nothing is pre-ticked, the name filter is
+ * debounced, and only the first RENDER_PAGE matching rows are in the DOM
+ * ("Show more" adds the next page). Every keystroke used to rebuild ~700 KB
+ * of HTML for the whole fleet.
  *
  * Usage (multi-select):
  *   const m = new ClientManager('schedule-client-list', 'schedule-client-cb');
@@ -23,9 +29,8 @@ class ClientManager {
         this.containerId = containerId;
         this.checkboxClass = checkboxClass;
         this.singleSelect = options.singleSelect === true;
-        // Auto-check online clients on first load — a sensible default for the
-        // multi-select pickers. Never for single-select (don't pre-pick a host).
-        this.autoSelectOnline = this.singleSelect ? false : (options.autoSelectOnline !== false);
+        // Nothing is pre-ticked. Pre-ticking every online client meant one click
+        // on a 1,000-endpoint fleet started a collection on all of them.
         this.onlineThreshold = options.onlineThreshold || 600;
         // Load the WHOLE fleet (incl. offline) once and filter client-side, so
         // the OS/label facets + online toggle can operate over everything
@@ -46,10 +51,9 @@ class ClientManager {
 
         this._clients = [];        // full fleet from the last load()
         this._shownCount = 0;      // rows passing facets on the last render()
+        this._renderLimit = ClientManager.RENDER_PAGE;  // rows in the DOM; "Show more" grows it
+        this._filterTimer = null;  // pending debounced name-filter render
         this.totalClients = 0;
-        // Once the user touches the picker we stop re-applying the "auto-check
-        // online" default on refreshes (so Select None doesn't get undone).
-        this._userHasInteracted = false;
         this._listenerAttached = false;
         this._facetBar = null;
         this._radioName = `${containerId}-radio`;
@@ -77,6 +81,12 @@ class ClientManager {
                     this._onCheckboxChange(t.value, t.checked);
                 }
             });
+            container.addEventListener('click', (e) => {
+                if (!e.target.closest || !e.target.closest('[data-act="show-more"]')) return;
+                e.preventDefault();
+                this._renderLimit += ClientManager.RENDER_PAGE;
+                this.render();
+            });
             this._listenerAttached = true;
         }
 
@@ -87,7 +97,6 @@ class ClientManager {
                 return;
             }
             this._setFleet(data);
-            this._applyAutoSelect();
             this.render();
         } catch (error) {
             container.innerHTML = `<p class="text-sm text-red-400">Error: ${escapeHtml(error.message)}</p>`;
@@ -136,7 +145,6 @@ class ClientManager {
             const ids = new Set(this._clients.map(c => c.client_id));
             const before = this.selected.size;
             this.selected = new Set([...this.selected].filter(id => ids.has(id)));
-            this._applyAutoSelect();
             this._refreshing = false;
             this.render();
             if (this.selected.size !== before) this._fireChange();
@@ -149,18 +157,9 @@ class ClientManager {
         }
     }
 
-    /** First-load smart default: check online clients (multi-select only). */
-    _applyAutoSelect() {
-        if (this._userHasInteracted || !this.autoSelectOnline) return;
-        const now = Date.now() / 1000;
-        for (const c of this._clients) {
-            if (this._isOnline(c, now)) this.selected.add(c.client_id);
-        }
-    }
-
     /**
      * Render the facet bar + the client list (grouped by OS), showing only the
-     * clients that pass the active facets.
+     * clients that pass the active facets -- the first _renderLimit of them.
      */
     render() {
         const container = document.getElementById(this.containerId);
@@ -243,16 +242,29 @@ class ClientManager {
             `;
         };
 
+        // Only the first _renderLimit rows (in display order) go into the DOM.
+        // Group headings still count every match, and the selection is the Set,
+        // so an unrendered client that is selected stays selected.
+        let budget = this._renderLimit;
         let html = orderedKeys.map(key => {
             const groupClients = groups[key];
+            if (budget <= 0) return '';
+            const rows = groupClients.slice(0, budget);
+            budget -= rows.length;
             const heading = `
                 <div class="flex items-center gap-2 px-2 pt-2 pb-1 mt-1 border-t border-gray-800 first:border-t-0 first:mt-0 first:pt-0">
                     <span class="text-xs uppercase tracking-wide text-gray-400 font-semibold">${escapeHtml(key)}</span>
                     <span class="text-xs text-gray-600">(${groupClients.length})</span>
                 </div>
             `;
-            return heading + groupClients.map(renderClient).join('');
+            return heading + rows.map(renderClient).join('');
         }).join('');
+
+        const notListed = shown.length - Math.min(shown.length, this._renderLimit);
+        if (notListed > 0) {
+            const next = Math.min(notListed, ClientManager.RENDER_PAGE);
+            html += `<button type="button" data-act="show-more" class="w-full text-xs text-blue-400 hover:text-blue-300 py-2">Show ${next} more (${notListed} not listed — narrow the filter, or use Select all matching)</button>`;
+        }
 
         if (this.totalClients > this._clients.length) {
             const more = this.totalClients - this._clients.length;
@@ -333,8 +345,8 @@ class ClientManager {
         // is in each module's header, beside Select All / None.
         const counts = this._countsText();
         const selectBtns = this.singleSelect ? '' : `
-                <button type="button" data-act="select-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Select shown</button>
-                <button type="button" data-act="deselect-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Deselect shown</button>`;
+                <button type="button" data-act="select-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Select all matching (${this._shownCount})</button>
+                <button type="button" data-act="deselect-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Deselect matching</button>`;
         const actions = `<div class="flex gap-2 items-center">${selectBtns}${this._refreshError ? `<span class="text-[11px] text-red-400">${escapeHtml(this._refreshError)}</span>` : ''}</div>`;
         const actionRow = `<div class="flex items-center justify-between">${actions}<span class="text-[11px] text-gray-500">${counts}</span></div>`;
 
@@ -350,8 +362,8 @@ class ClientManager {
 
     _countsText() {
         const base = this.singleSelect
-            ? `${this._shownCount} shown`
-            : `${this._shownCount} shown · ${this.selected.size} selected`;
+            ? `${this._shownCount} matching`
+            : `${this._shownCount} matching · ${this.selected.size} selected`;
         if (!this._loadedAt) return base;
         const p = n => String(n).padStart(2, '0');
         const t = this._loadedAt;
@@ -364,16 +376,23 @@ class ClientManager {
 
     setOsFacet(val) {
         if (this.activeOs.has(val)) this.activeOs.delete(val); else this.activeOs.add(val);
-        this.render();
+        this._refilter();
     }
 
     setLabelFacet(val) {
         if (this.activeLabels.has(val)) this.activeLabels.delete(val); else this.activeLabels.add(val);
-        this.render();
+        this._refilter();
     }
 
     setOnlineOnly(on) {
         this.onlineOnly = !!on;
+        this._refilter();
+    }
+
+    /** A new filter starts back at the first page of matches. */
+    _refilter() {
+        clearTimeout(this._filterTimer);
+        this._renderLimit = ClientManager.RENDER_PAGE;
         this.render();
     }
 
@@ -404,7 +423,6 @@ class ClientManager {
 
     /** Individual checkbox/radio toggle — update the Set, refresh counts only. */
     _onCheckboxChange(clientId, checked) {
-        this._userHasInteracted = true;
         if (this.singleSelect) {
             this.selected = new Set(checked ? [clientId] : []);
         } else if (checked) {
@@ -417,17 +435,19 @@ class ClientManager {
     }
 
     /**
-     * Debounced-free client-side name filter (kept as `filter` for the existing
-     * oninput handlers). Filtering is local, so it's instant.
+     * Client-side name filter (kept as `filter` for the existing oninput
+     * handlers). The term is stored at once, so a submit or "Select all
+     * matching" acts on what was typed; only the re-render is debounced, so
+     * typing a hostname is one render, not one per keystroke.
      */
     filter(searchTerm) {
         this.search = searchTerm || '';
-        this.render();
+        clearTimeout(this._filterTimer);
+        this._filterTimer = setTimeout(() => this._refilter(), ClientManager.FILTER_DEBOUNCE_MS);
     }
 
     /** Select/deselect the ENTIRE fleet (ignores facets). */
     selectAll(checked) {
-        this._userHasInteracted = true;
         if (checked) {
             this._clients.forEach(c => this.selected.add(c.client_id));
         } else {
@@ -440,7 +460,6 @@ class ClientManager {
     /** Include/exclude the currently-FILTERED (shown) set. */
     selectFiltered(checked) {
         if (this.singleSelect) return;
-        this._userHasInteracted = true;
         const now = Date.now() / 1000;
         for (const c of this._clients) {
             if (!this._passesFacets(c, now)) continue;
@@ -452,7 +471,6 @@ class ClientManager {
 
     /** Replace the selection (e.g. restoring a saved scheduled job). */
     setSelected(ids) {
-        this._userHasInteracted = true;
         this.selected = new Set(ids || []);
         this.render();
         this._fireChange();
@@ -462,13 +480,21 @@ class ClientManager {
         return Array.from(this.selected);
     }
 
-    /** Ask before acting on many clients. The list pre-selects every online client,
-     *  so on a 1,000-endpoint fleet one click started a collection on all of them. */
+    /** Ask before acting on many clients: "Select all matching" puts 1,000 one
+     *  click away. */
     confirmMany(action) {
-        const n = this.selected.size;
-        if (n <= ClientManager.CONFIRM_ABOVE) return true;
-        return window.confirm(`${action} on ${n} clients?\n\nEvery online client is selected by default. ` +
-                              'Cancel to change the selection.');
+        if (this.selected.size <= ClientManager.CONFIRM_ABOVE) return true;
+        return window.confirm(`${action} on ${this.describeSelected()}?\n\nCancel to change the selection.`);
+    }
+
+    /** "N clients (first 10: a, b, …)" -- a dialog that listed every hostname
+     *  of a big selection (~15 KB) pushed its real content off-screen. */
+    describeSelected(max = 10) {
+        const ids = this.getSelected();
+        const names = ids.slice(0, max).map(id => (this.getClient(id) || {}).hostname || id);
+        const head = `${ids.length} client${ids.length === 1 ? '' : 's'}`;
+        if (ids.length <= max) return `${head} (${names.join(', ')})`;
+        return `${head} (first ${max}: ${names.join(', ')}, …)`;
     }
 
     /** Look up a loaded client object by id (e.g. to read its hostname). */
@@ -504,5 +530,7 @@ class ClientManager {
 }
 
 ClientManager.CONFIRM_ABOVE = 10;   // more selected than this asks first
+ClientManager.RENDER_PAGE = 200;    // rows put in the DOM per page of matches
+ClientManager.FILTER_DEBOUNCE_MS = 200;
 
 window.ClientManager = ClientManager;

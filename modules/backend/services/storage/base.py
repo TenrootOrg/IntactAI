@@ -179,6 +179,23 @@ def create_tables():
             value TEXT,
             updated_at TEXT
         );
+
+        -- One row per run log line. Logs used to be a JSON array inside the
+        -- workflows row, so every line re-read and re-wrote the whole run: a
+        -- fleet run's thousands of lines cost bytes growing with the SQUARE of
+        -- the line count, every worker thread queued on the run's lock, and a
+        -- write that hit "database is locked" was swallowed -- lines silently
+        -- lost. Appending is now one INSERT. Runs written before this table
+        -- existed keep their embedded workflows.logs; readers merge the two
+        -- (workflow_store._merge_logs), embedded first.
+        CREATE TABLE IF NOT EXISTS workflow_logs (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            ts TEXT,
+            level TEXT,
+            msg TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_logs_run ON workflow_logs(run_id, id);
     """)
     conn.commit()
 

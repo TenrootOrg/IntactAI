@@ -24,11 +24,13 @@ async function picker(n) {
 
 (async () => {
   const big = await picker(12);
-  assert.strictEqual(big.cm.getSelected().length, 12, 'online clients are pre-selected');
+  assert.strictEqual(big.cm.getSelected().length, 0, 'nothing is pre-selected');
+  big.cm.selectAll(true);
   big.cm.setOsFacet('Linux');                                  // hide the Windows half
   assert.strictEqual(big.cm.getSelected().length, 12, 'hidden selected clients dropped');
   assert.strictEqual(big.cm.confirmMany('Start the collection'), false, 'cancel must stop the run');
-  assert.ok(/on 12 clients/.test(big.asked[0] || ''), 'the question names the count: ' + big.asked[0]);
+  assert.ok(/on 12 clients \(first 10: HOST-0,/.test(big.asked[0] || ''), 'the question names the count: ' + big.asked[0]);
+  assert.ok(!/HOST-11/.test(big.asked[0]), 'the question lists only the first 10 hosts');
 
   const small = await picker(3);
   assert.strictEqual(small.cm.confirmMany('Start the collection'), true);

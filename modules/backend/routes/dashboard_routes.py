@@ -7,10 +7,7 @@ import threading
 
 from flask import Blueprint, jsonify
 
-from services import (
-    get_all_automation_runs,
-    get_automation_run
-)
+from services import get_automation_run
 
 dashboard_bp = Blueprint('dashboard', __name__)
 
@@ -53,19 +50,31 @@ def get_all_automations():
     (upgrade/maintenance/purge/support-bundle/settings/…) always run as the
     built-in System workspace, so they appear only there — switch to the
     System workspace then Workflows to see them. They must NOT leak into an
-    investigation workspace like Default."""
-    from flask import g
-    automation_runs = get_all_automation_runs()
-    case_id = getattr(g, "case_id", None)
-    if case_id:
-        automation_runs = [r for r in automation_runs if r.get("case_id") == case_id]
-    for run in automation_runs:
+    investigation workspace like Default.
+
+    Summary rows, one page at a time (?limit=&offset=&type=), filtered in SQL.
+    This used to load every run of every case WITH every log line, filter in
+    Python and return it all -- once a second per open tab. Logs come from
+    /automation/<id>/logs; `total` is the count before paging. Elasticsearch-only
+    runs (never case-tagged, so never shown in a workspace) are not listed."""
+    from flask import g, request
+    from services.storage import list_workflow_summaries
+    from services.workflow_service import cleanup_orphan_workflows
+    cleanup_orphan_workflows()        # throttled: at most once a minute
+    try:
+        limit = max(1, min(int(request.args.get("limit", 200)), 1000))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"error": "limit and offset must be integers"}), 400
+    runs, total = list_workflow_summaries(getattr(g, "case_id", None) or None,
+                                          request.args.get("type") or None, limit, offset)
+    transformed = []
+    for run in runs:
         _reconcile_velociraptor_hunt(run)
-    transformed = [_transform_run(run) for run in automation_runs]
-    return jsonify({
-        "runs": transformed,
-        "total": len(transformed)
-    })
+        t = _transform_run(run)
+        t.pop("logs", None)
+        transformed.append(t)
+    return jsonify({"runs": transformed, "total": total, "limit": limit, "offset": offset})
 
 def _run_visible_in_active_workspace(run):
     """Mirror get_all_automations()' workspace scoping for single-resource
@@ -104,6 +113,31 @@ def get_automation_details(run_id):
     return jsonify({"error": f"Automation run {run_id} not found"}), 404
 
 
+# is_hunt_registered() is a docker exec + gRPC query, and the reconcile below
+# ran it for every running hunt on every poll of the list and of each open log
+# window. A hunt Velociraptor has is never un-registered, so a yes is kept for
+# good; a no (not there yet, or a gRPC blip) is re-asked after 30 s.
+_HUNT_NEGATIVE_TTL = 30.0
+_hunts_registered = set()
+_hunts_not_yet = {}          # hunt_id -> monotonic time of the last "no"
+
+
+def _hunt_registered_cached(hunt_id):
+    import time
+    if hunt_id in _hunts_registered:
+        return True
+    asked = _hunts_not_yet.get(hunt_id)
+    if asked is not None and time.monotonic() - asked < _HUNT_NEGATIVE_TTL:
+        return False
+    from services.velociraptor_service import is_hunt_registered
+    if is_hunt_registered(hunt_id):
+        _hunts_registered.add(hunt_id)
+        _hunts_not_yet.pop(hunt_id, None)
+        return True
+    _hunts_not_yet[hunt_id] = time.monotonic()
+    return False
+
+
 def _reconcile_velociraptor_hunt(run):
     """A velociraptor_hunt run is marked 'running' at dispatch time (the hunt
     object itself stays RUNNING for its whole expire window, so Velociraptor
@@ -116,9 +150,8 @@ def _reconcile_velociraptor_hunt(run):
     hunt_id = (run.get("details") or {}).get("hunt_id")
     if not hunt_id:
         return
-    from services.velociraptor_service import is_hunt_registered
     from services.workflow_service import update_run_status
-    if is_hunt_registered(hunt_id):
+    if _hunt_registered_cached(hunt_id):
         update_run_status(run.get("run_id", run.get("id")), "completed", progress=100)
         run["status"] = "completed"
         run["progress"] = 100
@@ -513,12 +546,40 @@ def stop_automation(run_id):
 
 @dashboard_bp.route('/api/dashboard/automation/<run_id>/logs')
 def get_automation_logs(run_id):
-    """Get logs for a specific automation run"""
-    run = get_automation_run(run_id)
-    if run and _run_visible_in_active_workspace(run):
-        return jsonify({
-            "id": run_id,
-            "logs": run["logs"]
-        })
+    """A run's log, for the log window that follows it.
 
-    return jsonify({"error": f"Automation run {run_id} not found"}), 404
+    No parameters: the whole log, as before. ?limit=N: only its last N lines.
+    ?since=<cursor>: only lines newer than that cursor (oldest first, at most
+    `limit`). Every answer carries `cursor` for the next poll, `truncated`, and
+    the run's status/progress, so a poll is one small request -- the window used
+    to refetch the WHOLE run every second and re-render thousands of lines."""
+    from flask import request
+    run = get_automation_run(run_id, with_logs=False)
+    if not run or not _run_visible_in_active_workspace(run):
+        return jsonify({"error": f"Automation run {run_id} not found"}), 404
+    try:
+        since = request.args.get("since")
+        since = int(since) if since not in (None, "") else None
+        limit = int(request.args.get("limit") or 0) or None
+    except ValueError:
+        return jsonify({"error": "since and limit must be integers"}), 400
+    _reconcile_velociraptor_hunt(run)
+    if "logs" in run:
+        # Elasticsearch-only run: nothing appends to those any more (new lines
+        # go to SQLite), so it is sent whole on the first read and never again.
+        lines = [] if since is not None else (run.get("logs") or [])
+        page = {"logs": lines[-limit:] if limit else lines, "cursor": 0,
+                "truncated": bool(limit) and len(lines) > limit}
+    else:
+        from services.storage import get_workflow_logs
+        page = get_workflow_logs(run_id, since, limit)
+    return jsonify({
+        "id": run_id,
+        **page,
+        "name": run.get("name"),
+        "type": run.get("automation_type", run.get("type")),
+        "status": run.get("status"),
+        "progress": run.get("progress", 0),
+        "error": run.get("error"),
+        "error_count": int(run.get("error_count") or 0),
+    })
