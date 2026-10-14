@@ -1019,22 +1019,26 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         out["errors"].append("no connection")
         return out
 
-    def _run(vql, timeout):
+    def _count(vql, timeout):
+        """Rows the query produced (each one a deletion), counted as they stream.
+        This used to keep every row in a list only to take len() of it -- millions
+        of dicts on a fleet -- and max_row=2,000,000 let one response carry them all
+        as a single JSON string. max_row is a batch size, not a cap."""
         stub = api_pb2_grpc.APIStub(channel)
         req = api_pb2.VQLCollectorArgs(
-            max_wait=10, max_row=2000000,
+            max_wait=10, max_row=10000,
             Query=[api_pb2.VQLRequest(VQL=vql)],
         )
-        rows = []
+        n = 0
         for resp in stub.Query(req, timeout=timeout):
             if resp.Response:
                 try:
                     r = json.loads(resp.Response)
                     if isinstance(r, list):
-                        rows.extend(r)
+                        n += len(r)
                 except json.JSONDecodeError:
                     pass
-        return rows
+        return n
 
     try:
         # 1. Live hunts — hunt_delete also removes their per-client collected
@@ -1042,13 +1046,13 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         if delete_hunts:
             try:
                 log("Deleting hunts…")
-                rows = _run(
+                n = _count(
                     "SELECT hunt_id, "
                     "hunt_delete(hunt_id=hunt_id, really_do_it=true) AS deleted "
                     "FROM hunts()",
                     timeout=600,
                 )
-                out["hunts"] = len(rows)
+                out["hunts"] = n
                 log(f"Deleted {out['hunts']} hunt(s)", "success")
             except Exception as e:
                 log(f"Hunt deletion error: {e}", "warning")
@@ -1058,7 +1062,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         if delete_flows:
             try:
                 log("Deleting tracked flows…")
-                rows = _run(
+                n = _count(
                     "SELECT client_id, session_id, "
                     "flow_delete(client_id=client_id, flow_id=session_id, really_do_it=true) AS deleted "
                     "FROM foreach("
@@ -1067,7 +1071,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
                     "workers=10)",
                     timeout=1800,
                 )
-                out["flows"] = len(rows)
+                out["flows"] = n
                 log(f"Deleted {out['flows']} tracked flow(s)", "success")
             except Exception as e:
                 log(f"Flow deletion error: {e}", "warning")
@@ -1083,7 +1087,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
             #    NOT an rm -rf. Client identity is untouched.
             try:
                 log("Sweeping residual collected-result files…")
-                rows = _run(
+                n = _count(
                     "SELECT OSPath, file_store_delete(path=OSPath) AS deleted "
                     "FROM foreach("
                     "row={ SELECT client_id FROM clients() WHERE client_id != 'server' }, "
@@ -1093,7 +1097,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
                     "workers=10)",
                     timeout=1800,
                 )
-                out["data_files"] = len(rows)
+                out["data_files"] = n
                 log(f"Removed {out['data_files']} residual result file(s)", "success")
             except Exception as e:
                 log(f"Residual sweep error: {e}", "warning")
@@ -1103,7 +1107,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         if delete_monitoring:
             try:
                 log("Deleting client monitoring data…")
-                rows = _run(
+                n = _count(
                     "SELECT OSPath, file_store_delete(path=OSPath) AS deleted "
                     "FROM foreach("
                     "row={ SELECT client_id FROM clients() WHERE client_id != 'server' }, "
@@ -1113,7 +1117,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
                     "workers=10)",
                     timeout=1800,
                 )
-                out["monitoring"] = len(rows)
+                out["monitoring"] = n
                 log(f"Deleted {out['monitoring']} monitoring file(s)", "success")
             except Exception as e:
                 log(f"Monitoring deletion error: {e}", "warning")
