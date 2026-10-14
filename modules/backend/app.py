@@ -385,16 +385,27 @@ def run_startup_initialization():
         from services.workflow_service import load_workflows, update_run_status
         _REAP_TYPES = {"velociraptor_upload", "timesketch", "velociraptor_collection",
                        "agentic", "aws_scan", "azure_scan", "memory",
-                       "velociraptor_adopt"}
+                       "velociraptor_adopt", "memory_batch"}
         _reaped = 0
-        for _w in (load_workflows() or []):
+        _all_runs = load_workflows(with_logs=False) or []
+        for _w in _all_runs:
             if (_w.get("automation_type") in _REAP_TYPES
                     and _w.get("status") in ("running", "pending")):
                 _run_id = _w["run_id"]
+                _why = ("Interrupted by a backend restart — the task's worker did "
+                        "not survive. Please re-run/re-upload.")
+                # A scheduled memory batch walks its hosts in one thread that died
+                # here: name the hosts it never reached, or they are silently dropped.
+                if _w.get("automation_type") == "memory_batch":
+                    _started = {(r.get("details") or {}).get("client_id") for r in _all_runs
+                                if (r.get("details") or {}).get("batch_run_id") == _run_id}
+                    _left = [c for c in (_w.get("details") or {}).get("client_ids") or []
+                             if c not in _started]
+                    if _left:
+                        _why += (f" {len(_left)} host(s) never started: " + ", ".join(_left[:20])
+                                 + (" …" if len(_left) > 20 else ""))
                 try:
-                    update_run_status(_run_id, "failed", error=(
-                        "Interrupted by a backend restart — the task's worker did "
-                        "not survive. Please re-run/re-upload."))
+                    update_run_status(_run_id, "failed", error=_why)
                     _reaped += 1
                 except Exception:
                     pass
