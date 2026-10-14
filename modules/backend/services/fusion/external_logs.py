@@ -28,58 +28,74 @@ from . import keys
 DATA_TYPES = {"siem": "SIEM", "firewall": "Firewall", "edr": "EDR", "idp": "Identity provider",
               "proxy": "Proxy / DNS", "other": "Logs"}
 
-# The normalized fields. Single values; indicator_rows() adds the list forms.
+# The normalized fields. Single values; the list forms (ips, users, hashes,
+# domains) hold indicators found inside free text (a message, _raw, nested JSON).
 FIELDS = ("ts", "host", "user", "src_ip", "dst_ip", "src_port", "dst_port", "action",
           "process", "cmdline", "url", "domain", "hash", "rule", "severity", "message")
+LIST_FIELDS = ("ips", "users", "hashes", "domains")
+_JOINS = {"host", "user", "src_ip", "dst_ip", "hash", "domain", "process", "url", "cmdline"} | set(LIST_FIELDS)
 
-# Column names that MEAN a field, from CIM / ECS / ASIM / OCSF and the common EDR,
-# firewall and IdP exports. Compared after lowercasing and dropping everything but
-# letters and digits, so "source.ip", "Source IP" and "sourceIp" are one name.
+# Column names that MEAN a field: the CIM / ECS / ASIM / OCSF / UDM schemas and the
+# export, API and SIEM-connector fields of the major EDR, identity, firewall, proxy,
+# e-mail and SIEM products. Compared after lowercasing and dropping everything but
+# letters and digits (and a trailing "[UTC]" / "(UTC)"), so "source.ip", "Source IP"
+# and "sourceIp" are one name. Earlier in a list = a better name for that field;
+# a name may stand for more than one field, and the column's VALUES then decide
+# ("source" is a host in Graylog, an account in Sophos).
 _NAMES = {
-    "ts": "@timestamp timestamp time _time eventtime timegenerated createdtime createddatetime "
-          "datetime date eventcreated receipttime rt devicereceipttime start starttime "
-          "activitydatetime published firstseen detecttime detectiontime alerttime logtime "
-          "generatedtime occurred timecreated utctime",
-    "host": "hostname host hostname computer computername devicename dvchost dvchostname "
-            "agenthostname hostnames endpoint endpointname machinename workstation dvc "
-            "devicehostname sourcehostname clienthostname",
-    "user": "user username user_name account accountname targetusername subjectusername "
-            "userprincipalname upn suser duser actoruser actorusername actordisplayname "
-            "srcuser initiatedby userid login loginname principal principalname "
-            "actoralternateid accountupn initiatingprocessaccountname",
-    "src_ip": "sourceip srcip src sourceaddress clientip cip callerip callersourceip "
-              "srcendpointip ipaddress remoteip clientaddress srcaddr sourceipaddress "
-              "clientipaddress requestip",
-    "dst_ip": "destinationip destip dstip dst dest destinationaddress serverip sip "
-              "dstendpointip remoteaddress dstaddr destinationipaddress targetip",
-    "src_port": "sourceport srcport spt clientport srcendpointport",
-    "dst_port": "destinationport destport dstport dpt serverport dstendpointport port",
+    "ts": "@timestamp timestamp eventtime timegenerated _time time createdtime createddatetime "
+          "creationtime alertcreationtime createdtimestamp createdat createtime detectiontimestamp "
+          "detecttime detectiontime alerttime activitydatetime published recordedat eventtimestamp "
+          "metadataeventtimestamp messagetime edgestarttimestamp eventgeneratedtime alarmdate "
+          "receivetime received messagetime systemtime timecreated utctime datetime date "
+          "eventcreated receipttime rt devicereceipttime start starttime firstseen logtime "
+          "generatedtime occurred occured idtime msg",
+    "host": "hostname host computername computerdnsname devicename dvchostname agentcomputername "
+            "agentname agenthostname devicehostname computerhostname threattargethostname impactedhost "
+            "machinename endpointname workstation computer endpoint dvchost sourcehost "
+            "srchostname clienthostname compromisedentity location source",
+    "user": "userprincipalname upn username user_name accountname targetusername subjectusername "
+            "user account suser duser deviceusername processuser actoralternateid actoremail "
+            "actorusername actorsusername useremailaddress principalemail threattargetusername "
+            "originlogin csusername srcusername srcuser initiatedbyusername accountupn "
+            "initiatingprocessaccountname targetuseruserid userid login loginname principal "
+            "principalname email recipientaddress recipient source",
+    "src_ip": "sourceip srcip src sourceaddress clientip cip callerip callersourceip ipaddress "
+              "srcendpointip srcaddr sourceipaddress clientipaddress requestip principalip idorigh "
+              "actionlocalip localaddressip4 devicelocalip deviceinternalip senderip fromip "
+              "useripaddress originip ipaddr accessdeviceip threattargetipv4address ip",
+    "dst_ip": "destinationip destip dstip dst dest destinationaddress serverip sip dstendpointip "
+              "remoteip remoteaddress actionremoteip idresph dstaddr destinationipaddress targetip",
+    "src_port": "sourceport srcport spt clientport srcendpointport idorigp",
+    "dst_port": "destinationport destport dstport dpt serverport dstendpointport idrespp port",
     "action": "action eventaction act disposition outcome eventoutcome result deviceaction "
-              "activity decision verdict status",
-    "process": "processname process image processexecutable executable filename "
-               "initiatingprocessfilename parentprocessname exe app application",
-    "cmdline": "commandline cmdline processcommandline initiatingprocesscommandline "
-               "processcmdline command",
-    "url": "url urlfull requesturl request uri csuri urloriginal",
-    "domain": "domain dnsquestionname query queryname urldomain destinationhostname dhost "
-              "fqdn sni servername",
-    "hash": "hash sha256 sha1 md5 filehash filehashsha256 processhashsha256 sha256hash "
-            "hashsha256 filesha256 imphash",
-    "rule": "alertname alerttitle rulename detectionname threatname signaturename displaymessage "
-            "rule signature alert title detectname eventname cefname name threat tactic "
-            "category eventtype",
-    "severity": "severity eventseverity level priority risklevel severitylevel "
-                "alertseverity cefseverity sev riskscore",
-    "message": "message msg description details eventmessage summary",
+              "securityaction wafaction activity decision verdict status",
+    "process": "processname imagefilename process image processexecutable executable "
+               "initiatingprocessfilename parentprocessname exe filename app",
+    "cmdline": "commandline cmdline processcommandline actorprocesscommandline "
+               "initiatingprocesscommandline processcmdline command",
+    "url": "url urlfull requesturl clientrequesturi request uri csuri urloriginal",
+    "domain": "domain dnsquestionname query queryname urldomain clientrequesthost requesthost "
+              "destinationhostname dhost fqdn sni servername",
+    "hash": "sha256 sha256hashdata processsha256 actionfilesha256 filesha256 filehashsha256 "
+            "processhashsha256 sha256hash hashsha256 hash sha1 md5 filehash imphash",
+    "rule": "ruledescription alertname alerttitle rulename alarmrulename detectionname threatname "
+            "riskname threatcontentname signaturename signaturemsg protectionname riskeventtype displaymessage "
+            "displayname title rule signature alert detectname detection attack threat reason "
+            "eventname cefname name model tactic category eventtype",
+    "severity": "severityname severity eventseverity alertseverity threatseverity crlevel "
+                "risklevelduringsignin risklevel severitylevel confidencelevel rulelevel cefseverity "
+                "riskscore riskbasedpriority magnitude priority level sev",
+    "message": "message msg fulllog raw description details eventmessage summary notes line",
 }
-# Earlier in a field's list = a better name for it: when an export has several
-# (Okta: displayMessage and eventType), the better one is the column used.
-_NAME_OF, _RANK = {}, {}
+_CANDS: dict = {}               # normalized name -> [(field, rank)]
 for _f, _ns in _NAMES.items():
     for _i, _n in enumerate(_ns.split()):
-        _k = re.sub(r"[^a-z0-9]", "", _n)
-        if _k not in _NAME_OF:
-            _NAME_OF[_k], _RANK[_k] = _f, _i
+        _CANDS.setdefault(re.sub(r"[^a-z0-9]", "", _n), []).append((_f, _i))
+# A dotted key is matched by its longest known suffix ("agent.name" -> agentname,
+# "relatedUser.userName" -> username) -- but never by a bare last word this
+# vague: "name", "type" or "ip" alone say nothing about whose name / which ip.
+_VAGUE = {"name", "type", "id", "value", "ip", "source", "status", "time", "port", "user", "host"}
 
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 _HASH = re.compile(r"\b(?:[a-fA-F0-9]{64}|[a-fA-F0-9]{40}|[a-fA-F0-9]{32})\b")
@@ -88,16 +104,67 @@ _DOMUSER = re.compile(r"\b([A-Za-z][A-Za-z0-9_.-]{0,40})\\([A-Za-z0-9_.$-]{1,64}
 _FQDN = re.compile(r"\b(?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24}\b")
 _ISO = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?")
 _HMS = re.compile(r"\b\d{1,2}:\d{2}:\d{2}\b")
+_URL = re.compile(r"^[a-z][a-z0-9+.-]{1,10}://\S+$", re.I)
 
 # Security severity words only. fusion's severity.from_string also reads "error",
 # "warning" and "alert" -- right for a SIGMA rule level, wrong here: in an
 # application or syslog export those are operational levels, and reading them as
-# high/critical would turn an ordinary log into findings.
+# high/critical would turn an ordinary log into findings. An EDR verdict
+# (malicious / suspicious) is a severity.
 _SEV_WORDS = {"critical": "critical", "crit": "critical", "high": "high", "medium": "medium",
               "moderate": "medium", "med": "medium", "low": "low", "informational": "informational",
-              "info": "informational", "information": "informational"}
+              "info": "informational", "information": "informational", "malicious": "high",
+              "suspicious": "medium"}
 
 MAX_ROWS = 2_000_000           # rows kept per file; the rest is said, not silently dropped
+
+
+# -- time ---------------------------------------------------------------------------
+_TFMTS = ("%Y/%m/%d %H:%M:%S", "%m/%d/%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%m/%d/%Y %I:%M:%S %p",
+          "%m/%d/%Y, %I:%M:%S %p", "%m/%d/%Y %I:%M %p", "%b %d %Y %H:%M:%S", "%b %d, %Y, %I:%M:%S %p",
+          "%b %d, %Y %I:%M:%S %p", "%b %d, %Y %H:%M:%S", "%d-%b-%Y %H:%M:%S", "%a %b %d %H:%M:%S %Y",
+          "%d.%m.%Y %H:%M:%S", "%d/%b/%Y:%H:%M:%S", "%Y%m%dT%H%M%S")
+
+
+def _ts(v) -> str | None:
+    """Any timestamp an export writes -> 'YYYY-MM-DDTHH:MM:SS' in UTC, or None.
+    keys.norm_ts is NOT used: it keeps a local time with its offset cut off and
+    reads no epoch finer than ms -- fine for the endpoint artifacts it was written
+    for, wrong for exports from every time zone."""
+    import datetime as _dt
+    if v in (None, "") or isinstance(v, bool):
+        return None
+    s = str(v).strip()
+    m = re.search(r"audit\((\d{9,11}(?:\.\d+)?):", s)          # auditd msg=audit(epoch:serial)
+    if m:
+        s = m.group(1)
+    if re.fullmatch(r"\d{9,20}(\.\d+)?", s):
+        n = float(s)
+        # seconds, ms, us or ns: the unit that lands between 1979 and 2103
+        n = next((n / d for d in (1, 1e3, 1e6, 1e9) if 3e8 <= n / d < 4.2e9), None)
+        if n is None:
+            return None
+        return _dt.datetime.fromtimestamp(n, _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    t = re.sub(r"\s*\b(GMT|UTC|Z)\s*$", "", s.replace(" ", " ")).strip()
+    iso = re.match(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)(\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?$",
+                   s.strip())
+    if iso:
+        off = iso.group(4) or ""
+        if off and off != "Z" and ":" not in off:
+            off = off[:3] + ":" + off[3:]
+        try:
+            d = _dt.datetime.fromisoformat(f"{iso.group(1)}T{iso.group(2)}{'+00:00' if off in ('', 'Z') else off}")
+            return d.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return None
+    t = re.sub(r"(\d{1,2}:\d{2}:\d{2})\.\d+", r"\1", t)          # drop fractions in text forms
+    t = re.sub(r"\s+", " ", t)
+    for f in _TFMTS:
+        try:
+            return _dt.datetime.strptime(t, f).strftime("%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            continue
+    return None
 
 
 # -- reading ----------------------------------------------------------------------
@@ -116,32 +183,59 @@ def read_text(path) -> str:
 
 def _flat(o, pre="", out=None, depth=0):
     """Nested JSON -> one level of dotted keys ("source.ip"); lists of scalars are
-    joined, lists of objects kept as JSON text (searchable, not columns)."""
+    joined, lists of objects kept as JSON text (searchable, and mined for
+    indicators in normalize)."""
     out = {} if out is None else out
-    if isinstance(o, dict) and depth < 6:
+    if isinstance(o, dict) and depth < 8:
         for k, v in o.items():
             _flat(v, f"{pre}.{k}" if pre else str(k), out, depth + 1)
     elif isinstance(o, list):
         out[pre] = (", ".join(str(x) for x in o) if all(not isinstance(x, (dict, list)) for x in o)
-                    else json.dumps(o, default=str)[:4000])
+                    else json.dumps(o, default=str)[:8000])
     else:
         out[pre] = o
     return out
 
 
-def _json_records(o):
-    """The records inside a JSON export: a list, or the list under the usual
-    envelope keys (Elastic hits.hits[]._source, Graph/Sentinel value, CloudTrail
-    Records, generic results/events/data)."""
+def _json_records(o, depth=0):
+    """The records inside a JSON export, wherever the API put them: a list; the
+    Elastic hits.hits[]._source; else the LARGEST list of objects found within a
+    few levels (CrowdStrike resources, Cortex reply.alerts, Duo response.authlogs,
+    Graph value, Proofpoint messagesDelivered...). A record that is only a wrapper
+    around a list of records (Mimecast data[].clickLogs[]) is opened too."""
     if isinstance(o, list):
-        return [x.get("_source", x) if isinstance(x, dict) else x for x in o]
+        recs = [x.get("_source", x) if isinstance(x, dict) else x for x in o]
+        dicts = [r for r in recs if isinstance(r, dict)]
+        if dicts and depth < 3:
+            inner = [k for k, v in dicts[0].items() if isinstance(v, list) and v and isinstance(v[0], dict)]
+            scal = [k for k, v in dicts[0].items() if not isinstance(v, (list, dict))]
+            subs = [k for k, v in dicts[0].items() if isinstance(v, dict)]
+            if len(inner) == 1 and len(scal) <= 1 and not subs \
+                    and all(isinstance(d.get(inner[0]), list) for d in dicts):
+                return [x for d in dicts for x in _json_records(d[inner[0]], depth + 1)]
+        return recs
     if isinstance(o, dict):
         hits = o.get("hits")
         if isinstance(hits, dict) and isinstance(hits.get("hits"), list):
-            return _json_records(hits["hits"])
-        for k in ("Records", "records", "value", "results", "events", "data", "items", "logs", "alerts"):
-            if isinstance(o.get(k), list):
-                return _json_records(o[k])
+            return _json_records(hits["hits"], depth + 1)
+        best = None
+
+        def walk(d, lvl):
+            nonlocal best
+            for v in d.values():
+                if isinstance(v, list) and v and all(isinstance(x, dict) for x in v[:20]):
+                    if best is None or len(v) > len(best):
+                        best = v
+                elif isinstance(v, dict) and lvl < 3:
+                    walk(v, lvl + 1)
+        walk(o, 0)
+        # An envelope is a few scalars (paging, counts) around the list. An object
+        # that carries its own time anywhere is a record, and its list (an alert's
+        # evidence, a UDM security_result) is one of its fields.
+        flat = {k: v for k, v in _flat(o).items() if not (isinstance(v, str) and v[:1] in "[{")}
+        own_time = any(any(f == "ts" for f, _ in _cands(k)) and _ts(v) for k, v in flat.items())
+        if best is not None and len(flat) <= 6 and not own_time:
+            return _json_records(best, depth + 1)
         return [o]
     return []
 
@@ -171,6 +265,8 @@ def _cef_row(line):
             return None
         row = dict(zip(("vendor", "product", "version", "eventname"), parts[:4]))
         ext = parts[4] if len(parts) > 4 else ""
+        if len(parts) == 5 and "=" not in parts[3] and "|" in ext and "=" not in ext.split("|", 1)[0]:
+            row["eventname"], ext = ext.split("|", 1)          # LEEF 2.0 adds a delimiter field
         for kv in re.split(r"\t|\^", ext):
             k, _, v = kv.partition("=")
             if k.strip():
@@ -192,6 +288,115 @@ def _kv_row(line):
     return row
 
 
+def _json_in_line(line):
+    """A JSON object behind a syslog prefix (EDR / SIEM connectors forward that way)."""
+    i = line.find("{")
+    if i < 0 or not line.rstrip().endswith("}"):
+        return None
+    try:
+        o = json.loads(line[i:])
+    except ValueError:
+        return None
+    if not isinstance(o, dict):
+        return None
+    row = _flat(o)
+    if line[:i].strip():
+        row["syslog_header"] = line[:i].strip()
+    return row
+
+
+def _xml_rows(text):
+    """Windows event XML (wevtutil / Get-WinEvent -> ToXml): System + EventData."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(re.sub(r'\sxmlns="[^"]+"', "", text, count=0))
+    except ET.ParseError:
+        return []
+    evs = [root] if root.tag == "Event" else root.findall(".//Event")
+    rows = []
+    for ev in evs[:MAX_ROWS]:
+        r = {}
+        for el in ev.iter():
+            if el.tag == "Data" and el.get("Name"):
+                r[el.get("Name")] = (el.text or "").strip()
+            elif el.tag == "TimeCreated":
+                r["SystemTime"] = el.get("SystemTime")
+            elif el.tag == "Provider":
+                r["Provider"] = el.get("Name")
+            elif len(el) == 0 and el.text and el.text.strip():
+                r.setdefault(el.tag, el.text.strip())
+        if r:
+            rows.append(r)
+    return rows
+
+
+def _delimited(lines):
+    """CSV / TSV / space-separated, with a header line, a `#fields` header (Zeek,
+    W3C) or none at all (the columns are then named c1..cN and found by value).
+    Returns (format, rows) or None."""
+    fields = next((ln for ln in lines[:20] if re.match(r"#\s*fields:?\s", ln, re.I)), None)
+    body = [ln for ln in lines if not ln.startswith("#")]
+    if not body:
+        return None
+    if fields:
+        names = re.split(r"\t|\s+", re.sub(r"#\s*fields:?\s*", "", fields, flags=re.I).strip())
+        delim = "\t" if "\t" in body[0] else None
+        rows = []
+        for ln in body[:MAX_ROWS]:
+            vals = ln.split("\t") if delim else ln.split()
+            if len(vals) == len(names):
+                rows.append(dict(zip(names, vals)))
+        return ("zeek" if delim else "w3c", rows) if rows else None
+    sample = body[:50]
+    dialect = None
+    try:
+        dialect = csv.Sniffer().sniff("\n".join(sample), delimiters=",\t;|")
+    except csv.Error:
+        pass
+    if dialect is not None:
+        first = next(csv.reader([body[0]], dialect))
+        if len(first) >= 2:
+            looks_data = any(_shape(v) in ("ip", "time") for v in first)
+            names = [f"c{i + 1}" for i in range(len(first))] if looks_data else first
+            if len(set(names)) == len(names) and all(str(h).strip() for h in names):
+                start = 0 if looks_data else 1
+                rows = []
+                for vals in csv.reader(body[start:start + MAX_ROWS], dialect):
+                    if len(vals) == len(names):
+                        rows.append(dict(zip(names, vals)))
+                good = [r for r in rows if sum(1 for v in r.values() if v) >= 2]
+                if good and len(good) >= 0.8 * max(1, len(body) - start):
+                    return ("tsv" if dialect.delimiter == "\t" else "csv"), good
+    # whitespace columns: the same count on (nearly) every line
+    counts = [len(ln.split()) for ln in sample]
+    n = max(set(counts), key=counts.count)
+    if n >= 4 and counts.count(n) >= 0.9 * len(counts):
+        first = body[0].split()
+        named = all(re.fullmatch(r"[A-Za-z_][\w.\-()]*", t) for t in first) and len(set(first)) == len(first)
+        names = first if named else [f"c{i + 1}" for i in range(n)]
+        rows = []
+        for ln in body[1 if named else 0:][:MAX_ROWS]:
+            vals = ln.split()
+            if len(vals) == n:
+                r = dict(zip(names, vals))
+                r["_line"] = ln
+                rows.append(r)
+        if rows:
+            return "space", rows
+    return None
+
+
+def _syslog_ts(header):
+    """The time a syslog header carries (RFC 5424 ISO, or "Oct  1 2026 10:05:00")."""
+    if not header:
+        return None
+    m = re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?", header)
+    if m:
+        return _ts(m.group(0))
+    m = re.search(r"[A-Z][a-z]{2}\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}", header)
+    return _ts(m.group(0)) if m else None
+
+
 def parse(text) -> tuple[str, list]:
     """(format, rows). format is "" when no structure was found -- the caller then
     has free text. Rows are flat dicts of the file's own columns."""
@@ -204,10 +409,14 @@ def parse(text) -> tuple[str, list]:
                 return "json", rows[:MAX_ROWS]
         except ValueError:
             pass
+    if s[:1] == "<" and re.search(r"<Event[\s>]", s[:2000]):
+        rows = _xml_rows(s)
+        if rows:
+            return "xml", rows
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return "", []
-    sample = lines[:400]
+    sample = [ln for ln in lines[:400] if not ln.startswith("#")] or lines[:400]
 
     def share(fn):
         return sum(1 for ln in sample if fn(ln)) / len(sample)
@@ -230,100 +439,184 @@ def parse(text) -> tuple[str, list]:
             if isinstance(o, dict):
                 rows.append(_flat(o))
         return "jsonl", rows
+    if share(lambda ln: _json_in_line(ln) is not None) >= 0.8:
+        return "syslog-json", [r for r in (_json_in_line(ln) for ln in lines[:MAX_ROWS]) if r]
     if share(lambda ln: bool(_CEF.search(ln))) >= 0.6:
         fmt = "cef" if "CEF:" in "".join(sample) else "leef"
         return fmt, [r for r in (_cef_row(ln) for ln in lines[:MAX_ROWS]) if r]
-    # CSV/TSV before key=value: a CSV of URLs is full of "=".
-    try:
-        dialect = csv.Sniffer().sniff("\n".join(sample[:50]), delimiters=",\t;|")
-        header = next(csv.reader([lines[0]], dialect))
-        if len(header) >= 2 and len(set(header)) == len(header) \
-                and all(h.strip() and not _IPV4.fullmatch(h.strip()) for h in header):
-            rows = list(csv.DictReader(io.StringIO("\n".join(lines[:MAX_ROWS + 1])), dialect=dialect))
-            good = [r for r in rows if None not in r and sum(1 for v in r.values() if v) >= 2]
-            if rows and len(good) >= 0.8 * len(rows):
-                return ("tsv" if dialect.delimiter == "\t" else "csv"), good
-    except (csv.Error, StopIteration):
-        pass
+    # Delimited before key=value: a CSV of URLs is full of "=".
+    if share(lambda ln: _kv_row(ln) is None) >= 0.5 or any(ln.startswith("#") for ln in lines[:20]):
+        got = _delimited(lines)
+        if got:
+            return got
     if share(lambda ln: _kv_row(ln) is not None) >= 0.6:
         return "kv", [r for r in (_kv_row(ln) for ln in lines[:MAX_ROWS]) if r]
-    return "", []
+    got = _delimited(lines)
+    return got if got else ("", [])
 
 
 # -- what each column is ------------------------------------------------------------
 def _norm_name(k) -> str:
-    return re.sub(r"[^a-z0-9]", "", str(k).lower())
+    k = re.sub(r"\s*[\[(][^\])]*[\])]\s*$", "", str(k))        # "TimeGenerated [UTC]"
+    return re.sub(r"[^a-z0-9]", "", k.lower())
+
+
+def _cands(col):
+    """[(field, rank)] for a column name: the whole name, else its longest known
+    dotted suffix (never a bare vague word)."""
+    whole = _norm_name(col)
+    if whole in _CANDS:
+        return _CANDS[whole]
+    parts = str(col).split(".")
+    for i in range(1, len(parts)):
+        suf = _norm_name("".join(parts[i:]))
+        if suf in _CANDS and not (i == len(parts) - 1 and suf in _VAGUE):
+            return _CANDS[suf]
+    return []
 
 
 def _shape(v) -> str | None:
-    """What a single value looks like: ip / time / user / hash / severity / None."""
-    s = str(v).strip()
+    """What a single value looks like: ip / time / user / hash / url / domain /
+    severity / None."""
+    s = str(v).strip().strip('"')
     if not s or len(s) > 300:
         return None
     if _IPV4.fullmatch(s):
         return "ip"
     if _HASH.fullmatch(s):
         return "hash"
-    if _ISO.match(s) or (re.fullmatch(r"\d{10}(\d{3})?(\.\d+)?", s) and 9e8 < float(s[:10]) < 4.2e9):
+    if _URL.match(s):
+        return "url"
+    if (_ISO.match(s) or s.startswith("audit(")
+            or re.fullmatch(r"\d{10}(\d{3}|\d{6}|\d{9})?(\.\d+)?", s)) and _ts(s):
         return "time"
     if _UPN.fullmatch(s) or _DOMUSER.fullmatch(s):
         return "user"
     if s.lower() in _SEV_WORDS:
         return "severity"
+    if keys.classify_indicator(s.rstrip(".")) == "domain":
+        return "domain"
     return None
 
 
+def _fits(field, vals, col) -> bool:
+    """Do a column's sampled values fit the field its NAME suggests? A name match
+    alone was wrong often enough (an "ip" that holds host names, a "level" that
+    holds syslog levels, "source" that is an account in one product and a host in
+    another) -- so the values have the last word."""
+    if not vals:
+        return False
+    k = len(vals)
+    shapes = [_shape(v) for v in vals]
+    if field in ("src_ip", "dst_ip"):
+        return sum(1 for v in vals if _IPV4.search(str(v))) >= 0.5 * k
+    if field == "ts":
+        return sum(1 for v in vals if _ts(v)) >= 0.5 * k
+    if field == "hash":
+        return sum(1 for v in vals if _HASH.search(str(v))) >= 0.5 * k
+    if field == "severity":
+        return sum(1 for v in vals if _severity(v, _sev_scale(col, vals))) >= 0.5 * k
+    if field == "host":
+        bad = sum(1 for x in shapes if x in ("ip", "user", "time", "url"))
+        return bad < 0.5 * k and all(len(str(v)) <= 255 for v in vals)
+    if field == "user":
+        if any(f == "host" for f, _ in _cands(col)):        # "source": an account only if it looks like one
+            return sum(1 for x in shapes if x == "user") >= 0.5 * k
+        return sum(1 for x in shapes if x in ("ip", "time", "url", "hash")) < 0.5 * k
+    if field in ("src_port", "dst_port"):
+        return sum(1 for v in vals if str(v).isdigit() and int(v) < 65536) >= 0.5 * k
+    if field == "domain":
+        return sum(1 for x in shapes if x in ("ip", "time", "hash")) < 0.5 * k
+    return True
+
+
+_ORDER = ("ts", "src_ip", "dst_ip", "hash", "severity", "user", "host", "domain", "url", "cmdline",
+          "process", "rule", "action", "src_port", "dst_port", "message")
+
+
 def detect_columns(rows, sample=300) -> dict:
-    """{field: column}. By NAME first (the schemas above), the longest/most specific
-    name winning a tie; then, for fields still open, by what the values look like:
-    a column whose sampled values are >=80% IPs is an IP column whatever it is
-    called. The first IP-shaped column is the source, the second the destination."""
+    """{field: column}. Each field takes its best-ranked NAMED column whose values
+    fit it (_fits); a field no name filled takes a column whose values have its
+    SHAPE (>=80% IPs, times, accounts...) -- the first IP-shaped column is the
+    source, the second the destination."""
     cols: dict = {}
     for r in rows[:sample]:
         for k in r:
             cols.setdefault(k, None)
-    out: dict = {}
-    best: dict = {}
-    for k in cols:                      # by name; dotted names also by their last part
-        nk = _norm_name(k)
-        if nk not in _NAME_OF:
-            nk = _norm_name(str(k).rsplit(".", 1)[-1])
-        f = _NAME_OF.get(nk)
-        if f and (f not in best or _RANK[nk] < best[f]):
-            out[f], best[f] = k, _RANK[nk]
-    # A "date" AND a "time" column (FortiGate, W3C/IIS): "time" is only the clock;
-    # the moment is date + time, joined in normalize().
-    if _norm_name(out.get("ts", "")) == "time":
-        d = next((k for k in cols if _norm_name(k) == "date"), None)
-        if d:
-            out["ts"] = d
-    taken = set(out.values())
+    vals = {k: [r.get(k) for r in rows[:sample] if r.get(k) not in (None, "")] for k in cols}
+    by_field: dict = {}
+    for k in cols:
+        for f, rank in _cands(k):
+            by_field.setdefault(f, []).append((rank, k))
+    out, used = {}, set()
+    # A "date" AND a "time" column (FortiGate, W3C/IIS): neither is a moment on its
+    # own; the moment is date + time, joined in normalize().
+    _d = next((k for k in cols if _norm_name(k) == "date"), None)
+    _t = next((k for k in cols if _norm_name(k) == "time"), None)
+    if _d and _t and any(_ts(f"{r.get(_d)} {r.get(_t)}") for r in rows[:20]):
+        out["ts"] = _d
+        used |= {_d, _t}
+    for f in _ORDER:
+        if f in out:
+            continue
+        for _, k in sorted(by_field.get(f, [])):
+            if k not in used and _fits(f, vals[k], k):
+                out[f] = k
+                used.add(k)
+                break
     shapes: dict = {}
     for k in cols:
-        if k in taken:
+        if k in used or k == "_line" or len(vals[k]) < 1:
             continue
-        vals = [r.get(k) for r in rows[:sample] if r.get(k) not in (None, "")]
-        if len(vals) < 3:
-            continue
-        kinds = [_shape(v) for v in vals]
-        for kind in ("ip", "time", "user", "hash", "severity"):
-            if kinds.count(kind) >= 0.8 * len(vals):
+        kinds = [_shape(v) for v in vals[k]]
+        for kind in ("ip", "time", "user", "hash", "severity", "url", "domain"):
+            if kinds.count(kind) >= 0.8 * len(kinds):
                 shapes.setdefault(kind, []).append(k)
                 break
-    for kind, f in (("time", "ts"), ("user", "user"), ("hash", "hash"), ("severity", "severity")):
+    for kind, f in (("time", "ts"), ("user", "user"), ("hash", "hash"), ("severity", "severity"),
+                    ("url", "url"), ("domain", "domain")):
         if f not in out and shapes.get(kind):
             out[f] = shapes[kind][0]
-    ips = [k for k in shapes.get("ip", [])]
+    ips = list(shapes.get("ip", []))
     for f in ("src_ip", "dst_ip"):
         if f not in out and ips:
             out[f] = ips.pop(0)
+    if "message" not in out and "_line" in cols:
+        out["message"] = "_line"
     return out
 
 
-def recognized(mapping) -> bool:
-    """Understood well enough to fuse: a time, and something that joins the case."""
-    return "ts" in mapping and bool(set(mapping) & {"host", "user", "src_ip", "dst_ip", "hash",
-                                                     "domain", "process"})
+def recognized(rows) -> bool:
+    """Understood well enough to fuse, judged on the NORMALIZED rows: most of them
+    have a time and something that can join the case."""
+    if not rows:
+        return False
+    k = len(rows)
+    t = sum(1 for r in rows if r["n"].get("ts"))
+    j = sum(1 for r in rows if _JOINS & set(r["n"]))
+    return t >= 0.5 * k and j >= 0.5 * k
+
+
+def _sev_scale(col, vals):
+    """The numeric scale of a severity column: IDS priority (1 = worst), Wazuh rule
+    level (0..15), 1..5, CEF 0..10 or a 0..100 risk score."""
+    nums = []
+    for v in vals:
+        try:
+            nums.append(float(str(v).strip()))
+        except (TypeError, ValueError):
+            pass
+    top = max(nums) if nums else 0
+    name = _norm_name(col)
+    if top and top <= 4 and (name.endswith("priority") or name == "alertseverity"):
+        return "inverted"
+    if name == "rulelevel" and top <= 15:
+        return 15
+    # Numbers that are no severity scale: a syslog level (0..7, 7 = debug), a syslog
+    # PRI (0..191), anything past 100. Only words count there.
+    if name in ("level", "pri") or name.endswith("priority") or top > 100:
+        return "words"
+    return top
 
 
 def _severity(v, scale) -> str | None:
@@ -336,6 +629,13 @@ def _severity(v, scale) -> str | None:
         n = float(s)
     except ValueError:
         return None
+    if scale == "words":
+        return None
+    if scale == "inverted":                        # Snort / Suricata / Firepower: 1 is the worst
+        return {1: "high", 2: "medium", 3: "low"}.get(int(n), "informational")
+    if scale == 15:                                # Wazuh rule level
+        return ("informational" if n <= 3 else "low" if n <= 6 else "medium" if n <= 9
+                else "high" if n <= 11 else "critical")
     if scale <= 5:                                 # 1..5 scales (IdP, many EDRs)
         return ("informational", "low", "medium", "high", "critical")[max(0, min(4, int(n) - 1))]
     if scale <= 10:                                # CEF 0..10
@@ -344,20 +644,17 @@ def _severity(v, scale) -> str | None:
 
 
 def normalize(rows, mapping) -> list:
-    """[{"n": {field: value}, "raw": row}] -- `n` holds only fields that have a value."""
+    """[{"n": {field: value}, "raw": row}] -- `n` holds only fields that have a value.
+    Indicators inside free text (the message, _raw, a nested JSON list) are added
+    as the list fields, so a SIEM export whose substance sits in _raw still joins."""
     scale = 0
     sc = mapping.get("severity")
     if sc:
-        nums = []
-        for r in rows[:2000]:
-            try:
-                nums.append(float(str(r.get(sc)).strip()))
-            except (TypeError, ValueError):
-                pass
-        scale = max(nums) if nums else 0
-    # W3C / IIS / many proxies split the moment into a "date" and a "time" column.
+        scale = _sev_scale(sc, [r.get(sc) for r in rows[:2000] if r.get(sc) not in (None, "")])
+    # W3C / IIS / FortiGate split the moment into a "date" and a "time" column.
     tcol = next((k for k in (rows[0] if rows else {}) if _norm_name(k) == "time"), None) \
         if _norm_name(mapping.get("ts", "")) == "date" else None
+    mapped = set(mapping.values())
     out = []
     for r in rows:
         n = {}
@@ -366,17 +663,35 @@ def normalize(rows, mapping) -> list:
             if v in (None, ""):
                 continue
             if f == "ts":
-                v = keys.norm_ts(f"{v}T{r.get(tcol)}" if tcol and r.get(tcol) else v)
+                v = _ts(f"{v} {r.get(tcol)}" if tcol and r.get(tcol) else v)
             elif f == "severity":
                 v = _severity(v, scale)
             elif f in ("src_ip", "dst_ip"):
-                v = str(v).strip()
-                if not _IPV4.fullmatch(v):
-                    v = (_IPV4.search(v) or [None])[0]
+                m = _IPV4.search(str(v))
+                v = m.group(0) if m else None
+            elif f == "host":
+                v = str(v).strip().rsplit("\\", 1)[-1]         # "CORP\\WS01" -> WS01
+            elif f == "domain":
+                v = str(v).strip().rstrip(".")
             else:
                 v = str(v).strip()[:4000]
             if v:
                 n[f] = v
+        # A "domain" that is no public domain is a host name (CEF dhost is either).
+        if n.get("domain") and keys.classify_indicator(n["domain"]) != "domain":
+            d = n.pop("domain")
+            n.setdefault("host", d)
+        if not n.get("ts"):
+            t = _syslog_ts(r.get("syslog_header"))
+            if t:
+                n["ts"] = t
+        free = [str(r[c]) for c in r if c in (mapping.get("message"),) or (
+            c not in mapped and isinstance(r[c], str) and r[c][:2] == "[{")]
+        if free:
+            ind = indicators(" ".join(free))
+            for k, v in ind.items():
+                if v:
+                    n[k] = v
         out.append({"n": n, "raw": r})
     return out
 
@@ -394,7 +709,7 @@ def indicators(text) -> dict:
 
 def _line_ts(line):
     m = _ISO.search(line)
-    return keys.norm_ts(m.group(0)) if m else None
+    return _ts(m.group(0)) if m else None
 
 
 def indicator_rows(lines) -> list:
@@ -490,7 +805,7 @@ def _grounded(ev, line) -> dict | None:
         if v not in (None, "") and str(v).strip().lower() in low:
             n[f] = str(v).strip()[:4000]
     if ev.get("ts"):
-        t = keys.norm_ts(ev["ts"])
+        t = _ts(ev["ts"])
         hms = t[11:19] if t and len(t) >= 19 else ""
         if t and (str(ev["ts"]).strip().lower() in low or (hms and (hms in line or hms.lstrip("0") in line))):
             n["ts"] = t
@@ -598,8 +913,8 @@ def ingest(case_id, run_id, path, data_type, log) -> dict:
     fmt, rows = parse(text)
     mapping = detect_columns(rows) if rows else {}
     summary = {"format": fmt or "text", "mapping": mapping}
-    if rows and recognized(mapping):
-        out = normalize(rows, mapping)
+    out = normalize(rows, mapping) if rows else []
+    if out and recognized(out):
         summary["via"] = "parser"
         log(f"read {len(out):,} {fmt.upper()} row(s); columns: "
             + ", ".join(f"{f}={c}" for f, c in mapping.items()), "info")

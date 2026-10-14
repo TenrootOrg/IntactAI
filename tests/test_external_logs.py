@@ -75,7 +75,7 @@ class Shapes(unittest.TestCase):
 
     def test_values_are_normalized(self):
         _, m, rows = _read(DEFENDER)
-        self.assertTrue(X.recognized(m))
+        self.assertTrue(X.recognized(rows))
         self.assertEqual(["high", "low"], [r["n"]["severity"] for r in rows])
         self.assertEqual("2026-10-01T10:05:00", rows[0]["n"]["ts"][:19])
         _, _, rows = _read(CEF)
