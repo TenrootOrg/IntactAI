@@ -9,6 +9,7 @@ import signal
 import subprocess
 import time
 import threading
+import weakref
 from datetime import datetime
 from services.file_storage_service import (
     save_workflow,
@@ -43,6 +44,8 @@ AGENTIC_TYPES = {"velociraptor_collection", "memory", "timesketch",
 # arms exactly when there is something new for it to fold in — arming on 'failed'
 # or 'cancelled' would schedule a fuse that finds nothing stale and does nothing.
 _TERMINAL_STATUSES = ("completed", "success")
+# Every status that ends a run (its in-memory per-run state can go).
+_FINISHED_STATUSES = ("completed", "success", "failed", "cancelled")
 
 # Settings-page / system-operation run types. These always run under the built-in
 # "System" workspace (regardless of the browser's active case) so they have a home
@@ -479,18 +482,39 @@ def get_automation_runs_by_case(case_id):
 # Per-run mutex registry for the read-modify-write helpers below (status,
 # details, name, metrics): without it concurrent updates read a stale snapshot
 # and clobber each other. Log appends no longer need it -- they are one INSERT.
-_RUN_LOG_LOCKS: dict = {}
+#
+# Weak values: an entry lives exactly as long as some thread holds or waits on
+# its lock, then drops out by itself. A plain dict grew by one lock per run,
+# forever. Deleting entries when a run finishes would race: a thread already
+# waiting on the old lock and one that just created a new one would both get in.
+class _RunLock:
+    """threading.Lock cannot be weakly referenced; this wrapper can."""
+    __slots__ = ("_lock", "__weakref__")
+
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    def __enter__(self):
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._lock.release()
+
+
+_RUN_LOG_LOCKS = weakref.WeakValueDictionary()
 _RUN_LOG_LOCKS_GUARD = threading.Lock()
 
 
 def _get_run_log_lock(run_id):
     """Return the per-run lock, creating it on first use. The guard lock
     only protects the dict-creation, never held during the actual write.
+    The caller's `with` keeps it alive for exactly as long as it is needed.
     """
     with _RUN_LOG_LOCKS_GUARD:
         lock = _RUN_LOG_LOCKS.get(run_id)
         if lock is None:
-            lock = threading.Lock()
+            lock = _RunLock()
             _RUN_LOG_LOCKS[run_id] = lock
         return lock
 
@@ -603,6 +627,13 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
         # callers logged "saved" over nothing. Whether the row landed is the
         # caller's business now.
         saved = save_workflow(workflow)
+
+        # A finished run's flow jobs (the Timesketch hand-off, keyed by flow id)
+        # are never read again; without this `jobs` grew by one entry per flow,
+        # forever.
+        if status in _FINISHED_STATUSES:
+            for fid in [f for f, j in list(jobs.items()) if j.get("run_id") == run_id]:
+                jobs.pop(fid, None)
 
         # A run that just reached a terminal state is new data for its case. Arm the
         # debounced auto-fuse -- ARM only. This runs inside the per-run lock, so it
