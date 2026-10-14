@@ -87,12 +87,18 @@ class MapCache(unittest.TestCase):
         writer truncate the other's half-written file."""
         import threading
         tmps, real = [], os.replace
+        both_reading = threading.Barrier(2)
+
+        def load():                                   # both miss, both are alive while writing
+            both_reading.wait(timeout=5)
+            return ROWS
 
         def record(src, dst):
             tmps.append(src)
             return real(src, dst)
         with mock.patch.object(store.os, "replace", record):
-            ts = [threading.Thread(target=self.call) for _ in range(2)]
+            ts = [threading.Thread(target=store._cached_map, args=(self.fp, self.det, load, self.mapper))
+                  for _ in range(2)]
             [t.start() for t in ts]
             [t.join() for t in ts]
         self.assertEqual(2, len(set(tmps)), tmps)
