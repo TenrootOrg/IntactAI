@@ -10,6 +10,8 @@ Handles:
 """
 
 import os
+import re
+import uuid
 import zipfile
 import json
 import shutil
@@ -230,18 +232,15 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
     try:
         # Setup paths
         os.makedirs(PLASO_OUTPUT_DIR, exist_ok=True)
-        plaso_file = f"{PLASO_OUTPUT_DIR}/{client_name}_Artifacts.plaso"
-
-        # Remove only THIS client's previous .plaso output (Plaso refuses to
-        # overwrite an existing storage file). DO NOT wipe the whole dir —
-        # the multi-client Timesketch orchestrator stages other clients' ZIPs
-        # here while they wait their turn in the Plaso queue; wiping the dir
-        # deletes those queued ZIPs and breaks the next client's run.
-        if os.path.isfile(plaso_file):
-            try:
-                os.remove(plaso_file)
-            except Exception:
-                pass
+        # One fresh name per call. This was {client_name}_Artifacts.plaso and
+        # deleted any file already there (Plaso refuses to overwrite), so two
+        # pipelines for same-named hosts -- every unnamed one is 'Unknown' --
+        # deleted each other's output mid-run. The name is endpoint- or
+        # ZIP-supplied text, so it is also reduced to a safe file name before
+        # it lands in a host path that is bind-mounted into the container.
+        safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', str(client_name or 'Unknown')).strip('.')[:64] or 'Unknown'
+        plaso_name = f"{safe_name}_{uuid.uuid4().hex[:12]}_Artifacts.plaso"
+        plaso_file = f"{PLASO_OUTPUT_DIR}/{plaso_name}"
 
         # Build Plaso command
         num_workers = str(workers) if workers else PLASO_CPUS
@@ -290,7 +289,7 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
 
         # Add output file and source
         plaso_cmd.extend([
-            '--storage-file', f'/data/{client_name}_Artifacts.plaso',
+            '--storage-file', f'/data/{plaso_name}',
             '/source'
         ])
 
