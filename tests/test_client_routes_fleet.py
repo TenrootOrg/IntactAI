@@ -2,6 +2,8 @@
 
 F27: offline-collection imports (no agent name, never interrogated, no version)
 were listed as clients in every picker and counted on the dashboard.
+F31: the pickers' limit=1000 was cut from an UNSORTED fleet, so above 1,000 an
+arbitrary subset (online hosts included) silently disappeared.
 
 flask is a container dependency, so the route runs here against a minimal stand-in
 for the few flask names client_routes uses; the service runs for real against a
@@ -122,6 +124,29 @@ class ImportsAreNotClients(FleetRouteCase):
     def test_service_keeps_them_marked_for_os_mapping_callers(self):
         got = {c["client_id"]: c["imported"] for c in vs.get_clients_from_snapshot(include_offline=True)}
         self.assertEqual({"C.agent1": False, "C.import1": True, "C.fresh": False}, got)
+
+
+class LimitCutsASortedList(FleetRouteCase):
+    # 1,200 clients, deliberately out of order; every 4th is online.
+    rows = [row(f"C.{i:04d}", f"host-{(i * 7919) % 1200:04d}", seen_ago_s=30 if i % 4 == 0 else 10**5)
+            for i in range(1200)]
+
+    def test_online_first_then_hostname_and_says_it_was_cut(self):
+        body = self.get(include_offline="true", limit=1000)
+        items = body["items"]
+        self.assertEqual(1000, len(items))
+        self.assertEqual((1200, 1200, True), (body["total"], body["filtered"], body["truncated"]))
+        now = time.time()
+        online = [cr._online(c, now) for c in items]
+        self.assertEqual(300, sum(online), "every online client must survive the cut")
+        self.assertEqual(sorted(online, reverse=True), online)
+        for part in (items[:300], items[300:]):
+            names = [c["hostname"] for c in part]
+            self.assertEqual(sorted(names), names)
+
+    def test_not_truncated_under_the_limit(self):
+        body = self.get(include_offline="true", limit=5000, search="host-000")
+        self.assertEqual((10, False), (body["filtered"], body["truncated"]))
 
 
 if __name__ == "__main__":
