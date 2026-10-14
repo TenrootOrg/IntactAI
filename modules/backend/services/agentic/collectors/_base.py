@@ -744,7 +744,10 @@ def _hunt_foreach(flows_vql, inner):
 
 
 def _query_rows(stub, query, timeout):
-    req = api_pb2.VQLCollectorArgs(max_wait=10, max_row=VELO_FETCH_BATCH_ROWS,
+    # The server-side limit is set to the same bound as the gRPC one: left at
+    # 0 the server applies its own default and may end a long hunt-wide stream
+    # early, which closes normally and looks complete.
+    req = api_pb2.VQLCollectorArgs(max_wait=10, max_row=VELO_FETCH_BATCH_ROWS, timeout=int(timeout),
                                    Query=[api_pb2.VQLRequest(VQL=query)])
     for response in stub.Query(req, timeout=timeout):
         if response.Response:
@@ -778,9 +781,14 @@ def _hunt_source_rows(stub, flows_vql, flows, source):
     """{(client_id, flow_id): rows} of one source across the hunt, or None.
 
     `flows` are the flows the enumeration says hold this source, so an empty
-    answer is a wrong answer, not an empty source."""
+    answer is a wrong answer, not an empty source. The caller re-reads every
+    flow missing from the answer: one in the middle is a failed source() (or a
+    result file with no rows); missing ones after the last flow read mean the
+    stream ended early (a server limit), so that last flow may be partial and is
+    left out too. foreach walks hunt_flows() in the order `flows` was listed."""
     want = set(flows)
     out = {}
+    last = None
     q = _hunt_foreach(flows_vql, f"SELECT *, IntactCid, IntactFid FROM source(client_id=IntactCid, "
                                  f"flow_id=IntactFid, artifact='{source}') "
                                  f"LIMIT {VELO_MAX_ROWS_PER_ARTIFACT}")
@@ -790,8 +798,11 @@ def _hunt_source_rows(stub, flows_vql, flows, source):
             return None
         if key in want:
             out.setdefault(key, []).append(row)
+            last = key
     if not out:
         return None
+    if last is not None and any(f not in out for f in flows[flows.index(last) + 1:]):
+        out.pop(last)
     for (cid, fid), rows in out.items():
         if len(rows) >= VELO_MAX_ROWS_PER_ARTIFACT:
             logger.warning(
@@ -1206,8 +1217,15 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                                            f"failed ({e})", "warning")
                 if got is None:
                     add_log_to_run(run_id, f"[Velociraptor] Reading {source_name} per client instead", "info")
-                    got = {f: query_artifact_results(stub, f[0], f[1], source_name, start_iso, end_iso,
-                                                     errors=errors) for f in have}
+                    got = {}
+                missing = [f for f in have if f not in got]
+                if missing and len(missing) < len(have):
+                    add_log_to_run(run_id, f"[Velociraptor] Hunt-wide read of {source_name} came back "
+                                           f"without {len(missing)} of {len(have)} client(s); reading "
+                                           f"those per client", "warning")
+                for f in missing:
+                    got[f] = query_artifact_results(stub, f[0], f[1], source_name, start_iso, end_iso,
+                                                    errors=errors)
                 for f, rows in got.items():
                     fetched[(f[0], f[1], source_name)] = rows
                 n_rows = sum(len(r or []) for r in got.values())

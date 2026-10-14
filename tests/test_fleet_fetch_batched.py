@@ -37,6 +37,7 @@ class FakeVelociraptor:
         self.hostnames = hostnames or {}
         self.hunts = hunts or {}         # hunt_id -> [client_id, ...] (flow F.<id>.H each)
         self.batched = batched           # "works" | "empty" (unresolved vars) | "raises"
+        #                                  | "cut" (a source stream ends partway, mid-flow)
         self.queries = []
 
     def _hunt_flows(self, vql):
@@ -70,6 +71,8 @@ class FakeVelociraptor:
                 art = re.search(r"artifact='([^']+)'", vql).group(1)
                 out += [dict(r, IntactCid=cid, IntactFid=fid)
                         for r in self.flows.get((cid, fid), {}).get(art, [])]
+        if self.batched == "cut" and "FROM source(" in vql:
+            return out[:len(out) // 2 + 1]       # odd cut: the last flow read is half there
         return out
 
     def _host(self, cid):
@@ -271,8 +274,9 @@ class TestHuntFetch(_Harness):
                 velo = _hunt_velo(n)
                 all_results, _a, _ci = self.fetch(velo, only_artifacts=self.ONLY)
                 self.assertEqual(2, len(all_results))
-                # hunt_flows + hostnames + source listing + one per wanted source
-                self.assertEqual(5, len(velo.queries), velo.queries)
+                # hunt_flows + hostnames + source listing + one per wanted source,
+                # + one re-read of C.0000, whose RDPAuth is listed but has no rows
+                self.assertEqual(6, len(velo.queries), velo.queries)
 
     def test_one_log_line_per_artifact_not_per_client(self):
         self.fetch(_hunt_velo(300), only_artifacts=self.ONLY)
@@ -302,6 +306,29 @@ class TestHuntFetch(_Harness):
                                  only_artifacts=self.ONLY, errors=errors)
                 self.assertEqual(json.dumps(good), json.dumps(got))
                 self.assertEqual([], errors)
+
+    def test_a_stream_that_ends_early_is_completed_per_client(self):
+        """A hunt-wide stream that the server ends early closes normally. The
+        flows after the cut, and the half-read flow at it, were accepted as
+        "no rows" and the report said complete. They are re-read per client."""
+        good = self.fetch(_hunt_velo(15), only_artifacts=self.ONLY)
+        errors, velo = [], _hunt_velo(15, batched="cut")
+        got = self.fetch(velo, only_artifacts=self.ONLY, errors=errors)
+        self.assertEqual(json.dumps(good), json.dumps(got))
+        self.assertEqual([], errors)
+        self.assertTrue(any(l == "warning" and "came back without" in m for l, m in self.logs), self.logs)
+        per_client = [q for q in velo.queries if q.startswith("SELECT * FROM source(client_id='")]
+        self.assertTrue(0 < len(per_client) < 15, "only the missing clients are re-read")
+
+    def test_the_server_side_limit_is_set(self):
+        velo = self.use(_hunt_velo(3))
+        seen = []
+        real = velo.Query
+        velo.Query = lambda req, timeout=None: (seen.append(req), real(req, timeout))[1]
+        _base.get_existing_collection_results("run_1", hunt_id="H.HUNT", only_artifacts=self.ONLY)
+        batched = [r for r in seen if "IntactCid" in r["Query"][0]]
+        self.assertTrue(batched)
+        self.assertTrue(all(r.get("timeout", 0) > 0 for r in batched), batched)
 
     def test_a_hunt_nobody_has_answered_is_empty_not_a_fallback_storm(self):
         cids = [f"C.{i:04d}" for i in range(50)]
