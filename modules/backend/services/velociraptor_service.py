@@ -12,14 +12,19 @@ import os
 import grpc
 import traceback
 import sys
+import threading
 from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
 
 from config import VELOCIRAPTOR_CONTAINER, VELOCIRAPTOR_API_CONFIG_PATH, VELOCIRAPTOR_SNAPSHOT_PATH
 from services.vql_safety import is_valid_client_id, is_valid_flow_id
 
-# Cached API configuration
+# Parsed api.config.yaml, see load_velociraptor_api_config()
 velociraptor_api_config = None
+_api_config_lock = threading.Lock()
+_API_CONFIG_KEYS = ("ca_certificate", "client_private_key", "client_cert", "api_connection_string")
+_SHARED_CONFIG_COPY = "/tmp/api.config.yaml"
+_CONNECT_CHECK_SECONDS = 5
 
 def get_clients_from_snapshot(include_offline=False):
     """Get clients directly from Velociraptor API using VQL query (real-time data).
@@ -213,81 +218,98 @@ def get_clients_from_snapshot_file(include_offline=True):
         print(f"[CLIENT-LIST] Error reading snapshot: {e}", flush=True)
         return []
 
-def load_velociraptor_api_config():
-    """Load Velociraptor API configuration from container"""
+def load_velociraptor_api_config(stale=None):
+    """The parsed API config (api.config.yaml), read from the Velociraptor container
+    once and then served from memory.
+
+    It used to be re-read on EVERY gRPC call: a `docker exec cat` whose output was
+    written to a shared /tmp/api.config.yaml and read back. Concurrent threads (one
+    per client at fleet scale) read it while another had just truncated it,
+    yaml.safe_load returned None, and that host's start or status check was reported
+    as failed. Now nothing reads a file: stdout is parsed directly, under a lock.
+
+    Pass `stale` = the config a connection just failed with: it is re-read then (a
+    changed hostname must not break every later call), unless another thread has
+    already replaced it, so a burst of failures costs one re-read, not one each.
+    Returns None when the config cannot be read."""
     global velociraptor_api_config
-
-    if velociraptor_api_config:
-        print("[CONFIG] Using cached API configuration")
-        return velociraptor_api_config
-
-    try:
-        print("[CONFIG] Loading Velociraptor API configuration from container...")
-        # Copy api.config.yaml from Velociraptor container
-        cmd = [
-            "docker", "exec", VELOCIRAPTOR_CONTAINER,
-            "cat", VELOCIRAPTOR_API_CONFIG_PATH
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-
-        if result.returncode == 0:
-            velociraptor_api_config = yaml.safe_load(result.stdout)
-            print("[CONFIG] ✓ Successfully loaded Velociraptor API configuration")
-            print(f"[CONFIG] Has client_cert: {bool(velociraptor_api_config.get('client_cert'))}")
-            print(f"[CONFIG] Has client_private_key: {bool(velociraptor_api_config.get('client_private_key'))}")
-            print(f"[CONFIG] Has ca_certificate: {bool(velociraptor_api_config.get('ca_certificate'))}")
+    with _api_config_lock:
+        if velociraptor_api_config is not None and velociraptor_api_config is not stale:
             return velociraptor_api_config
-        else:
-            print(f"[CONFIG] ✗ Failed to load API config: {result.stderr}")
+        try:
+            print("[CONFIG] Loading Velociraptor API configuration from container...", flush=True)
+            result = subprocess.run([
+                "docker", "exec", VELOCIRAPTOR_CONTAINER,
+                "cat", VELOCIRAPTOR_API_CONFIG_PATH
+            ], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                print(f"[CONFIG] ✗ Failed to load API config: {result.stderr}", flush=True)
+                return None
+            config = yaml.safe_load(result.stdout)
+            if not isinstance(config, dict) or not all(config.get(k) for k in _API_CONFIG_KEYS):
+                print("[CONFIG] ✗ API config is incomplete", flush=True)
+                return None
+            velociraptor_api_config = config
+            _refresh_shared_config_copy(result.stdout)
+            return config
+        except Exception as e:
+            print(f"[CONFIG] ✗ Exception loading API config: {e}", flush=True)
             return None
-    except Exception as e:
-        print(f"[CONFIG] ✗ Exception loading API config: {e}")
-        traceback.print_exc()
-        return None
+
+
+def _refresh_shared_config_copy(text):
+    """tools_download_service and msi_generator_service still read their own copy
+    of /tmp/api.config.yaml (written by them only when missing), so keep it current
+    -- replaced atomically, never truncated in place, so a reader can't see it half
+    written. ponytail: drop once both use setup_velociraptor_connection()."""
+    try:
+        tmp = _SHARED_CONFIG_COPY + ".new"
+        with open(tmp, "w") as f:
+            f.write(text)
+        os.replace(tmp, _SHARED_CONFIG_COPY)
+    except OSError as e:
+        print(f"[CONFIG] Could not refresh {_SHARED_CONFIG_COPY}: {e}", flush=True)
+
+
+def _secure_channel(config):
+    creds = grpc.ssl_channel_credentials(
+        root_certificates=config["ca_certificate"].encode("utf8"),
+        private_key=config["client_private_key"].encode("utf8"),
+        certificate_chain=config["client_cert"].encode("utf8"),
+    )
+    # Set gRPC options - increase message size for large artifacts like Hayabusa
+    # Default is 4MB, but forensic artifacts can return 30MB+
+    max_message_size = 100 * 1024 * 1024  # 100MB
+    options = (
+        ("grpc.ssl_target_name_override", "VelociraptorServer"),
+        ("grpc.max_receive_message_length", max_message_size),
+        ("grpc.max_send_message_length", max_message_size),
+    )
+    return grpc.secure_channel(config["api_connection_string"], creds, options)
+
 
 def setup_velociraptor_connection():
     """Setup gRPC connection to Velociraptor API"""
     try:
-        # Always re-copy the API config from the Velociraptor container rather
-        # than caching: a stale /tmp/api.config.yaml with an out-of-date hostname
-        # breaks every subsequent gRPC call. The copy is a cheap `docker exec
-        # cat` of a small YAML.
-        config_path = "/tmp/api.config.yaml"
-        print("[GRPC] Copying API config from Velociraptor container...", flush=True)
-        result = subprocess.run([
-            "docker", "exec", VELOCIRAPTOR_CONTAINER,
-            "cat", VELOCIRAPTOR_API_CONFIG_PATH
-        ], capture_output=True, text=True, timeout=5)
-
-        if result.returncode != 0:
-            print(f"[GRPC] Failed to copy config: {result.stderr}", flush=True)
+        config = load_velociraptor_api_config()
+        if not config:
             return None
-
-        with open(config_path, 'w') as f:
-            f.write(result.stdout)
-
-        # Load the YAML configuration
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-
-        # Prepare the credentials for the gRPC connection
-        creds = grpc.ssl_channel_credentials(
-            root_certificates=config["ca_certificate"].encode("utf8"),
-            private_key=config["client_private_key"].encode("utf8"),
-            certificate_chain=config["client_cert"].encode("utf8"),
-        )
-
-        # Set gRPC options - increase message size for large artifacts like Hayabusa
-        # Default is 4MB, but forensic artifacts can return 30MB+
-        max_message_size = 100 * 1024 * 1024  # 100MB
-        options = (
-            ("grpc.ssl_target_name_override", "VelociraptorServer"),
-            ("grpc.max_receive_message_length", max_message_size),
-            ("grpc.max_send_message_length", max_message_size),
-        )
-
-        # Establish the secure channel
-        channel = grpc.secure_channel(config["api_connection_string"], creds, options)
+        channel = _secure_channel(config)
+        # The config is cached, so a stale one (an out-of-date hostname after an IP
+        # or domain change) would break every later call. grpc channels are lazy, so
+        # connect now: if that fails, re-read the config and build the channel from
+        # it. A server that is simply down fails the same way the caller's own RPC
+        # always did; it only costs this wait and one re-read.
+        ready = grpc.channel_ready_future(channel)
+        try:
+            ready.result(timeout=_CONNECT_CHECK_SECONDS)
+        except Exception:
+            ready.cancel()
+            fresh = load_velociraptor_api_config(stale=config)
+            if fresh and fresh != config:
+                print("[GRPC] API config changed -- reconnecting with the new one", flush=True)
+                channel.close()
+                config, channel = fresh, _secure_channel(fresh)
         print(f"[GRPC] Secure channel established to {config['api_connection_string']}", flush=True)
         return channel
 
