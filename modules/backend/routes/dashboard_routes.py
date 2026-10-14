@@ -113,6 +113,31 @@ def get_automation_details(run_id):
     return jsonify({"error": f"Automation run {run_id} not found"}), 404
 
 
+# is_hunt_registered() is a docker exec + gRPC query, and the reconcile below
+# ran it for every running hunt on every poll of the list and of each open log
+# window. A hunt Velociraptor has is never un-registered, so a yes is kept for
+# good; a no (not there yet, or a gRPC blip) is re-asked after 30 s.
+_HUNT_NEGATIVE_TTL = 30.0
+_hunts_registered = set()
+_hunts_not_yet = {}          # hunt_id -> monotonic time of the last "no"
+
+
+def _hunt_registered_cached(hunt_id):
+    import time
+    if hunt_id in _hunts_registered:
+        return True
+    asked = _hunts_not_yet.get(hunt_id)
+    if asked is not None and time.monotonic() - asked < _HUNT_NEGATIVE_TTL:
+        return False
+    from services.velociraptor_service import is_hunt_registered
+    if is_hunt_registered(hunt_id):
+        _hunts_registered.add(hunt_id)
+        _hunts_not_yet.pop(hunt_id, None)
+        return True
+    _hunts_not_yet[hunt_id] = time.monotonic()
+    return False
+
+
 def _reconcile_velociraptor_hunt(run):
     """A velociraptor_hunt run is marked 'running' at dispatch time (the hunt
     object itself stays RUNNING for its whole expire window, so Velociraptor
@@ -125,9 +150,8 @@ def _reconcile_velociraptor_hunt(run):
     hunt_id = (run.get("details") or {}).get("hunt_id")
     if not hunt_id:
         return
-    from services.velociraptor_service import is_hunt_registered
     from services.workflow_service import update_run_status
-    if is_hunt_registered(hunt_id):
+    if _hunt_registered_cached(hunt_id):
         update_run_status(run.get("run_id", run.get("id")), "completed", progress=100)
         run["status"] = "completed"
         run["progress"] = 100
