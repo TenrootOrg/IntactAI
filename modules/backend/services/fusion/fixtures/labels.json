@@ -1,40 +1,65 @@
 {
-  "_comment": "Ground-truth labels for the real purple-team fixtures. The clean box is its OWN baseline (provisioning noise must subtract to silence). The attack must be recognized: Defender caught the masquerade/download chain (critical), and after baseline-subtraction the non-baseline medium chain (encoded-PS/autorun/named-pipe) surfaces as coordinated activity. Matching is finding-level.",
-  "clean": {
-    "baseline": "clean",
-    "window": null,
-    "expected_findings": [],
-    "must_not_fire_min_severity": "high",
-    "must_not_fire_titles": []
+ "_comment": "Ground-truth labels for the real purple-team fixtures. The clean box is its OWN baseline (provisioning noise must subtract to silence). The attack must be recognized: Defender caught the masquerade/download chain (critical), and after baseline-subtraction the non-baseline medium chain (encoded-PS/autorun/named-pipe) surfaces as coordinated activity. Matching is finding-level.",
+ "clean": {
+  "baseline": "clean",
+  "window": null,
+  "expected_findings": [],
+  "must_not_fire_min_severity": "high",
+  "must_not_fire_titles": []
+ },
+ "attack": {
+  "baseline": "clean",
+  "window": {
+   "start": "2026-06-18T12:45:00Z",
+   "end": "2026-06-18T13:05:00Z"
   },
-  "attack": {
-    "baseline": "clean",
-    "window": {"start": "2026-06-18T12:45:00Z", "end": "2026-06-18T13:05:00Z"},
-    "expected_findings": [
-      {"title_contains": "Defender Alert", "min_severity": "critical"},
-      {"title_contains": "Coordinated suspicious activity", "min_severity": "high"}
-    ],
-    "must_not_fire_titles": [
-      "Important Log File Cleared",
-      "Important Windows Eventlog Cleared",
-      "Service Binary in Suspicious Folder",
-      "Driver Load From A Temporary Directory"
-    ]
+  "expected_findings": [
+   {
+    "title_contains": "Defender Alert",
+    "min_severity": "critical"
+   },
+   {
+    "title_contains": "Burst of",
+    "min_severity": "high"
+   }
+  ],
+  "must_not_fire_titles": [
+   "Important Log File Cleared",
+   "Important Windows Eventlog Cleared",
+   "Service Binary in Suspicious Folder",
+   "Driver Load From A Temporary Directory"
+  ],
+  "_comment_2026_10_14": "'Coordinated suspicious activity' was renamed 'Burst of N detections'; same finding."
+ },
+ "attack2": {
+  "_comment": "Richer purple-team: masquerade (cmd->svchost.exe), renamed PowerShell, service + scheduled-task persistence, DLL-sideload bait, recon. Tests the new detection-linking + blind-spot typing on REAL data.",
+  "baseline": "clean",
+  "window": {
+   "start": "2026-06-18T17:50:00Z",
+   "end": "2026-06-18T18:20:00Z"
   },
-  "attack2": {
-    "_comment": "Richer purple-team: masquerade (cmd->svchost.exe), renamed PowerShell, service + scheduled-task persistence, DLL-sideload bait, recon. Tests the new detection-linking + blind-spot typing on REAL data.",
-    "baseline": "clean",
-    "window": {"start": "2026-06-18T17:50:00Z", "end": "2026-06-18T18:20:00Z"},
-    "expected_findings": [
-      {"title_contains": "Defender Alert", "min_severity": "critical"},
-      {"title_contains": "Masquerading As SvcHost", "min_severity": "high"},
-      {"title_contains": "Renamed PowerShell", "min_severity": "high"},
-      {"title_contains": "DLL sideloading", "min_severity": "medium"},
-      {"title_contains": "Coordinated suspicious activity", "min_severity": "high"}
-    ],
-    "must_not_fire_titles": [
-      "Important Log File Cleared",
-      "Important Windows Eventlog Cleared"
-    ]
-  }
+  "expected_findings": [
+   {
+    "title_contains": "Defender Alert",
+    "min_severity": "critical"
+   },
+   {
+    "title_contains": "Masquerading As SvcHost",
+    "min_severity": "high"
+   },
+   {
+    "title_contains": "Renamed PowerShell",
+    "min_severity": "high"
+   },
+   {
+    "title_contains": "DLL sideloading",
+    "min_severity": "medium"
+   }
+  ],
+  "must_not_fire_titles": [
+   "Important Log File Cleared",
+   "Important Windows Eventlog Cleared"
+  ],
+  "_comment_2026_10_14": "No burst expected any more: a burst only gathers detections not already shown as their own finding (test_an_event_already_on_its_own_row_is_not_repeated_in_a_burst), and here every one is. 'Masquerading As SvcHost' stays expected: it does not fire today -- an honest miss, not a renamed title."
+ }
 }

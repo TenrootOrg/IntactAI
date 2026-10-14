@@ -36,9 +36,10 @@ def graph_text(g) -> str:
     return "\n".join(out)
 
 
-def main():
-    ds, cid = sys.argv[1], sys.argv[2]
-    spec = json.load(open(os.path.join(HERE, "groundtruth_steps.json")))
+def score(ds, cid) -> dict:
+    """{steps, in_graph, in_report, traps, traps_hit, rows} for dataset `ds` on case `cid`."""
+    with open(os.path.join(HERE, "groundtruth_steps.json")) as fh:
+        spec = json.load(fh)
     # A combined dataset inherits its parts' STEPS but declares its own TRAPS: "UTICA is involved" is a
     # false claim for Day 1 alone and a true one once Day 2 is in the same case.
     steps = [s for part in spec[ds].get("include", [ds]) for s in spec[part]["steps"]]
@@ -55,16 +56,24 @@ def main():
         nr += in_r
         rows.append((s["id"], s["what"], in_g, in_r))
     hits = [(t["id"], t["what"]) for t in traps if re.search(t["rx"], rep, re.I | re.S)]
+    return {"dataset": ds, "case": cid, "findings": len(g.findings), "report_chars": len(rep),
+            "steps": len(steps), "in_graph": ng, "in_report": nr, "traps": len(traps),
+            "traps_hit": [h[0] for h in hits], "trap_text": dict(hits), "rows": rows}
+
+
+def main():
+    ds, cid = sys.argv[1], sys.argv[2]
+    r = score(ds, cid)
     if "--json" in sys.argv:
-        print(json.dumps({"dataset": ds, "case": cid, "steps": len(steps), "in_graph": ng, "in_report": nr,
-                          "traps_hit": [h[0] for h in hits], "rows": rows}))
+        print(json.dumps({k: v for k, v in r.items() if k != "trap_text"}))
         return
-    print(f"{ds} · {cid} · {len(g.findings)} findings · report {len(rep):,} chars")
+    print(f"{ds} · {cid} · {r['findings']} findings · report {r['report_chars']:,} chars")
     print(f"{'step':<18} {'graph':<6} {'report':<7} what")
-    for sid, what, a, b in rows:
+    for sid, what, a, b in r["rows"]:
         print(f"{sid:<18} {'yes' if a else '-':<6} {'yes' if b else '-':<7} {what}")
-    print(f"\nSTEPS  in graph {ng}/{len(steps)}   in report {nr}/{len(steps)}")
-    print(f"TRAPS  {len(hits)}/{len(traps)} false claims made" + "".join(f"\n  ! {i}: {w}" for i, w in hits))
+    print(f"\nSTEPS  in graph {r['in_graph']}/{r['steps']}   in report {r['in_report']}/{r['steps']}")
+    print(f"TRAPS  {len(r['traps_hit'])}/{r['traps']} false claims made"
+          + "".join(f"\n  ! {i}: {w}" for i, w in r["trap_text"].items()))
 
 
 if __name__ == "__main__":
