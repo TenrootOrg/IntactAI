@@ -103,6 +103,9 @@ TIMESKETCH_MAX_COLLECTORS = _env_int('TIMESKETCH_MAX_COLLECTORS', 8, minimum=1)
 PLASO_MAX_CONCURRENT = _env_int('PLASO_MAX_CONCURRENT', 1, minimum=1)
 # Free space PLASO_OUTPUT_DIR must have before a flow is exported into it.
 TIMESKETCH_EXPORT_MIN_FREE_GB = _env_int('TIMESKETCH_EXPORT_MIN_FREE_GB', 5)
+# A scheduled run skips clients not seen for this long (0 = never skip): each
+# one would otherwise hold a collector slot for the full monitor timeout.
+TIMESKETCH_OFFLINE_SKIP_HOURS = _env_int('TIMESKETCH_OFFLINE_SKIP_HOURS', 24)
 
 
 def get_plaso_image():
