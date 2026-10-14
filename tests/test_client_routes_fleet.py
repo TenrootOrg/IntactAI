@@ -4,6 +4,8 @@ F27: offline-collection imports (no agent name, never interrogated, no version)
 were listed as clients in every picker and counted on the dashboard.
 F31: the pickers' limit=1000 was cut from an UNSORTED fleet, so above 1,000 an
 arbitrary subset (online hosts included) silently disappeared.
+F36: every dashboard tab pulled the whole fleet every 10 s to show two numbers;
+/api/clients/summary answers {online, total} from a 30 s server-side cache.
 
 flask is a container dependency, so the route runs here against a minimal stand-in
 for the few flask names client_routes uses; the service runs for real against a
@@ -147,6 +149,39 @@ class LimitCutsASortedList(FleetRouteCase):
     def test_not_truncated_under_the_limit(self):
         body = self.get(include_offline="true", limit=5000, search="host-000")
         self.assertEqual((10, False), (body["filtered"], body["truncated"]))
+
+
+class Summary(FleetRouteCase):
+    rows = [row("C.on1", "A"), row("C.on2", "B"), row("C.off", "C", seen_ago_s=3600),
+            row("C.imp", "D", agent="", interrogated="", version="", seen_ago_s=10**6)]
+
+    def test_counts_agents_and_online(self):
+        body = cr.get_clients_summary()
+        self.assertEqual((2, 3), (body["online"], body["total"]))
+
+    def test_cached_for_30s_then_refetched(self):
+        cr.get_clients_summary()
+        cr.get_clients_summary()
+        self.assertEqual(1, self.stub.queries, "a second tab within 30 s must not re-query")
+        cr._FLEET_CACHE["at"] -= cr.SUMMARY_MAX_AGE + 1  # 31 s later
+        cr.get_clients_summary()
+        self.assertEqual(2, self.stub.queries)
+
+    def test_picker_refresh_is_live_and_refreshes_the_cache(self):
+        cr.get_clients_summary()
+        self.get(include_offline="true")                 # the pickers' ↻: never from cache
+        self.assertEqual(2, self.stub.queries)
+        cr.get_clients_summary()
+        self.assertEqual(2, self.stub.queries)
+
+    def test_concurrent_misses_cost_one_query(self):
+        import threading
+        ts = [threading.Thread(target=cr.get_clients_summary) for _ in range(20)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        self.assertEqual(1, self.stub.queries)
 
 
 if __name__ == "__main__":
