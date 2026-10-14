@@ -8,6 +8,7 @@ is templating, not analysis. The LLM (real or simulated) only narrates over
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace as _SimpleNS
 
 from . import severity as sev, keys
 from .correlate import in_window, finding_in_window, _assets_of, _host_label, _detection_name
@@ -164,6 +165,8 @@ RISK_TABLE_MAX_ROWS = 15
 EXPLICIT_MAX_HOSTS = 12
 EXPLICIT_MAX_FINDINGS = 150
 EXPLICIT_EVENTS_PER_FINDING = 6            # evidence lines surfaced per finding
+MEMBER_EVENTS = 2                          # ... per member of a burst / related group
+MEMBER_EVIDENCE_CHARS = 600                # ... and per member line
 # Per evidence line in the LLM payload. 200 truncated the one thing the deep/focused
 # view exists to show: the exact command line and the full -EncodedCommand blob (so the
 # base64 could not be decoded past its prefix). Applies ONLY to explicit detail
@@ -1058,6 +1061,7 @@ _DETAIL_LABELS = {"user": "User", "proc": "Process", "cmdline": "Command", "pid"
                   "pguid": "Process GUID", "tgtsid": "Target SID",
                   "tgtmachineid": "Target machine ID", "tgtuser": "Target user",
                   "srcuser": "Source user", "srchost": "Source host",
+                  "srccomp": "Source host", "tgtcomp": "Target host",
                   "tgthost": "Target host", "logontype": "Logon type",
                   "sid": "SID", "guid": "GUID", "ruleauthor": "Rule author",
                   "severity": "Rule severity", "type": "Type"}
@@ -1081,8 +1085,14 @@ _FIELD_RANK = {lbl: i for i, lbl in enumerate(_FIELD_ORDER)}
 # who and what ran, but not what was FOUND — which is the whole point of a
 # detection. Everything else is left out when a process is known, so the line
 # stays readable.
+# Parent command and the source/target host/IP are WHERE IT CAME FROM and WHERE IT WENT:
+# without them every report said "the parent process is not identified" and "initial
+# access undetermined" (APT29: explorer.exe -> the .scr / an ADS-reading PowerShell sat
+# in ParentCmdline), and "no outbound destination" with the WebDAV host on the line.
 _ALWAYS_FIELDS = ("Threat", "Path", "Service", "Start type", "Account", "Target IP",
-                  "Target port", "SHA256", "MD5", "Hashes", "Rule severity")
+                  "Target port", "SHA256", "MD5", "Hashes", "Rule severity",
+                  "Parent command", "Source host", "Source IP", "Target host",
+                  "Target user")
 
 
 # Defender names what it found with its own resource syntax, and the raw string
@@ -1365,11 +1375,32 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         except Exception:                                     # noqa: BLE001
             pass
         # EXPLICIT: surface real per-event evidence so the narrative can cite specifics.
-        if eff_detail == "explicit" and (sev.at_least(f.severity, "high")
+        # Medium too: the case floor is medium, so a medium finding IS a finding -- yet
+        # it reached the model as a bare title (APT29 Day 2's entry point, "Rundll32
+        # Spawned Via Explorer", and "WebDAV Temporary Local File Creation", both medium).
+        if eff_detail == "explicit" and (sev.at_least(f.severity, "medium")
                                          or f.kind == "cross_host"):
             ev = _finding_evidence(graph, f)
             if ev:
                 fd["evidence"] = ev
+        # A burst / related group IS several detections, and the model only got its
+        # title and the first 8 rule names alphabetically. Measured on APT29 Day 1: the
+        # SCRANTON burst held screen capture, clipboard capture, a certificate export
+        # and the WebDAV exfil to 192.168.0.4, and the report missed all four -- one
+        # even said "no outbound destination is provided". Each member now comes with
+        # its own lines (short: 2 per member, 600 chars, so a 25-member burst stays
+        # small; the finding's own evidence above keeps full length).
+        if eff_detail == "explicit" and f.parts:
+            mem = []
+            for p in f.parts:
+                m = {"title": p.get("title"), "ts": p.get("ts"), "hits": p.get("hits"),
+                     "severity": p.get("severity")}
+                pev = _finding_evidence(graph, _SimpleNS(entity_ids=p.get("entity_ids") or []),
+                                        cap_events=MEMBER_EVENTS, cap_chars=MEMBER_EVIDENCE_CHARS)
+                if pev:
+                    m["evidence"] = pev
+                mem.append(m)
+            fd["members"] = mem
         return fd
 
     # The payload TELLS THE MODEL its altitude, so a forced one has to reach here too
