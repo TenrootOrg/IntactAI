@@ -387,8 +387,12 @@ class ActivityBeforeTheCurrentName(unittest.TestCase):
         self.assertEqual([False], outside, mft)
 
     def test_every_report_prompt_carries_the_rule(self):
-        with open(os.path.join(ROOT, "modules/backend/services/fusion/llm_sim.py"), encoding="utf-8") as f:
-            self.assertEqual(3, f.read().count("before_current_name=true"))
+        """The prompts a report is actually written with: focused, and each macro phase.
+        (This counted 3 occurrences in llm_sim.py, and two were in prompts nothing
+        called -- so the phase prompt, which macro reports use, never had the rule.)"""
+        from services.fusion import llm_sim
+        for name in ("REPORT_SYSTEM_PROMPT_FOCUSED", "PHASE_SYSTEM_PROMPT"):
+            self.assertIn("before_current_name=true", getattr(llm_sim, name), name)
 
     def test_limitations_names_the_earlier_names(self):
         g = self._renamed()
