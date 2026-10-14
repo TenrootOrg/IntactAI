@@ -28,7 +28,7 @@ single ``call_llm`` invocation records to the workflow row's
 from __future__ import annotations
 
 import os
-import shutil
+import threading
 import time
 import traceback
 from typing import Any, Callable
@@ -42,7 +42,7 @@ from services.workflow_service import (
     unregister_cancel,
     update_run_status,
 )
-from .acquire import acquire_memory_dump, AcquisitionError
+from .acquire import acquire_memory_dump, AcquisitionError, release_disk, reserve_disk
 from .cleanup import cleanup_after_run
 from .defaults import (
     ACQUISITION_DEFAULTS,
@@ -373,17 +373,6 @@ def _disk_preflight(
     cleanest signal. Falls back to 8 GiB (a typical Win10 desktop)
     when unknown — preflight is a safety net, not a hard SLA.
     """
-    try:
-        # Must check dumps_dir's own filesystem, not "/" — dumps_dir is
-        # typically a separate bind-mounted data volume, and "/" being
-        # roomy tells us nothing about whether the actual destination has
-        # room for a multi-GB dump (see acquire.py's _preflight_capacity
-        # for the same pattern already done correctly).
-        os.makedirs(dumps_dir, exist_ok=True)
-        free_bytes = shutil.disk_usage(dumps_dir).free
-    except OSError as e:
-        add_log_to_run(run_id, f"preflight: disk_usage failed: {e}", "warning")
-        return
     # Default 4 GiB if Velociraptor doesn't expose total_memory_bytes.
     # Most observed in-prod dumps run 3-5 GB on Win10/11 clients with
     # 4-8 GB RAM; using 4 GiB as the assumption keeps preflight from
@@ -392,17 +381,33 @@ def _disk_preflight(
     # in DISK_PREFLIGHT_MULTIPLIER provides the safety margin.
     est = mem_bytes_estimate or (4 * 1024 * 1024 * 1024)
     required = int(est * DISK_PREFLIGHT_MULTIPLIER)
+    try:
+        # Must check dumps_dir's own filesystem, not "/" — dumps_dir is
+        # typically a separate bind-mounted data volume, and "/" being
+        # roomy tells us nothing about whether the actual destination has
+        # room for a multi-GB dump (see acquire.py's _preflight_capacity
+        # for the same pattern already done correctly).
+        os.makedirs(dumps_dir, exist_ok=True)
+        # Free space minus what other memory runs already reserved — free
+        # space alone passes every concurrent run (see acquire.reserve_disk).
+        free_bytes, held = reserve_disk(run_id, dumps_dir, required)
+    except OSError as e:
+        add_log_to_run(run_id, f"preflight: disk_usage failed: {e}", "warning")
+        return
     add_log_to_run(
         run_id,
         f"preflight: free={free_bytes // 1024 // 1024} MB "
+        f"reserved-by-other-runs={held // 1024 // 1024} MB "
         f"required>={required // 1024 // 1024} MB "
         f"(estimate {est // 1024 // 1024} MB × {DISK_PREFLIGHT_MULTIPLIER})",
         "info",
     )
-    if free_bytes < required:
+    if free_bytes - held < required:
         raise RuntimeError(
             f"insufficient disk: need ≥ {required // 1024 // 1024} MB free, "
-            f"have {free_bytes // 1024 // 1024} MB"
+            f"have {(free_bytes - held) // 1024 // 1024} MB "
+            f"({free_bytes // 1024 // 1024} MB free, {held // 1024 // 1024} MB "
+            f"reserved by other memory runs still in progress)"
         )
 
 
@@ -592,6 +597,82 @@ def _persist_fusion_payload(run_id, client, evidence_id, log) -> None:
 
 
 # ---------------------------------------------------------------------------
+# How many memory runs may work at once
+# ---------------------------------------------------------------------------
+# A scheduled capture used to start one pipeline per client in the same tick:
+# 1,000 hosts meant 1,000 multi-GB images arriving together plus 1,000 VolWeb
+# analyses. Every caller (scheduler, Memory page, uploads) goes through
+# run_memory_pipeline, so the limit lives here and bounds them all. The rest
+# wait their turn and say so in their log.
+#
+# A counter under a Condition rather than a Semaphore so the limit is re-read
+# while runs wait: a Settings change applies without a backend restart.
+MAX_CONCURRENT_RUNS_DEFAULT = 2
+_RUN_SLOTS = threading.Condition()
+_runs_active = 0
+# (read at, value). Every queued run re-checks the limit each few seconds, and
+# a fleet capture can queue hundreds: without this each check is a full
+# frontend_config read under _RUN_SLOTS.
+_limit_cache: list = [float("-inf"), MAX_CONCURRENT_RUNS_DEFAULT]
+
+
+def _max_concurrent_runs() -> int:
+    """Env ``MEMORY_MAX_CONCURRENT_RUNS``, then frontend_config
+    ``memory.max_concurrent_runs``, then 2 — the same order volweb_client's
+    settings use. 0 or less means no limit. Re-read at most every 10 s."""
+    now = time.monotonic()
+    if now - _limit_cache[0] < 10:
+        return _limit_cache[1]
+    raw = os.environ.get("MEMORY_MAX_CONCURRENT_RUNS")
+    if not raw:
+        try:
+            from services.storage.config_store import load_frontend_config  # local import — boot ordering
+            raw = ((load_frontend_config() or {}).get("memory") or {}).get("max_concurrent_runs")
+        except Exception:
+            raw = None
+    try:
+        value = int(raw) if raw not in (None, "") else MAX_CONCURRENT_RUNS_DEFAULT
+    except (TypeError, ValueError):
+        value = MAX_CONCURRENT_RUNS_DEFAULT
+    _limit_cache[:] = [now, value]
+    return value
+
+
+def _take_run_slot(cancel, log) -> None:
+    """Block until this run may start. Raises if the run is stopped while it
+    waits, so a queued run can be cancelled like any other. Logs outside the
+    lock: a log write can sit on SQLite's busy timeout, and a finishing run
+    must never wait on that to hand its slot over."""
+    global _runs_active
+    told = False
+    while True:
+        if cancel():
+            raise RuntimeError("cancelled while queued")
+        limit = _max_concurrent_runs()
+        with _RUN_SLOTS:
+            if limit <= 0 or _runs_active < limit:
+                _runs_active += 1
+                break
+            if told:
+                _RUN_SLOTS.wait(timeout=5)
+                continue
+            active = _runs_active
+        log(f"pipeline: queued — {active} memory run(s) already in progress "
+            f"(limit {limit}, setting memory.max_concurrent_runs); this run starts "
+            f"when one finishes", "info")
+        told = True
+    if told:
+        log("pipeline: a slot is free — starting", "info")
+
+
+def _give_run_slot() -> None:
+    global _runs_active
+    with _RUN_SLOTS:
+        _runs_active -= 1
+        _RUN_SLOTS.notify_all()
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -711,6 +792,7 @@ def run_memory_pipeline(
 
     started_at = time.time()
     cumulative = 0
+    holds_slot = False
 
     try:
         # ----------------------------------------------------------------
@@ -719,6 +801,9 @@ def run_memory_pipeline(
         if mode not in ("yara", "plugin", "layered"):
             raise ValueError(f"invalid mode {mode!r}")
         log(f"pipeline: mode={mode} client={client_id} case={case_name!r}")
+        _take_run_slot(cancel, log)
+        holds_slot = True
+        started_at = time.time()   # "complete in Ns" is the work, not the queue
         _persist_cleanup_state(run_id, client_id=client_id or None)
         if keep_dump:
             # Persist the instruction, not just the intent: the boot reaper
@@ -1153,6 +1238,9 @@ def run_memory_pipeline(
             )
         update_run_status(run_id, "failed", progress=0, error=err_msg)
     finally:
+        if holds_slot:
+            _give_run_slot()
+        release_disk(run_id)
         unregister_cancel(run_id)
 
 
