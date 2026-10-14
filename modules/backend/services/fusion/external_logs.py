@@ -65,17 +65,21 @@ _NAMES = {
               "fqdn sni servername",
     "hash": "hash sha256 sha1 md5 filehash filehashsha256 processhashsha256 sha256hash "
             "hashsha256 filesha256 imphash",
-    "rule": "rulename rule signature alertname alert title threatname detectname "
-            "detectionname name eventname cefname alerttitle tactic category "
-            "signaturename threat",
+    "rule": "alertname alerttitle rulename detectionname threatname signaturename displaymessage "
+            "rule signature alert title detectname eventname cefname name threat tactic "
+            "category eventtype",
     "severity": "severity eventseverity level priority risklevel severitylevel "
                 "alertseverity cefseverity sev riskscore",
     "message": "message msg description details eventmessage summary",
 }
-_NAME_OF = {}
+# Earlier in a field's list = a better name for it: when an export has several
+# (Okta: displayMessage and eventType), the better one is the column used.
+_NAME_OF, _RANK = {}, {}
 for _f, _ns in _NAMES.items():
-    for _n in _ns.split():
-        _NAME_OF.setdefault(re.sub(r"[^a-z0-9]", "", _n), _f)
+    for _i, _n in enumerate(_ns.split()):
+        _k = re.sub(r"[^a-z0-9]", "", _n)
+        if _k not in _NAME_OF:
+            _NAME_OF[_k], _RANK[_k] = _f, _i
 
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 _HASH = re.compile(r"\b(?:[a-fA-F0-9]{64}|[a-fA-F0-9]{40}|[a-fA-F0-9]{32})\b")
@@ -279,11 +283,20 @@ def detect_columns(rows, sample=300) -> dict:
         for k in r:
             cols.setdefault(k, None)
     out: dict = {}
+    best: dict = {}
     for k in cols:                      # by name; dotted names also by their last part
         nk = _norm_name(k)
-        f = _NAME_OF.get(nk) or _NAME_OF.get(_norm_name(str(k).rsplit(".", 1)[-1]))
-        if f and f not in out:
-            out[f] = k
+        if nk not in _NAME_OF:
+            nk = _norm_name(str(k).rsplit(".", 1)[-1])
+        f = _NAME_OF.get(nk)
+        if f and (f not in best or _RANK[nk] < best[f]):
+            out[f], best[f] = k, _RANK[nk]
+    # A "date" AND a "time" column (FortiGate, W3C/IIS): "time" is only the clock;
+    # the moment is date + time, joined in normalize().
+    if _norm_name(out.get("ts", "")) == "time":
+        d = next((k for k in cols if _norm_name(k) == "date"), None)
+        if d:
+            out["ts"] = d
     taken = set(out.values())
     shapes: dict = {}
     for k in cols:

@@ -69,7 +69,7 @@ def map_external(collected: dict, *, run_id: str, data_type: str, label: str) ->
             assets = []
             if _hostish(n.get("host")):
                 hid = keys.asset_id_from_host(n["host"])
-                add(hid, "asset", keys.norm_host(n["host"]), {"hostname": n["host"]}, ts, loc, [])
+                add(hid, "asset", str(n["host"]).strip().split(".")[0], {"hostname": n["host"]}, ts, loc, [])
                 assets = [hid]
             joins = []
             vals = [n.get("src_ip"), n.get("dst_ip"), n.get("domain"), n.get("hash")]
