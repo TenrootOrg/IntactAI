@@ -234,13 +234,13 @@ document.addEventListener('alpine:initialized', () => {
             }
         }, 5000);
 
-        // Slower refresh for services and clients (10 seconds)
+        // Slower refresh for services and clients (10 seconds). The Timesketch
+        // client picker is NOT redrawn here: on a fleet it is ~1,000 rows, and a
+        // redraw every 10 s jumped the operator's scroll and selection. It loads
+        // when the tab opens; its ↻ button reloads it on demand.
         setInterval(() => {
             Alpine.store('services').checkAll();
             Alpine.store('services').loadClients();
-            if (Alpine.store('app').currentTab === 'modules-timesketch') {
-                populateTimeSketchClients();
-            }
         }, 10000);
     }
 });
