@@ -19,62 +19,49 @@ But a Fetch pressed minutes later is not residue. It is a new operation the
 operator started, on purpose, on a run they know is finished. Callers that own
 such an operation pass force=True; everything else keeps the old behaviour.
 
-The REAL function is lifted out of workflow_service.py and executed against
-stubs, so this cannot drift from what ships.
+The REAL add_log_to_run runs against a real SQLite database in a temp dir
+(created by the product's own init_storage), so this cannot drift from what
+ships. It used to be lifted out by AST and run against stubs; since the guard
+moved into the INSERT itself (storage.append_workflow_log) a stub would test
+nothing.
 """
 
-import ast
 import os
+import sys
+import tempfile
 import unittest
 
+os.environ["INTACT_STORAGE_BASE"] = tempfile.mkdtemp(prefix="intact-postcancel-")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SERVICE = os.path.join(ROOT, "modules/backend/services/workflow_service.py")
+sys.path[:0] = [os.path.join(ROOT, "modules", "backend"), os.path.join(ROOT, "tests")]
 
+import _optional_deps  # noqa: F401,E402
+from services.storage import delete_workflow, get_workflow, init_storage, save_workflow  # noqa: E402
 
-def _load():
-    with open(SERVICE, encoding="utf-8") as f:
-        src = f.read()
-    tree = ast.parse(src)
-    node = next(n for n in ast.walk(tree)
-                if isinstance(n, ast.FunctionDef) and n.name == "add_log_to_run")
-
-    import contextlib
-    import datetime as _dt
-    state = {"wf": None, "saved": 0}
-
-    ns = {
-        "_state": state,
-        "datetime": _dt.datetime,
-        "_get_run_log_lock": lambda rid: contextlib.nullcontext(),
-        "file_get_workflow": lambda rid: state["wf"],
-    }
-
-    def _save(wf):
-        state["wf"] = wf
-        state["saved"] += 1
-    ns["save_workflow"] = _save
-
-    exec(compile(ast.Module(body=[node], type_ignores=[]), SERVICE, "exec"), ns)
-    return ns, state
-
-
-NS, STATE = _load()
-add_log_to_run = NS["add_log_to_run"]
+init_storage()
+from services.workflow_service import add_log_to_run  # noqa: E402
 
 
 def _wf(status):
-    return {"run_id": "r1", "status": status, "logs": []}
+    """(Re)create run r1 with this status; None leaves no run at all."""
+    delete_workflow("r1")
+    if status is not None:
+        save_workflow({"run_id": "r1", "status": status, "logs": []})
+
+
+def _run():
+    return get_workflow("r1")
 
 
 def _logs():
-    return [l["message"] for l in (STATE["wf"] or {}).get("logs", [])]
+    return [l["message"] for l in (_run() or {}).get("logs", [])]
 
 
 class TestRaceResidueIsStillDropped(unittest.TestCase):
     """The guard's original purpose, which the fix must not break."""
 
     def setUp(self):
-        STATE["wf"] = _wf("cancelled")
+        _wf("cancelled")
 
     def test_an_unforced_log_on_a_cancelled_run_is_dropped(self):
         add_log_to_run("r1", "[Velociraptor] All flows completed naturally", "success")
@@ -91,7 +78,7 @@ class TestADeliberateOperationIsHeard(unittest.TestCase):
     """The reported bug."""
 
     def setUp(self):
-        STATE["wf"] = _wf("cancelled")
+        _wf("cancelled")
 
     def test_a_forced_log_reaches_a_cancelled_run(self):
         add_log_to_run("r1", "[Fetch] Asking Velociraptor for this run's results",
@@ -111,7 +98,7 @@ class TestADeliberateOperationIsHeard(unittest.TestCase):
 
     def test_forcing_an_error_still_counts_it(self):
         add_log_to_run("r1", "[Fetch] Failed: ConnectionError", "error", force=True)
-        self.assertEqual(STATE["wf"].get("error_count"), 1,
+        self.assertEqual(_run().get("error_count"), 1,
                          "a forced error must still reach error_count")
 
 
@@ -121,14 +108,14 @@ class TestEveryOtherStatusIsUnaffected(unittest.TestCase):
     def test_a_running_run_logs_without_force(self):
         for status in ("running", "pending", "completed", "failed"):
             with self.subTest(status=status):
-                STATE["wf"] = _wf(status)
+                _wf(status)
                 add_log_to_run("r1", "hello")
                 self.assertEqual(_logs(), ["hello"])
 
     def test_a_missing_workflow_is_a_no_op(self):
-        STATE["wf"] = None
+        _wf(None)
         add_log_to_run("r1", "hello", force=True)          # must not raise
-        self.assertIsNone(STATE["wf"])
+        self.assertIsNone(_run())
 
 
 if __name__ == "__main__":
