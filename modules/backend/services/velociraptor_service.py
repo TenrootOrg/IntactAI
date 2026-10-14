@@ -3,6 +3,7 @@
 Velociraptor Service - gRPC connection, VQL queries, client operations
 """
 
+import base64
 import subprocess
 import json
 import shlex
@@ -37,16 +38,14 @@ def get_clients_from_snapshot(include_offline=False):
             existing-flow analysis where the data is already collected and
             client liveness is irrelevant.
     """
-    channel = None
+    print(f"[CLIENT-LIST] Querying clients via VQL API (real-time, include_offline={include_offline})...", flush=True)
+    # Outside the try: the fallback raises when the snapshot can't be decoded, and
+    # the except below would read it a second time.
+    channel = setup_velociraptor_connection()
+    if not channel:
+        print("[CLIENT-LIST] Failed to setup connection, falling back to snapshot file", flush=True)
+        return get_clients_from_snapshot_file(include_offline)
     try:
-        print(f"[CLIENT-LIST] Querying clients via VQL API (real-time, include_offline={include_offline})...", flush=True)
-
-        # Setup gRPC connection
-        channel = setup_velociraptor_connection()
-        if not channel:
-            print("[CLIENT-LIST] Failed to setup connection, falling back to snapshot file", flush=True)
-            return get_clients_from_snapshot_file(include_offline)
-
         stub = api_pb2_grpc.APIStub(channel)
 
         # VQL query to get clients with their info. Online filter only
@@ -145,92 +144,127 @@ def _is_import(row):
     return classify([row], None)["counts"]["imported"] == 1
 
 
+# actions_proto.ClientInfo field numbers -- what each snapshot record's `info` blob
+# is. Read from the protobuf descriptor embedded in the v0.77.1 server binary
+# (2026-10-14), not guessed: wire-format numbers are stable across versions.
+_CLIENT_INFO_FIELDS = {1: "client_id", 3: "hostname", 5: "os", 6: "os_version", 10: "last_ip",
+                       12: "version", 13: "agent", 15: "labels", 16: "interrogated"}
+
+
+def _client_info_strings(blob):
+    """The string fields of a serialized ClientInfo (protobuf wire format)."""
+    out, i = {"labels": []}, 0
+
+    def varint():
+        nonlocal i
+        n = shift = 0
+        while True:
+            b = blob[i]
+            i += 1
+            n |= (b & 0x7f) << shift
+            shift += 7
+            if b < 0x80:
+                return n
+    while i < len(blob):
+        key = varint()
+        num, wire = key >> 3, key & 7
+        if wire == 0:
+            varint()
+        elif wire == 1:
+            i += 8
+        elif wire == 5:
+            i += 4
+        elif wire == 2:
+            n = varint()
+            val, i = blob[i:i + n], i + n
+            if i > len(blob):
+                raise ValueError("truncated record")
+            name = _CLIENT_INFO_FIELDS.get(num)
+            if name == "labels":
+                out["labels"].append(val.decode("utf-8", "replace"))
+            elif name:
+                out[name] = val.decode("utf-8", "replace")
+        else:
+            raise ValueError(f"wire type {wire}")
+    return out
+
+
+def _decode_client_info(info, client_id):
+    """A snapshot record's `info` -> its ClientInfo strings. Hex is what this code
+    has always read; base64 is how Go's encoder writes []byte, so both are tried.
+    The decoded client_id must match the record's, so a wrong guess can't pass."""
+    for decode in (bytes.fromhex, base64.b64decode):
+        try:
+            got = _client_info_strings(decode(info))
+        except (ValueError, IndexError):        # binascii.Error is a ValueError
+            continue
+        if got.get("client_id") == client_id:
+            return got
+    raise ValueError(f"{client_id}: info is not a ClientInfo record")
+
+
 def get_clients_from_snapshot_file(include_offline=True):
     """Read clients from Velociraptor snapshot file (fallback method only).
 
-    The file says nothing about when a client was last seen. This used to stamp
-    every client "seen now", so with the API down the whole fleet showed online and
-    the pickers pre-selected all of it. Liveness is unknown here: clients are
-    listed as not seen (last_seen_at 0), and an online-only request gets none."""
+    This used to stamp every client "seen now", so with the API down the whole fleet
+    showed online and the pickers pre-selected all of it. The record's ping is only
+    as fresh as the last snapshot flush, and with the API down nothing can be sent
+    anyway: clients are listed as not seen (last_seen_at 0), and an online-only
+    request gets none.
+
+    Hostnames used to be guessed by searching the raw bytes for "DESKTOP-", so every
+    other host became "Unknown" -- at 1,000 hosts, 1,000 indistinguishable rows. Each
+    record is now decoded as the ClientInfo protobuf it is. If the snapshot has
+    records and none decode, this raises instead of listing a fleet of "Unknown"."""
     if not include_offline:
         print("[CLIENT-LIST] Snapshot fallback cannot tell who is online -- returning none", flush=True)
         return []
     try:
         print("[CLIENT-LIST] Using fallback snapshot file method...", flush=True)
-        cmd = [
+        result = subprocess.run([
             "docker", "exec", VELOCIRAPTOR_CONTAINER,
             "cat", VELOCIRAPTOR_SNAPSHOT_PATH
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            clients = []
-            for line in result.stdout.strip().split('\n'):
-                if line.strip():
-                    try:
-                        data = json.loads(line)
-
-                        # Get client_id from JSON (should be present directly)
-                        client_id = data.get('client_id', '')
-
-                        # Skip server and non-client entries
-                        if not client_id or client_id == 'server' or not client_id.startswith('C.'):
-                            continue
-
-                        # Decode the hex-encoded info field
-                        if 'info' in data:
-                            info_hex = data['info']
-                            info_bytes = bytes.fromhex(info_hex)
-                            info_str = info_bytes.decode('utf-8', errors='ignore')
-
-                            # Extract hostname (appears after client_id)
-                            hostname = "Unknown"
-                            if "DESKTOP-" in info_str:
-                                # Find DESKTOP- pattern
-                                idx = info_str.find("DESKTOP-")
-                                if idx != -1:
-                                    # Extract until next non-alphanumeric
-                                    hostname = ""
-                                    for char in info_str[idx:]:
-                                        if char.isalnum() or char in ['-', '_']:
-                                            hostname += char
-                                        else:
-                                            break
-
-                            # Extract OS (windows/linux/mac appears in the data)
-                            os_system = "Unknown"
-                            if "windows" in info_str.lower():
-                                os_system = "Windows"
-                            elif "linux" in info_str.lower():
-                                os_system = "Linux"
-                            elif "darwin" in info_str.lower() or "mac" in info_str.lower():
-                                os_system = "macOS"
-
-                            # Extract IP (looks for pattern like 192.168.1.29)
-                            last_ip = ""
-                            import re
-                            ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', info_str)
-                            if ip_match:
-                                last_ip = ip_match.group(1)
-
-                            last_seen_at = 0        # unknown -- never claim "online"
-
-                            clients.append({
-                                "client_id": client_id,
-                                "hostname": hostname,
-                                "os": os_system,
-                                "os_version": "",
-                                "last_seen_at": last_seen_at,
-                                "last_ip": last_ip
-                            })
-                    except Exception as e:
-                        print(f"[CLIENT-LIST] Error parsing client record: {e}", flush=True)
-                        continue
-            print(f"[CLIENT-LIST] Found {len(clients)} clients from snapshot file", flush=True)
-            return clients
-        return []
+        ], capture_output=True, text=True, timeout=10)
     except Exception as e:
         print(f"[CLIENT-LIST] Error reading snapshot: {e}", flush=True)
         return []
+    if result.returncode != 0:
+        return []
+    clients, undecodable = [], 0
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+            client_id = data.get('client_id') or ''
+            # Skip server and non-client entries
+            if not client_id.startswith('C.'):
+                continue
+            info = _decode_client_info(data.get('info') or '', client_id)
+        except Exception as e:
+            undecodable += 1
+            if undecodable <= 3:
+                print(f"[CLIENT-LIST] Error parsing client record: {e}", flush=True)
+            continue
+        agent = {k: info.get(k, '') for k in ('agent', 'version', 'interrogated')}
+        clients.append({
+            "client_id": client_id,
+            "hostname": info.get("hostname", ""),
+            "os": info.get("os", ""),
+            "os_version": info.get("os_version", ""),
+            "labels": [l for l in info["labels"] if l],
+            "last_seen_at": 0,      # unknown -- never claim "online"
+            "last_ip": info.get("last_ip", ""),
+            "imported": _is_import(agent),
+        })
+    if undecodable:
+        print(f"[CLIENT-LIST] {undecodable} snapshot record(s) could not be decoded", flush=True)
+        if not clients:
+            raise RuntimeError("The Velociraptor API is unreachable and its client snapshot "
+                               "could not be decoded; the client list is unavailable until "
+                               "the API answers again")
+    print(f"[CLIENT-LIST] Found {len(clients)} clients from snapshot file", flush=True)
+    return clients
 
 def load_velociraptor_api_config(stale=None):
     """The parsed API config (api.config.yaml), read from the Velociraptor container
