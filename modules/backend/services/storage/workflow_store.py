@@ -171,7 +171,7 @@ def list_workflow_summaries(case_id: Optional[str] = None, automation_type: Opti
     return runs, total
 
 
-def purge_finished_workflows(days: int, keep_types,
+def purge_finished_workflows(days: int, keep_types, system_case_id=None,
                              terminal=("completed", "success", "failed", "cancelled")) -> List[str]:
     """Delete finished runs last touched more than `days` ago, with their log
     lines. Returns the deleted run ids.
@@ -181,6 +181,10 @@ def purge_finished_workflows(days: int, keep_types,
     case-member types), and any run a case lists in its legacy member_run_ids.
     Those are a case's evidence -- fusion reads every member, failed and
     cancelled included -- and they go when their case is deleted, not by age.
+    Likewise any run tagged to a case that still exists (other than the System
+    workspace `system_case_id`): an offline import or upload is that case's
+    history, and a run holding a `bundle_path` (export, support bundle) is the
+    only UI path to its zip on disk.
     Also sweeps log lines whose run no longer exists (a delete path that
     missed them)."""
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
@@ -192,8 +196,11 @@ def purge_finished_workflows(days: int, keep_types,
         f"AND automation_type NOT IN ({','.join('?' * len(keep))}) "
         f"AND run_id NOT IN (SELECT j.value FROM workflows c, json_each("
         f"CASE WHEN json_valid(c.details) THEN json_extract(c.details, '$.member_run_ids') END) j "
-        f"WHERE c.automation_type = 'case' AND j.value IS NOT NULL)",
-        (*terminal, cutoff, *keep))]
+        f"WHERE c.automation_type = 'case' AND j.value IS NOT NULL) "
+        f"AND NOT (case_id IS NOT NULL AND case_id IS NOT ? AND case_id IN "
+        f"(SELECT run_id FROM workflows WHERE automation_type = 'case')) "
+        f"AND (CASE WHEN json_valid(details) THEN json_extract(details, '$.bundle_path') END) IS NULL",
+        (*terminal, cutoff, *keep, system_case_id))]
     for i in range(0, len(ids), 500):
         chunk = ids[i:i + 500]
         # Status re-checked: a run can be put back to 'running' (a re-run)

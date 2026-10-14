@@ -948,13 +948,15 @@ def _retention_days():
 
 def purge_old_runs():
     """Delete finished runs older than the retention window, with their logs.
-    Case containers and case-member runs are never aged out (see
-    storage.purge_finished_workflows); they go when their case is deleted."""
+    Case containers, case-member runs and anything tagged to a live case are
+    never aged out (see storage.purge_finished_workflows); they go when their
+    case is deleted. Upgrade history is kept too -- a few rows a year."""
     days = _retention_days()
     if not days:
         return []
     from services.storage import purge_finished_workflows
-    gone = purge_finished_workflows(days, AGENTIC_TYPES | INTERNAL_CASE_TYPES)
+    gone = purge_finished_workflows(days, AGENTIC_TYPES | INTERNAL_CASE_TYPES
+                                    | {"upgrade", "online_upgrade"}, _system_case_id())
     if gone:
         print(f"[WORKFLOW] Retention: deleted {len(gone)} finished run(s) older than {days} day(s)",
               flush=True)
