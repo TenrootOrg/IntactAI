@@ -373,6 +373,15 @@ layouts:
                file_digest, cloud, url_index, user_agent, file_type, x_forwarded_for, referer, sender, subject,
                recipient, report_id, dg_1, dg_2, dg_3, dg_4, vsys_name, device_name, future_use_6, src_vm_uuid,
                dst_vm_uuid, http_method]
+  - id: aws-vpcflow-v2
+    reason: "AWS VPC Flow Logs, default (version 2) format, no header. Unnamed, a REJECTed RDP attempt from the internet read as an answered one"
+    line: '^2 (\d{12}|unknown) eni-[0-9a-f]+ \S+ \S+ \S+ \S+ \S+ \S+ \S+ \d+ \d+ (ACCEPT|REJECT|-) (OK|NODATA|SKIPDATA)\s*$'
+    delimiter: " "
+    quote: none
+    empty: ["-"]
+    columns:
+      default: [version, account_id, interface_id, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes,
+                start, end, action, log_status]
   - id: umbrella-dns-csv
     reason: "Cisco Umbrella DNS log export (no header), documented field order"
     line: '^"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}","[^"]*","[^"]*","[\d.]+","[\d.]+","(?:Allowed|Blocked)"'

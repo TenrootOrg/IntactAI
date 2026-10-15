@@ -146,6 +146,11 @@ class Network(unittest.TestCase):
         ipt = "\n".join(f"Jan  8 03:3{i}:09 fw kernel: iptables DROP_INPUT: IN=eth0 OUT= SRC={ATK} "
                         f"DST=172.16.54.114 LEN=52 PROTO=TCP SPT={17805 + i} DPT=445 SYN" for i in range(5))
         self.assertEqual([], found(ipt), "a netfilter DROP prefix is a refused connection")
+        vpc = "\n".join(f"2 123456789010 eni-1235b8ca {ATK} 10.0.1.14 {40000 + i} 3389 6 1 40 "
+                         f"{BASE + i} {BASE + i + 50} REJECT OK" for i in range(5))
+        self.assertEqual([], found(vpc), "an AWS VPC flow REJECT is a refused connection")
+        self.assertEqual([("Remote admin service reached from the internet", "medium")],
+                         found(vpc.replace("REJECT", "ACCEPT")))
 
     def test_beaconing(self):
         rnd = random.Random(3)
