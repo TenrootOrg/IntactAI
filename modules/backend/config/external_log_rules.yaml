@@ -1,0 +1,124 @@
+# Detection rules for LOG DATA attached to a case (services/fusion/external_logs.py).
+#
+# Fusion takes DETECTIONS from attached logs, never the flat rows: a row enters
+# the case graph only when a rule here (or the row's own stated severity) says
+# it is one. Every other row stays searchable from chat and is never sent to a
+# model. Re-read when the file changes; a box can add rules or switch shipped
+# ones off in <data>/external_log_rules.local.yaml (same format, plus
+# `disable: [rule-id, ...]`).
+#
+# RULES OF THE ROAD
+# - Deterministic: a field name and a value pattern, nothing inferred.
+# - A rule names a product's OWN verdict (its detection engine already decided)
+#   or a generic shape; it never invents severity from an ordinary event.
+# - Every rule proves itself: `fires` rows must match, `quiet` rows must not.
+#   They run in tests/test_external_log_rules.py -- a rule without both fails it.
+#
+# native: the verdict the product itself wrote.
+#   fields:   column names, compared on letters+digits only and also as the last
+#             part of a dotted name ("debugContext.debugData.threatSuspected"),
+#             and as keys inside nested JSON (a list of findings in one column).
+#   match:    regex, case-insensitive, against the whole value.
+#   severity: what a hit is worth (medium / high / critical). The row's own
+#             stated severity wins when it is higher.
+
+version: 1
+
+native:
+
+  - id: threat-flag
+    reason: "the product flagged the event itself (a threat / malicious boolean)"
+    fields: [threatSuspected, isThreat, threatDetected, isMalicious, malicious]
+    match: 'true|1|yes'
+    severity: high
+    examples:
+      fires: [{debugContext.debugData.threatSuspected: "true"}, {isMalicious: 1}]
+      quiet: [{debugContext.debugData.threatSuspected: "false"}, {malicious: "no"}]
+
+  - id: malicious-verdict
+    reason: "the product's verdict or classification names a malicious kind"
+    fields: [verdict, confidenceLevel, classification, threatClassification, threatType,
+             threatCategory, malwareCategory, category, categories, urlcat, urlCategory]
+    match: 'malicious|malware|phish(ing)?|ransomware|trojan|backdoor|exploit|botnet|spyware|keylogger|worm|virus|rootkit|cryptomin(er|ing)|command[ -]and[ -]control|c2|malicious (content|sites?|urls?)|phishing and fraud|malware sites?'
+    severity: high
+    examples:
+      fires: [{confidenceLevel: "malicious"}, {threatsInfoMap.classification: "phish"}, {category: "Malicious"},
+              {urlcat: "Malicious Content"}, {categories: "Malware"}]
+      quiet: [{category: "Business and Economy"}, {verdict: "benign"}, {classification: "Malware Protection Update"}]
+
+  - id: suspicious-verdict
+    reason: "the product's verdict says suspicious / potentially unwanted"
+    fields: [verdict, confidenceLevel, classification, threatClassification, category]
+    match: 'suspicious|pua|pup|potentially unwanted( application| program)?|grayware|riskware|adware'
+    severity: medium
+    examples:
+      fires: [{confidenceLevel: "suspicious"}, {classification: "PUA"}]
+      quiet: [{confidenceLevel: "n/a"}, {category: "Software Updates"}]
+
+  - id: identity-risk-state
+    reason: "the identity provider marked the account or sign-in at risk (Entra riskState)"
+    fields: [riskState]
+    match: 'atRisk|confirmedCompromised'
+    severity: high
+    examples:
+      fires: [{riskState: "atRisk"}, {riskState: "confirmedCompromised"}]
+      quiet: [{riskState: "none"}, {riskState: "dismissed"}, {riskState: "remediated"}]
+
+  - id: identity-risk-event
+    reason: "the identity provider attached a risk detection to the sign-in (Entra riskEventTypes)"
+    fields: [riskEventTypes, riskEventTypes_v2, riskEventType]
+    match: '(?!none$|\[\]$).+'
+    severity: medium
+    examples:
+      fires: [{riskEventTypes_v2: "unfamiliarFeatures"}, {riskEventType: "anonymizedIPAddress"}]
+      quiet: [{riskEventTypes_v2: "none"}, {riskEventTypes: "[]"}]
+
+  - id: identity-provider-threat-event
+    reason: "the identity provider's own security event (Okta, Google Workspace, Duo, Auth0, Ping)"
+    fields: [eventType, eventName, events, name, type, reason, result, action.type]
+    match: 'security\.threat\.detected|user\.account\.lock(\.limit)?|user\.mfa\.attempt_bypass|security\.request\.blocked|user\.session\.impersonation\.(grant|initiate)|suspicious_login(_less_secure_app)?|suspicious_programmatic_login|gov_attack_warning|leaked_password|account_disabled_(password_leak|hijacked|spamming)|user_marked_fraud|fraud|pwd_leak|signup_pwd_leak|limit_wc|limit_mu|USER\.ACCESS_DENIED_BY_RISK|RISK\.EVALUATED.*HIGH'
+    severity: high
+    examples:
+      fires: [{eventType: "security.threat.detected"}, {events: '[{"type": "login", "name": "suspicious_login"}]'},
+              {reason: "user_marked_fraud"}, {type: "pwd_leak"}]
+      quiet: [{eventType: "user.session.start"}, {events: '[{"type": "login", "name": "login_success"}]'},
+              {reason: "user_approved"}, {type: "s"}]
+
+  - id: ids-notice
+    reason: "an IDS notice the sensor raised itself (Zeek notice.log `note`, Module::Name)"
+    fields: [note]
+    match: '[A-Za-z_]+::[A-Za-z_]+'
+    severity: medium
+    examples:
+      fires: [{note: "Scan::Port_Scan"}, {note: "SSL::Invalid_Server_Cert"}]
+      quiet: [{note: "Failed login"}, {notes: "Scan::Port_Scan"}]
+
+  - id: named-threat
+    reason: "the product named the threat it found (AV / IPS / proxy threat name)"
+    fields: [threatName, threat, virusName, malwareName, malwareFamily, attack, attackName,
+             threatContentName, detection, signatureMsg, ipsSignature, avName, spywareName]
+    match: '(?!(none|n/?a|-|0|unknown|null|not ?found|clean|\(9999\)|allowed)$).*[A-Za-z].*'
+    severity: medium
+    examples:
+      fires: [{threatname: "Win32.Backdoor.CobaltStrike"}, {attack: "Backdoor.Cobalt.Strike.Beacon"},
+              {"Threat/Content Name": "Cobalt Strike C2"}]
+      quiet: [{threatname: "None"}, {threat: "-"}, {threatname: "N/A"}]
+
+  - id: waf-attack-score
+    reason: "the WAF scored the request as an attack (Cloudflare: 1-20 = attack)"
+    fields: [WAFAttackScore, attackScore]
+    match: '([1-9]|1[0-9]|20)'
+    severity: medium
+    examples:
+      fires: [{WAFAttackScore: 5}, {WAFAttackScore: "20"}]
+      quiet: [{WAFAttackScore: 21}, {WAFAttackScore: 99}, {WAFAttackScore: 0}]
+
+  - id: nested-severity
+    reason: "a severity written inside a nested result (Chronicle security_result, alert evidence lists)"
+    fields: [severity]
+    nested_only: true
+    match: 'high|critical'
+    severity: high
+    examples:
+      fires: [{security_result: '[{"severity": "HIGH", "rule_name": "Password spray"}]'}]
+      quiet: [{security_result: '[{"severity": "LOW"}]'}, {security_result: '[{"summary": "ok"}]'}]

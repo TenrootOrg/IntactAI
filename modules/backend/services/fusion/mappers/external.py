@@ -121,6 +121,8 @@ def map_external(collected: dict, *, run_id: str, data_type: str, label: str) ->
                     attrs[k] = v
             if n0.get("message"):
                 attrs["message"] = str(n0["message"])[:500]
+            by = sorted({x for h in ep for x in (h[2].get("detected_by") or [])})
+            attrs["detected_by"] = by or ["stated severity"]       # which rule made this a detection
             ents.append(Entity(id=eid, type="event", label=title, attrs=attrs, sources=[MODULE],
                                evidence=[EvidenceRef(MODULE, run_id, h[1]) for h in ep[:_LOCS]],
                                severity=sev, anomaly=_RW[sev], flags=["detection"],

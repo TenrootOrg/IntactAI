@@ -21,6 +21,7 @@ import csv
 import gzip
 import io
 import json
+import os
 import re
 
 from . import keys
@@ -95,7 +96,8 @@ for _f, _ns in _NAMES.items():
 # A dotted key is matched by its longest known suffix ("agent.name" -> agentname,
 # "relatedUser.userName" -> username) -- but never by a bare last word this
 # vague: "name", "type" or "ip" alone say nothing about whose name / which ip.
-_VAGUE = {"name", "type", "id", "value", "ip", "source", "status", "time", "port", "user", "host"}
+_VAGUE = {"name", "type", "id", "value", "ip", "source", "status", "time", "port", "user", "host",
+          "displayname"}
 
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 _HASH = re.compile(r"\b(?:[a-fA-F0-9]{64}|[a-fA-F0-9]{40}|[a-fA-F0-9]{32})\b")
@@ -746,9 +748,11 @@ def _sev_scale(col, vals):
         return "inverted"
     if name == "rulelevel" and top <= 15:
         return 15
+    if name in ("cefseverity", "sev"):                 # CEF / LEEF: 0..10 by definition
+        return 10
     # Numbers that are no severity scale: a syslog level (0..7, 7 = debug), a syslog
     # PRI (0..191), anything past 100. Only words count there.
-    if name in ("level", "pri") or name.endswith("priority") or top > 100:
+    if name in ("level", "pri", "priority") or top > 100:
         return "words"
     return top
 
@@ -777,6 +781,85 @@ def _severity(v, scale) -> str | None:
     return ("low" if n < 40 else "medium" if n < 70 else "high" if n < 90 else "critical")  # 0..100 risk
 
 
+# -- detection rules (config/external_log_rules.yaml) ---------------------------------
+RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                          "config", "external_log_rules.yaml")
+LOCAL_RULES = ("/app/data/external_log_rules.local.yaml",)
+_RULES = {"key": None, "native": []}
+_SEV_RANK = {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+_NESTED_PAIR = re.compile(r'"([A-Za-z0-9_.@-]{1,80})"\s*:\s*"?([^"\n,}\]]{0,300})')
+
+
+def _load_yaml(path):
+    import yaml
+    with open(path) as fh:
+        return yaml.safe_load(fh) or {}
+
+
+def rules() -> dict:
+    """The detection rules, re-read when a file changes. A broken local file never
+    takes the shipped rules down with it: it is said and skipped."""
+    paths = (RULES_PATH,) + LOCAL_RULES
+    key = tuple((p, os.path.getmtime(p) if os.path.exists(p) else None) for p in paths)
+    if key == _RULES["key"]:
+        return _RULES
+    shipped, local = {}, {}
+    try:
+        shipped = _load_yaml(RULES_PATH)
+    except Exception as e:                                 # noqa: BLE001
+        print(f"[EXTERNAL-LOGS] {RULES_PATH} unreadable: {e}", flush=True)
+    for p in LOCAL_RULES:
+        if os.path.exists(p):
+            try:
+                local = _load_yaml(p)
+            except Exception as e:                         # noqa: BLE001
+                print(f"[EXTERNAL-LOGS] {p} unreadable, ignored: {e}", flush=True)
+    off = set(local.get("disable") or [])
+    native = []
+    for r in (local.get("native") or []) + (shipped.get("native") or []):
+        if not isinstance(r, dict) or r.get("id") in off or not r.get("fields") or not r.get("match"):
+            continue
+        try:
+            native.append({"id": r["id"], "reason": r.get("reason") or r["id"],
+                           "fields": {_norm_name(f) for f in r["fields"]},
+                           "rx": re.compile(f"(?:{r['match']})", re.I),
+                           "severity": r.get("severity") if r.get("severity") in _SEV_RANK else "medium",
+                           "nested_only": bool(r.get("nested_only"))})
+        except re.error as e:
+            print(f"[EXTERNAL-LOGS] rule {r.get('id')} skipped, bad match: {e}", flush=True)
+    _RULES.update(key=key, native=native)
+    return _RULES
+
+
+def native_hits(raw, _cache=None) -> list:
+    """[(rule, value)] -- the product's own verdicts in one raw row: a field the rules
+    name with a value they match, at top level or as a key inside nested JSON."""
+    nat = rules()["native"]
+    if not nat or not isinstance(raw, dict):
+        return []
+    cache = _cache if _cache is not None else {}
+    hits = []
+    for k, v in raw.items():
+        if v in (None, "") or isinstance(v, (dict, list)):
+            continue
+        sv = str(v).strip()
+        if sv[:1] in "[{" and len(sv) > 2:                 # nested findings: scan their keys
+            for kk, vv in _NESTED_PAIR.findall(sv[:20000]):
+                nk = _norm_name(kk)
+                for r in nat:
+                    if nk in r["fields"] and r["rx"].fullmatch(vv.strip()):
+                        hits.append((r, vv.strip()))
+            continue
+        rel = cache.get(k)
+        if rel is None:
+            nk, last = _norm_name(k), _norm_name(str(k).rsplit(".", 1)[-1])
+            rel = cache[k] = [r for r in nat if not r["nested_only"] and (nk in r["fields"] or last in r["fields"])]
+        for r in rel:
+            if r["rx"].fullmatch(sv):
+                hits.append((r, sv))
+    return hits
+
+
 def normalize(rows, mapping, stats=None) -> list:
     """[{"n": {field: value}, "raw": row}] -- `n` holds only fields that have a value.
     Indicators inside free text (the message, _raw, a nested JSON list) are added
@@ -796,10 +879,12 @@ def normalize(rows, mapping, stats=None) -> list:
     tcol = next((k for k in (rows[0] if rows else {}) if _norm_name(k) == "time"), None) \
         if _norm_name(mapping.get("ts", "")) == "date" else None
     mapped = set(mapping.values()) | {c for cs in alt.values() for c in cs}
-    out = []
+    out, cache = [], {}
     for r in rows:
         try:
-            out.append({"n": _norm_row(r, mapping, alt, scale, tcol, mapped), "raw": r})
+            n = _norm_row(r, mapping, alt, scale, tcol, mapped)
+            _verdict(n, native_hits(r, cache))
+            out.append({"n": n, "raw": r})
         except Exception:                                  # noqa: BLE001 -- one row, not the file
             stats["row_errors"] = stats.get("row_errors", 0) + 1
             try:
@@ -808,6 +893,21 @@ def normalize(rows, mapping, stats=None) -> list:
                 n = {}
             out.append({"n": n, "raw": r})
     return out
+
+
+def _verdict(n, hits):
+    """The product's own verdict raises the row to a detection: severity = the higher
+    of what the row states and what the verdict rule is worth; the title is the
+    product's own words when the row has no rule column."""
+    if not hits:
+        return
+    top = max(hits, key=lambda h: _SEV_RANK[h[0]["severity"]])
+    if _SEV_RANK[top[0]["severity"]] > _SEV_RANK.get(n.get("severity") or "informational", 0):
+        n["severity"] = top[0]["severity"]
+    if not n.get("rule"):
+        r, v = top
+        n["rule"] = v if not re.fullmatch(r"true|1|yes", v, re.I) else r["reason"]
+    n["detected_by"] = sorted({h[0]["id"] for h in hits})
 
 
 def _norm_row(r, mapping, alt, scale, tcol, mapped):
@@ -838,6 +938,10 @@ def _norm_row(r, mapping, alt, scale, tcol, mapped):
     if n.get("domain") and keys.classify_indicator(n["domain"]) != "domain":
         d = n.pop("domain")
         n.setdefault("host", d)
+    # A stated severity with no rule column: name the finding by what said so
+    # ("riskLevelDuringSignIn: high"), never by a neighbouring column.
+    if n.get("severity") and not n.get("rule") and mapping.get("severity"):
+        n["rule"] = f"{mapping['severity']}: {r.get(mapping['severity'])}"
     if not n.get("ts"):
         t = _syslog_ts(r.get("syslog_header"))
         if t:
