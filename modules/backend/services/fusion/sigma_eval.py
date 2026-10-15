@@ -600,11 +600,32 @@ def _applies(rule, profs) -> bool:
     return False
 
 
+_PROF_CACHE: dict = {}
+
+
+def _profiles_cached(ev):
+    """profiles() depends on which columns a row has, plus a few values (the
+    Windows event id / channel / provider and the URL's form): rows of one export
+    share the answer, so it is worked out once per such signature."""
+    row = ev.row
+    urls = tuple(str(ev.get(n) or "")[:12].find("://") >= 0 for n in ("c-uri", "url"))
+    sig = (tuple(row), ev.get("EventID"), ev.get("EventCode"), ev.get("Channel"), ev.get("LogName"),
+           ev.get("Provider"), ev.get("SourceName"), urls,
+           bool(re.match(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?/", str(ev.get("url") or ""))),
+           str(ev.get("Image") or ev.get("FileName") or "")[-4:].lower() == ".exe")
+    got = _PROF_CACHE.get(sig)
+    if got is None:
+        if len(_PROF_CACHE) > 20000:
+            _PROF_CACHE.clear()
+        got = _PROF_CACHE[sig] = profiles(ev)
+    return got
+
+
 def evaluate(row, rules=None, _cache=None) -> list:
     """The rules (level >= medium) that match one row, best first."""
     rules = load()["rules"] if rules is None else rules
     ev = Event(row)
-    profs = profiles(ev)
+    profs = _profiles_cached(ev)
     if not profs:
         return []
     key = tuple(sorted(map(str, profs)))

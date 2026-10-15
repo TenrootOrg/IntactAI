@@ -54,12 +54,24 @@ _OUTCOME_KEYS = ("outcome", "result", "status", "resulttype", "errorcode", "acti
                  "reason", "eventid", "eventtype", "type", "message", "displaymessage")
 
 
+_OUTCOME_COLS: dict = {}
+
+
+def _outcome_cols(keys_):
+    """Which columns of a row shape can say success / failure (cached per shape)."""
+    got = _OUTCOME_COLS.get(keys_)
+    if got is None:
+        got = _OUTCOME_COLS[keys_] = [k for k in keys_ if any(
+            re.sub(r"[^a-z]", "", str(k).lower()).endswith(o) for o in _OUTCOME_KEYS)]
+    return got
+
+
 def _outcome_text(n, raw) -> str:
     bits = [str(n.get(k) or "") for k in ("action", "rule", "message")]
     if isinstance(raw, dict):
-        for k, v in raw.items():
-            lk = re.sub(r"[^a-z]", "", str(k).lower())
-            if any(lk.endswith(o) for o in _OUTCOME_KEYS) and not isinstance(v, (dict, list)):
+        for k in _outcome_cols(tuple(raw)):
+            v = raw.get(k)
+            if not isinstance(v, (dict, list)):
                 bits.append(f"{k}={v}")
         if "text" in raw:
             bits.append(str(raw["text"]))
