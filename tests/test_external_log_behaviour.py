@@ -217,6 +217,40 @@ class Web(unittest.TestCase):
         self.assertEqual([], found("\n".join(lines)))
 
 
+class WindowsEventsByID(unittest.TestCase):
+    """Benign DC + workstation (Nextron, 1.24 M events): an Event 69 "failed", a
+    Sysmon registry write by mmc.exe, LLMNR from 224.0.0.252 and the DNS server
+    talking to itself were brute forces and port scans."""
+
+    def ev(self, t, eid, **kw):
+        return {"SystemTime": iso(BASE + t), "EventID": str(eid), "Channel": "Security",
+                "Computer": "DC01", **kw}
+
+    def test_failed_logons_by_id_are_a_brute_force(self):
+        evs = [self.ev(i * 10, 4625, TargetUserName="administrator", IpAddress=ATK, LogonType="3")
+               for i in range(15)]
+        evs.append(self.ev(200, 4624, TargetUserName="administrator", IpAddress=ATK, LogonType="3"))
+        self.assertIn(("Brute force then success", "high"), found(jl(evs)))
+
+    def test_other_windows_events_are_not_sign_ins(self):
+        evs = [{"SystemTime": iso(BASE + i * 10), "EventID": "69", "Channel": "Microsoft-Windows-AAD/Operational",
+                "UserSid": "S-1-5-21-1-2-3-1001", "Message": "Logon failed: error 0xCAA2000C", "User": "jdoe"}
+               for i in range(20)]
+        evs += [{"SystemTime": iso(BASE + i * 10), "EventID": "13", "Channel": "Microsoft-Windows-Sysmon/Operational",
+                 "Image": "C:\\Windows\\system32\\mmc.exe", "TargetObject": "HKLM\\...\\Logon\\FailedCount",
+                 "User": "CORP\\administrator"} for i in range(20)]
+        self.assertEqual([], found(jl(evs)))
+
+    def test_multicast_and_self_are_no_port_scan(self):
+        evs = [{"SystemTime": iso(BASE + i), "EventID": "3", "Channel": "Microsoft-Windows-Sysmon/Operational",
+                "Image": "C:\\Windows\\System32\\svchost.exe", "SourceIp": "224.0.0.252",
+                "DestinationIp": "10.0.2.1", "DestinationPort": str(50000 + i)} for i in range(60)]
+        evs += [{"SystemTime": iso(BASE + i), "EventID": "3", "Channel": "Microsoft-Windows-Sysmon/Operational",
+                 "Image": "C:\\Windows\\System32\\dns.exe", "SourceIp": "10.0.2.133",
+                 "DestinationIp": "10.0.2.133", "DestinationPort": str(56000 + i)} for i in range(60)]
+        self.assertEqual([], found(jl(evs)))
+
+
 class SuspiciousBurst(unittest.TestCase):
     """Low signals add up per host, like Splunk's risk-based alerting."""
 

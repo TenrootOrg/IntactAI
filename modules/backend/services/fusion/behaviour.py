@@ -14,6 +14,7 @@ Deterministic: a fixed threshold over a sliding time window, nothing inferred.
 from __future__ import annotations
 
 import math
+import ipaddress
 import re
 import statistics
 
@@ -109,12 +110,38 @@ def _entra_outcome(raw):
     return None
 
 
+# Windows events say what they are by ID. Read by words, a Sysmon registry write
+# from mmc.exe and an Event 69 "failed" were brute forces on a benign DC.
+_WIN_LOGON = {"4624": "ok", "4625": "fail", "4648": "ok", "4768": None, "4771": "fail", "4776": None,
+              "528": "ok", "529": "fail", "530": "fail", "531": "fail", "532": "fail", "533": "fail",
+              "534": "fail", "535": "fail", "536": "fail", "537": "fail", "539": "fail", "540": "ok"}
+
+
+def _windows_event(raw):
+    return isinstance(raw, dict) and raw.get("EventID") not in (None, "") and \
+        any(raw.get(k) for k in ("Channel", "Provider", "SourceName", "ProviderName"))
+
+
 def auth_event(r):
     """(ts, user, src_ip, outcome, mfa) when the row is an authentication, else None."""
     n, raw = r.get("n") or {}, r.get("raw") or {}
     ts = n.get("ts")
     if not ts:
         return None
+    if _windows_event(raw):
+        eid = str(raw.get("EventID")).strip()
+        if eid not in _WIN_LOGON:
+            return None
+        user = raw.get("TargetUserName") or n.get("user")
+        if not user or str(user).endswith("$"):          # a machine account's logon
+            return None
+        outcome = _WIN_LOGON[eid]
+        if outcome is None:                              # 4768 / 4776: the status says
+            st = str(raw.get("Status") or raw.get("ResultCode") or "0x0").lower()
+            outcome = "ok" if st in ("0x0", "0", "") else "fail"
+        src = n.get("src_ip") or raw.get("IpAddress")
+        src = None if str(src) in ("-", "::1", "127.0.0.1", "") else src
+        return ts, str(user).lower(), src, outcome, False
     user, src = n.get("user") or (n.get("users") or [None])[0], n.get("src_ip")
     text = _outcome_text(n, raw)
     phrase = False                     # user + source read from a sign-in phrase in free text
@@ -326,11 +353,23 @@ def _failed(n, raw):
     return bool(_FAILED_ACTION.search(str(act)))
 
 
+def _no_peer(ip):
+    """Multicast / broadcast / unspecified: no host on the other end (LLMNR from
+    224.0.0.252 to svchost read as a port scan on a benign DC)."""
+    try:
+        a = ipaddress.ip_address(str(ip).strip())
+        return a.is_multicast or a.is_unspecified or str(a) == "255.255.255.255"
+    except ValueError:
+        return False
+
+
 def _flows(rows):
     for i, r in enumerate(rows):
         n = r.get("n") or {}
         t = _t(n.get("ts"))
-        if t is not None and n.get("src_ip") and (n.get("dst_ip") or n.get("domain")):
+        if t is not None and n.get("src_ip") and (n.get("dst_ip") or n.get("domain")) \
+                and n.get("src_ip") != n.get("dst_ip") and not _no_peer(n.get("src_ip")) \
+                and not _no_peer(n.get("dst_ip")):
             yield t, n.get("src_ip"), n.get("dst_ip"), n.get("dst_port"), n.get("domain"), n.get("ts"), i, \
                 _failed(n, r.get("raw"))
 
