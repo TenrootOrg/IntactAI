@@ -151,6 +151,24 @@ class Shapes(unittest.TestCase):
     def test_free_text_is_not_a_structure(self):
         self.assertEqual(("", []), X.parse(FREE))
 
+    def test_auditd_path_records_stay_structured(self):
+        # PATH / CWD records have no host or address; as text no auditd rule saw them.
+        text = "\n".join(f"type=CWD msg=audit(1764000000.{i}:{i}): cwd=\"/etc\"\n"
+                          f"type=PATH msg=audit(1764000000.{i}:{i}): item=0 name=\"sudoers\" inode=1 nametype=NORMAL"
+                          for i in range(3))
+        fm, rows, _ = X.read(text)
+        self.assertTrue(X.recognized(X.normalize(rows, X.detect_columns(rows))))
+        self.assertEqual("/etc/sudoers", [r for r in rows if r["type"] == "PATH"][0]["full_path"])
+
+    def test_auditd_user_space_record_fields(self):
+        row = X._kv_row("type=SERVICE_STOP msg=audit(1722965459.146:15207): pid=1 uid=0 auid=4294967295 "
+                        "ses=4294967295 subj=unconfined msg='unit=auditd comm=\"systemd\" "
+                        "exe=\"/usr/lib/systemd/systemd\" hostname=? addr=? terminal=? res=success'"
+                        "UID=\"root\" AUID=\"unset\"")
+        self.assertEqual(("auditd", "systemd", "success", "audit(1722965459.146:15207)"),
+                         (row.get("unit"), row.get("comm"), row.get("res"), row.get("msg")))
+        self.assertNotIn("hostname", row)                  # "?" is none
+
     def test_squid_native_access_log(self):
         # Padded columns and "TCP_MISS/200": read as unnamed columns, no web rule saw it.
         text = "\n".join(["1157689312.049   5006 10.105.21.199 TCP_MISS/200 19763 CONNECT login.yahoo.com:443 "

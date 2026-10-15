@@ -335,12 +335,35 @@ def _auditd(row):
     return row
 
 
+def _auditd_paths(rows):
+    """auditd logs a file as the process named it: "sudoers" after `cd /etc`. The
+    event's CWD record (same audit id) says where it was; each PATH record gets the
+    full path as full_path, which the path rules read."""
+    cwd = {}
+    for r in rows:
+        if r.get("type") == "CWD" and r.get("cwd"):
+            cwd[str(r.get("msg"))] = r["cwd"]
+    for r in rows:
+        name = r.get("name")
+        if r.get("type") == "PATH" and name and name != "(null)":
+            base = cwd.get(str(r.get("msg")))
+            r["full_path"] = name if name.startswith("/") or not base else base.rstrip("/") + "/" + name
+    return rows
+
+
 def _kv_row(line):
     pairs = _KV.findall(line)
     if len(pairs) < 3:
         return None
     row = {k: v.strip("\"'") for k, v in pairs}
-    if "type" in row and str(row.get("msg", "")).startswith("audit("):
+    if "type" in row and "msg=audit(" in line:
+        # A user-space record (SERVICE_STOP, ADD_USER, USER_CMD...) carries its fields in
+        # a second msg='unit=auditd comm="systemd" exe=...'; the outer pairs alone lose them.
+        inner = str(row.get("msg") or "")
+        if "=" in inner and not inner.startswith("audit("):
+            for k, v in _KV.findall(inner):
+                if v.strip("\"'") not in ("", "?"):        # auditd writes ? for "none" (hostname=?)
+                    row.setdefault(k, v.strip("\"'"))
         # ausearch -i writes "msg=audit(02/20/2025 10:02:51.145:899) :": the date
         # holds a space, so the pair stopped at it -- take the whole stamp back.
         m = re.search(r"msg=audit\(([^)]*)\)", line)
@@ -693,7 +716,8 @@ def read(text) -> tuple[str, list, list]:
         if got:
             return got
     if share(_kv_row) >= 0.6:
-        return ("kv", *by_line(_kv_row))
+        rows, left = by_line(_kv_row)
+        return ("kv", _auditd_paths(rows), left)
     got = _guard(_delimited, lines)
     return got if got else ("", [], [])
 
@@ -958,6 +982,10 @@ def recognized(rows) -> bool:
     unnamed = isinstance(raw0, dict) and raw0 and all(_UNNAMED.fullmatch(str(c)) for c in raw0)
     if unnamed and sum(1 for r in rows if r["n"].get("ts")) < 0.5 * k:
         return False
+    # auditd PATH / CWD / SERVICE_STOP records carry no host or address, but the
+    # auditd Sigma rules are written for exactly these records: as text they never run.
+    if sum(1 for r in rows if str((r.get("raw") or {}).get("msg") or "").startswith("audit(")) >= 0.5 * k:
+        return True
     return j >= 0.5 * k
 
 
