@@ -140,6 +140,13 @@ class FreeText(unittest.TestCase):
         self.assertEqual((2, 1), (st["dropped"], st["values_dropped"]))
         self.assertTrue(seen[0].startswith("L1: "), "lines are numbered for citing")
 
+    def test_the_time_comes_from_the_line_not_the_model(self):
+        lines = ["Oct  1 10:05:07 web01 sshd[1]: Failed password for root from 185.220.101.4 port 1 ssh2"]
+        call = lambda s, u: json.dumps([{"line": 1, "ts": "Oct 1 10:05:07", "user": "root",
+                                         "src_ip": "185.220.101.4", "action": "Failed password"}])
+        rows, _ = X.llm_extract(lines, call=call)
+        self.assertTrue(rows[0]["n"]["ts"].endswith("-10-01T10:05:07"), rows[0]["n"])
+
     def test_masked_text_goes_out_and_answers_come_back_unmasked(self):
         from services.data_anonymizer import DataAnonymizer
         from services.fusion import investigate

@@ -1098,7 +1098,14 @@ def _grounded(ev, line) -> dict | None:
         v = ev.get(f)
         if v not in (None, "") and str(v).strip().lower() in low:
             n[f] = str(v).strip()[:4000]
-    if ev.get("ts"):
+    # The time comes from the LINE itself when it carries one (ISO, or syslog with
+    # the logrotate year): deterministic, and a model rewrites "Oct  1 10:05:00"
+    # into forms nothing can read back. The model's value only when the line has
+    # no readable time, and then only if the line holds its clock time.
+    t = _line_ts(line)
+    if t:
+        n["ts"] = t
+    elif ev.get("ts"):
         t = _ts(ev["ts"])
         hms = t[11:19] if t and len(t) >= 19 else ""
         if t and (str(ev["ts"]).strip().lower() in low or (hms and (hms in line or hms.lstrip("0") in line))):
