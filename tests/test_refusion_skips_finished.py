@@ -101,5 +101,76 @@ class FinishedCollections(unittest.TestCase):
         self.assertEqual(2, vr.downloads, "unknown is never a reason to skip")
 
 
+class Hunt:
+    def __init__(self, state="STOPPED", sched=3, done=3, rows=900):
+        self.state, self.sched, self.done, self.rows, self.pulls = state, sched, done, rows, 0
+
+    def query(self, vql, timeout=120):
+        assert "hunts(hunt_id='H.ABC')" in vql, vql
+        return [{"state": self.state, "expires": 0,
+                 "stats": {"total_clients_scheduled": self.sched, "total_finished_clients": self.done,
+                           "total_collected_rows": self.rows, "stopped": self.state == "STOPPED"}}]
+
+    def fetch(self, *a, **k):
+        self.pulls += 1
+        return {"Windows.System.Pslist": [{"Pid": 1}]}, [], {"C.1": {"hostname": "WS01"}}
+
+
+class SettledHunts(unittest.TestCase):
+    """A hunt is pulled on every rebuild so an in-flight one shows its partial
+    data -- kept. Only a hunt that can gain nothing, saved in full, is not."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.fp = os.path.join(self.tmp, "raw_results.json")
+        with open(self.fp, "w") as f:
+            json.dump({"Windows.System.Pslist": [{"Pid": 1}]}, f)
+        self.hostnames = []
+
+    def rebuild(self, h):
+        col = types.ModuleType("services.agentic.collectors")
+        col.get_existing_collection_results = h.fetch
+        col.persist_pipeline_artifacts = lambda *a, **k: None
+        vc = types.ModuleType("services.velociraptor_clients")
+        vc._query = h.query
+        det = {"hunt_id": "H.ABC"}                       # a fresh run row: host names are not stored on it
+
+        def mapper(rows, run_id, hostnames):
+            self.hostnames.append(dict(hostnames))
+            return [], []
+        with mock.patch.dict(sys.modules, {"services.agentic.collectors": col, "services.velociraptor_clients": vc}), \
+                mock.patch.object(store, "_raw_results_path", lambda rid, d: self.fp), \
+                mock.patch.object(store, "_resnapshot_without_losing_rows", lambda *a, **k: None), \
+                mock.patch.object(store, "_cached_map", lambda fp, d, load, m: m(load())), \
+                mock.patch.object(store, "map_agentic", mapper):
+            store._velo_hunt_contribution("r1", det)
+
+    def test_a_settled_hunt_saved_in_full_is_not_pulled_again_and_keeps_its_hosts(self):
+        h = Hunt()
+        self.rebuild(h)
+        self.rebuild(h)
+        self.assertEqual(1, h.pulls)
+        self.assertEqual({"C.1": "WS01"}, self.hostnames[-1], "the host names the pull supplied are kept")
+
+    def test_a_running_hunt_is_pulled_every_time(self):
+        h = Hunt(state="RUNNING")
+        self.rebuild(h)
+        self.rebuild(h)
+        self.assertEqual(2, h.pulls)
+
+    def test_a_client_still_pending_means_pull(self):
+        h = Hunt(done=2)
+        self.rebuild(h)
+        self.rebuild(h)
+        self.assertEqual(2, h.pulls)
+
+    def test_rows_that_arrived_mean_pull(self):
+        h = Hunt()
+        self.rebuild(h)
+        h.rows = 950
+        self.rebuild(h)
+        self.assertEqual(2, h.pulls)
+
+
 if __name__ == "__main__":
     unittest.main()
