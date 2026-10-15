@@ -43,8 +43,12 @@ _FAIL = re.compile(r"\b(fail(ed|ure|s)?|denied|deny|invalid|reject(ed)?|bad (pas
 _OK = re.compile(r"\b(success(ful(ly)?)?|succeeded|accepted|granted|approved|allowed|logged on|logon success|"
                  r"4624|session opened)\b", re.I)
 _MFA = re.compile(r"\b(mfa|2fa|multi.?factor|push|verify|verification|duo|authenticator|otp|factor)\b", re.I)
-_AUTH = re.compile(r"\b(log ?(in|on)|sign.?in|auth|authenticat\w*|password|session\.start|credential|sso|"
-                   r"4624|4625|4771|4776)\b", re.I)
+_AUTH = re.compile(r"\b(log ?(in|on)|sign.?in|auth|authenticat\w*|password|session[ .]start|credential|sso|"
+                   r"mfa|4624|4625|4771|4776)\b", re.I)
+# MFA wording is a sign-in signal too -- but only these phrases: a bare "push"
+# is also "git push".
+_MFA_AUTH = re.compile(r"\b(mfa|2fa|multi.?factor|factor|push verification|verify push|verification push|"
+                       r"otp|authenticator|duo push)\b", re.I)
 _TEXT_AUTH = re.compile(r"(?:for|user)\s+(?:invalid user\s+)?([A-Za-z0-9._@\\$-]{1,64})\s+from\s+"
                         r"((?:\d{1,3}\.){3}\d{1,3})", re.I)
 # PAM: "authentication failure; logname= uid=0 ... rhost=1.2.3.4  user=root"
@@ -120,7 +124,10 @@ def auth_event(r):
             outcome = "ok"
         else:
             return None
-    if not (phrase or _AUTH.search(text) or _entra_outcome(raw) is not None or n.get("src_ip")):
+    # A sign-in has to SAY it is one. A user, a failure word and an address are
+    # not enough: a proxy line "TCP_DENIED/407 ... someone@hotmail.com" is a
+    # normal authentication challenge, and 36 of them read as a brute force.
+    if not (phrase or _AUTH.search(text) or _MFA_AUTH.search(text) or _entra_outcome(raw) is not None):
         return None
     return ts, str(user).lower(), src, outcome, bool(_MFA.search(text))
 
