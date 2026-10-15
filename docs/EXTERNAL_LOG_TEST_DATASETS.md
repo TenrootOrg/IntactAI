@@ -1,0 +1,252 @@
+# Test datasets for attached log data
+
+Public security log datasets used to test the log-data pipeline (`services/fusion/external_logs.py`,
+`sigma_eval.py`, `behaviour.py`) against real exports. **The data itself is never committed to this
+repository**: it is third-party, often large, and some of it is attack traffic. On the test appliance
+it lives in `~/datasets/external-logs/<type>/<dataset>/`, each folder with a `manifest.json` (source,
+licence, files, ground truth). Fetch a dataset again from its source URL below.
+
+Downloaded 2026-10-15. The ground truth is what each source documents, plus a count of the events in
+the file; three CVE attributions in the manifests are marked as inferred.
+
+| Type | Dataset | Attack / benign | Ground truth | MITRE | Licence | Source |
+|---|---|---|---|---|---|---|
+| aws_gcp | elastic_gcp_audit_fixture | benign (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. GCP Cloud Audit Logs (protoPaylo |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/gcp/data_stream/audit/_dev/test/pipeline |
+| aws_gcp | splunk_cloudtrail_login_fail_per_user | attack | AWS console brute force: 28 ConsoleLogin Failure events (27 'No username found', 1 'Failed authentication' for daftpunk). | T1110.003 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1110.003/aws_multiple_login_fail_per_user |
+| aws_gcp | splunk_cloudtrail_mfa_disabled | attack | Root user runs DeactivateMFADevice and DeleteVirtualMFADevice (2 events). | T1621, T1556.006 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1621/aws_mfa_disabled |
+| aws_gcp | splunk_gcp_gcploit | attack | 1 GCP audit row (as a Splunk export {result:{...}} with flattened field names): GCPloit creates a Cloud Function as a service account (cloudfunctions.functions.create) for privilege escalation. | T1078 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1078/gcploit_exploitation_framework |
+| dns | secrepo_maccdc2012_dns | attack (CCDC red team, unlabelled) | Full Zeek dns.log from MACCDC 2012 (427,935 records, headerless TSV). Competition traffic with red-team recon: 52,706 in-addr.arpa PTR lookups, mostly from red-team hosts 192.168.202.83/.110/.97/.106. 50,330 NXDOMAIN (rc | T1046, T1590.002 | CC BY 4.0 (SecRepo, Mike Sconzo) | https://www.secrepo.com/maccdc2012/dns.log.gz |
+| dns | splunk_sysmon_long_dns_query | attack | Sysmon XML (8 x EID 22 DNSEvent + 2 x EID 1): PowerShell resolving long encoded subdomains of attackrange.local (DNS tunnelling-style). | T1071.004 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1071.004/long_dns_query |
+| dns | splunk_telegram_api_dns | attack | Sysmon EID 22 XML: queries for api.telegram.org (Telegram used as C2 or exfiltration channel). | T1102.002 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1102.002/telegram_api_dns |
+| edr_alerts | elastic_crowdstrike_alert_fixture | attack-shaped (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. 11 CrowdStrike Falcon Alerts-API |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/crowdstrike/data_stream/alert/_dev/test/pipeline |
+| edr_alerts | elastic_m365_defender_alert_fixture | attack-shaped (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. 5 Microsoft 365 Defender Graph-A |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/m365_defender/data_stream/alert/_dev/test/pipeline |
+| edr_alerts | elastic_sentinelone_alert_fixture | attack-shaped (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. 3 SentinelOne alerts with placeh |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/sentinel_one/data_stream/alert/_dev/test/pipeline |
+| edr_alerts | splunk_cisco_secure_endpoint_tamper | attack | Windows System XML (Service Control Manager EID 7036, 3 events): the Cisco Secure Endpoint 8.4.2, Security Connector Monitoring and AMP Orbital services stop, i.e. EDR tampering. | T1562.001 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1562.001/cisco_secure_endpoint_tampering |
+| edr_alerts | splunk_crowdstrike_falcon_lsass | attack | CrowdStrike Falcon Data Replicator (FDR) raw telemetry, not alerts. Atomic T1003.001 LSASS dumping (procdump, comsvcs, Mimikatz, pypykatz): ProcessRollup2 23, ProcessHandleOpDetectInfo 10, DmpFileWritten 5. | T1003.001 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1003.001/atomic_red_team |
+| edr_alerts | splunk_defender_asr | attack | Microsoft Defender Operational XML: Attack Surface Reduction rule block (EID 1121) and audit (EID 1122) events from ASR tests. | T1059 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1059/defender |
+| entra | elastic_azure_signinlogs_fixture | benign (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. Contains non-interactive user si |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/azure/data_stream/signinlogs/_dev/test/pipeline |
+| entra | splunk_azuread_bruteforce_single_user | attack | Invoke-MSOLSpray brute force: 25+ passwords against one account, 30 x 50126. | T1110.001 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1110.001/azure_ad_high_number_of_failed_authentications_for_user |
+| entra | splunk_azuread_distributed_spray | attack | Distributed password spray: 31 users, 30 different source IPs (AWS ranges 18.246.x / 35.93.x / 34.223.x), all 50126. | T1110.003 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1110.003/azure_ad_distributed_spray |
+| entra | splunk_azuread_mfa_denied_fatigue | attack | MFA fatigue: 11 sign-ins for one user, all failing with 500121 (strong authentication denied). | T1621 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1621/azure_ad_multiple_denied_mfa_requests |
+| entra | splunk_azuread_password_spray | attack | Invoke-MSOLSpray password spray against 31 accounts from one IP; every sign-in fails with 50126 (invalid username or password). | T1110.003 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1110.003/password_spraying_azuread |
+| firewall | elastic_cisco_asa_fixture | mixed (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. 201 Cisco ASA/FTD syslog message |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/cisco_asa/data_stream/log/_dev/test/pipeline |
+| firewall | elastic_fortigate_fixture | mixed (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. FortiOS 6.x/7.4 traffic, utm/web |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/fortinet_fortigate/data_stream/log/_dev/test/pipeline |
+| firewall | elastic_panos_fixture | mixed (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. 208 TRAFFIC and 219 THREAT lines |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/panw/data_stream/panos/_dev/test/pipeline |
+| firewall | elastic_pfsense_iptables_fixture | mixed (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. pfSense filterlog (BSD) and raw  |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/pfsense/data_stream/log/_dev/test/pipeline |
+| firewall | splunk_fortigate_cve_2022_40684 | attack | 1 PAN-OS THREAT/url log of a FortiOS CVE-2022-40684 auth-bypass attempt. It is a PAN log ABOUT FortiGate, not a FortiGate log. | T1190 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1190/fortigate |
+| firewall | splunk_pan_screenconnect_traffic | attack | ScreenConnect RMM install and use seen by a PA-220: 15 THREAT/url logs plus 1 TRAFFIC log. | T1219 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1219/screenconnect |
+| firewall | splunk_pan_threat_vmware_scan | attack | PAN-OS THREAT logs of exploitation scanning for VMware Workspace ONE CVE-2022-22954 and F5 CVE-2022-1388 (8 lines). | T1190, T1595 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1190/vmware |
+| firewall | splunk_pan_tor_allowed | attack | 2 PAN-OS TRAFFIC 'end' logs where the app is tor and the action is allow. | T1090.003 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1090.003/pan_tor_allowed |
+| gworkspace_or_duo | elastic_duo_auth_fixture | benign (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. Duo authentication log (access_d |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/cisco_duo/data_stream/auth/_dev/test/pipeline |
+| gworkspace_or_duo | elastic_gws_login_fixture | benign (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/google_workspace/data_stream/login/_dev/test/pipeline |
+| gworkspace_or_duo | splunk_duo_bypass_code | attack | Duo activity: an admin creates a bypass code for a user (2 bypass_create events). | T1556 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1556/cisco_duo_bypass_code |
+| gworkspace_or_duo | splunk_duo_policy_bypass_2fa | attack | Duo administrator log: 6 policy_update events creating a policy with 'Allow access without 2FA'. | T1556 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1556/cisco_duo_policy_bypass_2FA |
+| gworkspace_or_duo | splunk_gws_failed_mfa | attack | 10 Google Workspace login_failure events for one user submitting wrong 2SV codes. | T1621 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1621/multiple_failed_mfa_gws |
+| gworkspace_or_duo | splunk_gws_login_failures | attack | Google Workspace login_failure spray: 29 users, one IP, within 4 seconds. The source says it is synthetic, built from one real login_failure event. | T1110.003 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1110.003/gcp_gws_multiple_login_failure |
+| linux | secrepo_auth_log | attack (real internet SSH brute force) | Real /var/log/auth.log of an internet-facing AWS host (ip-172-31-27-153), 86,839 lines. Constant SSH brute force: 12,250 'Invalid user' attempts (admin, test, guest, oracle, ftp...) and 2,575 'Too many authentication fai | T1110.001, T1110.003 | CC BY 4.0 (SecRepo, Mike Sconzo) | https://www.secrepo.com/auth.log/auth.log.gz |
+| linux | splunk_auditd_add_user | attack | auditd SYSCALL/EXECVE/PROCTITLE for 'sudo useradd malware_user' (hex proctitle). The second file is a larger auditd capture with readable timestamps from a later run. | T1136.001 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1136.001/linux_auditd_add_user |
+| linux | splunk_auditd_copy_fail_privesc | attack | 'Copy Fail' Linux local privilege escalation in the Splunk attack range: auditd (241 records), kern.log (715 lines) and auth.log (3 lines: su to user snapattack). | T1068 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1068/linux_auditd_copy_fail |
+| okta | elastic_okta_system_fixture | benign (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/okta/data_stream/system/_dev/test/pipeline |
+| okta | splunk_okta_account_lockout | attack | Brute force until lockout: 7 user.account.lock (LOCKED_OUT) events from one IP. | T1110 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1110/okta_multiple_accounts_lockout |
+| okta | splunk_okta_mfa_push_fatigue | attack | MFA push fatigue: 10 system.push.send_factor_verify_push, 7 auth_via_mfa FAILURE, 3 SUCCESS (mostly user15). | T1621 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1621/okta_multiple_failed_mfa_pushes |
+| okta | splunk_okta_password_spray | attack | Okta password spray: one IP tries 10 users. 10 user.session.start FAILURE/INVALID_CREDENTIALS plus 3 auth_via_mfa failures. | T1110.003 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1110.003/okta_multiple_users_from_ip |
+| suricata | elastic_suricata_eve_fixture | mixed (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. test-eve-alerts.log has 20+ real |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/suricata/data_stream/eve/_dev/test/pipeline |
+| suricata | splunk_suricata_c2_useragents | attack | Suricata eve http/fileinfo events (no alert events) carrying C2/malware User-Agents. suricata_c2.log: 76 x POST /data with 'Trident/7.0 rv:11.0' UA to 10.0.1.130, plus Cobalt-Strike-like /css/... paths. suricata_malware. | T1071.001 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1071.001/http_user_agents |
+| suricata | splunk_suricata_ivanti_exploit | attack | Ivanti Connect Secure CVE-2023-46805 / CVE-2024-21887 path traversal: /api/v1/totp/user-backup-code/../../system/maintenance/archiving/cloud-server-test-connect (check phase and exploit phase, 6 eve events each). | T1190 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1190/ivanti |
+| suricata | splunk_suricata_webshell | attack | WSUS/IIS exploitation (web shell scenario). Suricata http/fileinfo events on WSUS SOAP endpoints (/ClientWebService/Client.asmx, /ReportingWebService/ReportingWebService.asmx, /SimpleAuthWebService) plus the matching IIS | T1505.003, T1190 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1505.003 |
+| suricata | stratosphere_iot23_mirai_34_1_eve | attack | Real Suricata eve.json for the same Mirai capture as zeek/stratosphere_iot23_mirai_34_1: 2,454 alerts (ET CHAT IRC NICK/USER/PING/PONG = IRC C2; 2 x ELF download over HTTP), plus flow, DNS and HTTP events. fast.log is th | T1071, T1105 | CC BY 4.0 (Stratosphere Lab, IoT-23, zenodo 4743746) | https://mcfp.felk.cvut.cz/publicDatasets/IoT-23-Dataset/IndividualScenarios/CTU-IoT-Malware-Capture-34-1/suricata/ |
+| web_proxy | elastic_squid_fixture | benign (format fixture) | None. Parser/format fixture from Elastic's ingest-pipeline tests: mixed synthetic and sanitised real events, no labelled attack. Use it for format coverage and false-positive checks only. |  | Elastic License 2.0 (elastic/integrations test fixture) | https://github.com/elastic/integrations/tree/main/packages/squid/data_stream/log/_dev/test/pipeline |
+| web_proxy | secrepo_apache_selflogs | mostly benign real-world | Real Apache combined access log of secrepo.com for 2017-01-01..03 (7,233 lines). Mostly benign visitors, plus internet noise: 322 /wp-login.php brute-force probes from many IPs (e.g. 86.127.95.57) on a site that is not W | T1110 (wp-login probes), T1595 | CC BY 4.0 (SecRepo, Mike Sconzo) | https://www.secrepo.com/self.logs/ |
+| web_proxy | secrepo_squid_access | benign real-world | Real Squid proxy access log (native format: epoch, elapsed, client, code/status, bytes, method, URL, user, hierarchy, type). First 500k of 1.64M lines. No attack labels. |  | CC BY 4.0 (SecRepo, Mike Sconzo) | https://www.secrepo.com/squid/access.log.gz |
+| web_proxy | splunk_nginx_k8s_lfi | attack | 1 nginx line: LFI GET /?page=../../../../../../etc/passwd returning 200. | T1212, T1190 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1212/kubernetes_nginx_lfi_attack |
+| web_proxy | splunk_nginx_log4shell | attack (with real internet noise) | Nginx kv access log of an internet-exposed honeypot during Log4Shell (CVE-2021-44228). 3 requests carry ${jndi:...} payloads; the rest is real scanner noise. | T1190 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1190/java |
+| web_proxy | splunk_nginx_tomcat_exploit | attack | Nginx kv access log in front of Tomcat. Mostly benign page loads, plus PUT then GET /rpMGEH.session. That is the partial-PUT session deserialization pattern of CVE-2025-24813 (inferred, the source says only 'Tomcat explo | T1190 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1190/tomcat |
+| windows_json | existing_references | attack | Nothing new was downloaded; the user asked to reuse these by reference. OTRF APT29 ATT&CK-evals day 1/2 (emulation plan in /home/tenroot/datasets/otrf_apt29/plan_day*.tsv). OTRF atomics and the APT3 Empire set are descri |  | MIT (OTRF Security-Datasets); Apache-2.0 (splunk/attack_data) | https://github.com/OTRF/Security-Datasets ; https://github.com/splunk/attack_data/tree/master/datasets/apt_simulations/ActiveMQ_exploit_Lockbit_Ransomware |
+| zeek | brimdata_wrccdc2018_zeek_json | mixed real-world (CCDC competition) | Zeek 6.2 JSON logs from about 21 minutes of the WRCCDC 2018 collegiate defence competition network (2018-03-24 pcaps). There is a red team, but NO per-event labels. Lots of RDP, SMB and NTLM activity, and 207 notices (al |  | CC BY-SA 4.0 (brimdata, built on WRCCDC pcaps) | https://github.com/brimdata/zed-sample-data/tree/main/zeek-json |
+| zeek | secrepo_maccdc2012 | attack (CCDC red team, coarse labels) | Zeek (Bro 2.x) logs from MACCDC 2012, a red-team vs blue-team competition, headerless TSV. notice.log has Scan::Port_Scan (147), Scan::Address_Scan (108), SSH::Password_Guessing (18) and HTTP::SQL_Injection_Attacker/Vict | T1046, T1595, T1110, T1190, T1059.003 | CC BY 4.0 (SecRepo, Mike Sconzo) | https://www.secrepo.com/maccdc2012/ |
+| zeek | splunk_zeek_http_encoded_post | attack | 2 Zeek http records: POST with a base64-encoded body (C2 beacon-like). | T1071.001 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1071.001/zeek_http_encoded_post |
+| zeek | splunk_zeek_http_unusual_method | attack | 2 Zeek http records with non-standard HTTP methods. | T1071 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1071/zeek_http_unusual_method |
+| zeek | splunk_zeek_rdp_conn | attack | 1 Zeek conn record: inbound RDP from the internet to an internal host. | T1021.001 | Apache-2.0 (splunk/attack_data) | https://github.com/splunk/attack_data/tree/master/datasets/attack_techniques/T1021.001/remote_desktop_connection |
+| zeek | stratosphere_iot23_honeypot_benign_4_1 | benign (labelled) | Philips Hue bridge (real device, not infected), Zeek conn.log; all 452 flows labelled benign. |  | CC BY 4.0 (Stratosphere Lab, IoT-23, zenodo 4743746) | https://mcfp.felk.cvut.cz/publicDatasets/IoT-23-Dataset/IndividualScenarios/CTU-Honeypot-Capture-4-1/bro/ |
+| zeek | stratosphere_iot23_mirai_34_1 | attack (per-flow labelled) | Mirai-infected IoT device, 24 h capture, Zeek conn.log with per-flow labels in the last columns: DDoS 14,394, C&C 6,706, PartOfAHorizontalPortScan 122, benign/unlabelled 1,923. | T1071, T1498, T1046 | CC BY 4.0 (Stratosphere Lab, IoT-23, zenodo 4743746) | https://mcfp.felk.cvut.cz/publicDatasets/IoT-23-Dataset/IndividualScenarios/CTU-IoT-Malware-Capture-34-1/bro/ |
+
+## Not found publicly
+
+- Okta, Entra ID, Google Workspace or Duo logs at realistic benign volume (only parser fixtures and small attack samples).
+- Real EDR / XDR alert exports with ground truth (only vendor-format fixtures).
+- Native FortiGate, Cisco ASA, pfSense or iptables logs with a labelled attack.
+- Windows DNS Server debug logs.
+- flaws.cloud CloudTrail: a single tarball over 240 MB, not taken.
+
+Windows event JSON is covered by the datasets already used for the fusion scorecard
+(OTRF APT29 day 1/2, OTRF atomics, APT3, Splunk ActiveMQ to LockBit), not repeated here.
+
+
+## Evaluation results (2026-10-15)
+
+Each file was attached as a case would attach it. The type was detected automatically, then three passes ran: the native verdict rules, Sigma (SigmaHQ, medium and above) and the behaviour rules. **41 of 43 attack datasets detect** (1.89 M rows in total). "Detections" counts what reaches fusion, before it is grouped into per-host episodes; the rows themselves never reach it. The harness lives outside the repo, like the data.
+
+| Type | Dataset | Kind | Files | Rows | Detections | Seconds | Read as | Main detections |
+|---|---|---|---|---|---|---|---|---|
+| aws_gcp | elastic_gcp_audit_fixture | benign | 1 | 24 | 0 | 0.0 | jsonl |  |
+| aws_gcp | splunk_cloudtrail_login_fail_per_user | attack | 1 | 28 | 1 | 0.0 | jsonl | AWS ConsoleLogin Failed Authentication ×1 |
+| aws_gcp | splunk_cloudtrail_mfa_disabled | attack | 1 | 2 | 2 | 0.0 | jsonl | DeleteVirtualMFADevice ×1; DeactivateMFADevice ×1 |
+| aws_gcp | splunk_gcp_gcploit | attack | 1 | 1 | 0 | 0.0 | json |  |
+| dns | secrepo_maccdc2012_dns | attack | 1 | 427,935 | 197 | 48.3 | zeek-dns-tsv | Suspicious DNS Z Flag Bit Set ×181; Host sweep ×8; Reverse DNS sweep ×7 |
+| dns | splunk_sysmon_long_dns_query | attack | 1 | 10 | 4 | 0.3 | xml | HackTool - NetExec Execution ×2; Suspicious DNS Query Indicating Kerberos Coercion via DNS Object SPN Spoofing ×2 |
+| dns | splunk_telegram_api_dns | attack | 1 | 13 | 13 | 0.0 | xml | Telegram Bot API Request ×13 |
+| edr_alerts | elastic_crowdstrike_alert_fixture | attack-shaped | 1 | 11 | 6 | 0.1 | jsonl | PrewittPupAdwareSensorDetect-Lowest ×3; Identity verification denied ×1; Identityverificationdenied ×1 |
+| edr_alerts | elastic_m365_defender_alert_fixture | attack-shaped | 2 | 11 | 9 | 0.0 | jsonl | Suspicious PowerShell command line ×4; Malware ×3; Suspicious process injection observed ×2 |
+| edr_alerts | elastic_sentinelone_alert_fixture | attack-shaped | 1 | 3 | 2 | 0.0 | jsonl | test5 ×2 |
+| edr_alerts | splunk_cisco_secure_endpoint_tamper | attack | 1 | 3 | 3 | 0.0 | xml | Security product service stopped ×3 |
+| edr_alerts | splunk_crowdstrike_falcon_lsass | attack | 1 | 43 | 34 | 0.3 | jsonl | LSASS Dump Keyword In CommandLine ×18; System File Execution Location Anomaly ×9; Process Memory Dump Via Comsvcs.DLL ×4 |
+| edr_alerts | splunk_defender_asr | attack | 2 | 18 | 2 | 0.0 | xml | PSExec and WMI Process Creations Block ×2 |
+| entra | elastic_azure_signinlogs_fixture | benign | 2 | 48 | 0 | 4.3 | jsonl |  |
+| entra | splunk_azuread_bruteforce_single_user | attack | 1 | 30 | 1 | 0.0 | jsonl | Brute force ×1 |
+| entra | splunk_azuread_distributed_spray | attack | 1 | 31 | 1 | 0.0 | jsonl | Distributed password spray ×1 |
+| entra | splunk_azuread_mfa_denied_fatigue | attack | 1 | 11 | 13 | 0.0 | jsonl | Multifactor Authentication Interrupted ×11; Brute force ×1; MFA fatigue ×1 |
+| entra | splunk_azuread_password_spray | attack | 1 | 31 | 1 | 0.0 | jsonl | Password spray ×1 |
+| firewall | elastic_cisco_asa_fixture | mixed | 1 | 201 | 5 | 0.4 | text | Firewall threat detection / IPS event ×5 |
+| firewall | elastic_fortigate_fixture | mixed | 2 | 141 | 13 | 0.0 | kv | crlevel: high ×3; PHP.CGI.Argument.Injection ×3; infected ×1 |
+| firewall | elastic_panos_fixture | mixed | 2 | 427 | 116 | 0.3 | panos-csv | generic:www.virussign.com(327891564) ×84; generic:sabaint.me(418218978) ×21; Virus/Linux.example(419149938) ×5 |
+| firewall | elastic_pfsense_iptables_fixture | mixed | 2 | 47 | 0 | 0.0 | csv, kv |  |
+| firewall | splunk_fortigate_cve_2022_40684 | attack | 1 | 1 | 1 | 0.0 | panos-csv | FortiOS admin API auth bypass (CVE-2022-40684) ×1 |
+| firewall | splunk_pan_screenconnect_traffic | attack | 2 | 16 | 1 | 0.0 | panos-csv | screenconnect ×1 |
+| firewall | splunk_pan_threat_vmware_scan | attack | 1 | 8 | 7 | 0.0 | panos-csv | VMware Server-Side Template Injection Remote Code Execution Vulnerability(92483) ×4; Exploit payload in a request ×3 |
+| firewall | splunk_pan_tor_allowed | attack | 1 | 2 | 2 | 0.0 | panos-csv | tor ×2 |
+| gworkspace_or_duo | elastic_duo_auth_fixture | benign | 1 | 19 | 1 | 0.0 | jsonl | user_marked_fraud ×1 |
+| gworkspace_or_duo | elastic_gws_login_fixture | benign | 1 | 18 | 8 | 0.0 | jsonl | suspicious_login ×2; account_disabled_password_leak ×1; suspicious_login_less_secure_app ×1 |
+| gworkspace_or_duo | splunk_duo_bypass_code | attack | 1 | 2 | 2 | 0.0 | jsonl | bypass_create ×2 |
+| gworkspace_or_duo | splunk_duo_policy_bypass_2fa | attack | 1 | 6 | 2 | 0.0 | jsonl | Allow access without 2FA ×2 |
+| gworkspace_or_duo | splunk_gws_failed_mfa | attack | 1 | 10 | 1 | 0.0 | jsonl | Brute force ×1 |
+| gworkspace_or_duo | splunk_gws_login_failures | attack | 1 | 30 | 1 | 0.0 | jsonl | Password spray ×1 |
+| linux | secrepo_auth_log | attack | 1 | 86,839 | 232 | 96.3 | text | Password spray ×195; Suspicious OpenSSH Daemon Error ×35; Brute force ×2 |
+| linux | splunk_auditd_add_user | attack | 2 | 179 | 178 | 0.1 | kv | Local account created by command ×178 |
+| linux | splunk_auditd_copy_fail_privesc | attack | 3 | 959 | 42 | 0.9 | kv, text | Linux AF_ALG Socket Creation - Kernel Crypto API Exploit Indicator ×40; Suspicious Log Entries ×1; Modifying Crontab ×1 |
+| okta | elastic_okta_system_fixture | benign | 1 | 26 | 0 | 0.0 | jsonl |  |
+| okta | splunk_okta_account_lockout | attack | 1 | 7 | 7 | 0.0 | jsonl | user.account.lock ×7 |
+| okta | splunk_okta_mfa_push_fatigue | attack | 1 | 20 | 1 | 0.0 | jsonl | MFA fatigue then approved ×1 |
+| okta | splunk_okta_password_spray | attack | 1 | 13 | 1 | 0.0 | jsonl | Password spray ×1 |
+| suricata | elastic_suricata_eve_fixture | mixed | 3 | 60 | 7 | 0.0 | jsonl | ET POLICY curl User-Agent Outbound ×6; ET POLICY Observed IP Lookup Domain (l2 .io in TLS SNI) ×1 |
+| suricata | splunk_suricata_c2_useragents | attack | 2 | 104 | 12 | 0.1 | jsonl | Malware User Agent ×8; Exploit Framework User Agent ×4 |
+| suricata | splunk_suricata_ivanti_exploit | attack | 2 | 12 | 12 | 0.0 | jsonl | Exploit payload in a request ×12 |
+| suricata | splunk_suricata_webshell | attack | 2 | 141 | 0 | 0.3 | jsonl, space |  |
+| suricata | stratosphere_iot23_mirai_34_1_eve | attack | 2 | 11,404 | 11 | 6.6 | jsonl, space | ET POLICY Executable and linking format (ELF) file download Over HTTP ×2; ET HUNTING Possible ELF executable sent when remote host claims to send a Text File ×2; Connection flood ×2 |
+| web_proxy | elastic_squid_fixture | benign | 1 | 101 | 0 | 0.0 | space |  |
+| web_proxy | secrepo_apache_selflogs | mostly benign real-world | 3 | 7,233 | 0 | 4.3 | access-log |  |
+| web_proxy | secrepo_squid_access | benign real-world | 1 | 499,999 | 0 | 45.1 | space |  |
+| web_proxy | splunk_nginx_k8s_lfi | attack | 1 | 1 | 1 | 0.3 | access-log | Exploit payload in a request ×1 |
+| web_proxy | splunk_nginx_log4shell | attack | 1 | 87 | 3 | 0.1 | kv | Exploit payload in a request ×3 |
+| web_proxy | splunk_nginx_tomcat_exploit | attack | 1 | 45 | 2 | 0.0 | kv | Server-side code uploaded with HTTP PUT ×2 |
+| windows_json | existing_references | attack | 1 | 196,081 | 1,887 | 140.7 | jsonl | Alternate PowerShell Hosts - PowerShell Module ×954; Python Initiated Connection ×348; Potential Binary Or Script Dropper Via PowerShell ×290 |
+| zeek | brimdata_wrccdc2018_zeek_json | mixed real-world | 14 | 377,519 | 22,710 | 144.1 | jsonl, text | Malware User Agent ×11943; Suspicious User-Agents Related To Recon Tools ×9232; Exploit payload in a request ×857 |
+| zeek | secrepo_maccdc2012 | attack | 4 | 257,826 | 110,393 | 186.6 | tsv, zeek-http-tsv, zeek-notice-tsv, zeek-ssh-tsv | Malware User Agent ×80958; Exploit payload in a request ×19444; Suspicious User-Agents Related To Recon Tools ×7420 |
+| zeek | splunk_zeek_http_encoded_post | attack | 1 | 2 | 2 | 0.0 | jsonl | Encoded blob POSTed to a web page ×2 |
+| zeek | splunk_zeek_http_unusual_method | attack | 1 | 2 | 2 | 0.0 | jsonl | Non-standard HTTP method ×2 |
+| zeek | splunk_zeek_rdp_conn | attack | 1 | 1 | 1 | 0.0 | json | Remote admin service reached from the internet ×1 |
+| zeek | stratosphere_iot23_honeypot_benign_4_1 | benign | 1 | 452 | 0 | 0.1 | zeek |  |
+| zeek | stratosphere_iot23_mirai_34_1 | attack | 1 | 23,145 | 2 | 1.7 | zeek | Connection flood ×1; Repeated failed connections to an outside host ×1 |
+
+**Benign sets stay quiet.** This covers 500k real Squid lines, the secrepo Apache self-logs, the IoT-23 Hue bridge,
+and the Okta, Entra, GCP and pfSense fixtures. Every "detection" on a fixture is a verdict the vendor itself wrote into
+the row.
+
+**Known misses, by design or because the log does not show the attack:**
+- **Defender ASR in audit mode (EID 1122):** informational, and noisy wherever ASR runs in audit. Block events (1121) do detect.
+- **WSUS web shell:** the IIS and Suricata rows carry no exploit marker.
+- **GCPloit:** a single API call that looks benign.
+- **Binary .evtx attachments:** not read. Export them to XML or JSON first.
+
+## Vendor fixtures with Elastic's parsed output (2026-10-15)
+
+These cover the 42 products that previously had synthetic samples only. The data comes from the pipeline-test
+fixtures of 57 data streams of [elastic/integrations](https://github.com/elastic/integrations) (Elastic
+License 2.0). Each fixture is stored under `~/datasets/external-logs/<type>/elastic_<package>_<stream>/`, unwrapped
+to the raw vendor lines, with Elastic's own parsed output kept beside it in `elastic_expected/`. The data is outside
+the repo.
+
+Every row was compared with Elastic's reading: time, source and destination IP, user and host, and whether
+Elastic calls the row an alert (`event.kind: alert`). Read the columns this way:
+- **Detected** counts Elastic alerts that we raise to medium or higher.
+- **Vendor graded low** counts rows the product itself rated low or informational. They stay searchable context by
+  design.
+- **Extra** counts detections Elastic files as plain events. Most are real: Proofpoint clicks on phish, Auth0
+  brute-force IP blocks, Entra risk events, Defender behaviours and SonicWall floods.
+
+Fields that differ from Elastic are mostly interpretation, not misreads:
+- Elastic applies a configured time zone where the log states none (SonicWall).
+- Elastic names the firewall itself as `host.name` (Sophos XG, Zscaler). We never put traffic on the firewall.
+- Elastic labels whole streams as alerts, including Mimecast TTP rows with `scanResult: clean`.
+
+Not covered:
+- Elastic Defend, OneLogin and Wazuh have no Elastic fixtures.
+- Netskope's fixtures are not pipeline tests.
+
+| Type | Elastic package / stream | Files read (of all) | Rows | Fields matching Elastic | Elastic alerts | Detected | Vendor graded low | Extra detections |
+|---|---|---|---|---|---|---|---|---|
+| edr_alerts | eset_protect_detection | 1/1 | 7 | ts 7/7, src_ip 4/4, dst_ip 6/6, user 7/7 | 7 | 3 | 2 | 0 |
+| edr_alerts | eset_protect_event | 1/1 | 28 |  | 0 | 0 | 0 | 0 |
+| edr_alerts | panw_cortex_xdr_alerts | 4/4 | 13 | ts 4/11, src_ip 7/7, dst_ip 6/6, user 8/8, host 9/9 | 12 | 5 | 7 | 0 |
+| edr_alerts | panw_cortex_xdr_event | 2/2 | 5 | ts 5/5, src_ip 2/2, dst_ip 2/2, user 2/3, host 2/2 | 0 | 0 | 0 | 0 |
+| edr_alerts | sophos_central_alert | 2/2 | 4 | ts 0/4, src_ip 4/4, dst_ip 4/4, user 1/4 | 4 | 4 | 0 | 0 |
+| edr_alerts | sophos_central_event | 2/2 | 4 | ts 4/4, src_ip 4/4, dst_ip 4/4, user 0/4 | 0 | 0 | 0 | 0 |
+| edr_alerts | symantec_endpoint_log | 13/17 | 33 | ts 5/8, src_ip 7/16, dst_ip 5/11, user 19/25, host 5/26 | 0 | 0 | 0 | 2 |
+| edr_alerts | symantec_endpoint_security_event | 8/12 | 58 | ts 52/53, src_ip 9/51, dst_ip 7/47, user 3/50, host 47/47 | 0 | 0 | 0 | 12 |
+| edr_alerts | symantec_endpoint_security_incident | 1/1 | 2 | ts 2/2 | 2 | 2 | 0 | 0 |
+| edr_alerts | trellix_epo_cloud_event | 1/1 | 3 | ts 2/2, src_ip 0/2, dst_ip 0/2 | 2 | 2 | 0 | 0 |
+| edr_alerts | trellix_edr_cloud_event | 1/1 | 1 | ts 1/1, src_ip 1/1, dst_ip 1/1, user 1/1 | 0 | 0 | 0 | 0 |
+| edr_alerts | trend_micro_vision_one_alert | 1/1 | 5 | ts 0/5 | 5 | 5 | 0 | 0 |
+| edr_alerts | trend_micro_vision_one_detection | 1/1 | 7 | ts 6/6, src_ip 4/4, dst_ip 4/4, host 1/4 | 0 | 0 | 0 | 1 |
+| edr_alerts | carbon_black_cloud_alert_v7 | 4/4 | 7 | ts 7/7, user 5/5, host 3/5 | 7 | 6 | 1 | 0 |
+| edr_alerts | carbon_black_cloud_watchlist_hit | 1/1 | 6 | ts 6/6, host 6/6 | 0 | 0 | 0 | 1 |
+| edr_alerts | carbon_black_cloud_endpoint_event | 1/1 | 22 | ts 0/22, src_ip 0/5, dst_ip 3/5, host 22/22 | 0 | 0 | 0 | 0 |
+| edr_alerts | m365_defender_alert | 1/1 | 5 | ts 0/4, src_ip 0/2, user 0/4 | 4 | 4 | 0 | 0 |
+| edr_alerts | m365_defender_event | 7/7 | 83 | ts 82/82, src_ip 20/26, dst_ip 20/24, user 39/41, host 63/63 | 4 | 3 | 0 | 3 |
+| edr_alerts | m365_defender_incident | 2/2 | 14 | ts 6/13, src_ip 0/1, user 0/8, host 0/6 | 13 | 7 | 6 | 0 |
+| edr_alerts | microsoft_defender_endpoint_log | 1/1 | 6 | user 2/2, host 5/5 | 5 | 5 | 0 | 0 |
+| firewall | checkpoint_firewall | 7/8 | 109 | ts 88/90, src_ip 71/73, dst_ip 30/32, user 11/38, host 2/2 | 2 | 0 | 1 | 2 |
+| firewall | cisco_ftd_log | 7/20 | 610 | ts 123/590, src_ip 104/552, dst_ip 104/538, user 49/71, host 0/33 | 7 | 2 | 3 | 4 |
+| firewall | juniper_srx_log | 6/7 | 105 | ts 66/105, src_ip 72/81, dst_ip 68/76, host 0/29 | 37 | 26 | 3 | 2 |
+| firewall | sonicwall_firewall_log | 4/4 | 220 | ts 0/220, src_ip 216/218, dst_ip 212/215, user 0/144 | 8 | 8 | 0 | 7 |
+| firewall | sophos_xg | 18/18 | 272 | ts 270/271, src_ip 238/241, dst_ip 213/223, user 8/8, host 0/272 | 73 | 32 | 18 | 0 |
+| firewall | cef_log | 8/8 | 36 | src_ip 20/21, dst_ip 9/10 | 0 | 0 | 0 | 13 |
+| firewall | aws_vpcflow | 5/7 | 32 | ts 1/26, src_ip 19/23, dst_ip 19/23 | 0 | 0 | 0 | 0 |
+| firewall | aws_firewall_logs | 1/1 | 3 | ts 3/3, src_ip 3/3, dst_ip 3/3 | 2 | 2 | 0 | 0 |
+| firewall | aws_waf | 1/1 | 5 | ts 5/5, src_ip 5/5 | 0 | 0 | 0 | 0 |
+| firewall | azure_network_watcher_nsg_log | 1/1 | 1 | ts 1/1, src_ip 0/1, dst_ip 0/1 | 0 | 0 | 0 | 0 |
+| firewall | zscaler_zia_firewall | 2/3 | 12 | ts 11/12, src_ip 4/12, dst_ip 6/12, user 2/10, host 0/10 | 0 | 0 | 0 | 10 |
+| aws_gcp | aws_guardduty | 1/1 | 6 | ts 1/5, src_ip 2/2, user 3/3 | 5 | 5 | 0 | 0 |
+| aws_gcp | aws_route53_resolver_logs | 1/1 | 34 | ts 34/34, src_ip 34/34 | 0 | 0 | 0 | 0 |
+| idp | auth0_logs | 10/10 | 111 | ts 111/111, src_ip 109/109, user 55/55 | 0 | 0 | 0 | 2 |
+| idp | ping_one_audit | 1/1 | 99 | ts 99/99, src_ip 1/1, user 92/92 | 0 | 0 | 0 | 0 |
+| idp | ping_federate_audit | 1/1 | 4 | ts 3/3, src_ip 3/3, user 3/3 | 0 | 0 | 0 | 0 |
+| idp | jumpcloud_events | 1/1 | 4 | ts 4/4, user 1/1 | 0 | 0 | 0 | 0 |
+| idp | azure_identity_protection | 2/3 | 15 | ts 9/15, src_ip 2/2, user 4/4 | 0 | 0 | 0 | 4 |
+| idp | azure_auditlogs | 5/6 | 22 | ts 16/22, src_ip 4/5, user 2/2 | 0 | 0 | 0 | 0 |
+| web_proxy | zscaler_zia_web | 2/2 | 10 | ts 10/10, src_ip 10/10, dst_ip 10/10, user 10/10, host 0/10 | 0 | 0 | 0 | 5 |
+| web_proxy | zscaler_zia_alerts | 0/1 | 3 | ts 0/3, dst_ip 0/3 | 0 | 0 | 0 | 0 |
+| web_proxy | cloudflare_logpush_http_request | 1/1 | 9 | ts 9/9, src_ip 9/9, dst_ip 0/8 | 0 | 0 | 0 | 1 |
+| web_proxy | cloudflare_logpush_firewall_event | 1/1 | 6 | ts 5/5, src_ip 6/6 | 0 | 0 | 0 | 0 |
+| web_proxy | cloudflare_logpush_gateway_http | 1/1 | 5 | ts 5/5, src_ip 4/4, dst_ip 5/5, host 5/5 | 0 | 0 | 0 | 0 |
+| dns | zscaler_zia_dns | 2/2 | 14 | ts 14/14, src_ip 14/14, dst_ip 14/14, user 14/14, host 0/14 | 0 | 0 | 0 | 0 |
+| dns | cisco_umbrella_log | 7/7 | 40 | ts 24/27, src_ip 17/17, dst_ip 9/22, user 0/2 | 2 | 2 | 0 | 0 |
+| dns | cloudflare_logpush_gateway_dns | 1/1 | 6 | ts 6/6, src_ip 4/4, dst_ip 6/6, host 6/6 | 0 | 0 | 0 | 0 |
+| dns | microsoft_dnsserver_analytical | 1/1 | 11 | ts 11/11, src_ip 1/6, dst_ip 0/5, host 8/8 | 0 | 0 | 0 | 0 |
+| dns | microsoft_dnsserver_audit | 1/1 | 3 | ts 3/3, host 1/1 | 0 | 0 | 0 | 0 |
+| email | proofpoint_tap_clicks_blocked | 1/1 | 6 | ts 5/5, src_ip 5/5, dst_ip 5/5 | 0 | 0 | 0 | 3 |
+| email | proofpoint_tap_clicks_permitted | 1/1 | 5 | ts 2/4, src_ip 4/4, dst_ip 4/4 | 0 | 0 | 0 | 3 |
+| email | proofpoint_tap_message_blocked | 1/1 | 7 | ts 1/6, src_ip 6/6 | 0 | 0 | 0 | 6 |
+| email | proofpoint_tap_message_delivered | 1/1 | 9 | ts 1/8, src_ip 8/8 | 0 | 0 | 0 | 8 |
+| email | mimecast_ttp_url_logs | 1/1 | 9 | ts 8/8, src_ip 0/6 | 5 | 5 | 0 | 0 |
+| email | mimecast_siem_logs | 3/3 | 84 | ts 84/84, src_ip 36/36, dst_ip 10/10 | 22 | 3 | 0 | 1 |
+| email | mimecast_ttp_ap_logs | 1/1 | 12 | ts 11/11 | 5 | 5 | 0 | 0 |
+| email | microsoft_exchange_online_message_trace_log | 1/1 | 8 | ts 6/7, src_ip 5/6, dst_ip 1/1, user 5/5 | 0 | 0 | 0 | 0 |
+
+**Left out by design:** spam verdicts, web-filter and blocklist blocks, and denied firewall traffic. These are policy
+actions, not attacks; they stay searchable.
+
+**Known limits:**
+- Custom-format AWS VPC Flow logs without a header stay unnamed. Their column order is only known from the
+  AWS-side format string.
+- A severity scale is inferred from the values in the file. Carbon Black's 1-10 scale is read as 1-5 when a file
+  holds only small values.

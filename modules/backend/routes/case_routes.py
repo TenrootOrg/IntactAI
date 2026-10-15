@@ -415,7 +415,7 @@ def get_case(case_id):
                     "is_system": bool(d.get("is_system")
                                       or d.get("name") == store.SYSTEM_CASE_NAME),
                     **store.case_info(d),
-                    "case_files": _case_files.listing(d),
+                    "case_files": _case_files.with_log_status(_case_files.listing(d)),
                     "include_evidence": _case_files.included(d),
                     # the SELECTED scope's reports only: each scope has its own
                     "report_history": _report_history.history(d, scope=store._active_scope_id(d)),
@@ -569,8 +569,9 @@ def _cf_reply(res):
 @case_bp.route("/api/cases/<case_id>/files", methods=["POST"])
 def upload_case_file(case_id):
     """multipart: file, name, description (both required), host, time, source,
-    finding_id (a Timeline row: host / time / title are then taken from the case).
-    Up to 100 MB; SHA-256 recorded."""
+    finding_id (a Timeline row: host / time / title are then taken from the case),
+    data_type (log data: siem / firewall / edr / idp / proxy / other -- parsed and
+    used in the analysis). Up to 100 MB; SHA-256 recorded."""
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify({"error": "no file"}), 400
@@ -579,7 +580,8 @@ def upload_case_file(case_id):
                                      description=fm.get("description", ""), host=fm.get("host", ""),
                                      time=fm.get("time", ""), source=fm.get("source", ""),
                                      finding_id=fm.get("finding_id", ""),
-                                     source_other=fm.get("source_other", "")))
+                                     source_other=fm.get("source_other", ""),
+                                     data_type=fm.get("data_type", "")))
 
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["GET"])
@@ -598,6 +600,17 @@ def download_case_file(case_id, file_id):
         resp = send_file(p, as_attachment=True, download_name=item["file_name"])
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
+
+
+@case_bp.route("/api/cases/<case_id>/files/<file_id>/facts", methods=["GET"])
+def case_file_facts(case_id, file_id):
+    """The facts condensed from an incident-notes attachment (the Data tab)."""
+    from services.fusion import external_logs
+    item = next((x for x in _case_files.listing(store.get_case(case_id) or {}) if x["id"] == file_id), None)
+    if not item or item.get("data_type") != external_logs.NOTES or not item.get("run_id"):
+        return jsonify({"error": "no incident notes with that id"}), 404
+    data = store._agentic_collected_data(item["run_id"], {}) or {}
+    return jsonify({"facts": data.get(external_logs.FACTS_KEY) or []})
 
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["PATCH"])

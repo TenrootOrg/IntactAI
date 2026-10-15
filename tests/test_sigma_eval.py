@@ -1,0 +1,158 @@
+"""The Sigma engine that runs the community rules over attached log data.
+
+Semantics checked with small rules (one per language feature), the row-shape
+profiles that decide which rules run, and -- where /opt/sigma-rules is installed
+-- every SigmaHQ regression event against the rule it was written for.
+"""
+import glob
+import json
+import os
+import sys
+import unittest
+
+for _p in (os.path.dirname(os.path.abspath(__file__)),
+           os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "modules/backend")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import _optional_deps  # noqa: F401,E402
+import yaml  # noqa: E402
+from services.fusion import external_logs as X, sigma_eval as S  # noqa: E402
+
+
+def rule(detection, logsource=None, level="high"):
+    return S.compile_rule({"title": "t", "id": "x", "level": level, "logsource": logsource or {"category": "proxy"},
+                           "detection": detection})
+
+
+def hit(r, row):
+    ev = S.Event(row)
+    res = S._Lazy(r["searches"], ev)
+    return any(t(res) for t in r["trees"])
+
+
+class Language(unittest.TestCase):
+
+    def test_values_and_wildcards(self):
+        r = rule({"sel": {"Image": "*\\cmd.exe"}, "condition": "sel"})
+        self.assertTrue(hit(r, {"Image": "C:\\Windows\\System32\\CMD.EXE"}), "case-insensitive by default")
+        self.assertFalse(hit(r, {"Image": "C:\\cmd.exe.bak"}), "whole value, not a substring")
+        r = rule({"sel": {"x": "a?c"}, "condition": "sel"})
+        self.assertTrue(hit(r, {"x": "abc"}))
+        r = rule({"sel": {"x": "lit\\*"}, "condition": "sel"})
+        self.assertTrue(hit(r, {"x": "lit*"}))
+        self.assertFalse(hit(r, {"x": "literal"}), "an escaped * is a literal *")
+
+    def test_modifiers(self):
+        self.assertTrue(hit(rule({"s": {"c|contains": "\\sysvol\\"}, "condition": "s"}),
+                            {"c": "findstr cpassword \\\\DC\\sysvol\\x.xml"}),
+                        "a value ending in a backslash: the added wildcard must stay a wildcard")
+        self.assertTrue(hit(rule({"s": {"c|contains|all": ["a", "b"]}, "condition": "s"}), {"c": "xbxa"}))
+        self.assertFalse(hit(rule({"s": {"c|contains|all": ["a", "b"]}, "condition": "s"}), {"c": "xa"}))
+        self.assertTrue(hit(rule({"s": {"c|startswith": "pow"}, "condition": "s"}), {"c": "PowerShell"}))
+        self.assertTrue(hit(rule({"s": {"c|re": "^a.c$"}, "condition": "s"}), {"c": "abc"}))
+        self.assertFalse(hit(rule({"s": {"c|re": "^A"}, "condition": "s"}), {"c": "abc"}), "re is cased")
+        self.assertTrue(hit(rule({"s": {"c|re|i": "^A"}, "condition": "s"}), {"c": "abc"}))
+        self.assertTrue(hit(rule({"s": {"ip|cidr": "10.0.0.0/8"}, "condition": "s"}), {"ip": "10.2.3.4"}))
+        self.assertFalse(hit(rule({"s": {"ip|cidr": "10.0.0.0/8"}, "condition": "s"}), {"ip": "11.2.3.4"}))
+        self.assertTrue(hit(rule({"s": {"c|windash|contains": " -enc "}, "condition": "s"}),
+                            {"c": "powershell /enc AAA"}))
+        import base64
+        blob = base64.b64encode(b"xxIEX (New-Object Net.WebClient)").decode()
+        self.assertTrue(hit(rule({"s": {"c|base64offset|contains": "IEX"}, "condition": "s"}), {"c": blob}))
+        self.assertTrue(hit(rule({"s": {"n|gt": 5}, "condition": "s"}), {"n": "7"}))
+        self.assertTrue(hit(rule({"s": {"a|exists": True}, "condition": "s"}), {"a": "x"}))
+        self.assertTrue(hit(rule({"s": {"a|exists": False}, "condition": "s"}), {"b": "x"}))
+        self.assertTrue(hit(rule({"s": {"a|fieldref": "b"}, "condition": "s"}), {"a": "1", "b": "1"}))
+        self.assertTrue(hit(rule({"s": {"a": None}, "condition": "s"}), {"b": "x"}), "null = the field is missing")
+
+    def test_conditions(self):
+        det = {"sel_a": {"x": "1"}, "sel_b": {"y": "2"}, "filter": {"z": "3"},
+               "condition": "1 of sel_* and not filter"}
+        r = rule(det)
+        self.assertTrue(hit(r, {"y": "2"}))
+        self.assertFalse(hit(r, {"y": "2", "z": "3"}))
+        r = rule({**det, "condition": "all of sel_*"})
+        self.assertFalse(hit(r, {"x": "1"}))
+        self.assertTrue(hit(r, {"x": "1", "y": "2"}))
+        r = rule({**det, "condition": "(sel_a or sel_b) and not (filter)"})
+        self.assertTrue(hit(r, {"x": "1"}))
+        r = rule({**det, "condition": "1 of them"})
+        self.assertTrue(hit(r, {"z": "3"}))
+
+    def test_lists_and_keywords(self):
+        r = rule({"s": [{"a": "1"}, {"b": "2"}], "condition": "s"})
+        self.assertTrue(hit(r, {"b": "2"}), "a list of maps is OR")
+        r = rule({"kw": ["Failed password", "*reverse*shell*"], "condition": "kw"})
+        self.assertTrue(hit(r, {"_text": "sshd: Failed password for root"}))
+        self.assertTrue(hit(r, {"msg": "a reverse bash shell opened"}))
+
+    def test_what_cannot_be_evaluated_exactly_is_skipped(self):
+        for det in ({"s": {"a|expand": "%x%"}, "condition": "s"},
+                    {"s": {"a": "1"}, "condition": "s | count() by b > 5"},
+                    {"s": {"a|weirdmod": "1"}, "condition": "s"}):
+            with self.assertRaises(S.Unsupported):
+                rule(det)
+
+    def test_field_lookup(self):
+        ev = S.Event({"Event.EventData.Image": "x", "Threat Name": "EICAR", "NewProcessName": "C:\\a.exe"})
+        self.assertEqual("x", ev.get("Image"))
+        self.assertEqual("EICAR", ev.get("ThreatName"))
+        self.assertEqual("C:\\a.exe", S.Event({"NewProcessName": "C:\\a.exe"}).get("Image"), "4688 spelling")
+
+
+class WhichRulesRun(unittest.TestCase):
+
+    def test_profiles(self):
+        P = S.profiles
+        self.assertIn(("windows", "process_creation", "sysmon"),
+                      P({"EventID": 1, "Channel": "Microsoft-Windows-Sysmon/Operational", "Image": "a"}))
+        self.assertIn(("windows", "process_creation", "security"), P({"EventID": 4688, "Channel": "Security"}))
+        self.assertIn(("okta", None, "okta"), P({"eventType": "x", "actor.alternateId": "a@b.c"}))
+        self.assertIn((None, "proxy", None), P({"url": "http://x.com/a", "useragent": "curl"}))
+        self.assertNotIn((None, "proxy", None), P({"cs-uri-stem": "/a", "sc-status": "200", "cs-method": "GET",
+                                                    "cs(User-Agent)": "x"}),
+                         "a web server log is no proxy log")
+        self.assertIn((None, "webserver", None), P({"cs-uri-stem": "/a", "sc-status": "200"}))
+        self.assertIn(("windows", "process_creation", None),
+                      P({"ProcessCommandLine": "cmd /c x", "FolderPath": "C:\\Windows\\cmd.exe"}),
+                      "EDR process telemetry")
+        self.assertEqual(set(), P({"foo": "bar"}))
+
+    def test_a_proxy_rule_never_fires_on_another_products_fields(self):
+        r = {**rule({"s": {"c-useragent": "curl*"}, "condition": "s"}), "product": None, "category": "proxy"}
+        self.assertEqual([], S.evaluate({"eventType": "x", "actor.alternateId": "a@b.c", "c-useragent": "curl/8"},
+                                        [r]))
+
+
+@unittest.skipUnless(os.path.isdir("/opt/sigma-rules/regression_data"), "SigmaHQ rules not installed here")
+class SigmaHQRegression(unittest.TestCase):
+    def test_every_regression_event_fires_its_rule(self):
+        loaded = S.load(dirs=("/opt/sigma-rules/rules", "/opt/sigma-rules/rules-emerging-threats",
+                              "/opt/sigma-rules/rules-threat-hunting"), min_level="informational")
+        byid = {r["id"]: r for r in loaded["rules"]}
+        n, missed = 0, []
+        for info in glob.glob("/opt/sigma-rules/regression_data/**/info.yml", recursive=True):
+            with open(info) as f:
+                meta = yaml.safe_load(f)
+            rid = meta["rule_metadata"][0]["id"]
+            for js in glob.glob(os.path.join(os.path.dirname(info), "*.json")):
+                with open(js) as f:
+                    text = f.read()
+                evs, pos, dec = [], 0, json.JSONDecoder()
+                while pos < len(text):                 # one object, a list, or several in a row
+                    while pos < len(text) and text[pos].isspace():
+                        pos += 1
+                    if pos >= len(text):
+                        break
+                    obj, pos = dec.raw_decode(text, pos)
+                    evs.extend(obj if isinstance(obj, list) else [obj])
+                n += 1
+                if rid not in byid or not any(S.evaluate(X._flat(e), [byid[rid]]) for e in evs):
+                    missed.append(meta["rule_metadata"][0]["title"])
+        self.assertGreater(n, 100)
+        self.assertEqual([], missed)
+
+
+if __name__ == "__main__":
+    unittest.main()

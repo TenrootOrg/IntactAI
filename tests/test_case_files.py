@@ -113,6 +113,42 @@ class Evidence(unittest.TestCase):
         self.assertEqual(case_files.with_evidence(md, {"name": "none"}), md)    # no evidence: unchanged
         self.assertNotIn("Evidence attached", case_files.with_evidence(once, {"name": "none"}))   # all deleted: section goes
 
+    def test_data_is_its_own_section_never_evidence(self):
+        """Log imports and incident notes are data the analysis read, not proof the
+        analyst attached: their own section, always in, with what was reported."""
+        from services.fusion import external_logs
+        runs = {"r_fw": {"status": "completed", "details": {"data_type": "firewall", "rows": 1200, "alerts": 3}},
+                "r_nt": {"status": "completed", "details": {"data_type": "notes", "facts": 2, "lines": 9}}}
+        with mock.patch.object(external_logs, "start", side_effect=["r_fw", "r_nt"]), \
+                mock.patch("services.workflow_service.get_automation_run",
+                           lambda rid, with_logs=False: runs.get(rid)):
+            self.add("popup.png", b"img", name="Popup", description="the prompt")
+            self.add("fw.csv", b"a", name="FortiGate export", description="Oct 1-3", data_type="firewall")
+            self.add("chat.txt", b"b", name="Call with the customer", description="Teams chat", data_type="notes")
+            self.d["include_evidence"] = True
+            md = "# Report\n\n## Findings\n- x\n\n---\n_Deterministic report — no model_\n"
+            facts = [{"kind": "customer_action", "what": "IT reimaged WS-FIN-07", "when": "Oct 3", "host": "WS-FIN-07",
+                      "source": "chat.txt"},
+                     {"kind": "impact", "what": "payroll down", "source": "chat.txt"}]
+            out = case_files.with_data_sources(case_files.with_evidence(md, self.d), self.d, facts)
+            ev = out[out.index("## Evidence attached"):]
+            self.assertIn("**Popup**", ev)
+            self.assertNotIn("FortiGate export", ev)
+            self.assertNotIn("Call with the customer", ev)
+            ds = out[out.index("## External data"):out.index("## Evidence attached")]
+            self.assertIn("**FortiGate export** — Firewall · 1,200 row(s), 3 detection(s)", ds)
+            self.assertIn("**Call with the customer** — Incident notes · 2 fact(s) from 9 line(s)", ds)
+            self.assertIn("### Reported by the customer (not verified)", ds)
+            self.assertLess(ds.index("**Impact**"), ds.index("**What the customer did**"))
+            self.assertIn("- IT reimaged WS-FIN-07 — Oct 3 · WS-FIN-07 _(chat.txt)_", ds)
+            self.assertEqual(out, case_files.with_data_sources(out, self.d, facts), "rebuilt, never repeated")
+            old = out.replace("## External data\n", "## Data sources\n")
+            self.assertEqual(out, case_files.with_data_sources(old, self.d, facts),
+                             "a report with the section's first name is rebuilt, not doubled")
+            self.d["include_evidence"] = False
+            self.assertIn("## External data", case_files.with_data_sources(md, self.d, facts),
+                          "data is in whatever the evidence switch says")
+
     def test_pictures_resolve_per_output(self):
         pic = self.add("popup.png", b"\x89PNGdata", finding_id="f_row", name="", description="")
         md = f"x\n\n![Popup](evidence:{pic['id']})\n\n![Gone](evidence:0000000000aa)\n"
@@ -162,6 +198,31 @@ class Evidence(unittest.TestCase):
         self.assertEqual(case_files.delete("c1", it["id"]), {"deleted": it["id"]})
         self.assertFalse(os.path.exists(p))
 
+    def test_log_data_gets_a_run_a_switch_and_goes_with_its_rows(self):
+        from services.fusion import external_logs
+        import services.workflow_service as ws
+        runs = {}
+        start = mock.patch.object(external_logs, "start", lambda cid, item, dt: "external_log_9").start()
+        get = mock.patch.object(ws, "get_automation_run",
+                                lambda rid, with_logs=True: runs.get(rid)).start()
+        upd = mock.patch.object(ws, "update_run_status").start()
+        gone = mock.patch("services.file_storage_service.delete_workflow").start()
+        runs["external_log_9"] = {"status": "running", "details": {"rows": 0}}
+        self.d["fused_run_ids"] = ["external_log_9", "velociraptor_collection_1"]
+        it = self.add("fw.csv", b"a,b\n1,2\n", name="Firewall", description="perimeter", data_type="firewall")
+        self.assertEqual(("firewall", "external_log_9", True, "running"),
+                         (it["data_type"], it["run_id"], it["ai"], it["log"]["status"]))
+        self.assertIn("data_type", case_files.add("c1", io.BytesIO(b"x"), "a.log", name="n", description="d",
+                                                  data_type="pcap")["error"])
+        self.assertNotIn("error", case_files.add("c1", io.BytesIO(b"x"), "b.log", name="n", description="d",
+                                                 data_type="auto"))
+        case_files.update("c1", it["id"], {"ai": False})
+        upd.assert_called_with("external_log_9", "running", details={"use_in_analysis": False}, force=True)
+        self.assertEqual(["velociraptor_collection_1"], self.d["fused_run_ids"], "the case shows it as changed")
+        case_files.delete("c1", it["id"])
+        gone.assert_called_once_with("external_log_9")
+        self.assertFalse(self.behind.call_count == 0)
+
     def test_limits_and_ids(self):
         self.assertIn("empty", self.add("a.txt", b"")["error"])
         with mock.patch.object(case_files, "MAX_BYTES", 4):
@@ -198,10 +259,13 @@ class Page(unittest.TestCase):
             self.skipTest("no node on this host")
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
-        parts = [re.search(r"const EV_SOURCES=.*?;\n", src).group(0)] + \
+        parts = [re.search(r"const %s=.*?;\n" % c, src).group(0)
+                 for c in ("EV_LOGTYPES", "EV_VIA", "EV_SOURCES", "EV_NOTES", "DT_KINDS")] + \
                 [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0)
-                 for n in ("_evFields", "_evThumb", "_evItem", "renderEvidence", "_evList", "_evHostList", "_evPickers")] + \
-                [re.search(r"function %s\(.*?\}\n" % n, src).group(0) for n in ("_evSize", "_evSrc")]
+                 for n in ("_evFields", "_evThumb", "_evItem", "renderEvidence", "renderData", "_dtFactsHtml",
+                           "_evHostList", "_evPickers", "_evLog", "_evFollow")] + \
+                [re.search(r"function %s\(.*?\}\n" % n, src).group(0) for n in ("_evSize", "_evSrc", "_evList", "_evOnly",
+                                                                                  "_dataList")]
         js = ("const esc=s=>String(s); const window={}; let OUT=''; const $=()=>({set innerHTML(v){OUT=v}});"
               "const api=()=>Promise.resolve({rows:[]}); let curInfo=null;\n" + "\n".join(parts) + "\n" + calls)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
@@ -240,6 +304,52 @@ console.log(JSON.stringify([all, one, bad, form, linked]));""")
         self.assertIn("Date &amp; time", form)
         self.assertNotIn("the AI use", form)                                           # evidence never goes to the AI
         self.assertNotIn("evn-host", linked.replace("eva", "evn"))                     # from the Timeline: host comes from the event
+
+    def test_log_data_shows_how_it_was_read_and_its_switch(self):
+        out = self.run_js("""
+const it=(id,log,ai)=>({id,name:'FW '+id,description:'d',file_name:'fw.csv',size:9,sha256:'ab'.repeat(32),kind:'text',ai,host:'',time:'',source:'other',source_other:'',finding_id:'',data_type:'firewall',log});
+curInfo={case_id:'c1', case_files:[it('0123456789b1',{status:'completed',rows:1200,alerts:3,via:'llm',first_ts:'2026-10-01T10:00:00',last_ts:'2026-10-02T11:00:00'},true),
+  it('0123456789b2',{status:'running'},false), it('0123456789b3',{status:'failed',error:'empty file'},true),
+  {...it('0123456789b4',{status:'completed',rows:5,via:'parser',data_type:'idp',leftover_lines:2,row_errors:1},true),data_type:'auto'}]};
+renderData(curInfo); const page=OUT;
+renderEvidence(curInfo); const ev=OUT;
+window._dtAdd=true; renderData(curInfo); const form=OUT;
+console.log(JSON.stringify([page, form, _evFields('evn',{},true,false), ev]));""")
+        page, form, evform, ev = out
+        self.assertIn("Log data · Firewall", page)
+        self.assertIn("1,200 row(s)", page)
+        self.assertIn("<b>3 alert(s)</b>", page)
+        self.assertIn("each value checked against its line", page)
+        self.assertIn("reading the file…", page)
+        self.assertIn("could not be read: empty file", page)
+        self.assertEqual(4, page.count("Use in analysis</label>"))
+        self.assertIn("Log data · Identity provider (Okta, Entra…)", page, "an auto item shows the type found")
+        self.assertIn("2 other line(s) kept", page)
+        self.assertIn("1 unreadable row(s) kept as text", page)
+        self.assertIn("evUseInAnalysis('0123456789b1',this.checked)", page)
+        self.assertIn('id="dtn-dtype"', form)
+        self.assertIn('<option value="edr">Log data — EDR alerts', form)
+        self.assertIn('<option value="auto">Log data — any kind', form)
+        self.assertIn('<option value="notes">Incident notes', form)
+        self.assertNotIn("dtype", evform, "the Evidence form adds evidence only")
+        self.assertNotIn("FW 0123456789b1", ev, "data is not evidence")
+        self.assertIn("No evidence yet.", ev)
+
+    def test_incident_notes_show_their_facts_on_the_data_tab(self):
+        out = self.run_js("""
+curInfo={case_id:'c1', case_files:[{id:'0123456789c1',name:'Call with IT',description:'Teams',file_name:'chat.txt',size:9,
+  sha256:'ab'.repeat(32),kind:'text',ai:true,host:'',time:'',source:'other',source_other:'',finding_id:'',data_type:'notes',
+  log:{status:'completed',data_type:'notes',facts:2,lines:9}}]};
+window._dtOpen='0123456789c1'; window._dtFacts={id:'0123456789c1', facts:[
+  {kind:'customer_action',what:'IT reimaged WS-FIN-07',when:'Oct 3',host:'WS-FIN-07',lines:[3,7],quote:'we reimaged'},
+  {kind:'impact',what:'payroll down',lines:[1]}]};
+renderData(curInfo); console.log(JSON.stringify([OUT]));""")
+        page = out[0]
+        self.assertIn("Incident notes</span>", page)
+        self.assertIn("<b>2 fact(s)</b> from 9 line(s)", page)
+        self.assertLess(page.index(">Impact<"), page.index(">What the customer did<"))
+        self.assertIn("• IT reimaged WS-FIN-07", page)
+        self.assertIn("line 3, 7", page)
 
     def test_a_deleted_pictures_link_is_named_not_requested(self):
         # A report written before an evidence item was deleted kept its picture link:

@@ -174,6 +174,12 @@ def _run_passes_gate(run, d) -> bool:
     _enabled_run_types`) so an agentic HUNT now fuses under 'Velociraptor
     (Agentic)' and a non-agentic collection/import no longer does."""
     atype = run.get("automation_type")
+    if atype == "external_log":
+        # Log data attached to the case. Its own switch ("Use in analysis" on the
+        # attachment) decides, not the module picker: a case saved before this
+        # existed has an explicit module list without it, and would silently ignore
+        # the logs the analyst just attached.
+        return True
     mods = set(normalize_modules(d.get("fusion_modules")))
     if atype in _VELOCIRAPTOR_TYPES:
         # Any velociraptor run (collection / offline-collector import / hunt) fuses when a
@@ -1351,6 +1357,15 @@ def _payload_too_big(fp, log=None):
     return True
 
 
+def _reported(case_id):
+    """Facts from the case's incident notes (the customer's own account)."""
+    try:
+        from .external_logs import reported_facts
+        return reported_facts(case_id) or None
+    except Exception:                                      # noqa: BLE001 -- context, never a blocker
+        return None
+
+
 def _agentic_collected_data(rid, det, log=None):
     """The real agentic pipeline persists rows to /data/downloads/<rid>/raw_results.json
     (not into details, to avoid bloating the SQLite blob). Prefer details.collected_data
@@ -1795,6 +1810,17 @@ def _contribution_for_run(run, log=None, refetch=False):
         if atype in ("aws_scan", "azure_scan"):
             prov = "aws" if atype == "aws_scan" else "azure"
             return _cloud_contribution(rid, det, prov)
+        if atype == "external_log":
+            if det.get("use_in_analysis") is False:
+                return [], []
+            fp = _raw_results_path(rid, det)
+            if not fp:
+                return [], []
+            from .mappers.external import map_external
+            return _cached_map(fp, det, lambda: _agentic_collected_data(rid, det, log=log),
+                               lambda rows: map_external(rows, run_id=rid,
+                                                         data_type=det.get("data_type") or "other",
+                                                         label=det.get("file_name") or rid))
     except Exception as e:  # never let one run break the fuse
         if log:
             log(f"fuse: run {rid} ({atype}) skipped: {e}", "warning")
@@ -2563,6 +2589,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                 dispositions=d.get("dispositions") or None,
                 validations=d.get("timeline_validations") or None,
                 manual_events=d.get("manual_timeline_events") or None,
+                reported=_reported(case_id),
                 checklist=d.get("disposition_checklist") or None,
                 # First scan narrates with the model whenever one is configured. It
                 # used to be hardcoded False -- "fast, free, deterministic; LLM on
@@ -3061,7 +3088,14 @@ def _with_evidence(case_id, report, d) -> str:
     deterministically — see case_files.with_evidence)."""
     try:
         from . import case_files
-        return case_files.with_evidence(report, get_case(case_id) or d)
+        cur = get_case(case_id) or d
+        report = case_files.with_evidence(report, cur)
+        try:
+            from .external_logs import reported_facts
+            facts = reported_facts(case_id, limit=500)
+        except Exception:                                    # noqa: BLE001
+            facts = []
+        return case_files.with_data_sources(report, cur, facts)
     except Exception as e:                                   # noqa: BLE001 — never lose a report over it
         print(f"[FUSION] evidence section not added for {case_id}: {e}", flush=True)
         return report
@@ -4629,6 +4663,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
             manual_events=d.get("manual_timeline_events") or None,
+            reported=_reported(case_id),
             checklist=d.get("disposition_checklist") or None,
             prefer_llm=bool(use_llm and not offline), max_entities=llm_ent, budget_chars=llm_chars,
             max_output_tokens=llm_out, detail="explicit", max_identities=llm_ident,
@@ -6154,6 +6189,7 @@ def chat_case(case_id, question) -> str:
                            excluded_hosts=d.get("excluded_hosts") or None,
                            master_prompt=d.get("master_prompt") or None,
                            manual_events=d.get("manual_timeline_events") or None,
+                           reported=_reported(case_id),
                            checklist=d.get("disposition_checklist") or None,
                            tool_case=case_id)      # the model may fetch explicit data itself
         log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
