@@ -277,6 +277,7 @@ RAW_SOURCES = {
     "wineventlog_application": {"product": "windows", "service": "application"},
     "ntlm_audit": {"product": "windows", "service": "ntlm"},
     "ms_defender": {"product": "windows", "service": "windefend"},
+    "wineventlog_appxdeploymentserver": {"product": "windows", "service": "appxdeployment-server"},
     "kube_audit": {"product": "kubernetes", "service": "audit"},
     "cisco_secure_firewall": {"product": "cisco", "service": "secure_firewall"},
     "cisco_duo_administrator": {"product": "cisco", "service": "duo"},
