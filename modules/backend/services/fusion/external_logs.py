@@ -45,7 +45,7 @@ _JOINS = {"host", "user", "src_ip", "dst_ip", "hash", "domain", "process", "url"
 # a name may stand for more than one field, and the column's VALUES then decide
 # ("source" is a host in Graylog, an account in Sophos).
 _NAMES = {
-    "ts": "@timestamp timestamp eventtime timegenerated _time time createdtime createddatetime "
+    "ts": "@timestamp timestamp ts eventtime timegenerated _time time createdtime createddatetime "
           "creationtime alertcreationtime createdtimestamp createdat createtime detectiontimestamp "
           "detecttime detectiontime alerttime activitydatetime published recordedat eventtimestamp "
           "metadataeventtimestamp messagetime edgestarttimestamp eventgeneratedtime alarmdate "
