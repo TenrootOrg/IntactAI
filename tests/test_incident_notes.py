@@ -49,11 +49,13 @@ class Facts(unittest.TestCase):
             {"kind": "customer_action", "what": "reset the password of svc_backup", "host": "DC01", "line": 4},
             {"kind": "timeline", "what": "noticed at noon", "when": "12:00", "line": 99},          # no such line
             {"kind": "advice", "what": "payroll down", "line": 1},                                 # not a kind
-            {"kind": "customer_action", "what": "IT reimaged WS-FIN-07 before calling", "line": 6},  # said again
+            {"kind": "customer_action", "what": "we reimaged WS-FIN-07", "host": "WS-FIN-07", "line": 6},  # again
+            {"kind": "observation", "what": "a ransom note on the file server FS-01", "host": "FS-01", "line": 2},
         ]
         facts, st = X.extract_facts(lines, call=fake_model(answer))
         self.assertEqual(["Payroll down since 08:30 on Oct 3", "IT reimaged WS-FIN-07 before calling",
-                          "reset the password of svc_backup"], [f["what"] for f in facts])
+                          "reset the password of svc_backup", "a ransom note on the file server FS-01"],
+                         [f["what"] for f in facts])
         self.assertEqual("WS-FIN-07", facts[1]["host"])
         self.assertNotIn("host", facts[2], "DC01 is not in the line")
         self.assertEqual([3, 6], facts[1]["lines"], "repeated: one fact, both lines")

@@ -1569,7 +1569,7 @@ def _free_text(lines, model, log, what):
 
 # -- incident notes: what the customer reported ------------------------------------
 NOTES_MAX_CHUNKS = 8           # ~240k chars condensed; the rest stays searchable
-FACT_KINDS = ("impact", "customer_action", "timeline", "suspicion")
+FACT_KINDS = ("impact", "customer_action", "observation", "timeline", "suspicion")
 FACTS_IN_CONTEXT = 60          # per case; the rest is a search away
 NOTES_SYSTEM = (
     "You read what the victim organisation said during a security incident: a chat, "
@@ -1579,14 +1579,16 @@ NOTES_SYSTEM = (
     "the text states, one object each:\n"
     "  kind: impact (what the incident broke, cost or exposed) | customer_action (what "
     "THEIR people did: reimaged, reset, blocked, restored, ran antivirus, contacted someone) | "
+    "observation (what they saw: a ransom note, an alert, traffic, a file, a message) | "
     "timeline (when they noticed or something happened) | suspicion (what they believe, "
     "unconfirmed)\n"
     "  what: the fact in at most 25 words, in the text's own terms\n"
     "  when: the time or date the line states, as written (omit if none)\n"
     "  host, user, ip: only if the line names them, exactly as written\n"
     "  line: the number N of the line that says it (L<N>)\n"
-    "Only facts a line actually states; no greetings, no small talk, no advice. If "
-    "nothing qualifies, return []."
+    "Cover EVERY line that states something about the incident -- one fact per thing "
+    "stated; skip only greetings, small talk and advice. Only what a line actually "
+    "states. If nothing qualifies, return []."
 )
 _STOP = set("the a an and or of to in on at for with from by was were is are be been has have had "
             "that this it its our we they their them you your not no".split())
@@ -1649,6 +1651,22 @@ def _mask_notes_values(text, mask):
             mask._get_or_create_pseudo(h, "host")
 
 
+def _same_fact(g, facts):
+    """The fact already kept that says the same thing: same kind, same host and
+    account, and mostly the same words ("our IT guy reimaged WS-FIN-07" / "we
+    reimaged WS-FIN-07")."""
+    words = lambda f: {w for w in re.findall(r"[a-z0-9][a-z0-9'-]{2,}", f["what"].lower()) if w not in _STOP
+                       and w not in ("our", "guy", "team", "they", "also", "yes")}
+    gw = words(g)
+    for f in facts:
+        if f["kind"] != g["kind"] or f.get("host") != g.get("host") or f.get("user") != g.get("user"):
+            continue
+        fw = words(f)
+        if gw and fw and len(gw & fw) / min(len(gw), len(fw)) >= 0.6:
+            return f
+    return None
+
+
 def extract_facts(lines, *, call, mask=None, revert=None) -> tuple[list, dict]:
     """The customer's text -> short, checked facts (what goes in the model's context
     instead of the text). Each chunk goes out as a JSON list of strings, so the
@@ -1668,7 +1686,7 @@ def extract_facts(lines, *, call, mask=None, revert=None) -> tuple[list, dict]:
         size += len(s) + 1
     if cur and len(chunks) < NOTES_MAX_CHUNKS:
         chunks.append(cur)
-    facts, seen = [], {}
+    facts = []
     if mask is not None:
         _mask_notes_values("\n".join(lines), mask)
     for ch in chunks:
@@ -1695,14 +1713,14 @@ def extract_facts(lines, *, call, mask=None, revert=None) -> tuple[list, dict]:
             if g is None:
                 stats["dropped"] += 1
                 continue
-            key = (g["kind"], re.sub(r"[^a-z0-9]+", " ", g["what"].lower()).strip())
-            if key in seen:                        # said again: one fact, every line kept
-                seen[key]["lines"].append(no)
+            same = _same_fact(g, facts)
+            if same is not None:                   # said again: one fact, every line kept
+                if no not in same["lines"]:
+                    same["lines"].append(no)
                 stats["merged"] += 1
                 continue
             g["lines"] = [no]
             g["quote"] = lines[no - 1].strip()[:500]
-            seen[key] = g
             facts.append(g)
             stats["facts"] += 1
     return facts, stats
@@ -1724,6 +1742,11 @@ def _ingest_notes(case_id, run_id, text, log) -> tuple[list, list, dict]:
         try:
             facts, st = extract_facts(lines, call=call, mask=mask, revert=revert)
             summary["llm"] = st
+            from . import injection
+            held = injection.take_hits(run_id)
+            if held:
+                log(f"{len(held)} line(s) addressed to an AI were withheld from the model: "
+                    + "; ".join(h[:120] for h in held[:3]), "warning")
             log(f"model: {st['facts']} fact(s) from {st['lines_read']:,} line(s); {st['merged']} repeated, "
                 f"{st['dropped']} dropped because the cited line does not say them", "info")
             if st["lines_read"] < len(lines):
@@ -1853,8 +1876,9 @@ def start(case_id, item, data_type) -> str:
             update_run_status(rid, "running", progress=5)
             s = ingest(case_id, rid, path, data_type, log)
             update_run_status(rid, "completed", progress=100, details=s)
-            log(f"done — {s['rows']:,} row(s), {s['alerts']:,} alert(s); Refusion adds them to the case",
-                "success")
+            log(f"done — {s['facts']:,} fact(s) from {s['lines']:,} line(s); chat and the report read them "
+                f"as the customer's account" if data_type == NOTES else
+                f"done — {s['rows']:,} row(s), {s['alerts']:,} alert(s); Refusion adds them to the case", "success")
         except Exception as e:                             # noqa: BLE001
             log(f"could not read the file: {e}", "error")
             update_run_status(rid, "failed", error=str(e))
