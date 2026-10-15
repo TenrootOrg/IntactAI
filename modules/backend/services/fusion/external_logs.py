@@ -1030,10 +1030,15 @@ def native_hits(raw, _cache=None) -> list:
             continue
         sv = str(v).strip()
         if sv[:2] in ('{"', "[{", '["') and len(sv) > 2:  # nested findings (JSON): scan their keys
-            for kk, vv in _NESTED_PAIR.findall(sv[:20000]):
+            pairs = _NESTED_PAIR.findall(sv[:20000])
+            for kk, vv in pairs:
                 nk = _norm_name(kk)
                 for r in nat:
-                    if nk in r["fields"] and r["rx"].fullmatch(vv.strip()):
+                    # An `and:` must hold inside the same blob: Carbon Black's signer
+                    # list ("name": "Sophos Ltd", "state": "...VERIFIED") once read
+                    # as "security service stopped" because the state was never checked.
+                    if nk in r["fields"] and r["rx"].fullmatch(vv.strip()) \
+                            and _and_holds(r, {k2: v2 for k2, v2 in pairs}):
                         hits.append((r, vv.strip(), kk))
             continue
         rel = cache.get(k)

@@ -170,6 +170,15 @@ class EachProductsOwnVerdict(unittest.TestCase):
             with self.subTest(name):
                 self._pair(name, rule, "\n".join([hit] * 3), "\n".join([quiet] * 3))
 
+    def test_a_nested_blob_keeps_the_rules_and_condition(self):
+        """Carbon Black's signer list is JSON in one column: a vendor NAME there
+        is no stopped service unless the same blob says stopped."""
+        row = {"device_timestamp": "2026-10-01T10:05:00Z", "device_name": "WS01", "type": "endpoint.event.filemod",
+               "process_publisher": '[{"name": "Carbon Black", "state": "FILE_SIGNATURE_STATE_VERIFIED"}]'}
+        self.assertEqual([], detections(_jl(row, row, row)))
+        row["process_publisher"] = '[{"Name": "Sysmon64", "State": "stopped"}]'
+        self.assertTrue(detections(_jl(row, row, row)))
+
     def test_a_number_or_flag_is_titled_with_its_field(self):
         d = detections(_jl(*[{"EdgeStartTimestamp": 1790849100000000000, "ClientIP": ATK, "WAFAttackScore": 4}] * 3))
         self.assertEqual("WAFAttackScore = 4", d[0]["rule"])
