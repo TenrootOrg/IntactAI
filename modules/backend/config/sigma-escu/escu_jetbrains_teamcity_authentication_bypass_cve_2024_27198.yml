@@ -1,0 +1,40 @@
+title: JetBrains TeamCity Authentication Bypass CVE-2024-27198
+id: fbcc04c7-8a79-453c-b3a9-c232c423bdd4
+status: experimental
+description: The following analytic identifies attempts to exploit the JetBrains TeamCity Authentication Bypass vulnerability
+  (CVE-2024-27198). It detects suspicious POST requests to the `/app/rest/users` and `/app/rest/users/id:1/tokens` endpoints,
+  which are indicative of attempts to create new administrator users or generate admin access tokens without authentication.
+  This detection leverages the Web datamodel and CIM-compliant log sources, such as Nginx or TeamCity logs. This activity
+  is significant as it can lead to full control over the TeamCity server, including all projects, builds, agents, and artifacts.
+  If confirmed malicious, attackers could gain unauthorized administrative access, leading to severe security breaches.
+references:
+- https://research.splunk.com/fbcc04c7-8a79-453c-b3a9-c232c423bdd4/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1190
+logsource:
+  category: web
+detection:
+  sel1:
+    c-uri: '*?jsp=*'
+  sel2:
+    c-uri: '*;.jsp*'
+  sel3:
+    sc-status: '200'
+  sel4:
+    cs-method: POST
+  sel5:
+    c-uri:
+    - '*jsp=/app/rest/users;.jsp'
+    - '*?jsp=/app/rest/users;.jsp'
+    - '*?jsp=.*/app/rest/users/id:*/tokens;*'
+  sel6:
+    sc-status: '200'
+  sel7:
+    cs-method: POST
+  condition: (((sel1 and sel2) and sel3 and sel4) or (sel5 and sel6 and sel7))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/jetbrains/teamcity_cve_2024_27198.log

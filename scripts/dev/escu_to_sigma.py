@@ -39,11 +39,21 @@ FIELDS = {   # CIM field -> (Sigma field, value shape)
     "Registry.registry_value_data": ("Details", "regdata"),
     "Filesystem.file_name": ("TargetFilename", "name"),
     "Filesystem.file_path": ("TargetFilename", "raw"),
+    # Web: the URL as one string (path and query), as proxies and Suricata write it;
+    # the engine reads it from an IIS/W3C log's cs-uri-stem too.
+    "Web.url": ("c-uri", "raw"),
+    "Web.uri_path": ("cs-uri-stem", "raw"),
+    "Web.uri_query": ("cs-uri-query", "raw"),
+    "Web.http_method": ("cs-method", "raw"),
+    "Web.status": ("sc-status", "raw"),
+    "Web.http_user_agent": ("c-useragent", "raw"),
+    "Web.http_referrer": ("cs-referrer", "raw"),
+    "DNS.query": ("query", "raw"),
 }
 IGNORED = {"Registry.action", "Filesystem.action", "Processes.action", "Processes.dest", "Registry.dest",
            "Filesystem.dest", "Processes.vendor_product"}      # true for every row Sigma sees
 CATEGORY = {"Endpoint.Processes": "process_creation", "Endpoint.Registry": "registry_event",
-            "Endpoint.Filesystem": "file_event"}
+            "Endpoint.Filesystem": "file_event", "Web": "web", "Network_Resolution": "dns"}
 TOKEN = re.compile(r'\s*(\(|\)|`[^`]+`|"(?:[^"\\]|\\.)*"|[^\s()=!,]+(?:\s*(?:!=|=)\s*(?:"(?:[^"\\]|\\.)*"|[^\s()]+))?|,|IN\b)',
                    re.I)
 
@@ -103,6 +113,9 @@ def leaf(field, op, values, product):
     out = []
     import html
     values = list(dict.fromkeys(list(values) + [html.unescape(v) for v in values]))   # raw XML keeps &gt;
+    if field == "Web.status" and "unknown" in values:
+        out.append(None)          # the add-ons fill status=unknown; the raw log just has none
+        values.remove("unknown")
     for v in values:
         if shape == "name" and not v.startswith("*"):
             v = "*" + sep + v
@@ -330,8 +343,8 @@ class RawParser(Parser):
 
 def translate(doc, macros):
     s = str(doc.get("search") or "")
-    m = re.match(r"\s*\|\s*tstats\b.*?FROM\s+datamodel=(Endpoint\.(?:Processes|Registry|Filesystem))\s+where\s+(.*?)\s+by\s",
-                 s, re.I | re.S)
+    m = re.match(r"\s*\|\s*tstats\b.*?FROM\s+datamodel=(Endpoint\.(?:Processes|Registry|Filesystem)|Web|Network_Resolution)"
+                 r"(?:\.Web|\.DNS)?\s+where\s+(.*?)\s+by\s", s, re.I | re.S)
     if not m:
         sels, condition, logsource = translate_raw(doc, macros)
         return _rule(doc, sels, condition, logsource)
@@ -342,7 +355,11 @@ def translate(doc, macros):
     product = ("linux" if re.match(r"linux\b", name, re.I) else "macos" if re.match(r"macos\b", name, re.I)
                else "windows")
     cond = expand(m.group(2), macros)
-    category = CATEGORY[m.group(1)]
+    category = CATEGORY[next(k for k in CATEGORY if k.lower() == m.group(1).lower())]
+    if category in ("web", "dns"):                    # network data: no operating system
+        tree = Parser(tokens(cond), "network").expr()
+        sels, condition = to_sigma(tree)
+        return _rule(doc, sels, condition, {"category": category})
     # The action names WHICH event: a deletion is its own Sysmon event (23 / 12-delete).
     if re.search(r'Filesystem\.action\s*=\s*"?deleted', cond, re.I):
         category = "file_delete"

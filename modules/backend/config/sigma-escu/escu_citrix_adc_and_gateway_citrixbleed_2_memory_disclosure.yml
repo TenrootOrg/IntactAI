@@ -1,0 +1,30 @@
+title: Citrix ADC and Gateway CitrixBleed 2 Memory Disclosure
+id: bef92f3f-7dc8-413a-8989-50581039e250
+status: experimental
+description: 'This detection identifies potential exploitation attempts of CVE-2025-5777 (CitrixBleed 2), a memory disclosure
+  vulnerability in Citrix NetScaler ADC and Gateway.
+
+  The vulnerability is triggered by sending POST requests with incomplete form data to the /p/u/doAuthentication.do endpoint,
+  causing the device to leak memory contents including session tokens and authentication materials.
+
+  This search looks for POST requests to the vulnerable endpoint that may indicate scanning or exploitation attempts.'
+references:
+- https://research.splunk.com/bef92f3f-7dc8-413a-8989-50581039e250/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1190
+logsource:
+  category: web
+detection:
+  sel1:
+    c-uri: '*/p/u/doAuthentication.do*'
+  sel2:
+    cs-method: POST
+  sel3:
+    sc-status: '200'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/citrix/suricata_citrixbleed2.log

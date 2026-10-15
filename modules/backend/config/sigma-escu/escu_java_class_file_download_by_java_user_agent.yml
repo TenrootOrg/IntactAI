@@ -1,0 +1,28 @@
+title: Java Class File download by Java User Agent
+id: 8281ce42-5c50-11ec-82d2-acde48001122
+status: experimental
+description: The following analytic identifies a Java user agent performing a GET request for a .class file from a remote
+  site. It leverages web or proxy logs within the Web Datamodel to detect this activity. This behavior is significant as it
+  may indicate exploitation attempts, such as those related to CVE-2021-44228 (Log4Shell). If confirmed malicious, an attacker
+  could exploit vulnerabilities in the Java application, potentially leading to remote code execution and further compromise
+  of the affected system.
+references:
+- https://research.splunk.com/8281ce42-5c50-11ec-82d2-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1190
+logsource:
+  category: web
+detection:
+  sel1:
+    c-useragent: '*Java*'
+  sel2:
+    cs-method: GET
+  sel3:
+    c-uri: '*.class*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/java/java.log

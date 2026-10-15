@@ -1,0 +1,29 @@
+title: DNS Kerberos Coercion
+id: 8551252d-b5b6-4b6e-8a82-51460aeb29a3
+status: experimental
+description: Detects DNS-based Kerberos coercion attacks where adversaries inject marshaled credential structures into DNS
+  records to spoof SPNs and redirect authentication such as in CVE-2025-33073. This detection leverages suricata looking for
+  specific CREDENTIAL_TARGET_INFORMATION structures in DNS queries.
+references:
+- https://research.splunk.com/8551252d-b5b6-4b6e-8a82-51460aeb29a3/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1557.001
+- attack.t1187
+- attack.t1071.004
+logsource:
+  category: dns
+detection:
+  sel1:
+    query: '*1UWhRC*'
+  sel2:
+    query: '*AAAAA*'
+  sel3:
+    query: '*YBAAAA*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1071.004/kerberos_coercion/suricata.log
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1071.004/kerberos_coercion/sysmon.log

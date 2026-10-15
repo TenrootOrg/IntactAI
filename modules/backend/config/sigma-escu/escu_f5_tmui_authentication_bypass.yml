@@ -1,0 +1,28 @@
+title: F5 TMUI Authentication Bypass
+id: 88bf127c-613e-4579-99e4-c4d4b02f3840
+status: experimental
+description: The following analytic detects attempts to exploit the CVE-2023-46747 vulnerability, an authentication bypass
+  flaw in F5 BIG-IP's Configuration utility (TMUI). It identifies this activity by monitoring for specific URI paths such
+  as "*/mgmt/tm/auth/user/*" with the PATCH method and a 200 status code. This behavior is significant for a SOC as it indicates
+  potential unauthorized access attempts, leading to remote code execution. If confirmed malicious, an attacker could gain
+  unauthorized access, execute arbitrary code, steal data, disrupt systems, or conduct further malicious activities within
+  the network.
+references:
+- https://research.splunk.com/88bf127c-613e-4579-99e4-c4d4b02f3840/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags: []
+logsource:
+  category: web
+detection:
+  sel1:
+    c-uri: '*/mgmt/tm/auth/user/*'
+  sel2:
+    cs-method: PATCH
+  sel3:
+    sc-status: '200'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/f5/f5_tmui.log

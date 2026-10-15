@@ -1,0 +1,31 @@
+title: Confluence Pre-Auth RCE via OGNL Injection CVE-2023-22527
+id: f56936c0-ae6f-4eeb-91ff-ecc1448c6105
+status: experimental
+description: The following analytic identifies attempts to exploit a critical template injection vulnerability (CVE-2023-22527)
+  in outdated Confluence Data Center and Server versions. It detects POST requests to the "/template/aui/text-inline.vm" endpoint
+  with HTTP status codes 200 or 202, indicating potential OGNL injection attacks. This activity is significant as it allows
+  unauthenticated attackers to execute arbitrary code remotely. If confirmed malicious, attackers could gain full control
+  over the affected Confluence instance, leading to data breaches, system compromise, and further network infiltration. Immediate
+  patching is essential to mitigate this threat.
+references:
+- https://research.splunk.com/f56936c0-ae6f-4eeb-91ff-ecc1448c6105/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1190
+logsource:
+  category: web
+detection:
+  sel1:
+    c-uri: '*/template/aui/text-inline.vm*'
+  sel2:
+    cs-method: POST
+  sel3:
+    sc-status:
+    - '200'
+    - '202'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/confluence/suricata_confluence_cve-2023-22527.log
