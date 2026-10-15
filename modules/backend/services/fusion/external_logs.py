@@ -196,9 +196,14 @@ def read_text(path) -> str:
     opener = gzip.open if head == b"\x1f\x8b" else open
     with opener(path, "rb") as f:
         data = f.read()
-    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return data.decode("utf-16", "replace")
-    return data.decode("utf-8-sig", "replace")
+    text = data.decode("utf-16", "replace") if data[:2] in (b"\xff\xfe", b"\xfe\xff") \
+        else data.decode("utf-8-sig", "replace")
+    # auditd's enriched format puts \x1d (group separator) before the interpreted fields
+    # (UID="root"); str.splitlines() breaks a line there, so every record became two.
+    return text.translate(_SEPARATORS)
+
+
+_SEPARATORS = {0x1c: " ", 0x1d: " ", 0x1e: " "}
 
 
 def _flat(o, pre="", out=None, depth=0):

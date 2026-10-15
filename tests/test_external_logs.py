@@ -151,6 +151,17 @@ class Shapes(unittest.TestCase):
     def test_free_text_is_not_a_structure(self):
         self.assertEqual(("", []), X.parse(FREE))
 
+    def test_auditd_enriched_separator_is_not_a_line_break(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "audit.log")
+        rec = ("type=ADD_USER msg=audit(1722960000.100:%d): pid=1 uid=0 auid=0 ses=1 msg='op=adding user "
+               "id=1001 exe=\"/usr/sbin/useradd\" hostname=web01 addr=? terminal=pts/0 res=success'\x1dUID=\"root\"\n")
+        with open(p, "w") as f:
+            f.write("".join(rec % i for i in range(5)))
+        fm, rows, left = X.read(X.read_text(p))
+        self.assertEqual(("kv", 5, 0), (fm, len(rows), len(left)))
+        self.assertEqual(("ADD_USER", "/usr/sbin/useradd", "root"), (rows[0]["type"], rows[0]["exe"], rows[0]["UID"]))
+
     def test_auditd_path_records_stay_structured(self):
         # PATH / CWD records have no host or address; as text no auditd rule saw them.
         text = "\n".join(f"type=CWD msg=audit(1764000000.{i}:{i}): cwd=\"/etc\"\n"
