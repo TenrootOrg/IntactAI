@@ -99,6 +99,8 @@ class Language(unittest.TestCase):
         self.assertEqual("x", ev.get("Image"))
         self.assertEqual("EICAR", ev.get("ThreatName"))
         self.assertEqual("C:\\a.exe", S.Event({"NewProcessName": "C:\\a.exe"}).get("Image"), "4688 spelling")
+        self.assertEqual("Microsoft-Windows-Eventlog", S.Event({"Provider": "Microsoft-Windows-Eventlog"}).get("Provider_Name"),
+                         "event XML's Provider is what 86 SigmaHQ rules call Provider_Name")
 
 
 class WhichRulesRun(unittest.TestCase):

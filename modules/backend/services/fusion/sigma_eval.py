@@ -410,6 +410,9 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
 # style names; a Security 4688 event, a proxy export or a DNS log spells them
 # otherwise (the role pySigma's processing pipelines play).
 ALIASES = {
+    # 86 SigmaHQ rules name the event provider Provider_Name (the EVTX-to-JSON name);
+    # Windows event XML, NXLog and Winlogbeat call it Provider / SourceName / provider_name.
+    "provider_name": ["provider", "sourcename", "providername", "winlog.provider_name"],
     # CloudTrail in OCSF (AWS Security Lake): the CloudTrail names Sigma rules use
     "eventname": ["api.operation"], "eventsource": ["api.service.name"],
     "errorcode": ["api.response.error"], "errormessage": ["api.response.message"],
