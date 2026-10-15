@@ -448,7 +448,10 @@ def _syslog_ts(header):
     if m:
         return _ts(m.group(0))
     m = re.search(r"[A-Z][a-z]{2}\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}", header)
-    return _ts(m.group(0)) if m else None
+    if m:
+        return _ts(m.group(0))
+    m = _SYSLOG_TS.match(header.strip())
+    return _yearless(*m.groups()) if m else None
 
 
 def parse(text) -> tuple[str, list]:
@@ -785,7 +788,7 @@ def _severity(v, scale) -> str | None:
 RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                           "config", "external_log_rules.yaml")
 LOCAL_RULES = ("/app/data/external_log_rules.local.yaml",)
-_RULES = {"key": None, "native": []}
+_RULES = {"key": None, "native": [], "behaviour": {}}
 _SEV_RANK = {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 _NESTED_PAIR = re.compile(r'"([A-Za-z0-9_.@-]{1,80})"\s*:\s*"?([^"\n,}\]]{0,300})')
 
@@ -827,7 +830,14 @@ def rules() -> dict:
                            "nested_only": bool(r.get("nested_only"))})
         except re.error as e:
             print(f"[EXTERNAL-LOGS] rule {r.get('id')} skipped, bad match: {e}", flush=True)
-    _RULES.update(key=key, native=native)
+    beh = {}
+    for src in (shipped.get("behaviour") or {}, local.get("behaviour") or {}):   # the box's values win
+        for k, v in (src.items() if isinstance(src, dict) else []):
+            if isinstance(v, dict):
+                beh[k] = {**beh.get(k, {}), **v}
+    for k in off:
+        beh.setdefault(k, {})["enabled"] = False
+    _RULES.update(key=key, native=native, behaviour=beh)
     return _RULES
 
 
@@ -970,9 +980,30 @@ def indicators(text) -> dict:
             "hashes": sorted(hashes), "domains": sorted(doms)}
 
 
+_SYSLOG_TS = re.compile(r"^(?:<\d+>)?([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}:\d{2}:\d{2})\b")
+
+
+def _yearless(mon, day, hms, now=None):
+    """A syslog time without a year ("Oct  1 10:05:00"): the most recent such
+    moment that is not in the future -- the rule logrotate'd files follow."""
+    import datetime as _dt
+    now = now or _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+    for year in (now.year, now.year - 1):
+        try:
+            d = _dt.datetime.strptime(f"{year} {mon} {int(day)} {hms}", "%Y %b %d %H:%M:%S")
+        except ValueError:
+            return None
+        if d <= now + _dt.timedelta(days=1):
+            return d.strftime("%Y-%m-%dT%H:%M:%S")
+    return None
+
+
 def _line_ts(line):
     m = _ISO.search(line)
-    return _ts(m.group(0)) if m else None
+    if m:
+        return _ts(m.group(0))
+    m = _SYSLOG_TS.match(line.strip())
+    return _yearless(*m.groups()) if m else None
 
 
 def indicator_rows(lines) -> list:
@@ -1168,6 +1199,53 @@ def _model(case_id, run_id, log):
             (lambda o: investigate._revert_obj(o, mask)) if mask is not None else None)
 
 
+def sigma_pass(out, log=None) -> dict:
+    """Run the community Sigma rules (SigmaHQ, /opt/sigma-rules) over every row --
+    the structured row as the product wrote it, a free-text line as text. A hit
+    raises the row to a detection; the product's own title is kept when it has
+    one. Returns {"rules", "rows_hit", "titles"}.
+    ponytail: one Python pass, ~700 rows/s with 3,300 rules; an index or a
+    compiled engine (RSigma) if attachments ever get far past 100 MB."""
+    from . import sigma_eval
+    import time
+    log = log or (lambda m, l="info": None)
+    loaded = sigma_eval.load()
+    if not loaded["rules"]:
+        log("Sigma: no rules on this appliance (/opt/sigma-rules is not installed) — vendor verdicts and "
+            "behaviour rules still ran", "warning")
+        return {"rules": 0, "rows_hit": 0, "titles": {}}
+    t0, cache, titles, hit_rows = time.time(), {}, {}, 0
+    for i, r in enumerate(out):
+        raw = r.get("raw") or {}
+        ev = {"_text": raw["text"], "text": raw["text"]} if set(raw) <= {"line", "text"} and "text" in raw else raw
+        try:
+            hits = sigma_eval.evaluate(ev, loaded["rules"], cache)
+        except Exception:                                  # noqa: BLE001 -- one row, never the file
+            continue
+        if not hits:
+            continue
+        hit_rows += 1
+        n = r["n"]
+        top = hits[0]
+        # The product already called it an alert: its title stays, Sigma is added.
+        product_alert = n.get("detected_by") or _SEV_RANK.get(n.get("severity") or "", 0) >= 2
+        if _SEV_RANK.get(top["level"], 0) > _SEV_RANK.get(n.get("severity") or "informational", 0):
+            n["severity"] = top["level"]
+        if not product_alert or not n.get("rule"):
+            n["rule"] = top["title"]
+        n["detected_by"] = sorted(set(n.get("detected_by") or []) | {f"sigma: {h['title']}" for h in hits[:5]})
+        if any(h["mitre"] for h in hits):
+            n["mitre"] = sorted({m for h in hits for m in h["mitre"]} | set(n.get("mitre") or []))
+        for h in hits:
+            titles[h["title"]] = titles.get(h["title"], 0) + 1
+        if (i + 1) % 50000 == 0:
+            log(f"Sigma: {i + 1:,} of {len(out):,} row(s) checked", "info")
+    top = sorted(titles.items(), key=lambda x: -x[1])[:5]
+    log(f"Sigma: {len(loaded['rules']):,} rule(s) over {len(out):,} row(s) in {time.time() - t0:.0f}s — "
+        f"{hit_rows:,} row(s) matched" + (": " + "; ".join(f"{t} ×{c}" for t, c in top) if top else ""), "info")
+    return {"rules": len(loaded["rules"]), "rows_hit": hit_rows, "titles": titles}
+
+
 def _free_text(lines, model, log, what):
     """Lines no structure reader took: the case's model reads them when it can
     (every value checked against its line), else every line carrying an IP,
@@ -1239,6 +1317,11 @@ def ingest(case_id, run_id, path, data_type, log) -> dict:
         out, summary["via"], st = _free_text(text.splitlines(), model, log, why)
         if st:
             summary["llm"] = st
+    summary["sigma"] = {k: v for k, v in sigma_pass(out, log).items() if k != "titles"}
+    from . import behaviour
+    found = behaviour.run(out, rules().get("behaviour"), log)
+    out += found
+    summary["behaviour"] = len(found)
     if data_type not in DATA_TYPES:                    # "auto": the analyst left it to us
         data_type = guess_type(out)
         log(f"this looks like {DATA_TYPES[data_type]} data", "info")

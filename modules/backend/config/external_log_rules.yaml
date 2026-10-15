@@ -122,3 +122,18 @@ native:
     examples:
       fires: [{security_result: '[{"severity": "HIGH", "rule_name": "Password spray"}]'}]
       quiet: [{security_result: '[{"severity": "LOW"}]'}, {security_result: '[{"summary": "ok"}]'}]
+
+# behaviour: patterns only MANY rows show (services/fusion/behaviour.py). Each
+# occurrence becomes ONE detection with its counts, time span and example rows.
+# Thresholds below are the shipped defaults; a box overrides any of them in its
+# local file (`behaviour: {brute-force: {failures: 20}}`) or switches a rule off
+# (`enabled: false`, or the rule id under `disable:`). Proven by
+# tests/test_external_log_behaviour.py on attack AND clean streams.
+behaviour:
+  brute-force:      {failures: 10, window_s: 600, success_within_s: 1800, severity: medium, severity_with_success: high}
+  password-spray:   {users: 10, window_s: 1800, severity: high}
+  mfa-fatigue:      {denials: 5, window_s: 900, severity: medium, severity_with_success: high}
+  port-scan:        {ports: 25, window_s: 300, severity: medium}
+  host-sweep:       {hosts: 25, window_s: 300, severity: medium}
+  beaconing:        {connections: 20, min_span_s: 1800, max_jitter: 0.2, min_interval_s: 10, max_interval_s: 3600, severity: medium}
+  dns-tunnel:       {subdomains: 100, window_s: 3600, long_label: 40, long_queries: 20, severity: medium}

