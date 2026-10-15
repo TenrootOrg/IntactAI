@@ -254,6 +254,7 @@ behaviour:
   host-sweep:       {hosts: 25, window_s: 300, severity: medium}
   beaconing:        {connections: 20, min_span_s: 1800, max_jitter: 0.2, min_interval_s: 10, max_interval_s: 1800, severity: medium}
   outbound-flood:   {connections: 1000, window_s: 60, severity: high}
+  inbound-remote-admin: {ports: [3389, 5900, 5985, 5986, 445, 135, 139, 23], severity: medium}
   c2-retry:         {attempts: 200, window_s: 3600, failed_share: 0.5, severity: medium}
   web-scan:         {paths: 50, window_s: 600, severity: medium}
   web-login-brute-force: {posts: 20, window_s: 600, severity: medium}

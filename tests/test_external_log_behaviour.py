@@ -133,6 +133,20 @@ class Network(unittest.TestCase):
                 "id.resp_p": 443, "proto": "tcp", "conn_state": "SF"} for i in range(400)]
         self.assertEqual([], found(jl(evs)))
 
+    def test_rdp_answered_from_the_internet(self):
+        evs = [{"ts": BASE, "id.orig_h": ATK, "id.resp_h": "10.0.1.14", "id.orig_p": 57960, "id.resp_p": 3389,
+                "proto": "tcp", "conn_state": "RSTR", "duration": 5099.2}]
+        self.assertEqual([("Remote admin service reached from the internet", "medium")], found(jl(evs)))
+
+    def test_refused_or_internal_rdp_stays_quiet(self):
+        evs = [flow(BASE + i * 30, f"203.0.113.{i}", "10.0.1.14", 3389, "deny") for i in range(10)]
+        evs += [flow(BASE + i * 30, "10.0.0.66", "10.0.1.14", 3389) for i in range(10)]        # admin on the LAN
+        evs += [flow(BASE + i * 30, ATK, "10.0.1.20", 22) for i in range(3)]                   # a jump host
+        self.assertEqual([], found(jl(evs)))
+        ipt = "\n".join(f"Jan  8 03:3{i}:09 fw kernel: iptables DROP_INPUT: IN=eth0 OUT= SRC={ATK} "
+                        f"DST=172.16.54.114 LEN=52 PROTO=TCP SPT={17805 + i} DPT=445 SYN" for i in range(5))
+        self.assertEqual([], found(ipt), "a netfilter DROP prefix is a refused connection")
+
     def test_beaconing(self):
         rnd = random.Random(3)
         evs = [flow(BASE + i * 60 + rnd.uniform(-2, 2), "10.0.0.5", ATK, 443) for i in range(60)]

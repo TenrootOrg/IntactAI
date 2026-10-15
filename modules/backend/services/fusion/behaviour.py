@@ -32,6 +32,8 @@ DEFAULTS = {
     # capture); C2 beacons run seconds to minutes. Slower beacons are the trade.
     "beaconing": {"connections": 20, "min_span_s": 1800, "max_jitter": 0.2, "min_interval_s": 10,
                   "max_interval_s": 1800, "severity": "medium"},
+    # SSH (22) is left out: jump hosts take it from the internet by design.
+    "inbound-remote-admin": {"ports": [3389, 5900, 5985, 5986, 445, 135, 139, 23], "severity": "medium"},
     "outbound-flood": {"connections": 1000, "window_s": 60, "severity": "high"},
     "c2-retry": {"attempts": 200, "window_s": 3600, "failed_share": 0.5, "severity": "medium"},
     "web-scan": {"paths": 50, "window_s": 600, "severity": "medium"},
@@ -306,7 +308,8 @@ def mfa_fatigue(auth, p):
 
 
 _FAILED_STATE = re.compile(r"^(S0|REJ|RSTOS0|RSTRH|SH|SHR|OTH)$")      # Zeek conn_state: never answered
-_FAILED_ACTION = re.compile(r"\b(deny|denied|drop(ped)?|reject(ed)?|block(ed)?|reset)\b", re.I)
+# Letter boundaries, not \b: iptables prefixes read "DROP_INPUT" / "REJECT_FWD".
+_FAILED_ACTION = re.compile(r"(?<![a-z])(deny|denied|drop(ped)?|reject(ed)?|block(ed)?|reset)(?![a-z])", re.I)
 
 
 def _failed(n, raw):
@@ -314,7 +317,9 @@ def _failed(n, raw):
     st = str((raw or {}).get("conn_state") or "")
     if st:
         return bool(_FAILED_STATE.match(st))
-    return bool(_FAILED_ACTION.search(str(n.get("action") or "")))
+    # No action column: an iptables/netfilter line says it in its log prefix.
+    act = n.get("action") or (raw or {}).get("syslog_header") or ""
+    return bool(_FAILED_ACTION.search(str(act)))
 
 
 def _flows(rows):
@@ -370,6 +375,32 @@ def c2_retry(flows, p, flood_pairs=()):
                             {"src_ip": src, "dst_ip": dst, "dst_port": port},
                             f"{src} tried {dst}:{port} {len(win):,} times within {p['window_s'] // 60} min, "
                             f"{failed:,} without an answer"))
+    return out
+
+
+def inbound_remote_admin(flows, p):
+    """An outside address getting an answer from RDP / SMB / WinRM / VNC / RPC /
+    Telnet on an internal host. One row per exposed service, not per source, so
+    internet-wide scanning of it reads as one finding."""
+    ports = {int(x) for x in p["ports"]}
+    groups: dict = {}
+    for f in flows:
+        try:
+            port = int(f[3])
+        except (TypeError, ValueError):
+            continue
+        if port in ports and not f[7] and _public(f[1]) and f[2] and not _public(f[2]) \
+                and _IPV4.fullmatch(str(f[2])):
+            groups.setdefault((f[2], port), []).append(f)
+    out = []
+    for (dst, port), items in groups.items():
+        srcs = sorted({i[1] for i in items})
+        members = [(i[5], i[6]) for i in items]
+        out.append(_row("inbound-remote-admin", "Remote admin service reached from the internet", p["severity"],
+                        members, {"src_ip": srcs[0] if len(srcs) == 1 else None, "dst_ip": dst, "dst_port": port,
+                                  "ips": srcs[:20]},
+                        f"{dst}:{port} answered {len(items):,} connection(s) from {len(srcs)} outside "
+                        f"address(es): {', '.join(srcs[:5])}{' …' if len(srcs) > 5 else ''}"))
     return out
 
 
@@ -559,6 +590,7 @@ def run(rows, params=None, log=None) -> list:
                            ("mfa-fatigue", mfa_fatigue, auth), ("port-scan", port_scan, flows),
                            ("host-sweep", host_sweep, flows), ("beaconing", beaconing, flows),
                            ("outbound-flood", outbound_flood, flows),
+                           ("inbound-remote-admin", inbound_remote_admin, flows),
                            ("c2-retry", lambda f, p: c2_retry(f, p, {(x["n"].get("src_ip"), x["n"].get("dst_ip"))
                                                                      for x in found if x["raw"]["behaviour"] ==
                                                                      "outbound-flood"}), flows),
