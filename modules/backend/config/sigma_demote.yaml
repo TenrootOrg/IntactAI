@@ -7,3 +7,5 @@ df9a0e0e-fedb-4d6c-8668-d765dfc92aa7: "Suspicious Non PowerShell WSMAN COM Provi
 65236ec7-ace0-4f0c-82fd-737b04fd4dcb: "EVTX Created In Uncommon Location -- 602 benign hits"
 96f697b0-b499-4e5d-9908-a67bec11cdb6: "Removal of Potential COM Hijacking Registry Keys -- 237 benign hits"
 0b7889b4-5577-4521-a60a-3376ee7f9f7b: "WMI Persistence -- 12 benign hits"
+# Posture, not attack: true on every normal login of a tenant without enforced MFA.
+40e17d88-87da-414e-b253-8dc1e4f9555b: "GCP Successful Single-Factor Authentication -- every login where MFA is not enforced"

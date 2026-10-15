@@ -98,7 +98,7 @@ def unq(v):
 
 
 def leaf(field, op, values, product):
-    if "{}" in field:
+    if "{}" in field and field not in FIELDS:
         # Splunk's multivalue path: "user.groups{}" = any element. A list of plain
         # values is one joined string here ("a, b"), so an element is a contained value.
         if not field.endswith("{}") or "{}" in field[:-2]:
@@ -132,6 +132,8 @@ def leaf(field, op, values, product):
     for v in values:
         if shape == "name" and not v.startswith("*"):
             v = "*" + sep + v
+        elif shape == "element" and not (v.startswith("*") and v.endswith("*")):
+            v = f"*{v}*"
         elif shape == "tail" and not v.startswith("*"):
             v = "*" + "\\" + v
         elif shape == "regdata" and not (v.startswith("*") and v.endswith("*")):
@@ -278,6 +280,8 @@ RAW_SOURCES = {
     "kube_audit": {"product": "kubernetes", "service": "audit"},
     "cisco_secure_firewall": {"product": "cisco", "service": "secure_firewall"},
     "cisco_duo_administrator": {"product": "cisco", "service": "duo"},
+    "gws_reports_login": {"product": "google_workspace", "service": "google_workspace.admin"},   # Reports API
+    "gws_reports_admin": {"product": "google_workspace", "service": "google_workspace.admin"},
     "esxi_syslog": {"product": "esxi"},                 # free-text syslog: Message is the line
 }
 RAW_FIELDS = {   # Splunk add-on names -> the raw / Sigma names our reader keeps
@@ -291,6 +295,12 @@ RAW_FIELDS_BY_SOURCE = {      # names Splunk's add-on gives a field that has ano
     "wineventlog_security": {"TargetFilename": ("ObjectName", "raw"), "file_path": ("ObjectName", "raw")},
     "esxi_syslog": {"Message": ("text", "raw")},
     "github_organizations": {"vendor_action": ("action", "raw")},     # the add-on renames GitHub's action
+    # Google Reports: the parameters are name/value pairs (the reader makes them fields);
+    # a multiValue one is a joined list, so a value is an element of it.
+    "gws_reports_login": {"login_challenge_method": ("login_challenge_method", "element"),
+                          # the only multiValue parameter of a login event is the challenge method
+                          "event.parameters{}.multiValue{}": ("login_challenge_method", "element")},
+    "gws_reports_admin": {"command": ("event.name", "raw")},
     "cisco_secure_firewall": {"signature_id": ("SignatureID", "raw"), "dest_port": ("ResponderPort", "raw"),
                               "src_port": ("InitiatorPort", "raw"), "action": ("AC_RuleAction", "raw"),
                               "url": ("URL", "raw")},
