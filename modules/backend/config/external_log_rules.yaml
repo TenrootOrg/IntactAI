@@ -182,6 +182,20 @@ native:
       quiet: [{param1: "Cisco Security Connector Monitoring 8.4.2", param2: "running"},
               {param1: "Windows Update", param2: "stopped"}]
 
+  - id: web-executable-upload
+    title: "Server-side code uploaded with HTTP PUT"
+    reason: "a PUT request wrote a file the web server would execute (a JSP / PHP / ASPX page, a WAR, a Tomcat session file): how web shells are planted and how CVE-2025-24813 starts"
+    fields: [uri_path, cs-uri-stem, url, uri, http.url, url.path, request_uri, c-uri]
+    match: '.*\.(jspx?|war|php\d?|phtml|aspx?|ashx|asmx|cfm|session)(\?.*)?'
+    and:
+      - fields: [http_method, method, cs-method, http.http_method, request_method, http.request.method]
+        match: 'PUT'
+    severity: high
+    examples:
+      fires: [{http_method: "PUT", uri_path: "/rpMGEH.session"}, {cs-method: "PUT", cs-uri-stem: "/uploads/cmd.jsp"}]
+      quiet: [{http_method: "GET", uri_path: "/index.jsp"}, {http_method: "PUT", uri_path: "/api/v1/items/42"},
+              {cs-method: "POST", cs-uri-stem: "/login.php"}]
+
   - id: firewall-threat-detection
     title: "Firewall threat detection / IPS event"
     reason: "the firewall's own threat detection (rate exceeded: scanning or DoS) or built-in IPS signature fired (Cisco ASA 733100 / 4000xx)"
