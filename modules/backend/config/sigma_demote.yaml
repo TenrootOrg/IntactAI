@@ -9,3 +9,4 @@ df9a0e0e-fedb-4d6c-8668-d765dfc92aa7: "Suspicious Non PowerShell WSMAN COM Provi
 0b7889b4-5577-4521-a60a-3376ee7f9f7b: "WMI Persistence -- 12 benign hits"
 # Posture, not attack: true on every normal login of a tenant without enforced MFA.
 40e17d88-87da-414e-b253-8dc1e4f9555b: "GCP Successful Single-Factor Authentication -- every login where MFA is not enforced"
+c977cb50-3dff-4a9f-b873-9290f56132f1: "AppX Located in Uncommon Directory Added to Deployment Pipeline -- 331 benign hits (AppX channel, 2026-10-15)"

@@ -551,7 +551,26 @@ _CHANNELS = {"security": "security", "system": "system", "application": "applica
              "microsoft-windows-applocker/exe and dll": "applocker",
              "microsoft-windows-smbclient/security": "smbclient-security",
              "microsoft-windows-ntlm/operational": "ntlm", "directory service": "directory-service",
-             "dns server": "dns-server", "microsoft-windows-firewall-with-advanced-security/firewall": "firewall-as"}
+             "dns server": "dns-server", "microsoft-windows-firewall-with-advanced-security/firewall": "firewall-as",
+             # the rest of SigmaHQ's Windows services (sigma's windows pipeline names these channels)
+             "microsoft-windows-appxdeploymentserver/operational": "appxdeployment-server",
+             "msexchange management": "msexchange-management",
+             "microsoft-iis-configuration/operational": "iis-configuration",
+             "microsoft-windows-security-mitigations/kernelmode": "security-mitigations",
+             "microsoft-windows-security-mitigations/usermode": "security-mitigations",
+             "microsoft-windows-shell-core/operational": "shell-core",
+             "microsoft-windows-driverframeworks-usermode/operational": "driver-framework",
+             "openssh/operational": "openssh",
+             "microsoft-windows-appxpackaging/operational": "appxpackaging-om",
+             "microsoft-windows-appmodel-runtime/admin": "appmodel-runtime",
+             "microsoft-windows-capi2/operational": "capi2",
+             "microsoft-servicebus-client": "microsoft-servicebus-client",
+             "microsoft-windows-diagnosis-scripted/operational": "diagnosis-scripted",
+             "microsoft-windows-ldap-client/debug": "ldap",
+             "microsoft-windows-lsa/operational": "lsa-server",
+             "microsoft-windows-certificateservicesclient-lifecycle-system/operational":
+                 "certificateservicesclient-lifecycle-system",
+             "microsoft-windows-smbserver/connectivity": "smbserver-connectivity"}
 
 
 def _has(ev, *names):

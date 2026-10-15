@@ -312,6 +312,15 @@ class CiscoAsaSyslog(unittest.TestCase):
         self.assertFalse(self.fires("sshd[1]: executed the 'no logging' command"))     # not an ASA line
 
 
+class MoreWindowsChannels(unittest.TestCase):
+    def test_sigmahq_channel_services_are_mapped(self):
+        # Rules for these channels (AppX, CAPI2, LSA, OpenSSH...) never ran: no channel mapped to them.
+        for chan, svc in (("Microsoft-Windows-AppXDeploymentServer/Operational", "appxdeployment-server"),
+                          ("OpenSSH/Operational", "openssh"), ("Microsoft-Windows-CAPI2/Operational", "capi2")):
+            ev = {"EventID": "1", "Channel": chan, "Provider": "x"}
+            self.assertIn(("windows", None, svc), S.profiles(ev), chan)
+
+
 class EsxiSyslog(unittest.TestCase):
     """ESXi lines read as structure (key=value, or columns split on spaces) lost the
     message the ESXi rules match: all 23 Splunk ESXi detections were silent."""
