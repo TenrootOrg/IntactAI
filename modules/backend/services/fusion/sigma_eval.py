@@ -143,12 +143,22 @@ def _matcher(mods, value):
     post = "contains" in mods or "startswith" in mods
     tests = []
     for x in variants:
-        if _has_wild(x) or pre or post:
+        if _has_wild(x):
             rx = _wild(x, cased, pre, post)
             tests.append(lambda v, rx=rx: rx.fullmatch(v) is not None)
+            continue
+        # No wildcard of its own (nearly every Sigma value): plain string checks,
+        # not a regex -- same meaning, a fraction of the cost on big exports.
+        lit = _unescape(x) if cased else _unescape(x).lower()
+        low = (lambda v: v) if cased else str.lower
+        if pre and post:
+            tests.append(lambda v, lit=lit, low=low: lit in low(v))
+        elif pre:
+            tests.append(lambda v, lit=lit, low=low: low(v).endswith(lit))
+        elif post:
+            tests.append(lambda v, lit=lit, low=low: low(v).startswith(lit))
         else:
-            lit = _unescape(x) if cased else _unescape(x).lower()
-            tests.append(lambda v, lit=lit, cased=cased: (v if cased else v.lower()) == lit)
+            tests.append(lambda v, lit=lit, low=low: low(v) == lit)
 
     def test(v):
         if v is None:
@@ -203,8 +213,16 @@ def _search(body):
         kws = body if isinstance(body, list) else [body]
         if any(isinstance(k, (dict, list)) for k in kws):
             raise Unsupported("mixed keyword list")
-        rxs = [_wild(str(k), pre=True, post=True) for k in kws]
-        return lambda ev, rxs=rxs: any(rx.fullmatch(t) for t in ev.texts() for rx in rxs)
+        lits = [_unescape(str(k)).lower() for k in kws if not _has_wild(str(k))]
+        wild = [_wild(str(k), pre=True, post=True).pattern for k in kws if _has_wild(str(k))]
+        rx = re.compile("|".join(f"(?:{w})" for w in wild), re.I | re.S) if wild else None
+
+        def kw(ev, lits=lits, rx=rx):
+            for t in ev.texts_lower():
+                if any(k in t for k in lits) or (rx is not None and rx.fullmatch(t)):
+                    return True
+            return False
+        return kw
     raise Unsupported("empty search")
 
 
@@ -384,13 +402,14 @@ ALIASES = {
 class Event:
     """A row with Sigma's field lookup: exact name, case-insensitive name, dotted
     suffix ("Image" finds "Event.EventData.Image"), then the taxonomy aliases."""
-    __slots__ = ("row", "_low", "_last", "_texts")
+    __slots__ = ("row", "_low", "_last", "_texts", "_ltexts")
 
     def __init__(self, row):
         self.row = row
         self._low = None
         self._last = None
         self._texts = None
+        self._ltexts = None
 
     def _index(self):
         self._low, self._last = {}, {}
@@ -414,6 +433,11 @@ class Event:
             if name in self._last:
                 return self._last[name]
         return None
+
+    def texts_lower(self):
+        if self._ltexts is None:
+            self._ltexts = [t.lower() for t in self.texts()]
+        return self._ltexts
 
     def texts(self):
         if self._texts is None:
