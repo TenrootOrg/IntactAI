@@ -251,6 +251,38 @@ class WindowsEventsByID(unittest.TestCase):
         self.assertEqual([], found(jl(evs)))
 
 
+class ActiveDirectoryAccountAbuse(unittest.TestCase):
+    """Three single events that a normal domain never writes (Splunk's recordings
+    account_manipulation, resetnightmare, bluehammer); 48 benign 4728/4732/4738 stay quiet."""
+    SID = "S-1-5-21-1-2-3-"
+
+    def ev(self, eid, **kw):
+        return {"SystemTime": iso(BASE), "EventID": eid, "Channel": "Security", "Computer": "DC01", **kw}
+
+    def test_each_one_fires(self):
+        self.assertEqual([("Account added itself to a group", "high")], found(jl([self.ev(
+            "4728", SubjectUserName="unpriv2", SubjectUserSid=self.SID + "1105", MemberSid=self.SID + "1105",
+            MemberName="CN=unpriv2,CN=Users,DC=corp,DC=local", TargetUserName="Domain Admins")])))
+        self.assertEqual([("Account set its own UPN to another name", "high")], found(jl([self.ev(
+            "4738", SubjectUserName="snap", SubjectUserSid=self.SID + "1602", TargetSid=self.SID + "1602",
+            UserPrincipalName="Administrator")])))
+        self.assertEqual([("Built-in Administrator password changed by another account", "high")], found(jl([self.ev(
+            "4723", SubjectUserName="bob", SubjectUserSid=self.SID + "1003", TargetSid=self.SID + "500",
+            TargetUserName="Administrator")])))
+
+    def test_normal_changes_stay_quiet(self):
+        quiet = [self.ev("4728", SubjectUserName="Administrator", SubjectUserSid=self.SID + "500",
+                         MemberSid=self.SID + "1105", MemberName="CN=jdoe,CN=Users,DC=corp,DC=local"),
+                 self.ev("4738", SubjectUserName="jdoe", SubjectUserSid=self.SID + "1105", TargetSid=self.SID + "1105",
+                         UserPrincipalName="jdoe@corp.local"),
+                 self.ev("4738", SubjectUserName="admin", SubjectUserSid=self.SID + "500", TargetSid=self.SID + "1105",
+                         UserPrincipalName="jdoe"),
+                 self.ev("4723", SubjectUserName="Administrator", SubjectUserSid=self.SID + "500",
+                         TargetSid=self.SID + "500"),
+                 self.ev("4723", SubjectUserName="bob", SubjectUserSid=self.SID + "1003", TargetSid=self.SID + "1000")]
+        self.assertEqual([], found(jl(quiet)))
+
+
 class ActiveDirectoryPermissions(unittest.TestCase):
     """5136 logs the old and new descriptor of a change; the rule reads what was ADDED.
     No benign corpus holds 5136 (DS auditing off), so a legitimate delegation to a

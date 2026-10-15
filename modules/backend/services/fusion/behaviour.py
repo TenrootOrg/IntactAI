@@ -47,6 +47,7 @@ DEFAULTS = {
     "ad-acl-change": {"severity": "medium"},
     "kerberos-ticket-burst": {"services": 10, "window_s": 600, "severity": "medium"},
     "kerberos-user-enum": {"names": 10, "window_s": 600, "severity": "medium"},
+    "ad-account-abuse": {"severity": "high"},
     "dns-tunnel": {"subdomains": 100, "window_s": 3600, "long_label": 40, "long_queries": 20,
                    "severity": "medium"},
 }
@@ -636,6 +637,50 @@ def _trustee_is_admin(sid):
     return bool(s.startswith("S-1-5-21-") and m and int(m.group(1)) < 1000)   # 500 admin, 512 DA, 519 EA...
 
 
+def _rid(sid):
+    m = re.search(r"^S-1-5-21-[\d-]+-(\d+)$", str(sid or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _same(a, b):
+    a, b = str(a or "").strip().lower(), str(b or "").strip().lower()
+    return bool(a) and a not in ("-", "s-1-0-0") and a == b
+
+
+def ad_account_abuse(rows, p):
+    """One event each, never normal:
+    - an account adds ITSELF to a group (4728 / 4732 / 4756: member = subject);
+    - an account sets its OWN UPN to a bare name (4738, no "@"): ResetNightmare /
+      certificate-mapping spoofing, the UPN then names another account;
+    - another account changes the built-in Administrator's password (4723, RID 500)."""
+    out = []
+    for i, r in enumerate(rows):
+        raw = r.get("raw") or {}
+        eid = str(raw.get("EventID") or raw.get("EventCode") or "")
+        if eid not in ("4728", "4732", "4756", "4738", "4723"):
+            continue
+        subj, n = raw.get("SubjectUserName"), r.get("n") or {}
+        title = None
+        if eid in ("4728", "4732", "4756"):
+            cn = re.match(r"\s*CN=([^,]+)", str(raw.get("MemberName") or ""), re.I)
+            if _same(raw.get("MemberSid"), raw.get("SubjectUserSid")) or (cn and _same(cn.group(1), subj)):
+                title = "Account added itself to a group"
+                why = f"{subj} added itself to {raw.get('TargetUserName')}"
+        elif eid == "4738":
+            upn = str(raw.get("UserPrincipalName") or "").strip()
+            if _same(raw.get("SubjectUserSid"), raw.get("TargetSid")) and upn and "@" not in upn \
+                    and upn not in ("-", "%%1793"):
+                title = "Account set its own UPN to another name"
+                why = f"{subj} set its own userPrincipalName to '{upn}'"
+        elif _rid(raw.get("TargetSid")) == 500 and _rid(raw.get("SubjectUserSid")) not in (None, 500):
+            title = "Built-in Administrator password changed by another account"
+            why = f"{subj} changed the password of {raw.get('TargetUserName')} (RID 500)"
+        if title:
+            out.append(_row("ad-account-abuse", title, p["severity"], [(n.get("ts"), i)],
+                            {"user": subj, "host": raw.get("Computer") or n.get("host")}, why))
+    return out
+
+
 def ad_acl_change(rows, p):
     pairs: dict = {}
     for i, r in enumerate(rows):
@@ -800,6 +845,7 @@ def run(rows, params=None, log=None) -> list:
                            ("dns-ptr-sweep", dns_ptr_sweep, rows),
                            ("suspicious-burst", suspicious_burst, rows),
                            ("ad-acl-change", ad_acl_change, rows),
+                           ("ad-account-abuse", ad_account_abuse, rows),
                            ("kerberos-ticket-burst", kerberos_ticket_burst, rows),
                            ("kerberos-user-enum", kerberos_user_enum, rows),
                            ("dns-tunnel", dns_tunnel, rows)):
