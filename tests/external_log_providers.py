@@ -252,7 +252,8 @@ SAMPLES = [
      f"HIER_DIRECT/{ATK} text/plain\n"
      f"1790849101.456    110 {INT} TCP_MISS/200 1234 GET http://update-check.evil-c2.net/b.sh jdoe "
      f"HIER_DIRECT/{ATK} text/plain\n",
-     {"ts": T, "ips": [INT, ATK], "domains": ["update-check.evil-c2.net"]}),
+     {"ts": T, "src_ip": INT, "dst_ip": ATK, "user": "jdoe", "http_method": "GET",
+      "url": "http://update-check.evil-c2.net/a.sh"}),
     ("Cisco Umbrella - DNS logs CSV (no header)", "proxy",
      f'"2026-10-01 10:05:00","WS01","WS01,Corp","{INT}","{ATK}","Blocked","1 (A)","NOERROR",'
      '"update-check.evil-c2.net.","Malware"\n'

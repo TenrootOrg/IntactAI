@@ -151,6 +151,20 @@ class Shapes(unittest.TestCase):
     def test_free_text_is_not_a_structure(self):
         self.assertEqual(("", []), X.parse(FREE))
 
+    def test_squid_native_access_log(self):
+        # Padded columns and "TCP_MISS/200": read as unnamed columns, no web rule saw it.
+        text = "\n".join(["1157689312.049   5006 10.105.21.199 TCP_MISS/200 19763 CONNECT login.yahoo.com:443 "
+                          "badeyek DIRECT/209.73.177.115 -",
+                          "1157689320.327    864 10.105.21.199 TCP_DENIED/403 10182 GET http://evil.example/x.jsp?cmd=id "
+                          "- NONE/- text/html"] * 3)
+        fm, rows, _ = X.read(text)
+        self.assertEqual("squid-native", fm)
+        self.assertEqual({"src_ip": "10.105.21.199", "action": "TCP_DENIED", "status": "403", "method": "GET",
+                          "url": "http://evil.example/x.jsp?cmd=id", "hierarchy": "NONE"},
+                         {k: rows[1][k] for k in ("src_ip", "action", "status", "method", "url", "hierarchy")})
+        self.assertNotIn("dst_ip", rows[1])                 # "-" is empty
+        self.assertNotIn("user", rows[1])
+
 
 class FreeText(unittest.TestCase):
     """Not recognized -> the case's model reads it, and nothing it says is kept

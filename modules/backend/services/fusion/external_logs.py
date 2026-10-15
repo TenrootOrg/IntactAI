@@ -590,7 +590,9 @@ def _layout_rows(lines):
                 continue
             body = m.group("csv") if "csv" in lo["rx"].groupindex else ln
             try:
-                if lo.get("quote") == "none":
+                if lo.get("delimiter") == "whitespace":       # padded columns (Squid's elapsed time)
+                    vals = body.split()
+                elif lo.get("quote") == "none":
                     vals = body.split(lo.get("delimiter") or ",")
                 else:
                     vals = next(csv.reader([body], delimiter=lo.get("delimiter") or ","))
@@ -602,6 +604,10 @@ def _layout_rows(lines):
                 or cols.get("default") or []
             empty = set(lo.get("empty") or ()) | {"", None}
             r = {names[i] if i < len(names) else f"c{i + 1}": v for i, v in enumerate(vals) if v not in empty}
+            for n in [n for n in r if "/" in n]:          # "action/status": TCP_MISS/200 holds two fields
+                a, b = n.split("/", 1)
+                va, _, vb = str(r.pop(n)).partition("/")
+                r.update({k: v for k, v in ((a, va), (b, vb)) if v not in empty})
             pre = ln[:m.start("csv")].strip() if "csv" in lo["rx"].groupindex else ""
             if pre:
                 r["syslog_header"] = pre

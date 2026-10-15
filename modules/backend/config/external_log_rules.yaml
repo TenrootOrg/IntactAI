@@ -416,6 +416,15 @@ layouts:
                file_digest, cloud, url_index, user_agent, file_type, x_forwarded_for, referer, sender, subject,
                recipient, report_id, dg_1, dg_2, dg_3, dg_4, vsys_name, device_name, future_use_6, src_vm_uuid,
                dst_vm_uuid, http_method]
+  - id: squid-native
+    reason: "Squid access.log, native format (no header). Unnamed, no web rule could read its URL or method"
+    line: '^\d{9,10}(\.\d{3})?\s+\d+ \S+ [A-Z_]+/\d{3} -?\d+ [A-Z_]+ \S+ \S+ [A-Z_]+/\S+ \S+\s*$'
+    delimiter: whitespace
+    quote: none
+    empty: ["-"]
+    columns:
+      default: [timestamp, elapsed_ms, src_ip, action/status, bytes, method, url, user, hierarchy/dst_ip,
+                content_type]
   - id: aws-vpcflow-v2
     reason: "AWS VPC Flow Logs, default (version 2) format, no header. Unnamed, a REJECTed RDP attempt from the internet read as an answered one"
     line: '^2 (\d{12}|unknown) eni-[0-9a-f]+ \S+ \S+ \S+ \S+ \S+ \S+ \S+ \d+ \d+ (ACCEPT|REJECT|-) (OK|NODATA|SKIPDATA)\s*$'
