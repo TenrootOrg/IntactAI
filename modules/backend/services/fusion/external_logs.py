@@ -460,15 +460,21 @@ def _delimited(lines):
         rows, left, names, delim = [], [], None, "\t" if "\t" in body[0] else None
         for ln in lines[:MAX_ROWS]:
             if re.match(r"#\s*fields:?\s", ln, re.I):
-                names = re.split(r"\t|\s+", re.sub(r"#\s*fields:?\s*", "", ln, flags=re.I).strip())
+                head = re.sub(r"#\s*fields:?\s*", "", ln, flags=re.I).strip()
+                # Split the header the way the data is split: IoT-23 writes its
+                # last three label columns space-separated in both.
+                names = head.split("\t") if delim and "\t" in head else head.split()
                 continue
             if ln.startswith("#") or not names:
                 continue
             vals = ln.split("\t") if delim else ln.split()
-            if len(vals) == len(names):
-                rows.append(dict(zip(names, vals)))
-            else:
+            if len(vals) < 3:
                 left.append(ln)
+                continue
+            r = dict(zip(names, vals))                 # a short row keeps what it has
+            for i, v in enumerate(vals[len(names):], 1):
+                r[f"_extra{i}"] = v
+            rows.append(r)
         return ("zeek" if delim else "w3c", rows, left) if rows else None
     sample = body[:50]
     dialect = None
@@ -607,9 +613,12 @@ def read(text) -> tuple[str, list, list]:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return "", [], []
-    got = _guard(_layout_rows, lines)
-    if got:
-        return got
+    # A file that names its own columns (Zeek "#fields") is read by them; a layout
+    # is only for files that do not.
+    if not any(re.match(r"#\s*fields:?\s", ln, re.I) for ln in lines[:20]):
+        got = _guard(_layout_rows, lines)
+        if got:
+            return got
     sample = [ln for ln in lines[:400] if not ln.startswith("#")] or lines[:400]
 
     def share(fn):

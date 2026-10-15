@@ -27,8 +27,11 @@ DEFAULTS = {
     "mfa-fatigue": {"denials": 5, "window_s": 900, "severity": "medium", "severity_with_success": "high"},
     "port-scan": {"ports": 25, "window_s": 300, "severity": "medium"},
     "host-sweep": {"hosts": 25, "window_s": 300, "severity": "medium"},
+    # max_interval_s: a fixed hourly check-in with zero jitter is what update and
+    # IoT telemetry look like (a Hue bridge, every 3,600 s, in the IoT-23 benign
+    # capture); C2 beacons run seconds to minutes. Slower beacons are the trade.
     "beaconing": {"connections": 20, "min_span_s": 1800, "max_jitter": 0.2, "min_interval_s": 10,
-                  "max_interval_s": 3600, "severity": "medium"},
+                  "max_interval_s": 1800, "severity": "medium"},
     "outbound-flood": {"connections": 1000, "window_s": 60, "severity": "high"},
     "c2-retry": {"attempts": 200, "window_s": 3600, "failed_share": 0.5, "severity": "medium"},
     "web-scan": {"paths": 50, "window_s": 600, "severity": "medium"},

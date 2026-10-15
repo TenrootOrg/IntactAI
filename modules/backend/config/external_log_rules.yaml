@@ -252,7 +252,7 @@ behaviour:
   mfa-fatigue:      {denials: 5, window_s: 900, severity: medium, severity_with_success: high}
   port-scan:        {ports: 25, window_s: 300, severity: medium}
   host-sweep:       {hosts: 25, window_s: 300, severity: medium}
-  beaconing:        {connections: 20, min_span_s: 1800, max_jitter: 0.2, min_interval_s: 10, max_interval_s: 3600, severity: medium}
+  beaconing:        {connections: 20, min_span_s: 1800, max_jitter: 0.2, min_interval_s: 10, max_interval_s: 1800, severity: medium}
   outbound-flood:   {connections: 1000, window_s: 60, severity: high}
   c2-retry:         {attempts: 200, window_s: 3600, failed_share: 0.5, severity: medium}
   web-scan:         {paths: 50, window_s: 600, severity: medium}
@@ -314,7 +314,7 @@ layouts:
                 qtype_name, rcode, rcode_name, AA, TC, RD, RA, Z, answers, TTLs, rejected]
   - id: zeek-http-tsv
     reason: "Zeek http.log without its header"
-    line: '^\d{9,10}\.\d+\t\S+\t[\d.:a-fA-F]+\t\d+\t[\d.:a-fA-F]+\t\d+\t\d+\t([A-Z]+|-)\t'
+    line: '^\d{9,10}\.\d+\t\S+\t[\d.:a-fA-F]+\t\d+\t[\d.:a-fA-F]+\t\d+\t\d+\t([A-Z_]+|-)\t'
     delimiter: "\t"
     quote: none
     empty: ["-", "(empty)"]
