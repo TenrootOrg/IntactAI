@@ -139,6 +139,11 @@ class Network(unittest.TestCase):
                for i in range(150)]
         self.assertIn(("Possible DNS tunnelling", "medium"), found(jl(evs)))
 
+    def test_reverse_dns_sweep_is_recon_not_a_tunnel(self):
+        evs = [{"ts": BASE + i, "id.orig_h": "10.0.0.66", "id.resp_h": "10.0.0.2",
+                "query": f"{i % 250}.{i // 250}.0.10.in-addr.arpa", "qtype_name": "PTR"} for i in range(300)]
+        self.assertEqual([("Reverse DNS sweep", "medium")], found(jl(evs)))
+
     def test_ordinary_dns_stays_quiet(self):
         names = ["www.google.com", "outlook.office365.com", "login.microsoftonline.com", "github.com",
                  "api.slack.com", "cdn.jsdelivr.net", "update.googleapis.com", "time.windows.com"]

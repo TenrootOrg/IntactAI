@@ -546,9 +546,14 @@ def profiles(row) -> set:
     # A proxy log names the full destination (scheme://host/... or cs-host); a web
     # server log only the path it served. Sigma keeps them apart (a crawler is
     # normal on a web server and odd leaving a workstation).
-    full_url = any("://" in str(ev.get(n) or "")[:12] for n in ("c-uri", "url", "requesturl", "url.full", "url.original"))
-    if (full_url or _has(ev, "cs-host", "c-uri")) and _has(ev, "c-useragent", "cs-host", "cs-method", "useragent",
-                                                           "user_agent", "method", "http.request.method"):
+    urls = [str(ev.get(n) or "") for n in ("c-uri", "url", "requesturl", "url.full", "url.original")]
+    full_url = any("://" in u[:12] for u in urls)
+    # A firewall URL log writes "host/path" without a scheme; next to the two
+    # addresses of the connection it is the same request a proxy logs.
+    host_path = any(re.match(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?/", u) for u in urls)
+    if ((full_url or _has(ev, "cs-host", "c-uri")) and _has(ev, "c-useragent", "cs-host", "cs-method", "useragent",
+                                                            "user_agent", "method", "http.request.method")) \
+            or (host_path and _has(ev, "dst_ip", "dstip", "destination.ip", "dst")):
         out.add((None, "proxy", None))
     # HTTP seen on the wire (Suricata http / fileinfo, Zeek http.log): both ends of
     # the request are in it, so the proxy AND web server rules are about it.

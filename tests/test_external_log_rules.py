@@ -63,6 +63,7 @@ DETECTS = {
     "Elastic / Kibana - search export", "Microsoft Sentinel - KQL results CSV", "IBM QRadar - offense events CSV",
     "Google SecOps (Chronicle) - UDM", "ArcSight - CEF", "LogRhythm - alarm export CSV",
     "Proofpoint TAP - SIEM API", "Mimecast - TTP URL logs",
+    "Cisco Umbrella - DNS logs CSV (no header)",          # Umbrella's own "Malware" category, read via its layout
 }
 
 

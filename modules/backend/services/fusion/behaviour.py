@@ -31,6 +31,7 @@ DEFAULTS = {
                   "max_interval_s": 3600, "severity": "medium"},
     "web-scan": {"paths": 50, "window_s": 600, "severity": "medium"},
     "web-login-brute-force": {"posts": 20, "window_s": 600, "severity": "medium"},
+    "dns-ptr-sweep": {"lookups": 100, "window_s": 600, "severity": "medium"},
     "dns-tunnel": {"subdomains": 100, "window_s": 3600, "long_label": 40, "long_queries": 20,
                    "severity": "medium"},
 }
@@ -62,7 +63,8 @@ def _outcome_text(n, raw) -> str:
                 bits.append(f"{k}={v}")
         if "text" in raw:
             bits.append(str(raw["text"]))
-    return " ".join(bits)
+    # "login_failure", "user.session.start": separators, or \b never sees the words
+    return re.sub(r"[_.]", " ", " ".join(bits))
 
 
 def _entra_outcome(raw):
@@ -412,8 +414,8 @@ def dns_tunnel(rows, p):
         names = [n.get("domain")] + list(n.get("domains") or [])
         t = _t(n.get("ts"))
         for d in names:
-            if not d or t is None or d.count(".") < 2:
-                continue
+            if not d or t is None or d.count(".") < 2 or d.lower().rstrip(".").endswith(".arpa"):
+                continue                           # reverse lookups are dns-ptr-sweep's, never a tunnel
             labels = d.lower().rstrip(".").split(".")
             base = ".".join(labels[-2:])
             groups.setdefault(base, []).append((t, labels[0], n.get("ts"), i, n.get("src_ip")))
@@ -434,6 +436,33 @@ def dns_tunnel(rows, p):
                    f"{len(long_q)} queries with long random labels under {base}")
             out.append(_row("dns-tunnel", "Possible DNS tunnelling", p["severity"], members,
                             {"domain": base, "src_ip": src}, why))
+    return out
+
+
+def dns_ptr_sweep(rows, p):
+    """One source resolving many different addresses back to names: mapping the
+    network (reconnaissance), not a client resolving what it talks to."""
+    groups: dict = {}
+    for i, r in enumerate(rows):
+        n = r.get("n") or {}
+        t = _t(n.get("ts"))
+        for d in [n.get("domain")] + list(n.get("domains") or []):
+            if d and t is not None and str(d).lower().rstrip(".").endswith((".in-addr.arpa", ".ip6.arpa")):
+                groups.setdefault(n.get("src_ip") or "?", []).append((t, str(d).lower(), n.get("ts"), i))
+    out = []
+    for src, items in groups.items():
+        items.sort(key=lambda x: x[0])
+        start, best = 0, None
+        for end in range(len(items)):
+            while items[end][0] - items[start][0] > p["window_s"]:
+                start += 1
+            names = {i[1] for i in items[start:end + 1]}
+            if len(names) >= p["lookups"] and (best is None or len(names) > best[0]):
+                best = (len(names), items[start:end + 1])
+        if best:
+            out.append(_row("dns-ptr-sweep", "Reverse DNS sweep", p["severity"], [(i[2], i[3]) for i in best[1]],
+                            {"src_ip": None if src == "?" else src},
+                            f"{src} resolved {best[0]} different addresses back to names"))
     return out
 
 
@@ -461,6 +490,7 @@ def run(rows, params=None, log=None) -> list:
                            ("mfa-fatigue", mfa_fatigue, auth), ("port-scan", port_scan, flows),
                            ("host-sweep", host_sweep, flows), ("beaconing", beaconing, flows),
                            ("web-scan", web_scan, rows), ("web-login-brute-force", web_login_brute_force, rows),
+                           ("dns-ptr-sweep", dns_ptr_sweep, rows),
                            ("dns-tunnel", dns_tunnel, rows)):
         if name in off:
             continue

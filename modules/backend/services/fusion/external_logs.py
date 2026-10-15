@@ -479,6 +479,38 @@ def _delimited(lines):
     return None
 
 
+def _layout_rows(lines):
+    """A header-less export the rules file knows the layout of (PAN-OS CSV, Umbrella
+    DNS...): (format, rows, leftovers) when one layout matches most lines, else None."""
+    sample = lines[:200]
+    for lo in rules()["layouts"]:
+        if sum(1 for ln in sample if lo["rx"].match(ln)) < 0.8 * len(sample):
+            continue
+        rows, left = [], []
+        cols = lo["columns"]
+        for ln in lines[:MAX_ROWS]:
+            m = lo["rx"].match(ln)
+            if not m:
+                left.append(ln)
+                continue
+            body = m.group("csv") if "csv" in lo["rx"].groupindex else ln
+            try:
+                vals = next(csv.reader([body], delimiter=lo.get("delimiter") or ","))
+            except (csv.Error, StopIteration):
+                left.append(ln)
+                continue
+            k = lo.get("key_column")
+            names = cols.get(vals[k] if k is not None and k < len(vals) else None) or cols.get(lo.get("default")) \
+                or cols.get("default") or []
+            r = {names[i] if i < len(names) else f"c{i + 1}": v for i, v in enumerate(vals) if v not in ("", None)}
+            pre = ln[:m.start("csv")].strip() if "csv" in lo["rx"].groupindex else ""
+            if pre:
+                r["syslog_header"] = pre
+            rows.append(r)
+        return (lo["id"], rows, left) if rows else None
+    return None
+
+
 def _syslog_ts(header):
     """The time a syslog header carries (RFC 5424 ISO, or "Oct  1 2026 10:05:00")."""
     if not header:
@@ -520,6 +552,9 @@ def read(text) -> tuple[str, list, list]:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return "", [], []
+    got = _guard(_layout_rows, lines)
+    if got:
+        return got
     sample = [ln for ln in lines[:400] if not ln.startswith("#")] or lines[:400]
 
     def share(fn):
@@ -723,7 +758,9 @@ def detect_columns(rows, sample=300) -> dict:
             used.update(more)
     shapes: dict = {}
     for k in cols:
-        if k in used or k == "_line" or len(vals[k]) < 1:
+        # A translated / egress address (NAT, Umbrella's external IP) is neither end
+        # of the connection: never a source or destination by shape.
+        if k in used or k == "_line" or len(vals[k]) < 1 or re.search(r"nat|egress|xlat|translated", str(k), re.I):
             continue
         kinds = [_shape(v) for v in vals[k]]
         for kind in ("ip", "time", "user", "hash", "severity", "url", "domain"):
@@ -831,7 +868,7 @@ def _severity(v, scale) -> str | None:
 RULES_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                           "config", "external_log_rules.yaml")
 LOCAL_RULES = ("/app/data/external_log_rules.local.yaml",)
-_RULES = {"key": None, "native": [], "behaviour": {}}
+_RULES = {"key": None, "native": [], "behaviour": {}, "layouts": []}
 _SEV_RANK = {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 _NESTED_PAIR = re.compile(r'"([A-Za-z0-9_.@-]{1,80})"\s*:\s*"?([^"\n,}\]]{0,300})')
 
@@ -880,7 +917,15 @@ def rules() -> dict:
                 beh[k] = {**beh.get(k, {}), **v}
     for k in off:
         beh.setdefault(k, {})["enabled"] = False
-    _RULES.update(key=key, native=native, behaviour=beh)
+    layouts = []
+    for lo in (local.get("layouts") or []) + (shipped.get("layouts") or []):
+        if not isinstance(lo, dict) or lo.get("id") in off or not lo.get("line") or not lo.get("columns"):
+            continue
+        try:
+            layouts.append({**lo, "rx": re.compile(lo["line"])})
+        except re.error as e:
+            print(f"[EXTERNAL-LOGS] layout {lo.get('id')} skipped, bad line: {e}", flush=True)
+    _RULES.update(key=key, native=native, behaviour=beh, layouts=layouts)
     return _RULES
 
 
@@ -997,7 +1042,9 @@ def _norm_row(r, mapping, alt, scale, tcol, mapped):
     # A stated severity with no rule column: name the finding by what said so
     # ("riskLevelDuringSignIn: high"), never by a neighbouring column.
     if n.get("severity") and not n.get("rule") and mapping.get("severity"):
-        n["rule"] = f"{mapping['severity']}: {r.get(mapping['severity'])}"
+        col = next((c for c in [mapping["severity"]] + list(alt.get("severity", ()))
+                    if r.get(c) not in (None, "")), mapping["severity"])
+        n["rule"] = f"{col}: {r.get(col)}"
     if not n.get("ts"):
         t = _syslog_ts(r.get("syslog_header"))
         if t:
