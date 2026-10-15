@@ -671,6 +671,10 @@ def _cands(col):
         suf = _norm_name("".join(parts[i:]))
         if suf in _CANDS and not (i == len(parts) - 1 and suf in _VAGUE):
             return _CANDS[suf]
+    if len(parts) > 1:                  # SentinelOne "ruleInfo.name" -> rulename
+        alt = re.sub(r"(info|details?|data)$", "", _norm_name(parts[-2])) + _norm_name(parts[-1])
+        if alt in _CANDS:
+            return _CANDS[alt]
     return []
 
 
