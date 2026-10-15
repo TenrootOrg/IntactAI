@@ -353,6 +353,27 @@ def _kv_row(line):
     return row
 
 
+# Colon pairs, two dialects: Check Point Log Exporter  [src:"1.2.3.4"; dst:"..."; ...]
+# and "Key: Value, Key: Value" (Cisco Firepower/FTD, Symantec SEP, many appliances).
+# Checked before CSV and key=value: an FTD line is full of ", ", a Check Point
+# value is full of "=".
+_CPQ = re.compile(r'([A-Za-z_][\w.\-]{0,60}):"((?:[^"\\]|\\.)*)"')
+_CPAIR = re.compile(r"(?:(?<=,)|(?<=: )|^)\s*([A-Za-z][A-Za-z0-9 _./()-]{0,40}?):\s+([^,]*)")
+
+
+def _colon_row(line):
+    pairs = _CPQ.findall(line)
+    if len(pairs) < 4:
+        pairs = [(k.strip(), v.strip().strip('"')) for k, v in _CPAIR.findall(line)]
+        if len(pairs) < 4:
+            return None
+    row = {k: v for k, v in pairs if v not in ("", "-")}
+    pre = line[:line.find(pairs[0][0])].strip(" ,[")
+    if pre:
+        row["syslog_header"] = pre
+    return row
+
+
 # NCSA common / combined access log (Apache, Nginx, many proxies and appliances):
 #   1.2.3.4 - user [30/Nov/2015:06:39:00 -0800] "GET /p?q=1 HTTP/1.1" 200 512 "ref" "agent"
 _CLF = re.compile(r'^(?:(?P<vhost>\S+:\d+)\s+)?(?P<ip>\S+)\s+\S+\s+(?P<user>\S+)\s+\[(?P<time>[^\]]+)\]\s+'
@@ -638,7 +659,7 @@ def read(text) -> tuple[str, list, list]:
             (rows.append(r) if r else left.append(ln))
         return rows, left
     for fmt, fn, need in (("jsonl", _json_obj, 0.8), ("syslog-json", _json_in_line, 0.8),
-                          ("cef", _cef_row, 0.6), ("access-log", _clf_row, 0.6)):
+                          ("cef", _cef_row, 0.6), ("access-log", _clf_row, 0.6), ("colon-kv", _colon_row, 0.6)):
         if share(fn) >= need:
             if fmt == "cef" and "CEF:" not in "".join(sample):
                 fmt = "leef"
@@ -1161,7 +1182,10 @@ def _norm_row(r, mapping, alt, scale, tcol, mapped):
     if n.get("severity") and not n.get("rule") and mapping.get("severity"):
         col = next((c for c in [mapping["severity"]] + list(alt.get("severity", ()))
                     if r.get(c) not in (None, "")), mapping["severity"])
-        n["rule"] = f"{col}: {r.get(col)}"
+        msg = str(n.get("message") or "").strip()
+        # The row's own words before "Priority: 1": Firepower's intrusion message
+        # is the signature; two different attacks must not share one title.
+        n["rule"] = msg if 8 <= len(msg) <= 160 and re.search(r"[A-Za-z]{4}", msg) else f"{col}: {r.get(col)}"
     if not n.get("ts"):
         t = _syslog_ts(r.get("syslog_header"))
         if t:

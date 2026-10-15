@@ -51,7 +51,7 @@ class EveryRuleProvesItself(unittest.TestCase):
 # must, telemetry (process, flow, DNS, web, logon events) must not -- that is for
 # the Sigma and behaviour rules, not for the product's own verdict.
 DETECTS = {
-    "Microsoft Defender for Endpoint - alerts API", "CrowdStrike Falcon - Alerts API", "SentinelOne - threats API", "SentinelOne - unified alerts API", "ESET PROTECT - detections API",
+    "Microsoft Defender for Endpoint - alerts API", "CrowdStrike Falcon - Alerts API", "SentinelOne - threats API", "SentinelOne - unified alerts API", "ESET PROTECT - detections API", "Cisco Firepower (FTD) - intrusion syslog",
     "VMware Carbon Black Cloud - alerts", "Palo Alto Cortex XDR - alerts", "Sophos Central - SIEM alerts",
     "Trend Micro Vision One - workbench alerts", "Cisco Secure Endpoint (AMP) - events", "Elastic Defend (ECS)",
     "Wazuh - alerts.json", "Symantec Endpoint Protection - CSV risk export", "ESET PROTECT - syslog JSON",

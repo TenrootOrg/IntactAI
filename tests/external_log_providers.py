@@ -189,7 +189,8 @@ SAMPLES = [
     ("Cisco Firepower (FTD) - intrusion syslog", "firewall",
      f'Oct  1 10:05:00 ftd01 SFIMS: Protocol: TCP, SrcIP: {INT}, DstIP: {ATK}, SrcPort: 51000, DstPort: 443, '
      'Priority: 1, Message: "MALWARE-CNC Cobalt Strike beacon"\n',
-     {"ips": [INT, ATK]}),
+     {"src_ip": INT, "dst_ip": ATK, "dst_port": "443", "severity": "high",
+      "rule": "MALWARE-CNC Cobalt Strike beacon"}),
     ("Juniper SRX - structured syslog", "firewall",
      f'<14>1 2026-10-01T10:05:00.000Z srx01 RT_FLOW - RT_FLOW_SESSION_DENY [junos@2636.1.1.1.2.26 '
      f'source-address="{INT}" source-port="51000" destination-address="{ATK}" destination-port="443" '
