@@ -48,6 +48,7 @@ DEFAULTS = {
     "kerberos-ticket-burst": {"services": 10, "window_s": 600, "severity": "medium"},
     "kerberos-user-enum": {"names": 10, "window_s": 600, "severity": "medium"},
     "ad-account-abuse": {"severity": "high"},
+    "m365-persistence": {},
     "dns-tunnel": {"subdomains": 100, "window_s": 3600, "long_label": 40, "long_queries": 20,
                    "severity": "medium"},
 }
@@ -681,6 +682,60 @@ def ad_account_abuse(rows, p):
     return out
 
 
+# Application permissions that hand over the tenant or every mailbox (Microsoft's ids).
+_M365_PRIV = {"dc890d15-9560-4a4c-9b7f-a736ec74ec40": "full_access_as_app (Exchange, every mailbox)",
+              "1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9": "Application.ReadWrite.All (Graph)",
+              "06b708a9-e830-4db3-a914-8e69da51d44f": "AppRoleAssignment.ReadWrite.All (Graph)",
+              "9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8": "RoleManagement.ReadWrite.Directory (Graph)"}
+
+
+def m365_persistence(rows, p):
+    """What an attacker changes in a Microsoft 365 tenant to stay, read from the audit
+    record's old and new value (ModifiedProperties), so only what this change ADDED:
+    - a privileged API permission added to an application (high);
+    - protection against consent to risky apps turned off (high);
+    - an MFA method added to an account (medium: also a user enrolling a new phone);
+    - a consent to an application Microsoft rated risky, blocked (medium)."""
+    out = []
+    for i, r in enumerate(rows):
+        raw = r.get("raw") or {}
+        op = str(raw.get("Operation") or "")
+        if not op:
+            continue
+        mp = {k[len("ModifiedProperties."):]: str(v) for k, v in raw.items() if str(k).startswith("ModifiedProperties.")}
+        hits = []
+        if op in ("Update application.", "Add application."):
+            new, old = mp.get("RequiredResourceAccess.NewValue", ""), mp.get("RequiredResourceAccess.OldValue", "")
+            added = [name for pid, name in _M365_PRIV.items() if pid in new and pid not in old]
+            if added:
+                hits.append(("Privileged API permission added to an application", "high",
+                             "added " + ", ".join(added)))
+        if op in ("Update company settings", "Update company settings.", "Update authorization policy."):
+            settings = mp.get("ObjectSettings.NewValue", "")
+            if re.search(r'"BlockUserConsentForRiskyApps",\s*"Value":\s*"false"', settings, re.I) or \
+                    re.search(r"true", mp.get("AllowUserConsentForRiskyApps.NewValue", ""), re.I):
+                hits.append(("Protection against consent to risky apps turned off", "high",
+                             "users may now consent to applications Microsoft rates risky"))
+        if op == "Update user.":
+            for prop, mark in (("StrongAuthenticationMethod", "MethodType"),
+                               ("StrongAuthenticationPhoneAppDetail", "DeviceName")):
+                n_new = mp.get(f"{prop}.NewValue", "").count(mark)
+                n_old = mp.get(f"{prop}.OldValue", "").count(mark)
+                if n_new > n_old:
+                    hits.append(("MFA method added to an account", "medium",
+                                 f"{prop}: {n_old} -> {n_new} method(s)"))
+                    break
+        if op == "Consent to application." and "risky application" in mp.get("ConsentAction.Reason.NewValue", "").lower():
+            hits.append(("Consent to a risky application blocked", "medium",
+                         "Microsoft blocked a user's consent to an application it rates risky"))
+        n = r.get("n") or {}
+        target = raw.get("ObjectId") or raw.get("Target")
+        for title, sev, what in hits:
+            out.append(_row("m365-persistence", title, sev, [(n.get("ts"), i)], {"user": raw.get("UserId") or n.get("user"), "src_ip": n.get("src_ip")},
+                            f"{raw.get('UserId')}: {op} {target or ''} -- {what}".replace("  ", " ")))
+    return out
+
+
 def ad_acl_change(rows, p):
     pairs: dict = {}
     for i, r in enumerate(rows):
@@ -846,6 +901,7 @@ def run(rows, params=None, log=None) -> list:
                            ("suspicious-burst", suspicious_burst, rows),
                            ("ad-acl-change", ad_acl_change, rows),
                            ("ad-account-abuse", ad_account_abuse, rows),
+                           ("m365-persistence", m365_persistence, rows),
                            ("kerberos-ticket-burst", kerberos_ticket_burst, rows),
                            ("kerberos-user-enum", kerberos_user_enum, rows),
                            ("dns-tunnel", dns_tunnel, rows)):

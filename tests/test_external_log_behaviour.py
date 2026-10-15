@@ -283,6 +283,38 @@ class ActiveDirectoryAccountAbuse(unittest.TestCase):
         self.assertEqual([], found(jl(quiet)))
 
 
+class M365Persistence(unittest.TestCase):
+    """Read from the change's old and new value: only what THIS change added fires."""
+    def ev(self, op, props, **kw):
+        return {"CreationTime": iso(BASE), "Operation": op, "Workload": "AzureActiveDirectory",
+                "UserId": "attacker@contoso.com", "ModifiedProperties": props, **kw}
+
+    def test_each_one_fires(self):
+        graph = '[{"ResourceAppId": "00000003-0000-0000-c000-000000000000", "RequiredAppPermissions": ' \
+                '[{"EntitlementId": "%s"}]}]'
+        got = found(jl([
+            self.ev("Update application.", [{"Name": "RequiredResourceAccess", "OldValue": graph % "x",
+                                             "NewValue": graph % "9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8"}]),
+            self.ev("Update user.", [{"Name": "StrongAuthenticationMethod", "OldValue": '[{"MethodType": 6}]',
+                                      "NewValue": '[{"MethodType": 6}, {"MethodType": 7}]'}]),
+            self.ev("Update company settings", [{"Name": "ObjectSettings", "OldValue": "",
+                     "NewValue": '[{"Key": "BlockUserConsentForRiskyApps", "Value": "False"}]'}]),
+            self.ev("Consent to application.", [{"Name": "ConsentAction.Reason", "OldValue": "",
+                                                 "NewValue": "Risky application detected"}], ResultStatus="Failure")]))
+        self.assertEqual(sorted([("Privileged API permission added to an application", "high"),
+                                 ("MFA method added to an account", "medium"),
+                                 ("Protection against consent to risky apps turned off", "high"),
+                                 ("Consent to a risky application blocked", "medium")]), sorted(got))
+
+    def test_unchanged_or_removed_stays_quiet(self):
+        perm = '[{"RequiredAppPermissions": [{"EntitlementId": "dc890d15-9560-4a4c-9b7f-a736ec74ec40"}]}]'
+        self.assertEqual([], found(jl([
+            self.ev("Update application.", [{"Name": "RequiredResourceAccess", "OldValue": perm, "NewValue": perm}]),
+            self.ev("Update user.", [{"Name": "StrongAuthenticationMethod",
+                                      "OldValue": '[{"MethodType": 6}, {"MethodType": 7}]',
+                                      "NewValue": '[{"MethodType": 6}]'}])])))
+
+
 class ActiveDirectoryPermissions(unittest.TestCase):
     """5136 logs the old and new descriptor of a change; the rule reads what was ADDED.
     No benign corpus holds 5136 (DS auditing off), so a legitimate delegation to a

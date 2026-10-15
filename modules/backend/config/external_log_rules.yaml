@@ -397,6 +397,7 @@ behaviour:
   ad-acl-change:    {severity: medium}       # AdminSDHolder: high
   kerberos-ticket-burst: {services: 10, window_s: 600, severity: medium}   # RC4: high
   kerberos-user-enum: {names: 10, window_s: 600, severity: medium}
+  m365-persistence: {}                     # privileged app permission, risky-consent block off, MFA added
   ad-account-abuse: {severity: high}       # self-add to group, own UPN to a bare name, RID 500 password by another
   web-scan:         {paths: 50, window_s: 600, severity: medium}
   web-login-brute-force: {posts: 20, window_s: 600, severity: medium}
