@@ -208,6 +208,16 @@ class Shapes(unittest.TestCase):
         self.assertEqual(("jsonl", "UpdateSAMLProvider"), (fm, rows[0].get("eventName")))
         self.assertNotIn("preview", rows[0])
 
+    def test_name_value_pairs_are_fields(self):
+        # Google Reports keeps an event's details as [{"name": ..., "value"/"multiValue": ...}]
+        r = X._flat({"event": {"name": "login_failure", "parameters": [
+            {"name": "login_type", "value": "google_password"},
+            {"name": "login_challenge_method", "multiValue": ["password", "google_authenticator"]}]}})
+        self.assertEqual("google_password", r["event.parameters.login_type"])
+        self.assertEqual("password, google_authenticator", r["event.parameters.login_challenge_method"])
+        self.assertIn("event.parameters", r)                # the JSON text stays
+        self.assertNotIn("x.a", X._flat({"x": [{"a": 1, "b": 2, "c": 3, "d": 4}]}))   # not pairs
+
     def test_squid_native_access_log(self):
         # Padded columns and "TCP_MISS/200": read as unnamed columns, no web rule saw it.
         text = "\n".join(["1157689312.049   5006 10.105.21.199 TCP_MISS/200 19763 CONNECT login.yahoo.com:443 "

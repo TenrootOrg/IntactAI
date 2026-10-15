@@ -206,6 +206,25 @@ def read_text(path) -> str:
 _SEPARATORS = {0x1c: " ", 0x1d: " ", 0x1e: " "}
 
 
+_PAIR_NAME = ("name", "key", "Name", "Key")
+_PAIR_VALUE = ("value", "Value", "multiValue", "boolValue", "intValue", "multiIntValue")
+
+
+def _name_value_pairs(items):
+    """[{"name": "a", "value": 1}, ...] -> {"a": 1}; None when the list is anything else."""
+    out = {}
+    for it in items:
+        if not isinstance(it, dict):
+            return None
+        n = next((it[k] for k in _PAIR_NAME if k in it), None)
+        vals = [it[k] for k in _PAIR_VALUE if k in it]
+        if not isinstance(n, str) or not n or len(vals) != 1 or len(it) > 3:
+            return None
+        v = vals[0]
+        out[n] = ", ".join(str(x) for x in v) if isinstance(v, list) else v
+    return out
+
+
 def _flat(o, pre="", out=None, depth=0):
     """Nested JSON -> one level of dotted keys ("source.ip"); lists of scalars are
     joined, lists of objects kept as JSON text (searchable, and mined for
@@ -217,6 +236,11 @@ def _flat(o, pre="", out=None, depth=0):
     elif isinstance(o, list):
         out[pre] = (", ".join(str(x) for x in o) if all(not isinstance(x, (dict, list)) for x in o)
                     else json.dumps(o, default=str)[:8000])
+        # A list of name/value pairs (Google Reports "parameters", AWS tags) is a set of
+        # fields: event.parameters.login_challenge_method, as the products' own add-ons read it.
+        pairs = _name_value_pairs(o) if o and depth < 8 else None
+        for k, v in (pairs or {}).items():
+            out.setdefault(f"{pre}.{k}" if pre else k, v)
     else:
         out[pre] = o
     return out
