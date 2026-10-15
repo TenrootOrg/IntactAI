@@ -196,6 +196,31 @@ native:
       quiet: [{http_method: "GET", uri_path: "/index.jsp"}, {http_method: "PUT", uri_path: "/api/v1/items/42"},
               {cs-method: "POST", cs-uri-stem: "/login.php"}]
 
+  - id: http-method-not-a-method
+    title: "Non-standard HTTP method"
+    reason: "HTTP methods are upper-case tokens (GET, POST, PROPFIND); a random mixed-case verb carrying a body is malware using HTTP as a covert channel"
+    fields: [http_method, method, cs-method, http.http_method, request_method, http.request.method]
+    match: '(?-i:[A-Za-z]*[a-z][A-Za-z]*)'
+    and:
+      - fields: [uri, uri_path, cs-uri-stem, url, http.url, url.path, request_uri, c-uri, url.original]
+        match: '/.*|https?://.*'
+    severity: medium
+    examples:
+      fires: [{method: "hfKyMa", uri: "/", host: "www.sysmelook.com"}, {cs-method: "get", cs-uri-stem: "/x"}]
+      quiet: [{method: "GET", uri: "/"}, {method: "PROPFIND", uri: "/dav/"}, {method: "M-SEARCH", uri: "*"},
+              {method: "password", user: "root"}]
+
+  - id: encoded-post-body
+    title: "Encoded blob POSTed to a web page"
+    reason: "a request body that is nothing but one long base64 string -- no form fields, no JSON -- is how web-shell clients and HTTP C2 send commands"
+    fields: [post_body, request_body, http.request.body.content, requestbody, cs-body]
+    match: '[A-Za-z0-9+/]{64,}={0,2}'
+    severity: medium
+    examples:
+      fires: [{post_body: "hMUlHTVEzmc+5fNbbspSRUEVsphYbAJ2Sy3CJZ9K12xyL1cRo1jrslMNWGGNnxbHB14R/CMybW0Z2+wOIuWtkDfKUG2IMpcOUutkDFdSiKo="}]
+      quiet: [{post_body: "user=admin&password=hunter2&submit=Login"}, {post_body: '{"query": "status", "page": 2}'},
+              {post_body: "c2VhcmNo"}]
+
   - id: firewall-threat-detection
     title: "Firewall threat detection / IPS event"
     reason: "the firewall's own threat detection (rate exceeded: scanning or DoS) or built-in IPS signature fired (Cisco ASA 733100 / 4000xx)"
