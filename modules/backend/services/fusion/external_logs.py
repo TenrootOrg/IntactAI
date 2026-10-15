@@ -819,6 +819,11 @@ def detect_columns(rows, sample=300) -> dict:
             if kinds.count(kind) >= 0.8 * len(kinds):
                 shapes.setdefault(kind, []).append(k)
                 break
+    # "High" / "Medium" alone do not make a severity column: Sysmon's IntegrityLevel
+    # is High for an admin process. By shape only when the NAME also says so.
+    shapes["severity"] = [k for k in shapes.get("severity", [])
+                          if re.search(r"sev|prio|risk|score|critic|threat|alert", str(k), re.I)
+                          and not re.search(r"integrity|trust|imperson|elevat|token", str(k), re.I)]
     for kind, f in (("time", "ts"), ("user", "user"), ("hash", "hash"), ("severity", "severity"),
                     ("url", "url"), ("domain", "domain")):
         if f not in out and shapes.get(kind):
@@ -964,7 +969,7 @@ def rules() -> dict:
         if not isinstance(r, dict) or r.get("id") in off or not r.get("fields") or not r.get("match"):
             continue
         try:
-            native.append({"id": r["id"], "reason": r.get("reason") or r["id"],
+            native.append({"id": r["id"], "reason": r.get("reason") or r["id"], "title": r.get("title"),
                            "fields": {_norm_name(f) for f in r["fields"]},
                            "rx": re.compile(f"(?:{r['match']})", re.I),
                            "severity": r.get("severity") if r.get("severity") in _SEV_RANK else "medium",
@@ -1060,15 +1065,21 @@ def _verdict(n, hits):
     product's own words when the row has no rule column."""
     if not hits:
         return
+    stated = n.get("severity")
     top = max(hits, key=lambda h: _SEV_RANK[h[0]["severity"]])
     if _SEV_RANK[top[0]["severity"]] > _SEV_RANK.get(n.get("severity") or "informational", 0):
         n["severity"] = top[0]["severity"]
-    if not n.get("rule"):
+    product_alert = _SEV_RANK.get(stated or "", 0) >= 2
+    if not n.get("rule") or not product_alert:
+        # A row the product did not call an alert has no title of its own: a
+        # column taken as "rule" there is a content type or an event type, never
+        # the reason it is a detection. The rule's title, else the product's own
+        # words (a threat name, an event type); a number or flag says nothing
+        # alone: "WAFAttackScore = 4".
         r, v, k = top
-        # The product's own words when it wrote some (a threat name, an event type);
-        # a number or a flag says nothing alone: "WAFAttackScore = 4".
-        n["rule"] = v if re.search(r"[A-Za-z]{3}", v) and not re.fullmatch(r"true|yes", v, re.I) \
-            else f"{str(k).rsplit('.', 1)[-1]} = {v}"
+        n["rule"] = r.get("title") or (v if re.search(r"[A-Za-z]{3}", v) and len(v) <= 120
+                                        and not re.fullmatch(r"true|yes", v, re.I)
+                                        else f"{str(k).rsplit('.', 1)[-1]} = {v[:80]}")
     n["detected_by"] = sorted({h[0]["id"] for h in hits})
 
 
@@ -1092,6 +1103,8 @@ def _norm_row(r, mapping, alt, scale, tcol, mapped):
             v = str(v).strip().rsplit("\\", 1)[-1]         # "CORP\\WS01" -> WS01
         elif f == "domain":
             v = str(v).strip().rstrip(".")
+        elif f == "rule" and re.fullmatch(r"\s*(-|none|n/?a|null|unknown|\(\d+\)|0)\s*", str(v), re.I):
+            v = None                                   # "-", "(9999)": no name at all
         else:
             v = str(v).strip()[:4000]
         if v:
@@ -1373,6 +1386,11 @@ def sigma_pass(out, log=None) -> dict:
             "behaviour rules still ran", "warning")
         return {"rules": 0, "rows_hit": 0, "titles": {}}
     t0, cache, titles, hit_rows = time.time(), {}, {}, 0
+    ncache: dict = {}
+    for r in out:                                   # free-text rows never went through normalize()
+        raw = r.get("raw") or {}
+        if set(raw) <= {"line", "text"} and "text" in raw and not r["n"].get("detected_by"):
+            _verdict(r["n"], native_hits({"text": raw["text"]}, ncache))
     for i, r in enumerate(out):
         raw = r.get("raw") or {}
         ev = {"_text": raw["text"], "text": raw["text"]} if set(raw) <= {"line", "text"} and "text" in raw else raw

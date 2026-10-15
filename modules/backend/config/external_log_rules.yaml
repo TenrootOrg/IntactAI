@@ -142,6 +142,7 @@ native:
       quiet: [{action: "user_update"}, {eventType: "user.mfa.factor.activate"}, {eventName: "ListMFADevices"}]
 
   - id: exploit-payload-in-request
+    title: "Exploit payload in a request"
     reason: "a request carries a known exploit payload (Log4Shell, template injection, SQL injection, path traversal, a shell in the URL)"
     fields: [url, uri, request, c-uri, cs-uri-stem, cs-uri-query, http.url, url.original, url.full, requestUrl,
              clientRequestURI, useragent, user_agent, c-useragent, cs(User-Agent), http.http_user_agent, http_user_agent,
@@ -157,6 +158,7 @@ native:
               {url: "/docs/../index.html"}, {url: "/static/js/app.js?v=2"}]
 
   - id: local-account-created
+    title: "Local account created by command"
     reason: "a command created a local account on a Linux host (persistence; SigmaHQ only sees it in SYSCALL / ADD_USER records)"
     fields: [CommandLine, proctitle, cmdline, process.command_line]
     match: '(sudo\s+)?(\S*/)?(useradd|adduser)\s+(?!(-h|--help)\b).+'
@@ -166,6 +168,7 @@ native:
       quiet: [{proctitle: "grep -EiH useradd /var/log/auth.log"}, {CommandLine: "useradd --help"}, {CommandLine: "man adduser"}]
 
   - id: ids-alert-line-priority-1
+    title: "IDS alert (priority 1)"
     reason: "a Snort / Suricata alert line (fast.log, syslog) the sensor itself rated priority 1"
     fields: [text]
     match: '.*\[\*\*\]\s*\[\d+:\d+:\d+\].*\[Priority:\s*1\].*'
@@ -176,6 +179,7 @@ native:
               {text: 'Priority: 1 of the sprint is the login page'}]
 
   - id: ids-alert-line-priority-2
+    title: "IDS alert (priority 2)"
     reason: "a Snort / Suricata alert line the sensor rated priority 2"
     fields: [text]
     match: '.*\[\*\*\]\s*\[\d+:\d+:\d+\].*\[Priority:\s*2\].*'
