@@ -102,6 +102,18 @@ class Shapes(unittest.TestCase):
         rows = [{"time": 1790849100000, "type": "INCIDENT_CREATION", "severity_id": 4, "type_id": 8075}] * 3
         self.assertEqual("high", X.normalize(rows, X.detect_columns(rows))[0]["n"]["severity"])
 
+    def test_a_rows_own_time_zone_is_honoured(self):
+        """Sophos XG writes local date + time and names the zone; a time with its
+        own offset keeps it."""
+        def ts(row):
+            return X.normalize([row] * 3, X.detect_columns([row] * 3))[0]["n"]["ts"]
+        self.assertEqual("2020-05-18T12:38:48", ts({"date": "2020-05-18", "time": "14:38:48", "timezone": "CEST",
+                                                    "src_ip": "10.0.0.5"}))
+        self.assertEqual("2017-01-31T08:46:19", ts({"date": "2017-01-31", "time": "14:16:19", "timezone": "+05:30",
+                                                    "src_ip": "10.0.0.5"}))
+        self.assertEqual("2017-01-31T14:16:19", ts({"timestamp": "2017-01-31T14:16:19Z", "timezone": "IST",
+                                                    "src_ip": "10.0.0.5"}))
+
     def test_gzip_and_utf16_are_read(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "a.gz")

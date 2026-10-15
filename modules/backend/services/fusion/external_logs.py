@@ -1150,6 +1150,27 @@ def _verdict(n, hits):
     n["detected_by"] = sorted({h[0]["id"] for h in hits})
 
 
+# A row that states its zone by name (Sophos XG: timezone="CEST"). Abbreviations
+# are ambiguous; these are the readings Elastic and the vendors use.
+# ponytail: common zones only -- an unknown name leaves the time as written (UTC).
+_TZ_ABBR = {"utc": "+00:00", "gmt": "+00:00", "z": "+00:00", "wet": "+00:00", "west": "+01:00", "bst": "+01:00",
+            "cet": "+01:00", "cest": "+02:00", "eet": "+02:00", "eest": "+03:00", "msk": "+03:00",
+            "ist": "+05:30", "pkt": "+05:00", "ict": "+07:00", "sgt": "+08:00", "hkt": "+08:00", "awst": "+08:00",
+            "jst": "+09:00", "kst": "+09:00", "aest": "+10:00", "aedt": "+11:00", "nzst": "+12:00",
+            "nzdt": "+13:00", "est": "-05:00", "edt": "-04:00", "cst": "-06:00", "cdt": "-05:00",
+            "mst": "-07:00", "mdt": "-06:00", "pst": "-08:00", "pdt": "-07:00", "akst": "-09:00", "hst": "-10:00"}
+_HAS_OFF = re.compile(r"(Z|[+-]\d{2}:?\d{2}|\b(GMT|UTC))\s*$", re.I)
+
+
+def _row_tz(r):
+    z = next((str(v).strip() for k, v in r.items() if _norm_name(k) in ("timezone", "tz", "timezoneoffset")
+              and v not in (None, "")), "")
+    m = re.fullmatch(r"(?:UTC|GMT)?\s*([+-])(\d{1,2}):?(\d{2})?", z, re.I)
+    if m:
+        return f"{m.group(1)}{int(m.group(2)):02d}:{m.group(3) or '00'}"
+    return _TZ_ABBR.get(z.lower())
+
+
 def _norm_row(r, mapping, alt, scale, tcol, mapped):
     """One row's normalized fields (normalize() guards it)."""
     n = {}
@@ -1160,7 +1181,9 @@ def _norm_row(r, mapping, alt, scale, tcol, mapped):
         if v in (None, ""):
             continue
         if f == "ts":
-            v = _ts(f"{v} {r.get(tcol)}" if tcol and r.get(tcol) else v)
+            v = f"{v} {r.get(tcol)}" if tcol and r.get(tcol) else str(v)
+            z = None if _HAS_OFF.search(v) or re.fullmatch(r"\d{9,20}(\.\d+)?", v.strip()) else _row_tz(r)
+            v = _ts(f"{v} {z}" if z else v)
         elif f == "severity":
             v = _severity(v, scale)
         elif f in ("src_ip", "dst_ip"):
