@@ -210,6 +210,14 @@ class WebUrlParts(unittest.TestCase):
                                     "user_agent": "curl/8", "src": "1.2.3.4", "dst": "5.6.7.8",
                                     "dst_port": "443", "action": "allow"}))
 
+    def test_a_url_with_its_category_is_a_proxy_log(self):
+        row = {"datetime": "2023-11-06 16:49:47 GMT", "action": "Blocked", "url": "dummy-url.example.com",
+               "urlcategory": "Other Information Technology", "urlclass": "Legal Liability", "serverip": "1.2.3.4",
+               "ClientIP": "10.0.0.5", "requestmethod": "POST", "useragent": "Mozilla/5.0"}
+        r = S.compile_rule({"title": "t", "id": "x", "level": "high", "logsource": {"category": "proxy"},
+                            "detection": {"sel": {"urlclass": "Legal Liability"}, "condition": "sel"}})
+        self.assertTrue(S.evaluate(row, [r], {}))
+
     def test_no_query_is_the_path_alone(self):
         self.assertFalse(self.fires({"cs-uri-stem": "/shell.jsp", "cs-uri-query": "-", "cs-method": "GET",
                                      "sc-status": "200", "c-ip": "10.0.0.1"}))

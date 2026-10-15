@@ -666,7 +666,10 @@ def profiles(row) -> set:
     host_path = any(re.match(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?/", u) for u in urls)
     if ((full_url or _has(ev, "cs-host", "c-uri")) and _has(ev, "c-useragent", "cs-host", "cs-method", "useragent",
                                                             "user_agent", "method", "http.request.method")) \
-            or (host_path and _has(ev, "dst_ip", "dstip", "destination.ip", "dst")):
+            or (host_path and _has(ev, "dst_ip", "dstip", "destination.ip", "dst")) \
+            or (_has(ev, "url", "c-uri") and _has(ev, "urlcategory", "url_category", "urlclass", "urlsupercategory")):
+        # (A URL with its category: only a secure web gateway / URL filter writes one --
+        # Zscaler NSS logs "host" without a path and the server as "serverip".)
         out.add((None, "proxy", None))
     # HTTP seen on the wire (Suricata http / fileinfo, Zeek http.log): both ends of
     # the request are in it, so the proxy AND web server rules are about it.
