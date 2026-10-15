@@ -23,11 +23,14 @@ DEFAULTS = {
     "brute-force": {"failures": 10, "window_s": 600, "success_within_s": 1800,
                     "severity": "medium", "severity_with_success": "high"},
     "password-spray": {"users": 10, "window_s": 1800, "severity": "high"},
+    "distributed-spray": {"users": 20, "sources": 3, "window_s": 3600, "recover_s": 1800, "severity": "high"},
     "mfa-fatigue": {"denials": 5, "window_s": 900, "severity": "medium", "severity_with_success": "high"},
     "port-scan": {"ports": 25, "window_s": 300, "severity": "medium"},
     "host-sweep": {"hosts": 25, "window_s": 300, "severity": "medium"},
     "beaconing": {"connections": 20, "min_span_s": 1800, "max_jitter": 0.2, "min_interval_s": 10,
                   "max_interval_s": 3600, "severity": "medium"},
+    "web-scan": {"paths": 50, "window_s": 600, "severity": "medium"},
+    "web-login-brute-force": {"posts": 20, "window_s": 600, "severity": "medium"},
     "dns-tunnel": {"subdomains": 100, "window_s": 3600, "long_label": 40, "long_queries": 20,
                    "severity": "medium"},
 }
@@ -43,6 +46,8 @@ _AUTH = re.compile(r"\b(log ?(in|on)|sign.?in|auth|authenticat\w*|password|sessi
                    r"4624|4625|4771|4776)\b", re.I)
 _TEXT_AUTH = re.compile(r"(?:for|user)\s+(?:invalid user\s+)?([A-Za-z0-9._@\\$-]{1,64})\s+from\s+"
                         r"((?:\d{1,3}\.){3}\d{1,3})", re.I)
+# PAM: "authentication failure; logname= uid=0 ... rhost=1.2.3.4  user=root"
+_TEXT_PAM = re.compile(r"rhost=((?:\d{1,3}\.){3}\d{1,3})(?:\s+user=([A-Za-z0-9._@\\$-]{1,64}))?", re.I)
 _IPV4 = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}")
 _OUTCOME_KEYS = ("outcome", "result", "status", "resulttype", "errorcode", "action", "disposition",
                  "reason", "eventid", "eventtype", "type", "message", "displaymessage")
@@ -81,10 +86,16 @@ def auth_event(r):
         return None
     user, src = n.get("user") or (n.get("users") or [None])[0], n.get("src_ip")
     text = _outcome_text(n, raw)
+    phrase = False                     # user + source read from a sign-in phrase in free text
     if (not user or not src) and isinstance(raw, dict) and raw.get("text"):
-        m = _TEXT_AUTH.search(str(raw["text"]))
+        line = str(raw["text"])
+        m = _TEXT_AUTH.search(line)
         if m:
-            user, src = user or m.group(1), src or m.group(2)
+            user, src, phrase = user or m.group(1), src or m.group(2), True
+        else:
+            m = _TEXT_PAM.search(line)
+            if m:
+                src, user, phrase = src or m.group(1), user or m.group(2) or "(unknown)", True
     if not user:
         return None
     outcome = _entra_outcome(raw)
@@ -95,7 +106,7 @@ def auth_event(r):
             outcome = "ok"
         else:
             return None
-    if not (_AUTH.search(text) or _entra_outcome(raw) is not None or n.get("src_ip")):
+    if not (phrase or _AUTH.search(text) or _entra_outcome(raw) is not None or n.get("src_ip")):
         return None
     return ts, str(user).lower(), src, outcome, bool(_MFA.search(text))
 
@@ -142,8 +153,10 @@ def _windows(items, window_s):
 
 
 # -- the rules ------------------------------------------------------------------------
-def brute_force(auth, p):
-    """Many failures for one account from one source; worse when a success follows."""
+def brute_force(auth, p, spray_srcs=()):
+    """Many failures for one account from one source; worse when a success follows.
+    A source already named in a password spray raises no PLAIN brute force (the
+    same burst, counted once) -- but always a brute force that ended in a success."""
     out = []
     groups: dict = {}
     for a in auth:
@@ -157,12 +170,14 @@ def brute_force(auth, p):
             end = win[-1][0]
             won = next((t for t in oks if end - p["window_s"] <= t <= end + p["success_within_s"]
                         and t >= win[0][0]), None)
+            if won is None and src in spray_srcs:
+                continue
             members = [w[1] for w in win]
             who = f"{user}" + (f" from {src}" if src else "")
             if won is not None:
-                title, sev = f"Brute force then success ({who})", p["severity_with_success"]
+                title, sev = "Brute force then success", p["severity_with_success"]
             else:
-                title, sev = f"Brute force ({who})", p["severity"]
+                title, sev = "Brute force", p["severity"]
             out.append(_row("brute-force", title, sev, members, {"user": user, "src_ip": src},
                             f"{len(members)} failed sign-ins for {who}"
                             + (" followed by a successful one" if won is not None else "")))
@@ -187,9 +202,38 @@ def password_spray(auth, p):
                 best = (len(users), items[start:end + 1])
         if best:
             members = [i[1] for i in best[1]]
-            out.append(_row("password-spray", f"Password spray from {src}", p["severity"], members,
+            out.append(_row("password-spray", "Password spray", p["severity"], members,
                             {"src_ip": src, "users": sorted({m[1] for m in members})[:50]},
                             f"{src} failed against {best[0]} different accounts"))
+    return out
+
+
+def distributed_spray(auth, p, spray_srcs=()):
+    """A spray spread over many addresses (one guess per account per IP), which the
+    per-source rule cannot see. Counted are only UNRECOVERED failures -- an account
+    whose failure is not followed by its own success -- so a busy morning of typos,
+    each followed by a good login, stays quiet."""
+    oks: dict = {}
+    for a in auth:
+        if a[3] == "ok" and _t(a[0]) is not None:
+            oks.setdefault(a[1], []).append(_t(a[0]))
+    fails = []
+    for a in auth:
+        t = _t(a[0])
+        if a[3] != "fail" or t is None or a[2] in spray_srcs:
+            continue
+        if any(t <= o <= t + p["recover_s"] for o in oks.get(a[1], ())):
+            continue                                       # the owner got in: a typo
+        fails.append((t, a))
+    out = []
+    for win in _windows(fails, p["window_s"]):
+        users = {w[1][1] for w in win}
+        srcs = {w[1][2] for w in win if w[1][2]}
+        if len(users) >= p["users"] and len(srcs) >= p["sources"]:
+            members = [w[1] for w in win]
+            out.append(_row("distributed-spray", "Distributed password spray", p["severity"], members,
+                            {"users": sorted(users)[:50], "ips": sorted(srcs)[:50]},
+                            f"{len(users)} accounts failed without a later success, from {len(srcs)} addresses"))
     return out
 
 
@@ -208,7 +252,7 @@ def mfa_fatigue(auth, p):
                 continue
             won = next((t for t in oks if win[0][0] <= t <= win[-1][0] + p["window_s"]), None)
             members = [w[1] for w in win]
-            out.append(_row("mfa-fatigue", f"MFA fatigue ({user})" + (" then approved" if won else ""),
+            out.append(_row("mfa-fatigue", "MFA fatigue" + (" then approved" if won else ""),
                             p["severity_with_success"] if won else p["severity"], members, {"user": user},
                             f"{len(members)} MFA prompts denied or unanswered for {user}"
                             + (", then one approved" if won else "")))
@@ -240,7 +284,7 @@ def port_scan(flows, p):
                 best = (len(ports), items[start:end + 1])
         if best:
             members = [(i[5], i[6]) for i in best[1]]
-            out.append(_row("port-scan", f"Port scan of {dst} from {src}", p["severity"], members,
+            out.append(_row("port-scan", "Port scan", p["severity"], members,
                             {"src_ip": src, "dst_ip": dst}, f"{src} reached {best[0]} different ports on {dst}"))
     return out
 
@@ -264,7 +308,7 @@ def host_sweep(flows, p):
                 best = (len(hosts), items[start:end + 1])
         if best:
             members = [(i[5], i[6]) for i in best[1]]
-            out.append(_row("host-sweep", f"Host sweep on port {port} from {src}", p["severity"], members,
+            out.append(_row("host-sweep", f"Host sweep on port {port}", p["severity"], members,
                             {"src_ip": src, "dst_port": port}, f"{src} reached {best[0]} different hosts on port {port}"))
     return out
 
@@ -293,11 +337,62 @@ def beaconing(flows, p):
         if jitter > p["max_jitter"]:
             continue
         members = [(i[5], i[6]) for i in items]
-        out.append(_row("beaconing", f"Beaconing from {src} to {dest}", p["severity"], members,
+        out.append(_row("beaconing", "Beaconing", p["severity"], members,
                         {"src_ip": src, "dst_ip": dest if keys.classify_indicator(dest) == "ip" else None,
                          "domain": dest if keys.classify_indicator(dest) == "domain" else None},
                         f"{len(ts)} connections from {src} to {dest} every ~{mean:.0f}s (jitter {jitter:.2f}) "
                         f"over {(ts[-1] - ts[0]) / 60:.0f} min"))
+    return out
+
+
+_LOGIN_PATH = re.compile(r"(log[_-]?in|log[_-]?on|sign[_-]?in|wp-login\.php|xmlrpc\.php|/auth\b|/session|"
+                         r"/token\b|j_security_check|owa/auth|/api/v\d+/login|/user/login|/account/login)", re.I)
+
+
+def _web(rows):
+    for i, r in enumerate(rows):
+        n = r.get("n") or {}
+        t = _t(n.get("ts"))
+        if t is not None and n.get("src_ip") and n.get("url") and n.get("http_status"):
+            yield t, n.get("src_ip"), str(n["url"]).split("?")[0], str(n.get("http_method") or "").upper(), \
+                str(n["http_status"]), n.get("ts"), i
+
+
+def web_scan(rows, p):
+    """One source asking for many different paths that do not exist (4xx): a
+    scanner walking a wordlist, not a visitor."""
+    out, groups = [], {}
+    for w in _web(rows):
+        if w[4].startswith("4"):
+            groups.setdefault(w[1], []).append(w)
+    for src, items in groups.items():
+        items.sort(key=lambda x: x[0])
+        start, best = 0, None
+        for end in range(len(items)):
+            while items[end][0] - items[start][0] > p["window_s"]:
+                start += 1
+            paths = {i[2] for i in items[start:end + 1]}
+            if len(paths) >= p["paths"] and (best is None or len(paths) > best[0]):
+                best = (len(paths), items[start:end + 1])
+        if best:
+            out.append(_row("web-scan", "Web scanning", p["severity"], [(i[5], i[6]) for i in best[1]],
+                            {"src_ip": src}, f"{src} asked for {best[0]} different paths that returned 4xx"))
+    return out
+
+
+def web_login_brute_force(rows, p):
+    """One source posting to a login page over and over."""
+    out, groups = [], {}
+    for w in _web(rows):
+        if w[3] == "POST" and _LOGIN_PATH.search(w[2]):
+            groups.setdefault(w[1], []).append((w[0], w))
+    for src, items in groups.items():
+        for win in _windows(items, p["window_s"]):
+            if len(win) >= p["posts"]:
+                paths = sorted({w[1][2] for w in win})
+                out.append(_row("web-login-brute-force", "Web login brute force", p["severity"],
+                                [(w[1][5], w[1][6]) for w in win], {"src_ip": src, "url": paths[0]},
+                                f"{src} posted {len(win)} times to {', '.join(paths[:3])}"))
     return out
 
 
@@ -337,7 +432,7 @@ def dns_tunnel(rows, p):
             src = next((i[4] for i in items if i[4]), None)
             why = (f"{best[0]} different subdomains of {base}" if best else
                    f"{len(long_q)} queries with long random labels under {base}")
-            out.append(_row("dns-tunnel", f"Possible DNS tunnelling via {base}", p["severity"], members,
+            out.append(_row("dns-tunnel", "Possible DNS tunnelling", p["severity"], members,
                             {"domain": base, "src_ip": src}, why))
     return out
 
@@ -353,10 +448,19 @@ def run(rows, params=None, log=None) -> list:
         if a:
             auth.append((*a, i))
     flows = list(_flows(rows))
-    found = []
-    for name, fn, data in (("brute-force", brute_force, auth), ("password-spray", password_spray, auth),
+    found, spray_srcs = [], set()
+    if "password-spray" not in off:
+        try:
+            sprays = password_spray(auth, ps["password-spray"])
+            found += sprays
+            spray_srcs = {f["n"].get("src_ip") for f in sprays}
+        except Exception as e:                             # noqa: BLE001
+            log(f"behaviour rule password-spray failed: {e}", "warning")
+    for name, fn, data in (("brute-force", lambda a, p: brute_force(a, p, spray_srcs), auth),
+                           ("distributed-spray", lambda a, p: distributed_spray(a, p, spray_srcs), auth),
                            ("mfa-fatigue", mfa_fatigue, auth), ("port-scan", port_scan, flows),
                            ("host-sweep", host_sweep, flows), ("beaconing", beaconing, flows),
+                           ("web-scan", web_scan, rows), ("web-login-brute-force", web_login_brute_force, rows),
                            ("dns-tunnel", dns_tunnel, rows)):
         if name in off:
             continue

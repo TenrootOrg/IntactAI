@@ -224,7 +224,7 @@ class IngestAndSearch(unittest.TestCase):
         s, rows = self._ingest("\n".join(lines))
         alerts = [r["n"] for r in rows if r["n"].get("severity") in ("medium", "high", "critical")]
         by = {a["rule"]: a for a in alerts}
-        self.assertIn("Brute force then success (root from 185.220.101.4)", by)
+        self.assertIn("Brute force then success", by)
         self.assertTrue(any("sigma: " in d for a in alerts for d in a.get("detected_by", [])), alerts)
         self.assertEqual(1, s["behaviour"])
         self.assertGreaterEqual(s["sigma"]["rows_hit"], 1)

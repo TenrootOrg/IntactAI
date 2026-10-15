@@ -113,6 +113,25 @@ native:
       fires: [{WAFAttackScore: 5}, {WAFAttackScore: "20"}]
       quiet: [{WAFAttackScore: 21}, {WAFAttackScore: 99}, {WAFAttackScore: 0}]
 
+  - id: ids-alert-line-priority-1
+    reason: "a Snort / Suricata alert line (fast.log, syslog) the sensor itself rated priority 1"
+    fields: [text]
+    match: '.*\[\*\*\]\s*\[\d+:\d+:\d+\].*\[Priority:\s*1\].*'
+    severity: high
+    examples:
+      fires: [{text: '12/21-15:44:09.432 [**] [1:2018567:2] ET POLICY ELF file download [**] [Classification: Potential Corporate Privacy Violation] [Priority: 1] {TCP} 1.2.3.4:80 -> 10.0.0.5:4444'}]
+      quiet: [{text: '12/21-15:44:09.432 [**] [1:2002024:20] ET CHAT IRC NICK command [**] [Classification: Misc activity] [Priority: 3] {TCP} 10.0.0.5:4444 -> 1.2.3.4:6667'},
+              {text: 'Priority: 1 of the sprint is the login page'}]
+
+  - id: ids-alert-line-priority-2
+    reason: "a Snort / Suricata alert line the sensor rated priority 2"
+    fields: [text]
+    match: '.*\[\*\*\]\s*\[\d+:\d+:\d+\].*\[Priority:\s*2\].*'
+    severity: medium
+    examples:
+      fires: [{text: '[**] [1:2010935:3] ET SCAN Suspicious inbound to MSSQL port 1433 [**] [Classification: Potentially Bad Traffic] [Priority: 2] {TCP} 1.2.3.4:1 -> 10.0.0.5:1433'}]
+      quiet: [{text: '[**] [1:2002024:20] ET CHAT IRC NICK command [**] [Classification: Misc activity] [Priority: 3] {TCP} 10.0.0.5:1 -> 1.2.3.4:6667'}]
+
   - id: nested-severity
     reason: "a severity written inside a nested result (Chronicle security_result, alert evidence lists)"
     fields: [severity]
@@ -132,8 +151,11 @@ native:
 behaviour:
   brute-force:      {failures: 10, window_s: 600, success_within_s: 1800, severity: medium, severity_with_success: high}
   password-spray:   {users: 10, window_s: 1800, severity: high}
+  distributed-spray: {users: 20, sources: 3, window_s: 3600, recover_s: 1800, severity: high}
   mfa-fatigue:      {denials: 5, window_s: 900, severity: medium, severity_with_success: high}
   port-scan:        {ports: 25, window_s: 300, severity: medium}
   host-sweep:       {hosts: 25, window_s: 300, severity: medium}
   beaconing:        {connections: 20, min_span_s: 1800, max_jitter: 0.2, min_interval_s: 10, max_interval_s: 3600, severity: medium}
+  web-scan:         {paths: 50, window_s: 600, severity: medium}
+  web-login-brute-force: {posts: 20, window_s: 600, severity: medium}
   dns-tunnel:       {subdomains: 100, window_s: 3600, long_label: 40, long_queries: 20, severity: medium}

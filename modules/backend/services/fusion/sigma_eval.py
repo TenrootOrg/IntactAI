@@ -360,13 +360,16 @@ ALIASES = {
     "c-uri": ["url", "uri", "requesturl", "url.full", "url.original", "clientrequesturi", "cs-uri-stem"],
     "c-uri-query": ["cs-uri-query", "url.query", "query_string"],
     "c-uri-stem": ["cs-uri-stem", "url.path", "uri_path"],
-    "cs-uri-query": ["c-uri-query", "url.query", "query_string"],
-    "cs-uri-stem": ["c-uri-stem", "url.path", "uri", "clientrequesturi"],
-    "c-useragent": ["useragent", "user_agent", "cs(user-agent)", "user_agent.original", "http.user_agent",
+    # Network HTTP (Suricata http.url, Zeek uri) keeps path and query in ONE field;
+    # the web server rules that look at either are contains-style, so it serves both.
+    "cs-uri-query": ["c-uri-query", "url.query", "query_string", "url", "uri"],
+    "cs-uri-stem": ["c-uri-stem", "url.path", "uri", "clientrequesturi", "url"],
+    "c-useragent": ["useragent", "user_agent", "http_user_agent", "cs(user-agent)", "user_agent.original",
+                    "http.user_agent",
                     "clientrequestuseragent", "cs-user-agent", "c-user-agent"],
     "cs-user-agent": ["c-useragent", "useragent", "user_agent", "cs(user-agent)", "user_agent.original"],
     "cs-host": ["host", "domain", "url.domain", "clientrequesthost", "cs(host)", "hostname"],
-    "cs-method": ["method", "http.request.method", "clientrequestmethod", "request_method"],
+    "cs-method": ["method", "http_method", "http.request.method", "clientrequestmethod", "request_method"],
     "sc-status": ["status", "http.response.status_code", "edgeresponsestatus", "status_code"],
     "cs-referrer": ["referer", "referrer", "cs(referer)", "http.request.referrer"],
     "c-ip": ["clientip", "src_ip", "source.ip", "srcip"],
@@ -547,6 +550,12 @@ def profiles(row) -> set:
     if (full_url or _has(ev, "cs-host", "c-uri")) and _has(ev, "c-useragent", "cs-host", "cs-method", "useragent",
                                                            "user_agent", "method", "http.request.method"):
         out.add((None, "proxy", None))
+    # HTTP seen on the wire (Suricata http / fileinfo, Zeek http.log): both ends of
+    # the request are in it, so the proxy AND web server rules are about it.
+    if _has(ev, "http.url", "uri") and _has(ev, "http.http_user_agent", "http.hostname", "user_agent", "host") \
+            and _has(ev, "http.http_method", "method", "http.status", "status_code"):
+        out.add((None, "proxy", None))
+        out.add((None, "webserver", None))
     if _has(ev, "cs-uri-stem", "cs-uri-query", "request", "uri_path", "url.path", "clientrequesturi") and \
             _has(ev, "sc-status", "status", "http.response.status_code", "edgeresponsestatus"):
         out.add((None, "webserver", None))
@@ -557,7 +566,7 @@ def profiles(row) -> set:
                      "dstaddr") \
             and _has(ev, "dst_port", "dstport", "destination.port", "dpt", "action", "destination port", "dstport"):
         out.add((None, "firewall", None))
-    if _has(ev, "_text", "_line") and not out:
+    if _has(ev, "_text") and not out:
         # A free-text line: the keyword rules of the syslog services it may come from.
         for svc in (None, "auth", "sshd", "syslog", "sudo", "cron", "vsftpd", "guacamole", "clamav"):
             out.add(("linux", None, svc))

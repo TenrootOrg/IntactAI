@@ -50,7 +50,7 @@ class SignIns(unittest.TestCase):
     def test_okta_brute_force_then_success(self):
         evs = [okta(BASE + i * 15, "jdoe@corp.com", ATK, "FAILURE") for i in range(15)]
         evs.append(okta(BASE + 240, "jdoe@corp.com", ATK, "SUCCESS"))
-        self.assertIn(("Brute force then success (jdoe@corp.com from 185.220.101.4)", "high"), found(jl(evs)))
+        self.assertIn(("Brute force then success", "high"), found(jl(evs)))
 
     def test_entra_error_codes(self):
         evs = [{"createdDateTime": iso(BASE + i * 20), "userPrincipalName": "jdoe@corp.com", "ipAddress": ATK,
@@ -58,24 +58,35 @@ class SignIns(unittest.TestCase):
         evs.append({"createdDateTime": iso(BASE + 300), "userPrincipalName": "jdoe@corp.com", "ipAddress": ATK,
                     "appDisplayName": "Office 365", "status": {"errorCode": 0}})
         got = found(json.dumps({"value": evs}))
-        self.assertEqual([("Brute force then success (jdoe@corp.com from 185.220.101.4)", "high")], got)
+        self.assertEqual([("Brute force then success", "high")], got)
 
     def test_auth_log_text(self):
         lines = [f"Oct  1 10:{5 + i // 6:02d}:{i * 10 % 60:02d} web01 sshd[2211]: Failed password for root "
                  f"from {ATK} port {51000 + i} ssh2" for i in range(14)]
         lines.append(f"Oct  1 10:09:00 web01 sshd[2215]: Accepted password for root from {ATK} port 51188 ssh2")
-        self.assertIn(("Brute force then success (root from 185.220.101.4)", "high"), found("\n".join(lines)))
+        self.assertIn(("Brute force then success", "high"), found("\n".join(lines)))
 
     def test_password_spray(self):
         evs = [okta(BASE + i * 30, f"user{i}@corp.com", ATK, "FAILURE") for i in range(15)]
-        self.assertIn(("Password spray from 185.220.101.4", "high"), found(jl(evs)))
+        self.assertIn(("Password spray", "high"), found(jl(evs)))
+
+    def test_distributed_spray(self):
+        evs = [okta(BASE + i * 50, f"user{i}@corp.com", f"203.0.113.{i}", "FAILURE") for i in range(25)]
+        self.assertIn(("Distributed password spray", "high"), found(jl(evs)))
+
+    def test_one_burst_is_named_once(self):
+        """A source spraying many accounts is a spray -- not also a brute force per
+        account and a distributed spray."""
+        evs = [okta(BASE + i * 5, f"user{i % 12}@corp.com", ATK, "FAILURE") for i in range(150)]
+        got = found(jl(evs))
+        self.assertEqual([("Password spray", "high")], got)
 
     def test_mfa_fatigue(self):
         evs = [okta(BASE + i * 60, "jdoe@corp.com", ATK, "FAILURE", "system.push.send_factor_verify_push",
                     "Push verification denied") for i in range(7)]
         evs.append(okta(BASE + 480, "jdoe@corp.com", ATK, "SUCCESS", "user.authentication.auth_via_mfa",
                         "Authentication of user via MFA"))
-        self.assertIn(("MFA fatigue (jdoe@corp.com) then approved", "high"), found(jl(evs)))
+        self.assertIn(("MFA fatigue then approved", "high"), found(jl(evs)))
 
     def test_ordinary_sign_ins_stay_quiet(self):
         rnd = random.Random(7)
@@ -97,11 +108,11 @@ class Network(unittest.TestCase):
 
     def test_port_scan(self):
         evs = [flow(BASE + i, ATK, "10.0.0.5", 1000 + i, "deny") for i in range(40)]
-        self.assertIn(("Port scan of 10.0.0.5 from 185.220.101.4", "medium"), found(jl(evs)))
+        self.assertIn(("Port scan", "medium"), found(jl(evs)))
 
     def test_internal_host_sweep(self):
         evs = [flow(BASE + i * 3, "10.0.0.66", f"10.0.1.{i}", 445) for i in range(30)]
-        self.assertIn(("Host sweep on port 445 from 10.0.0.66", "medium"), found(jl(evs)))
+        self.assertIn(("Host sweep on port 445", "medium"), found(jl(evs)))
 
     def test_browsing_is_no_sweep(self):
         evs = [flow(BASE + i * 4, "10.0.0.66", f"151.101.{i}.140", 443) for i in range(60)]
@@ -110,7 +121,7 @@ class Network(unittest.TestCase):
     def test_beaconing(self):
         rnd = random.Random(3)
         evs = [flow(BASE + i * 60 + rnd.uniform(-2, 2), "10.0.0.5", ATK, 443) for i in range(60)]
-        self.assertIn(("Beaconing from 10.0.0.5 to 185.220.101.4", "medium"), found(jl(evs)))
+        self.assertIn(("Beaconing", "medium"), found(jl(evs)))
 
     def test_irregular_traffic_and_internal_polling_stay_quiet(self):
         rnd = random.Random(5)
@@ -126,7 +137,7 @@ class Network(unittest.TestCase):
         evs = [{"ts": BASE + i * 4, "id.orig_h": "10.0.0.5", "id.resp_h": "10.0.0.2", "query":
                 "".join(rnd.choice("abcdef0123456789") for _ in range(48)) + ".t.evil-c2.net", "qtype_name": "TXT"}
                for i in range(150)]
-        self.assertIn(("Possible DNS tunnelling via evil-c2.net", "medium"), found(jl(evs)))
+        self.assertIn(("Possible DNS tunnelling", "medium"), found(jl(evs)))
 
     def test_ordinary_dns_stays_quiet(self):
         names = ["www.google.com", "outlook.office365.com", "login.microsoftonline.com", "github.com",
@@ -136,6 +147,35 @@ class Network(unittest.TestCase):
         evs += [{"ts": BASE + i * 4, "id.orig_h": "10.0.0.5", "id.resp_h": "10.0.0.2",
                  "query": f"host{i}.example-shop{i}.com", "qtype_name": "A"} for i in range(150)]
         self.assertEqual([], found(jl(evs)))
+
+
+def access(t, ip, method, path, status):
+    import datetime as dt
+    ts = dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%d/%b/%Y:%H:%M:%S +0000")
+    return f'{ip} - - [{ts}] "{method} {path} HTTP/1.1" {status} 512 "-" "Mozilla/5.0 (X11; Linux) Firefox/120.0"'
+
+
+class Web(unittest.TestCase):
+
+    def test_web_scan(self):
+        lines = [access(BASE + i, ATK, "GET", f"/{w}", 404) for i, w in
+                 enumerate(f"admin{i}.php" for i in range(80))]
+        self.assertIn(("Web scanning", "medium"), found("\n".join(lines)))
+
+    def test_login_brute_force(self):
+        lines = [access(BASE + i * 5, ATK, "POST", "/wp-login.php", 200) for i in range(40)]
+        self.assertIn(("Web login brute force", "medium"), found("\n".join(lines)))
+
+    def test_visitors_stay_quiet(self):
+        rnd = random.Random(11)
+        pages = ["/", "/blog/", "/about", "/feed", "/css/site.css", "/js/app.js", "/missing.png"]
+        lines = []
+        for i in range(600):
+            ip = f"198.51.100.{rnd.randrange(1, 200)}"
+            p = rnd.choice(pages)
+            lines.append(access(BASE + i * 6, ip, "GET", p, 404 if p == "/missing.png" else 200))
+        lines += [access(BASE + i * 60, "198.51.100.7", "POST", "/wp-login.php", 302) for i in range(3)]
+        self.assertEqual([], found("\n".join(lines)))
 
 
 class TheBoxDecides(unittest.TestCase):

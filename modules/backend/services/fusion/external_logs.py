@@ -32,7 +32,8 @@ DATA_TYPES = {"siem": "SIEM", "firewall": "Firewall", "edr": "EDR", "idp": "Iden
 # The normalized fields. Single values; the list forms (ips, users, hashes,
 # domains) hold indicators found inside free text (a message, _raw, nested JSON).
 FIELDS = ("ts", "host", "user", "src_ip", "dst_ip", "src_port", "dst_port", "action",
-          "process", "cmdline", "url", "domain", "hash", "rule", "severity", "message")
+          "process", "cmdline", "url", "domain", "hash", "rule", "severity", "message",
+          "http_method", "http_status")
 LIST_FIELDS = ("ips", "users", "hashes", "domains")
 _JOINS = {"host", "user", "src_ip", "dst_ip", "hash", "domain", "process", "url", "cmdline"} | set(LIST_FIELDS)
 
@@ -88,6 +89,8 @@ _NAMES = {
                 "risklevelduringsignin risklevel severitylevel confidencelevel rulelevel cefseverity "
                 "riskscore riskbasedpriority magnitude priority level sev",
     "message": "message msg fulllog raw description details eventmessage summary notes line",
+    "http_method": "csmethod httpmethod requestmethod httprequestmethod clientrequestmethod method",
+    "http_status": "scstatus httpstatus statuscode httpresponsestatuscode responsecode edgeresponsestatus",
 }
 _CANDS: dict = {}               # normalized name -> [(field, rank)]
 for _f, _ns in _NAMES.items():
@@ -161,6 +164,15 @@ def _ts(v) -> str | None:
             return None
     t = re.sub(r"(\d{1,2}:\d{2}:\d{2})\.\d+", r"\1", t)          # drop fractions in text forms
     t = re.sub(r"\s+", " ", t)
+    m = re.match(r"(.*\d{2}:\d{2}:\d{2})\s*([+-]\d{2}):?(\d{2})$", t)
+    if m:                                                    # "30/Nov/2015:06:39:00 -0800": to UTC
+        for f in _TFMTS:
+            try:
+                d = _dt.datetime.strptime(m.group(1), f).replace(
+                    tzinfo=_dt.timezone(_dt.timedelta(hours=int(m.group(2)), minutes=int(m.group(2)[0] + m.group(3)))))
+                return d.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+            except ValueError:
+                continue
     for f in _TFMTS:
         try:
             return _dt.datetime.strptime(t, f).strftime("%Y-%m-%dT%H:%M:%S")
@@ -290,6 +302,28 @@ def _kv_row(line):
     return row
 
 
+# NCSA common / combined access log (Apache, Nginx, many proxies and appliances):
+#   1.2.3.4 - user [30/Nov/2015:06:39:00 -0800] "GET /p?q=1 HTTP/1.1" 200 512 "ref" "agent"
+_CLF = re.compile(r'^(?:(?P<vhost>\S+:\d+)\s+)?(?P<ip>\S+)\s+\S+\s+(?P<user>\S+)\s+\[(?P<time>[^\]]+)\]\s+'
+                  r'"(?P<method>[A-Z]{2,10}|-)?\s*(?P<target>[^"\s]*)?(?:\s+(?P<proto>[^"]*))?"\s+'
+                  r'(?P<status>\d{3}|-)\s+(?P<bytes>\d+|-)(?:\s+"(?P<ref>[^"]*)"\s+"(?P<ua>[^"]*)")?')
+
+
+def _clf_row(line):
+    m = _CLF.match(line.strip())
+    if not m:
+        return None
+    g = m.groupdict()
+    path, _, query = (g.get("target") or "").partition("?")
+    row = {"c-ip": g["ip"], "cs-username": None if g["user"] == "-" else g["user"], "time": g["time"],
+           "cs-method": g.get("method"), "cs-uri-stem": path, "cs-uri-query": query or None,
+           "cs-protocol": g.get("proto"), "sc-status": g["status"], "sc-bytes": g["bytes"],
+           "cs-referer": g.get("ref"), "c-useragent": g.get("ua"), "_line": line}
+    if g.get("vhost"):
+        row["cs-host"] = g["vhost"]
+    return {k: v for k, v in row.items() if v not in (None, "", "-")}
+
+
 def _json_in_line(line):
     """A JSON object behind a syslog prefix (EDR / SIEM connectors forward that way)."""
     i = line.find("{")
@@ -310,10 +344,15 @@ def _json_in_line(line):
 def _xml_rows(text):
     """Windows event XML (wevtutil / Get-WinEvent -> ToXml): System + EventData."""
     import xml.etree.ElementTree as ET
+    body = re.sub(r"""\sxmlns=(["'])[^"']+\1""", "", text)          # either quote style
+    body = re.sub(r"<\?xml[^>]*\?>", "", body)
     try:
-        root = ET.fromstring(re.sub(r'\sxmlns="[^"]+"', "", text, count=0))
+        root = ET.fromstring(body)
     except ET.ParseError:
-        return []
+        try:                                    # one <Event> per line, no root (Splunk XmlWinEventLog)
+            root = ET.fromstring(f"<Events>{body}</Events>")
+        except ET.ParseError:
+            return []
     evs = [root] if root.tag == "Event" else root.findall(".//Event")
     rows = []
     for ev in evs[:MAX_ROWS]:
@@ -500,7 +539,7 @@ def read(text) -> tuple[str, list, list]:
             (rows.append(r) if r else left.append(ln))
         return rows, left
     for fmt, fn, need in (("jsonl", _json_obj, 0.8), ("syslog-json", _json_in_line, 0.8),
-                          ("cef", _cef_row, 0.6)):
+                          ("cef", _cef_row, 0.6), ("access-log", _clf_row, 0.6)):
         if share(fn) >= need:
             if fmt == "cef" and "CEF:" not in "".join(sample):
                 fmt = "leef"
@@ -598,6 +637,10 @@ def _fits_values(field, vals, col) -> bool:
         if any(f == "host" for f, _ in _cands(col)):        # "source": an account only if it looks like one
             return sum(1 for x in shapes if x == "user") >= 0.5 * k
         return sum(1 for x in shapes if x in ("ip", "time", "url", "hash")) < 0.5 * k
+    if field == "http_status":
+        return sum(1 for v in vals if re.fullmatch(r"[1-5]\d\d", str(v).strip())) >= 0.5 * k
+    if field == "http_method":
+        return sum(1 for v in vals if re.fullmatch(r"[A-Z]{3,10}", str(v).strip())) >= 0.5 * k
     if field in ("src_port", "dst_port"):
         return sum(1 for v in vals if str(v).isdigit() and int(v) < 65536) >= 0.5 * k
     if field == "domain":
@@ -606,7 +649,7 @@ def _fits_values(field, vals, col) -> bool:
 
 
 _ORDER = ("ts", "src_ip", "dst_ip", "hash", "severity", "user", "host", "domain", "url", "cmdline",
-          "process", "rule", "action", "src_port", "dst_port", "message")
+          "process", "rule", "http_method", "http_status", "action", "src_port", "dst_port", "message")
 
 
 def _spread(rows, n):
@@ -853,7 +896,7 @@ def native_hits(raw, _cache=None) -> list:
         if v in (None, "") or isinstance(v, (dict, list)):
             continue
         sv = str(v).strip()
-        if sv[:1] in "[{" and len(sv) > 2:                 # nested findings: scan their keys
+        if sv[:2] in ('{"', "[{", '["') and len(sv) > 2:  # nested findings (JSON): scan their keys
             for kk, vv in _NESTED_PAIR.findall(sv[:20000]):
                 nk = _norm_name(kk)
                 for r in nat:
