@@ -30,6 +30,7 @@ import re
 BUNDLED = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                        "config", "sigma-escu")
 RULE_DIRS = ("/opt/sigma-rules/rules", "/opt/sigma-rules/rules-emerging-threats", BUNDLED)
+DEMOTE = os.path.join(os.path.dirname(BUNDLED), "sigma_demote.yaml")   # SigmaHQ rules noisy on benign data
 LEVELS = {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 MIN_LEVEL = "medium"                 # below it a rule is context, never a detection
 _CACHE = {"key": None, "rules": [], "skipped": {}}
@@ -360,7 +361,10 @@ def compile_rule(doc):
             "category": (ls.get("category") or "").lower() or None,
             "service": (ls.get("service") or "").lower() or None,
             "mitre": sorted({t.split(".", 1)[1].upper() for t in tags if re.match(r"attack\.t\d{4}", t)}),
-            "searches": searches, "trees": trees}
+            "searches": searches, "trees": trees,
+            # False: a low signal normal systems also raise -- context only, never
+            # counted toward a "burst of suspicious activity" (behaviour.py).
+            "burst": doc.get("x-intact-burst") is not False}
 
 
 def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
@@ -372,6 +376,11 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
     if key == _CACHE["key"]:
         return _CACHE
     rules, skipped = [], {}
+    try:
+        with open(DEMOTE) as fh:
+            demote = set((yaml.safe_load(fh) or {}).keys())
+    except Exception:                                      # noqa: BLE001 -- no list = nothing demoted
+        demote = set()
     for d in present:
         # The bundled set also ships LOW rules (Splunk "Anomaly" signals): context on
         # their own, and what the suspicious-activity burst rule counts per host.
@@ -395,7 +404,10 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
                     skipped["below level"] = skipped.get("below level", 0) + 1
                     continue
                 try:
-                    rules.append(compile_rule(doc))
+                    rule = compile_rule(doc)
+                    if rule["id"] in demote:              # noisy on normal systems: context only
+                        rule.update(level="low", burst=False)
+                    rules.append(rule)
                 except Unsupported as e:
                     k = str(e).split(" ")[0]
                     skipped[k] = skipped.get(k, 0) + 1

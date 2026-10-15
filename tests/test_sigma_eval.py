@@ -141,6 +141,29 @@ class WhichRulesRun(unittest.TestCase):
                                         [r]))
 
 
+class NoisyRulesAreContext(unittest.TestCase):
+    def test_a_listed_rule_loads_low_and_out_of_bursts(self):
+        import tempfile, textwrap
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "r.yml"), "w") as f:
+            f.write(textwrap.dedent("""\
+                title: Noisy
+                id: 11111111-2222-3333-4444-555555555555
+                level: medium
+                logsource: {category: proxy}
+                detection: {sel: {c-uri: '*x*'}, condition: sel}
+            """))
+        dl = os.path.join(d, "demote.yaml")
+        with open(dl, "w") as f:
+            f.write('11111111-2222-3333-4444-555555555555: "noisy"\n')
+        from unittest import mock
+        with mock.patch.object(S, "DEMOTE", dl):
+            S._CACHE["key"] = None
+            r = S.load(dirs=(d,))["rules"][0]
+        S._CACHE["key"] = None
+        self.assertEqual(("low", False), (r["level"], r["burst"]))
+
+
 @unittest.skipUnless(os.path.isdir("/opt/sigma-rules/regression_data"), "SigmaHQ rules not installed here")
 class SigmaHQRegression(unittest.TestCase):
     def test_every_regression_event_fires_its_rule(self):
