@@ -40,15 +40,17 @@ native:
     # Not a severity column: confidenceLevel is how sure a classifier is (M365's
     # ConfidenceLevel is "High" on a clean, delivered mail); it counts only as a verdict.
     fields: [verdict, confidenceLevel, classification, threatClassification, threatType, threatTypes,
-             threatCategory, malwareCategory, category, categories, urlcat, urlCategory]
-    match: 'malicious|malware|phish(ing)?|ransomware|trojan|backdoor|exploit|botnet|spyware|keylogger|worm|virus|rootkit|cryptomin(er|ing)|command[ -]and[ -]control|c2|malicious (content|sites?|urls?)|phishing and fraud|malware sites?'
+             threatCategory, malwareCategory, category, categories, urlcat, urlCategory, scanResult, result]
+    match: 'malicious|malware|phish(ing)?|ransomware|trojan|backdoor|exploit|botnet|spyware|keylogger|worm|virus|rootkit|cryptomin(er|ing)|command[ -]and[ -]control|c2|malicious (content|sites?|urls?)|phishing ?(and|&) ?fraud|malware sites?'
     severity: high
     examples:
       fires: [{confidenceLevel: "malicious"}, {threatsInfoMap.classification: "phish"}, {category: "Malicious"},
-              {properties.ThreatTypes: "Phishing"},
+              {properties.ThreatTypes: "Phishing"}, {UrlCategory: "Phishing & Fraud"}, {scanResult: "malicious", category: "Compromised"},
+              {result: "malicious", fileName: "invoice.docm"},
               {urlcat: "Malicious Content"}, {categories: "Malware"}]
       quiet: [{category: "Business and Economy"}, {verdict: "benign"}, {classification: "Malware Protection Update"},
-              {properties.ThreatTypes: "None", properties.ConfidenceLevel: "High"}]
+              {properties.ThreatTypes: "None", properties.ConfidenceLevel: "High"}, {scanResult: "clean"},
+              {result: "safe"}, {result: "FAILURE"}, {outcome.result: "SUCCESS"}]
 
   - id: suspicious-verdict
     reason: "the product's verdict says suspicious / potentially unwanted"
@@ -99,7 +101,7 @@ native:
 
   - id: named-threat
     reason: "the product named the threat it found (AV / IPS / proxy threat name)"
-    fields: [threatName, threat, virusName, malwareName, malwareFamily, attack, attackName,
+    fields: [threatName, threat, virusName, virusFound, malwareName, malwareFamily, attack, attackName,
              threatContentName, detection, signatureMsg, ipsSignature, avName, spywareName]
     match: '(?!(none|n/?a|-|0|unknown|unknown threat|null|not ?found|clean|\(9999\)|allowed)$).*[A-Za-z].*'
     severity: medium
@@ -281,6 +283,20 @@ native:
     examples:
       fires: [{verdict-number: "8", action: "BLOCK", file-category: "executable"}]
       quiet: [{verdict-number: "2", action: "PERMIT"}]
+
+  - id: email-impersonation-held
+    title: "Impersonation mail held"
+    reason: "the mail gateway's impersonation protection (look-alike sender, display-name spoofing: business e-mail compromise) held or bounced a message"
+    fields: [Definition, policyDefinition, policy]
+    match: '.*impersonation.*'
+    and:
+      - fields: [Action, Act, action]
+        match: 'hold|hld|bounce|reject|block(ed)?|quarantine(d)?'
+    severity: medium
+    examples:
+      fires: [{Action: "Hold", Definition: "Default Impersonation Definition", Hits: "1"}]
+      quiet: [{Action: "None", Definition: "Default Impersonation Definition"},
+              {Action: "Hold", Definition: "Default Spam Definition"}]
 
   - id: firewall-threat-detection
     title: "Firewall threat detection / IPS event"
