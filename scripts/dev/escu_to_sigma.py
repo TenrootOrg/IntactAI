@@ -90,6 +90,9 @@ def unq(v):
 def leaf(field, op, values, product):
     if field in IGNORED or field in RAW_IGNORED and "Processes.process" not in FIELDS:
         return None
+    if field == "errorCode" and [v.lower() for v in values] == ["success"]:
+        # Splunk's CloudTrail add-on fills errorCode=success; raw CloudTrail has none on success
+        return {"field": "errorCode", "values": [None], "neg": op == "!="}
     if field in FIELDS:
         sig, shape = FIELDS[field]
     elif "Processes.process" not in FIELDS and re.fullmatch(r"[A-Za-z_][\w.]*", field):
@@ -201,7 +204,23 @@ def to_sigma(tree):
     return sels, cond
 
 
+# Splunk "Anomaly" detections are suspicious-but-routine signals Splunk adds up per
+# host (risk-based alerting); they carry no score. Here they are LOW -- context, and
+# input to the behaviour rule that turns several on one host into a detection --
+# except these, which are rarely benign and strong on their own.
+PROMOTE = {
+    "Linux Auditd AI CLI Permission Override Activated", "Linux Auditd Auditd Daemon Abort",
+    "Linux Auditd Auditd Daemon Shutdown", "Linux Auditd Auditd Service Stop", "Linux Auditd Osquery Service Stop",
+    "Linux Auditd Sysmon Service Stop", "Linux Auditd Disable Or Modify System Firewall",
+    "Linux Auditd Insert Kernel Module Using Insmod Utility", "Linux Auditd Nopasswd Entry In Sudoers File",
+    "Linux Auditd Possible Access To Credential Files", "Linux Auditd Possible Setuid Execve Privesc",
+    "Linux Auditd Setuid Using Chmod Utility", "Linux Auditd Find Ssh Private Keys",
+}
+
+
 def severity(doc):
+    if doc.get("type") == "Anomaly":
+        return "medium" if doc.get("name") in PROMOTE else "low"
     """The detection's risk score (finding / intermediate findings; older: rba)."""
     ents = [(doc.get("finding") or {}).get("entity") or {}]
     ents += [f.get("entity") or {} for f in doc.get("intermediate_findings") or [] if isinstance(f, dict)]
@@ -228,6 +247,11 @@ RAW_FIELDS = {   # Splunk add-on names -> the raw / Sigma names our reader keeps
     "EventCode": ("EventID", "raw"), "process_name": ("Image", "name"), "parent_process_name": ("ParentImage", "name"),
     "process": ("CommandLine", "raw"), "parent_process": ("ParentCommandLine", "raw"),
     "process_path": ("Image", "raw"), "parent_process_path": ("ParentImage", "raw"),
+    "file_path": ("TargetFilename", "raw"), "file_name": ("TargetFilename", "name"),
+    "execve_command": ("CommandLine", "raw"),          # auditd: the EXECVE arguments, joined
+}
+RAW_FIELDS_BY_SOURCE = {      # names Splunk's add-on gives a field that has another raw name in this log
+    "wineventlog_security": {"TargetFilename": ("ObjectName", "raw"), "file_path": ("ObjectName", "raw")},
 }
 RAW_IGNORED = {"dest", "src", "host", "sourcetype", "source", "index", "signature_id"}
 OK_PIPES = {"stats", "rename", "table", "fields", "fillnull", "sort", "head", "convert", "collect", "rangemap",
@@ -256,6 +280,7 @@ def translate_raw(doc, macros):
     try:
         FIELDS.clear()
         FIELDS.update(RAW_FIELDS)
+        FIELDS.update(RAW_FIELDS_BY_SOURCE.get(m.group(1), {}))
         toks = tokens(cond)
         for t in toks:                                 # every term must be field op value / IN / boolean
             if not (t in ("(", ")", ",") or t.upper() in ("AND", "OR", "NOT", "IN") or re.match(r"[\w.]+\s*(!=|=)", t)
@@ -266,7 +291,26 @@ def translate_raw(doc, macros):
         FIELDS.clear()
         FIELDS.update(saved)
     sels, condition = to_sigma(tree)
-    return sels, condition, dict(RAW_SOURCES[m.group(1)])
+    logsource = dict(RAW_SOURCES[m.group(1)])
+    # Sysmon: a top-level EventCode names the category, so the engine's profile filter
+    # skips the rule for every other event (without it, each Sysmon rule ran on every
+    # Windows row: 2,960 -> 1,286 rows/s with the bundled set).
+    if m.group(1) == "sysmon" and isinstance(tree, tuple) and tree[0] == "and":
+        for part in tree[1]:
+            if isinstance(part, dict) and part["field"] == "EventID" and not part["neg"]:
+                cats = {SYSMON_CATEGORY.get(str(v)) for v in part["values"]}
+                if len(cats) == 1 and None not in cats:
+                    logsource["category"] = cats.pop()
+                break
+    return sels, condition, logsource
+
+
+SYSMON_CATEGORY = {"1": "process_creation", "2": "file_change", "3": "network_connection", "5": "process_termination",
+                   "6": "driver_load", "7": "image_load", "8": "create_remote_thread", "9": "raw_access_thread",
+                   "10": "process_access", "11": "file_event", "12": "registry_event", "13": "registry_event",
+                   "14": "registry_event", "15": "create_stream_hash", "17": "pipe_created", "18": "pipe_created",
+                   "19": "wmi_event", "20": "wmi_event", "21": "wmi_event", "22": "dns_query", "23": "file_delete",
+                   "26": "file_delete_detected"}
 
 
 class RawParser(Parser):
@@ -347,7 +391,7 @@ def load_docs(src):
     return dets, macros
 
 
-def main(src, out_dir, types=("TTP",)):
+def main(src, out_dir, types=("TTP", "Anomaly")):
     dets, macros = load_docs(src)
     os.makedirs(out_dir, exist_ok=True)
     made, skipped = [], {}
