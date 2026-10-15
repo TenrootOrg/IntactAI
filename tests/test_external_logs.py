@@ -180,6 +180,20 @@ class Shapes(unittest.TestCase):
                          (row.get("unit"), row.get("comm"), row.get("res"), row.get("msg")))
         self.assertNotIn("hostname", row)                  # "?" is none
 
+    def test_cisco_estreamer_intrusion_event(self):
+        # A bare dash ("Impact":-) broke the JSON; PriorityID is the IDS scale (1 = worst);
+        # the rule is IntrusionRuleMessage; UserID 9999997 is "no authentication", no user.
+        line = ('{"EventType":"IntrusionEvent", "EventSecond":1740804347, "InitiatorIP":"23.48.99.12", '
+                '"ResponderIP":"172.16.3.110", "ResponderPort":51500, "PriorityID":%d, "SignatureID":62710, '
+                '"Impact":-, "IntrusionRuleMessage":"MALWARE-OTHER Win.Malware.Lumma variant download attempt", '
+                '"UserID":9999997}')
+        fm, rows, _ = X.read("\n".join(line % p for p in (1, 1, 2, 3)))
+        n = X.normalize(rows, X.detect_columns(rows))
+        self.assertEqual("jsonl", fm)
+        self.assertEqual(["high", "high", "medium", "low"], [r["n"].get("severity") for r in n])
+        self.assertEqual("MALWARE-OTHER Win.Malware.Lumma variant download attempt", n[0]["n"]["rule"])
+        self.assertNotIn("user", n[0]["n"])
+
     def test_squid_native_access_log(self):
         # Padded columns and "TCP_MISS/200": read as unnamed columns, no web rule saw it.
         text = "\n".join(["1157689312.049   5006 10.105.21.199 TCP_MISS/200 19763 CONNECT login.yahoo.com:443 "

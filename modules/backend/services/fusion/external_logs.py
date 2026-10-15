@@ -84,13 +84,13 @@ _NAMES = {
               "destinationhostname dhost fqdn sni servername",
     "hash": "sha256 sha256hashdata processsha256 actionfilesha256 filesha256 filehashsha256 "
             "processhashsha256 sha256hash hashsha256 hash sha1 md5 filehash imphash",
-    "rule": "ruledescription alertname alerttitle rulename alarmrulename detectionname threatname "
+    "rule": "ruledescription alertname alerttitle rulename intrusionrulemessage alarmrulename detectionname threatname "
             "riskname threatcontentname signaturename signaturemsg protectionname riskeventtype displaymessage "
             "displayname title rule signature alert detectname detection attack threat reason circumstances "
             "eventname cefname name model tactic category eventtype",
     "severity": "severityname severity eventseverity alertseverity threatseverity crlevel "
                 "risklevelduringsignin risklevel severitylevel rulelevel cefseverity "
-                "riskscore riskbasedpriority magnitude severityid priority level sev",
+                "riskscore riskbasedpriority magnitude severityid priority priorityid level sev",
     "message": "message msg fulllog raw description details eventmessage summary notes line",
     "http_method": "csmethod httpmethod requestmethod httprequestmethod clientrequestmethod method",
     "http_status": "scstatus httpstatus statuscode httpresponsestatuscode responsecode edgeresponsestatus",
@@ -700,7 +700,11 @@ def read(text) -> tuple[str, list, list]:
         ln = ln.strip()
         if not ln.startswith("{"):
             return None
-        o = json.loads(ln)
+        try:
+            o = json.loads(ln)
+        except ValueError:
+            # Cisco eStreamer writes an empty number as a bare dash ("Impact":-).
+            o = json.loads(re.sub(r'(":\s*)-(\s*[,}])', r"\1null\2", ln))
         return _flat(o) if isinstance(o, dict) else None
 
     def by_line(fn):
@@ -818,6 +822,10 @@ def _fits_values(field, vals, col) -> bool:
         bad = sum(1 for x in shapes if x in ("ip", "user", "time", "url"))
         return bad < 0.5 * k and all(len(str(v)) <= 255 for v in vals)
     if field == "user":
+        # A "...id" column of bare numbers is a database id (Cisco eStreamer UserID 9999997
+        # = "no authentication"), not an account anyone logs in with.
+        if _norm_name(col).endswith("id") and all(str(v).strip().isdigit() for v in vals):
+            return False
         if any(f == "host" for f, _ in _cands(col)):        # "source": an account only if it looks like one
             return sum(1 for x in shapes if x == "user") >= 0.5 * k
         return sum(1 for x in shapes if x in ("ip", "time", "url", "hash")) < 0.5 * k
@@ -1008,7 +1016,7 @@ def _sev_scale(col, vals):
             pass
     top = max(nums) if nums else 0
     name = _norm_name(col)
-    if top and top <= 4 and (name.endswith("priority") or name == "alertseverity"):
+    if top and top <= 4 and (name.endswith("priority") or name in ("alertseverity", "priorityid")):
         return "inverted"
     if name == "rulelevel" and top <= 15:
         return 15
