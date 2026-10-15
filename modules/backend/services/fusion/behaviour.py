@@ -53,6 +53,8 @@ _MFA_AUTH = re.compile(r"\b(mfa|2fa|multi.?factor|factor|push verification|verif
                        r"otp|authenticator|duo push)\b", re.I)
 _TEXT_AUTH = re.compile(r"(?:for|user)\s+(?:invalid user\s+)?([A-Za-z0-9._@\\$-]{1,64})\s+from\s+"
                         r"((?:\d{1,3}\.){3}\d{1,3})", re.I)
+# Cisco ASA 113005 / 113004: "AAA user authentication Rejected : ... : user = jdoe : user IP = 1.2.3.4"
+_TEXT_AAA = re.compile(r"user\s*=\s*([A-Za-z0-9._@\\$-]{1,64})\s*:\s*user IP\s*=\s*((?:\d{1,3}\.){3}\d{1,3})", re.I)
 # PAM: "authentication failure; logname= uid=0 ... rhost=1.2.3.4  user=root"
 _TEXT_PAM = re.compile(r"rhost=((?:\d{1,3}\.){3}\d{1,3})(?:\s+user=([A-Za-z0-9._@\\$-]{1,64}))?", re.I)
 _IPV4 = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}")
@@ -109,7 +111,7 @@ def auth_event(r):
     phrase = False                     # user + source read from a sign-in phrase in free text
     if (not user or not src) and isinstance(raw, dict) and (raw.get("text") or raw.get("_line")):
         line = str(raw.get("text") or raw.get("_line"))
-        m = _TEXT_AUTH.search(line)
+        m = _TEXT_AUTH.search(line) or _TEXT_AAA.search(line)
         if m:
             user, src, phrase = user or m.group(1), src or m.group(2), True
         else:

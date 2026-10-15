@@ -167,6 +167,33 @@ native:
       fires: [{proctitle: "sudo useradd malware_user"}, {CommandLine: "/sbin/useradd -d /home/svc -s /bin/bash svc"}]
       quiet: [{proctitle: "grep -EiH useradd /var/log/auth.log"}, {CommandLine: "useradd --help"}, {CommandLine: "man adduser"}]
 
+  - id: security-service-stopped
+    title: "Security product service stopped"
+    reason: "the service of an EDR / antivirus / logging agent stopped or was disabled (Windows 7036 / 7040): blinding the defence"
+    fields: [param1, ServiceName, service_name, Service, Name]
+    match: '.*(defender|windefend|\bsense\b|sysmon|crowdstrike|csagent|falcon|sentinel ?(agent|one)|carbon ?black|cb ?defense|cylance|sophos|eset|symantec|mcafee|trellix|cisco (secure|amp|security connector)|security connector|tanium|elastic (agent|endpoint)|velociraptor|wazuh|ossec|osquery|splunk ?forwarder|nxlog|winlogbeat|qualys|rapid7|insight ?agent|tenable|nessus agent|bitdefender|kaspersky|trend ?micro|apex ?one|cortex|cyvera|traps|cybereason|malwarebytes|webroot|fortiedr|harfanglab|withsecure|f-secure|panda|avast|avg|norton).*'
+    and:
+      - fields: [param2, State, Status, StartType]
+        match: '.*(stopped|disabled|stop).*'
+    severity: high
+    examples:
+      fires: [{param1: "Cisco Security Connector Monitoring 8.4.2", param2: "stopped"},
+              {param1: "Sysmon64", param2: "disabled"}]
+      quiet: [{param1: "Cisco Security Connector Monitoring 8.4.2", param2: "running"},
+              {param1: "Windows Update", param2: "stopped"}]
+
+  - id: firewall-threat-detection
+    title: "Firewall threat detection / IPS event"
+    reason: "the firewall's own threat detection (rate exceeded: scanning or DoS) or built-in IPS signature fired (Cisco ASA 733100 / 4000xx)"
+    fields: [text, message, msg]
+    match: '.*%(ASA|FTD|PIX)-\d-(733100|4000\d\d|4001\d\d)\b.*'
+    severity: medium
+    examples:
+      fires: [{text: "%ASA-4-733100: [ Scanning] drop rate-1 exceeded. Current burst rate is 10 per second"},
+              {text: "%ASA-4-400013: IPS:2003 ICMP redirect from 10.0.0.1 to 10.0.0.2 on interface outside"}]
+      quiet: [{text: "%ASA-6-302013: Built outbound TCP connection 1 for outside:1.2.3.4/443"},
+              {text: "%ASA-4-106023: Deny tcp src outside:1.2.3.4/4444 dst inside:10.0.0.5/445"}]
+
   - id: ids-alert-line-priority-1
     title: "IDS alert (priority 1)"
     reason: "a Snort / Suricata alert line (fast.log, syslog) the sensor itself rated priority 1"

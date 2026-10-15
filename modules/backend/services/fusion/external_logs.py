@@ -973,7 +973,9 @@ def rules() -> dict:
         if not isinstance(r, dict) or r.get("id") in off or not r.get("fields") or not r.get("match"):
             continue
         try:
-            native.append({"id": r["id"], "reason": r.get("reason") or r["id"], "title": r.get("title"),
+            ands = [{"fields": {_norm_name(f) for f in c["fields"]}, "rx": re.compile(f"(?:{c['match']})", re.I)}
+                    for c in (r.get("and") or []) if isinstance(c, dict) and c.get("fields") and c.get("match")]
+            native.append({"id": r["id"], "reason": r.get("reason") or r["id"], "title": r.get("title"), "and": ands,
                            "fields": {_norm_name(f) for f in r["fields"]},
                            "rx": re.compile(f"(?:{r['match']})", re.I),
                            "severity": r.get("severity") if r.get("severity") in _SEV_RANK else "medium",
@@ -1023,9 +1025,20 @@ def native_hits(raw, _cache=None) -> list:
             nk, last = _norm_name(k), _norm_name(str(k).rsplit(".", 1)[-1])
             rel = cache[k] = [r for r in nat if not r["nested_only"] and (nk in r["fields"] or last in r["fields"])]
         for r in rel:
-            if r["rx"].fullmatch(sv):
+            if r["rx"].fullmatch(sv) and _and_holds(r, raw):
                 hits.append((r, sv, k))
     return hits
+
+
+def _and_holds(rule, raw) -> bool:
+    """A rule's `and:` conditions: another field of the same row must match too
+    (a service NAME in one field, its new STATE in another)."""
+    for c in rule.get("and") or ():
+        if not any(c["rx"].fullmatch(str(v).strip()) for k, v in raw.items()
+                   if v not in (None, "") and (_norm_name(k) in c["fields"]
+                                              or _norm_name(str(k).rsplit(".", 1)[-1]) in c["fields"])):
+            return False
+    return True
 
 
 def normalize(rows, mapping, stats=None) -> list:
@@ -1175,14 +1188,15 @@ def _line_ts(line):
 
 
 def indicator_rows(lines) -> list:
-    """With no model (or when it fails): every line that carries an indicator, with
-    its time if the line has an ISO one. Searchable, and its indicators still join
-    the case -- nothing is inferred."""
+    """With no model (or when it fails): every non-empty line, with the indicators
+    it carries and its time. Nothing is inferred. A line with no IP or account is
+    kept too: the keyword and text rules (an ASA threat-detection message, a
+    "useradd") must see it, and only what a rule marks ever enters the fusion."""
     out = []
     for i, ln in enumerate(lines):
-        ind = indicators(ln)
-        if not any(ind.values()):
+        if not ln.strip():
             continue
+        ind = indicators(ln)
         n = {k: v for k, v in ind.items() if v}
         n["message"] = ln.strip()[:2000]
         t = _line_ts(ln)
@@ -1452,8 +1466,8 @@ def _free_text(lines, model, log, what):
         except Exception as e:                             # noqa: BLE001 -- a model failure keeps the file
             log(f"the model could not read them ({e}) — kept as indicator lines", "warning")
     out = indicator_rows(lines)
-    log(f"{what} — kept {len(out):,} of {len(lines):,} line(s): those carrying an IP, account, "
-        f"hash or domain", "info")
+    log(f"{what} — kept {len(out):,} line(s) as text, with the IPs, accounts, hashes and domains they "
+        f"carry; the detection rules read every one", "info")
     return out, "indicators", None
 
 

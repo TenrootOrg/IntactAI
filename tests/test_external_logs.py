@@ -111,9 +111,10 @@ class FreeText(unittest.TestCase):
     """Not recognized -> the case's model reads it, and nothing it says is kept
     unless the line it cites says it too. No model -> indicator lines."""
 
-    def test_without_a_model_lines_with_indicators_are_kept(self):
+    def test_without_a_model_every_line_is_kept_with_its_indicators(self):
         rows = X.indicator_rows(FREE.splitlines())
-        self.assertEqual([1, 3], [r["raw"]["line"] for r in rows])
+        self.assertEqual([1, 2, 3], [r["raw"]["line"] for r in rows], "a line with no IP is kept for the rules")
+        self.assertNotIn("ips", rows[1]["n"])
         self.assertEqual(["185.220.101.4"], rows[0]["n"]["ips"])
         self.assertEqual(["CORP\\jdoe"], rows[0]["n"]["users"])
         self.assertEqual("2026-10-01T10:00:01", rows[0]["n"]["ts"][:19])
@@ -231,13 +232,13 @@ class IngestAndSearch(unittest.TestCase):
 
     def test_free_text_with_no_model_keeps_indicator_lines(self):
         s, rows = self._ingest(FREE)
-        self.assertEqual(("indicators", 2), (s["via"], s["rows"]))
+        self.assertEqual(("indicators", 3), (s["via"], s["rows"]))
 
     def test_a_failing_model_still_keeps_the_file(self):
         def boom(system, user):
             raise RuntimeError("provider down")
         s, rows = self._ingest(FREE, model=(boom, None, None))
-        self.assertEqual(("indicators", 2), (s["via"], s["rows"]))
+        self.assertEqual(("indicators", 3), (s["via"], s["rows"]))
         self.assertTrue(any("could not read them" in m for m in self.logs), self.logs)
 
     def test_the_model_reads_what_no_parser_understood(self):
