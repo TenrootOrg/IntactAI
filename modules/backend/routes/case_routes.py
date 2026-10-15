@@ -602,6 +602,17 @@ def download_case_file(case_id, file_id):
     return resp
 
 
+@case_bp.route("/api/cases/<case_id>/files/<file_id>/facts", methods=["GET"])
+def case_file_facts(case_id, file_id):
+    """The facts condensed from an incident-notes attachment (the Data tab)."""
+    from services.fusion import external_logs
+    item = next((x for x in _case_files.listing(store.get_case(case_id) or {}) if x["id"] == file_id), None)
+    if not item or item.get("data_type") != external_logs.NOTES or not item.get("run_id"):
+        return jsonify({"error": "no incident notes with that id"}), 404
+    data = store._agentic_collected_data(item["run_id"], {}) or {}
+    return jsonify({"facts": data.get(external_logs.FACTS_KEY) or []})
+
+
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["PATCH"])
 def update_case_file(case_id, file_id):
     """{name?, description?, host?, time?, source?, source_other?, ai?, finding_id: "" to unlink}"""

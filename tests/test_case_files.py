@@ -256,11 +256,13 @@ class Page(unittest.TestCase):
             self.skipTest("no node on this host")
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
-        parts = [re.search(r"const %s=.*?;\n" % c, src).group(0) for c in ("EV_LOGTYPES", "EV_VIA", "EV_SOURCES")] + \
+        parts = [re.search(r"const %s=.*?;\n" % c, src).group(0)
+                 for c in ("EV_LOGTYPES", "EV_VIA", "EV_SOURCES", "EV_NOTES", "DT_KINDS")] + \
                 [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0)
-                 for n in ("_evFields", "_evThumb", "_evItem", "renderEvidence", "_evList", "_evHostList", "_evPickers",
-                           "_evLog", "_evFollow")] + \
-                [re.search(r"function %s\(.*?\}\n" % n, src).group(0) for n in ("_evSize", "_evSrc")]
+                 for n in ("_evFields", "_evThumb", "_evItem", "renderEvidence", "renderData", "_dtFactsHtml",
+                           "_evHostList", "_evPickers", "_evLog", "_evFollow")] + \
+                [re.search(r"function %s\(.*?\}\n" % n, src).group(0) for n in ("_evSize", "_evSrc", "_evList", "_evOnly",
+                                                                                  "_dataList")]
         js = ("const esc=s=>String(s); const window={}; let OUT=''; const $=()=>({set innerHTML(v){OUT=v}});"
               "const api=()=>Promise.resolve({rows:[]}); let curInfo=null;\n" + "\n".join(parts) + "\n" + calls)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
@@ -306,9 +308,11 @@ const it=(id,log,ai)=>({id,name:'FW '+id,description:'d',file_name:'fw.csv',size
 curInfo={case_id:'c1', case_files:[it('0123456789b1',{status:'completed',rows:1200,alerts:3,via:'llm',first_ts:'2026-10-01T10:00:00',last_ts:'2026-10-02T11:00:00'},true),
   it('0123456789b2',{status:'running'},false), it('0123456789b3',{status:'failed',error:'empty file'},true),
   {...it('0123456789b4',{status:'completed',rows:5,via:'parser',data_type:'idp',leftover_lines:2,row_errors:1},true),data_type:'auto'}]};
-renderEvidence(curInfo); const page=OUT;
-console.log(JSON.stringify([page, _evFields('evn',{},true,false), _evFields('eva',{},true,true)]));""")
-        page, form, linked = out
+renderData(curInfo); const page=OUT;
+renderEvidence(curInfo); const ev=OUT;
+window._dtAdd=true; renderData(curInfo); const form=OUT;
+console.log(JSON.stringify([page, form, _evFields('evn',{},true,false), ev]));""")
+        page, form, evform, ev = out
         self.assertIn("Log data · Firewall", page)
         self.assertIn("1,200 row(s)", page)
         self.assertIn("<b>3 alert(s)</b>", page)
@@ -320,10 +324,29 @@ console.log(JSON.stringify([page, _evFields('evn',{},true,false), _evFields('eva
         self.assertIn("2 other line(s) kept", page)
         self.assertIn("1 unreadable row(s) kept as text", page)
         self.assertIn("evUseInAnalysis('0123456789b1',this.checked)", page)
-        self.assertIn('id="evn-dtype"', form)
+        self.assertIn('id="dtn-dtype"', form)
         self.assertIn('<option value="edr">Log data — EDR alerts', form)
         self.assertIn('<option value="auto">Log data — any kind', form)
-        self.assertNotIn("dtype", linked, "attached to a Timeline event it is evidence, not a log")
+        self.assertIn('<option value="notes">Incident notes', form)
+        self.assertNotIn("dtype", evform, "the Evidence form adds evidence only")
+        self.assertNotIn("FW 0123456789b1", ev, "data is not evidence")
+        self.assertIn("No evidence yet.", ev)
+
+    def test_incident_notes_show_their_facts_on_the_data_tab(self):
+        out = self.run_js("""
+curInfo={case_id:'c1', case_files:[{id:'0123456789c1',name:'Call with IT',description:'Teams',file_name:'chat.txt',size:9,
+  sha256:'ab'.repeat(32),kind:'text',ai:true,host:'',time:'',source:'other',source_other:'',finding_id:'',data_type:'notes',
+  log:{status:'completed',data_type:'notes',facts:2,lines:9}}]};
+window._dtOpen='0123456789c1'; window._dtFacts={id:'0123456789c1', facts:[
+  {kind:'customer_action',what:'IT reimaged WS-FIN-07',when:'Oct 3',host:'WS-FIN-07',lines:[3,7],quote:'we reimaged'},
+  {kind:'impact',what:'payroll down',lines:[1]}]};
+renderData(curInfo); console.log(JSON.stringify([OUT]));""")
+        page = out[0]
+        self.assertIn("Incident notes</span>", page)
+        self.assertIn("<b>2 fact(s)</b> from 9 line(s)", page)
+        self.assertLess(page.index(">Impact<"), page.index(">What the customer did<"))
+        self.assertIn("• IT reimaged WS-FIN-07", page)
+        self.assertIn("line 3, 7", page)
 
     def test_a_deleted_pictures_link_is_named_not_requested(self):
         # A report written before an evidence item was deleted kept its picture link:
