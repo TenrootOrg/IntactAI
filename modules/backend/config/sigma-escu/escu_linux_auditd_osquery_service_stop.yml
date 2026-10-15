@@ -1,0 +1,27 @@
+title: Linux Auditd Osquery Service Stop
+id: 0c320fea-6e87-4b99-a884-74d09d4b655d
+status: experimental
+description: The following analytic detects suspicious stopping of the `osquery` service, which may indicate an attempt to
+  disable monitoring and evade detection. `Osquery` is a powerful tool used for querying system information and detecting
+  anomalies, and stopping its service can be a sign that an attacker is trying to disrupt security monitoring or hide malicious
+  activities. By monitoring for unusual or unauthorized stops of the `osquery` service, this analytic helps identify potential
+  efforts to bypass security controls, enabling security teams to investigate and respond to possible threats effectively.
+references:
+- https://research.splunk.com/0c320fea-6e87-4b99-a884-74d09d4b655d/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1489
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    type: SERVICE_STOP
+  sel2:
+    unit: osqueryd
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1489/linux_auditd_osquerd_service_stop/linux_auditd_osquerd_service_stop.log

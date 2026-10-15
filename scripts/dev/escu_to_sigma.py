@@ -105,8 +105,14 @@ def leaf(field, op, values, product):
             raise Skip(f"list of objects {field}")
         field = field[:-2]
         values = [v if v.startswith("*") and v.endswith("*") else f"*{v}*" for v in values]
-    if field in IGNORED or field in RAW_IGNORED and "Processes.process" not in FIELDS:
+    if field in IGNORED:
         return None
+    if field in RAW_IGNORED and field not in FIELDS and "Processes.process" not in FIELDS:
+        # Only a placeholder test (src!="unknown", dest=*) may be dropped. A real value
+        # (signature_id=65118) dropped would turn the rule into "every event".
+        if op == "!=" or all(v.strip("*").lower() in ("", "-", "unknown", "null") for v in values):
+            return None
+        raise Skip(f"no field for {field}={values[0]!r}")
     if field == "errorCode" and [v.lower() for v in values] == ["success"]:
         # Splunk's CloudTrail add-on fills errorCode=success; raw CloudTrail has none on success
         return {"field": "errorCode", "values": [None], "neg": op == "!="}
@@ -270,6 +276,7 @@ RAW_SOURCES = {
     "ntlm_audit": {"product": "windows", "service": "ntlm"},
     "ms_defender": {"product": "windows", "service": "windefend"},
     "kube_audit": {"product": "kubernetes", "service": "audit"},
+    "cisco_secure_firewall": {"product": "cisco", "service": "secure_firewall"},
     "esxi_syslog": {"product": "esxi"},                 # free-text syslog: Message is the line
 }
 RAW_FIELDS = {   # Splunk add-on names -> the raw / Sigma names our reader keeps
@@ -283,6 +290,9 @@ RAW_FIELDS_BY_SOURCE = {      # names Splunk's add-on gives a field that has ano
     "wineventlog_security": {"TargetFilename": ("ObjectName", "raw"), "file_path": ("ObjectName", "raw")},
     "esxi_syslog": {"Message": ("text", "raw")},
     "github_organizations": {"vendor_action": ("action", "raw")},     # the add-on renames GitHub's action
+    "cisco_secure_firewall": {"signature_id": ("SignatureID", "raw"), "dest_port": ("ResponderPort", "raw"),
+                              "src_port": ("InitiatorPort", "raw"), "action": ("AC_RuleAction", "raw"),
+                              "url": ("URL", "raw")},
 }
 RAW_IGNORED = {"dest", "src", "host", "sourcetype", "source", "index", "signature_id"}
 # Pipes after the filter that only shape what is shown (extract, compute, rename, count,
@@ -307,7 +317,7 @@ def check_pipes(pipes):
     return the `| regex field="..."` filters, which Sigma can (field|re)."""
     regexes = []
     for p in pipes:
-        cmd = p.strip().split(" ", 1)[0].lower()
+        cmd = (p.split() or [""])[0].lower()          # "stats\n count": any whitespace ends the name
         if cmd.startswith("`"):
             if not re.match(r"`(security_content_ctime|\w+_filter|drop_dm_object_name)", cmd):
                 raise Skip(f"macro after the filter: {cmd}")
@@ -338,8 +348,20 @@ def with_regexes(tree, regexes, field_of):
     return ("and", [tree] + leaves)
 
 
+_AUDITD_PATH = re.compile(r'mvfilter\(match\(candidate_paths,\s*"((?:[^"\\]|\\.)+)"\)\)')
+
+
 def translate_raw(doc, macros):
     s = str(doc.get("search") or "").strip()
+    # auditd path rules: PATH + CWD records joined per event, the full path matched.
+    # The reader gives each PATH record that full path (full_path), so it is one condition.
+    m = _AUDITD_PATH.search(s)
+    if m and s.startswith("`linux_auditd`") \
+            and [w.strip() for w in re.findall(r"\|\s*where\b[^|]*", s)] == ["| where match_count > 0"]:
+        pat = m.group(1).replace("\\\\", "\\")
+        re.compile(pat)
+        return ({"sel1": {"type": "PATH"}, "sel2": {"full_path|re": pat}}, "sel1 and sel2",
+                {"product": "linux", "service": "auditd"})
     m = re.match(r"`(\w+)`\s*(.*)$", s, re.S)
     if not m or m.group(1) not in RAW_SOURCES:
         raise Skip("raw search on a source with no Sigma log source")

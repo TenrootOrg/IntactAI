@@ -1,0 +1,30 @@
+title: Cisco Secure Firewall - SSH Connection to sshd_operns
+id: 8a9c1d2e-3f4b-5c6d-7e8f-9a0b1c2d3e4f
+status: experimental
+description: 'This analytic detects inbound SSH connections to the sshd_operns service on network devices using Cisco Secure
+  Firewall Intrusion Events.
+
+  APT actors have been observed enabling sshd_operns and opening it on non-standard ports to maintain encrypted remote access
+  to compromised network infrastructure.
+
+  This detection leverages Snort signature 65368 to identify connections to this service, which when combined with other indicators
+  may signal persistent access mechanisms established by threat actors.'
+references:
+- https://research.splunk.com/8a9c1d2e-3f4b-5c6d-7e8f-9a0b1c2d3e4f/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1021.004
+logsource:
+  product: cisco
+  service: secure_firewall
+detection:
+  sel1:
+    EventType: IntrusionEvent
+  sel2:
+    SignatureID: '65368'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_secure_firewall_threat_defense/intrusion_event/intrusion_events.log

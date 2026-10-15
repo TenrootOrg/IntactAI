@@ -1,0 +1,28 @@
+title: Cisco Secure Firewall - React Server Components RCE Attempt
+id: d36459b1-7901-401a-a67e-44426c15b168
+status: experimental
+description: 'This analytic detects exploitation activity of CVE-2025-55182 using Cisco Secure Firewall Intrusion Events.
+
+  It leverages Cisco Secure Firewall Threat Defense IntrusionEvent logs to identify cases where Snort signature 65554 (React
+  Server Components remote code execution attempt) is triggered
+
+  If confirmed malicious, this behavior could be indicative of a potential exploitation of CVE-2025-55182.'
+references:
+- https://research.splunk.com/d36459b1-7901-401a-a67e-44426c15b168/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk, Talos NTDR
+tags:
+- attack.t1190
+logsource:
+  product: cisco
+  service: secure_firewall
+detection:
+  sel1:
+    EventType: IntrusionEvent
+  sel2:
+    SignatureID: '65554'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_secure_firewall_threat_defense/react2shell/react2shell.log

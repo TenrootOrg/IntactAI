@@ -35,6 +35,10 @@ class Translate(unittest.TestCase):
         r = tr('`wineventlog_security` EventCode=4728 | eval x=1 | rename a as b | stats count by user')
         self.assertEqual({"EventID": "4728"}, r["detection"]["sel1"])
 
+    def test_a_pipe_name_ends_at_a_newline(self):
+        r = tr('`wineventlog_security` EventCode=4728 | stats\n count by user')
+        self.assertEqual({"EventID": "4728"}, r["detection"]["sel1"])
+
     def test_web_data_model_is_any_http_log(self):
         r = tr('| tstats count FROM datamodel=Web WHERE Web.url="*/x.vm*" Web.status IN (200, unknown) '
                'BY Web.src | `drop_dm_object_name("Web")`')
@@ -47,6 +51,20 @@ class Translate(unittest.TestCase):
         self.assertEqual({"product": "kubernetes", "service": "audit"}, r["logsource"])
         self.assertEqual({"objectRef.resource": "cronjobs"}, r["detection"]["sel1"])
         self.assertEqual({"user.groups": "*system:unauthenticated*"}, r["detection"]["sel2"])
+
+    def test_auditd_path_join_is_one_full_path_condition(self):
+        r = tr('`linux_auditd`\n(type=PATH OR type=CWD)\n| rex "msg=audit\\([^)]*:(?<audit_id>\\d+)\\)"\n'
+               '| stats values(name) as names by audit_id, host\n'
+               '| eval matched_paths = mvfilter(match(candidate_paths, "/etc/ld\\.so\\.preload.*"))\n'
+               '| eval match_count = mvcount(matched_paths)\n| where match_count > 0\n| stats count by dest')
+        self.assertEqual({"type": "PATH"}, r["detection"]["sel1"])
+        self.assertEqual({"full_path|re": "/etc/ld\\.so\\.preload.*"}, r["detection"]["sel2"])
+
+    def test_an_unmapped_field_with_a_real_value_is_never_dropped(self):
+        with self.assertRaises(T.Skip):        # would read "every intrusion event"
+            tr('`wineventlog_security` EventCode=4625 signature_id=65118')
+        r = tr('`wineventlog_security` EventCode=4625 NOT src IN ("-", "unknown")')
+        self.assertEqual({"EventID": "4625"}, r["detection"]["sel1"])
 
     def test_a_list_of_objects_is_skipped(self):
         with self.assertRaises(T.Skip):

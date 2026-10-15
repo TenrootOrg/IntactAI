@@ -1,0 +1,47 @@
+title: Cisco Secure Firewall - Binary File Type Download
+id: 24b2c2e3-2ff7-4a23-b814-87f8a62028cd
+status: experimental
+description: 'The following analytic detects file downloads involving executable, archive, or scripting-related file types
+  that are commonly used in malware delivery.
+
+  These file types include formats like PE executables, shell scripts, autorun files, installers, and known testing samples
+  such as EICAR.
+
+  This detection leverages Cisco Secure Firewall Threat Defense logs and enriches the results using a filetype lookup to provide
+  context.
+
+  If confirmed malicious, these downloads could indicate the initial infection vector, malware staging, or scripting abuse.'
+references:
+- https://research.splunk.com/24b2c2e3-2ff7-4a23-b814-87f8a62028cd/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1203
+- attack.t1059
+logsource:
+  product: cisco
+  service: secure_firewall
+detection:
+  sel1:
+    EventType: FileEvent
+  sel2:
+    FileDirection: Download
+  sel3:
+    FileType:
+    - ISHIELD_MSI
+    - BINHEX
+    - BINARY_DATA
+    - ELF
+    - MACHO
+    - JARPACK
+    - TORRENT
+    - AUTORUN
+    - EICAR
+    - LNK
+    - SCR
+    - UNIX_SCRIPT
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_secure_firewall_threat_defense/file_event/file_events.log
