@@ -51,7 +51,7 @@ _NAMES = {
           "metadataeventtimestamp messagetime edgestarttimestamp eventgeneratedtime alarmdate "
           "receivetime received messagetime systemtime timecreated utctime datetime date "
           "eventcreated receipttime rt devicereceipttime start starttime firstseen logtime "
-          "generatedtime occurred occured idtime msg",
+          "generatedtime occurred occured idtime timelocal timeiso8601 msg",
     "host": "hostname host computername computerdnsname devicename dvchostname agentcomputername "
             "agentname agenthostname devicehostname computerhostname threattargethostname impactedhost "
             "machinename endpointname workstation computer endpoint dvchost sourcehost "
@@ -666,7 +666,8 @@ def _shape_of(v) -> str | None:
     if _URL.match(s):
         return "url"
     if (_ISO.match(s) or s.startswith("audit(")
-            or re.fullmatch(r"\d{10}(\d{3}|\d{6}|\d{9})?(\.\d+)?", s)) and _ts(s):
+            or re.fullmatch(r"\d{10}(\d{3}|\d{6}|\d{9})?(\.\d+)?", s)
+            or (re.search(r"\b(19|20)\d\d\b", s) and ":" in s and len(s) <= 40)) and _ts(s):
         return "time"
     if _UPN.fullmatch(s) or _DOMUSER.fullmatch(s):
         return "user"
@@ -842,14 +843,23 @@ def guess_type(rows) -> str:
 
 
 def recognized(rows) -> bool:
-    """Understood well enough to fuse, judged on the NORMALIZED rows: most of them
-    have a time and something that can join the case."""
+    """Understood well enough to keep as structured rows, judged on the NORMALIZED
+    rows: most of them have something that can join the case (a host, account,
+    address, hash, domain, process, URL). A time is not required -- columns
+    without one are still far richer than the same file read back as text."""
     if not rows:
         return False
     k = len(rows)
-    t = sum(1 for r in rows if r["n"].get("ts"))
     j = sum(1 for r in rows if _JOINS & set(r["n"]))
-    return t >= 0.5 * k and j >= 0.5 * k
+    # Columns WITHOUT names (a line split on spaces, a header-less CSV) are only a
+    # structure when they also give a time; else they are text lines, and the free
+    # text readers (sign-in phrases, keyword rules) do better with them.
+    raw0 = rows[0].get("raw") or {}
+    unnamed = isinstance(raw0, dict) and raw0 and all(re.fullmatch(r"c\d+|_line|syslog_header", str(c))
+                                                     for c in raw0)
+    if unnamed and sum(1 for r in rows if r["n"].get("ts")) < 0.5 * k:
+        return False
+    return j >= 0.5 * k
 
 
 def _sev_scale(col, vals):

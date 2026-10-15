@@ -73,8 +73,8 @@ def _outcome_text(n, raw) -> str:
             v = raw.get(k)
             if not isinstance(v, (dict, list)):
                 bits.append(f"{k}={v}")
-        if "text" in raw:
-            bits.append(str(raw["text"]))
+        if "text" in raw or "_line" in raw:
+            bits.append(str(raw.get("text") or raw.get("_line")))
     # "login_failure", "user.session.start": separators, or \b never sees the words
     return re.sub(r"[_.]", " ", " ".join(bits))
 
@@ -101,8 +101,8 @@ def auth_event(r):
     user, src = n.get("user") or (n.get("users") or [None])[0], n.get("src_ip")
     text = _outcome_text(n, raw)
     phrase = False                     # user + source read from a sign-in phrase in free text
-    if (not user or not src) and isinstance(raw, dict) and raw.get("text"):
-        line = str(raw["text"])
+    if (not user or not src) and isinstance(raw, dict) and (raw.get("text") or raw.get("_line")):
+        line = str(raw.get("text") or raw.get("_line"))
         m = _TEXT_AUTH.search(line)
         if m:
             user, src, phrase = user or m.group(1), src or m.group(2), True
