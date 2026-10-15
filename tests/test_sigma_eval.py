@@ -121,6 +121,11 @@ class WhichRulesRun(unittest.TestCase):
         lin = P({"EventID": "1", "Channel": "Linux-Sysmon/Operational", "Provider": "Linux-Sysmon",
                  "Image": "/bin/dd", "CommandLine": "dd of=/dev/sda if=/dev/zero"})
         self.assertIn(("linux", "process_creation", "sysmon"), lin, "Sysmon for Linux is Linux")
+        oq = {"name": "es_process_events", "columns.event_type": "exec", "columns.path": "/sbin/kextload",
+              "columns.cmdline": "kextload /tmp/evil.kext"}
+        self.assertIn(("macos", "process_creation", None), P(oq), "osquery EndpointSecurity")
+        self.assertEqual("/sbin/kextload", S.Event(oq).get("Image"))
+        self.assertEqual("kextload /tmp/evil.kext", S.Event(oq).get("CommandLine"))
         self.assertFalse([p for p in lin if p[0] == "windows"], lin)
 
     def test_a_proxy_rule_never_fires_on_another_products_fields(self):

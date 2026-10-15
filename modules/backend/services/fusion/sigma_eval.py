@@ -404,7 +404,7 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
 ALIASES = {
     # process telemetry: Security 4688, Defender XDR, CrowdStrike FDR, Elastic, generic
     "image": ["newprocessname", "folderpath", "imagefilename", "process.executable", "processpath",
-              "actor_process_image_path", "exe"],
+              "actor_process_image_path", "exe", "columns.path"],
     "parentimage": ["parentprocessname", "initiatingprocessfolderpath", "process.parent.executable",
                     "parentimagefilename", "causality_actor_process_image_path"],
     "commandline": ["processcommandline", "process.command_line", "actor_process_command_line", "cmdline"],
@@ -571,6 +571,12 @@ def profiles(row) -> set:
     if cmd not in (None, "") and proc not in (None, ""):
         win = "\\" in str(proc) or str(proc).lower().endswith(".exe") or ".exe" in str(cmd).lower()
         out.add(("windows" if win else "linux", "process_creation", None))
+    # osquery process events: macOS EndpointSecurity (es_process_events) or the Linux
+    # audit / eBPF tables. Profiles are cached per row SHAPE, so this must not turn on a
+    # value: exec, fork and exit rows share one shape (an exit row only repeats the path).
+    oq = str(ev.get("name") or "")
+    if oq in ("es_process_events", "process_events", "bpf_process_events") and _has(ev, "columns.path"):
+        out.add(("macos" if oq.startswith("es_") else "linux", "process_creation", None))
     if _has(ev, "eventType") and _has(ev, "actor.alternateId", "actor.id", "displayMessage"):
         out.add(("okta", None, "okta"))
     if _has(ev, "userPrincipalName") and _has(ev, "appDisplayName", "ResultType", "resultType", "status.errorCode",
