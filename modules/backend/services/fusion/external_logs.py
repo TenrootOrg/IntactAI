@@ -546,14 +546,18 @@ def _layout_rows(lines):
                 continue
             body = m.group("csv") if "csv" in lo["rx"].groupindex else ln
             try:
-                vals = next(csv.reader([body], delimiter=lo.get("delimiter") or ","))
+                if lo.get("quote") == "none":
+                    vals = body.split(lo.get("delimiter") or ",")
+                else:
+                    vals = next(csv.reader([body], delimiter=lo.get("delimiter") or ","))
             except (csv.Error, StopIteration):
                 left.append(ln)
                 continue
             k = lo.get("key_column")
             names = cols.get(vals[k] if k is not None and k < len(vals) else None) or cols.get(lo.get("default")) \
                 or cols.get("default") or []
-            r = {names[i] if i < len(names) else f"c{i + 1}": v for i, v in enumerate(vals) if v not in ("", None)}
+            empty = set(lo.get("empty") or ()) | {"", None}
+            r = {names[i] if i < len(names) else f"c{i + 1}": v for i, v in enumerate(vals) if v not in empty}
             pre = ln[:m.start("csv")].strip() if "csv" in lo["rx"].groupindex else ""
             if pre:
                 r["syslog_header"] = pre

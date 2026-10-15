@@ -249,3 +249,55 @@ layouts:
     columns:
       default: [timestamp, host, identities, src_ip, nat_ip, action, query_type, response_code, domain, categories,
                 most_granular_identity_type, identity_types, blocked_categories]
+  # Zeek / Bro TSV whose "#fields" header was stripped (SecRepo, many SIEM
+  # exports): the default column order of each log, Bro 2.x. More specific
+  # shapes first; conn.log last (its pattern is the loosest).
+  - id: zeek-notice-tsv
+    reason: "Zeek notice.log without its header"
+    line: '^\d{9,10}\.\d+(\t[^\t]*){9}\t[A-Za-z_]+::[A-Za-z_]+\t'
+    delimiter: "\t"
+    quote: none
+    empty: ["-", "(empty)"]
+    columns:
+      default: [ts, uid, id.orig_h, id.orig_p, id.resp_h, id.resp_p, fuid, file_mime_type, file_desc, proto, note, msg,
+                sub, src, dst, p, n, peer_descr, actions, suppress_for, dropped, remote_location.country_code,
+                remote_location.region, remote_location.city, remote_location.latitude, remote_location.longitude]
+  - id: zeek-dns-tsv
+    reason: "Zeek dns.log without its header"
+    line: '^\d{9,10}\.\d+\t\S+\t[\d.:a-fA-F]+\t\d+\t[\d.:a-fA-F]+\t\d+\t(udp|tcp)\t[\d-]+\t[^\t]*\t[\d-]+\t(C_[A-Z]+|-)\t'
+    delimiter: "\t"
+    quote: none
+    empty: ["-", "(empty)"]
+    columns:
+      default: [ts, uid, id.orig_h, id.orig_p, id.resp_h, id.resp_p, proto, trans_id, query, qclass, qclass_name, qtype,
+                qtype_name, rcode, rcode_name, AA, TC, RD, RA, Z, answers, TTLs, rejected]
+  - id: zeek-http-tsv
+    reason: "Zeek http.log without its header"
+    line: '^\d{9,10}\.\d+\t\S+\t[\d.:a-fA-F]+\t\d+\t[\d.:a-fA-F]+\t\d+\t\d+\t([A-Z]+|-)\t'
+    delimiter: "\t"
+    quote: none
+    empty: ["-", "(empty)"]
+    columns:
+      default: [ts, uid, id.orig_h, id.orig_p, id.resp_h, id.resp_p, trans_depth, method, host, uri, referrer,
+                user_agent, request_body_len, response_body_len, status_code, status_msg, info_code, info_msg,
+                filename, tags, username, password, proxied, mime_type, md5, extraction_file]
+  - id: zeek-ssh-tsv
+    reason: "Zeek ssh.log without its header"
+    line: '^\d{9,10}\.\d+\t\S+\t[\d.:a-fA-F]+\t\d+\t[\d.:a-fA-F]+\t\d+\t(success|failure|undetermined|-)\t(INBOUND|OUTBOUND|-)\t'
+    delimiter: "\t"
+    quote: none
+    empty: ["-", "(empty)"]
+    columns:
+      default: [ts, uid, id.orig_h, id.orig_p, id.resp_h, id.resp_p, status, direction, client, server,
+                remote_location.country_code, remote_location.region, remote_location.city,
+                remote_location.latitude, remote_location.longitude]
+  - id: zeek-conn-tsv
+    reason: "Zeek conn.log without its header"
+    line: '^\d{9,10}\.\d+\t\S+\t[\d.:a-fA-F]+\t\d+\t[\d.:a-fA-F]+\t\d+\t(tcp|udp|icmp)\t[^\t]*\t([\d.]+|-)\t'
+    delimiter: "\t"
+    quote: none
+    empty: ["-", "(empty)"]
+    columns:
+      default: [ts, uid, id.orig_h, id.orig_p, id.resp_h, id.resp_p, proto, service, duration, orig_bytes, resp_bytes,
+                conn_state, local_orig, missed_bytes, history, orig_pkts, orig_ip_bytes, resp_pkts, resp_ip_bytes,
+                tunnel_parents]

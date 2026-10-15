@@ -116,6 +116,9 @@ def auth_event(r):
             m = _TEXT_PAM.search(line)
             if m:
                 src, user, phrase = src or m.group(1), user or m.group(2) or "(unknown)", True
+    if not user and isinstance(raw, dict) and str(raw.get("status", "")).lower() in ("success", "failure") \
+            and any(str(raw.get(k, "")).startswith("SSH-") for k in ("client", "server")):
+        user, phrase = "(any account)", True       # Zeek ssh.log: the outcome, never the account
     if not user:
         return None
     outcome = _entra_outcome(raw)
