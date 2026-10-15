@@ -398,6 +398,13 @@ layouts:
     columns:
       default: [version, account_id, interface_id, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes,
                 start, end, action, log_status]
+  - id: umbrella-ips-csv
+    reason: "Cisco Umbrella intrusion (IPS) log export (no header), documented field order"
+    line: '^"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}","[^"]*","[^"]*","\d+","\d+","[^"]*","\d+","(HIGH|MEDIUM|LOW|VERY LOW)",'
+    delimiter: ","
+    columns:
+      default: [timestamp, identity, identity_type, generator_id, signature_id, signature_msg, signature_list_id,
+                severity, classification, cve, protocol, session_id, src_ip, src_port, dst_ip, dst_port, action]
   - id: umbrella-dns-csv
     reason: "Cisco Umbrella DNS log export (no header), documented field order"
     line: '^"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}","[^"]*","[^"]*","[\d.]+","[\d.]+","(?:Allowed|Blocked)"'
