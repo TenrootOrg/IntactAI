@@ -86,7 +86,7 @@ _NAMES = {
             "displayname title rule signature alert detectname detection attack threat reason circumstances "
             "eventname cefname name model tactic category eventtype",
     "severity": "severityname severity eventseverity alertseverity threatseverity crlevel "
-                "risklevelduringsignin risklevel severitylevel confidencelevel rulelevel cefseverity "
+                "risklevelduringsignin risklevel severitylevel rulelevel cefseverity "
                 "riskscore riskbasedpriority magnitude severityid priority level sev",
     "message": "message msg fulllog raw description details eventmessage summary notes line",
     "http_method": "csmethod httpmethod requestmethod httprequestmethod clientrequestmethod method",

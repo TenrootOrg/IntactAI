@@ -37,14 +37,18 @@ native:
 
   - id: malicious-verdict
     reason: "the product's verdict or classification names a malicious kind"
-    fields: [verdict, confidenceLevel, classification, threatClassification, threatType,
+    # Not a severity column: confidenceLevel is how sure a classifier is (M365's
+    # ConfidenceLevel is "High" on a clean, delivered mail); it counts only as a verdict.
+    fields: [verdict, confidenceLevel, classification, threatClassification, threatType, threatTypes,
              threatCategory, malwareCategory, category, categories, urlcat, urlCategory]
     match: 'malicious|malware|phish(ing)?|ransomware|trojan|backdoor|exploit|botnet|spyware|keylogger|worm|virus|rootkit|cryptomin(er|ing)|command[ -]and[ -]control|c2|malicious (content|sites?|urls?)|phishing and fraud|malware sites?'
     severity: high
     examples:
       fires: [{confidenceLevel: "malicious"}, {threatsInfoMap.classification: "phish"}, {category: "Malicious"},
+              {properties.ThreatTypes: "Phishing"},
               {urlcat: "Malicious Content"}, {categories: "Malware"}]
-      quiet: [{category: "Business and Economy"}, {verdict: "benign"}, {classification: "Malware Protection Update"}]
+      quiet: [{category: "Business and Economy"}, {verdict: "benign"}, {classification: "Malware Protection Update"},
+              {properties.ThreatTypes: "None", properties.ConfidenceLevel: "High"}]
 
   - id: suspicious-verdict
     reason: "the product's verdict says suspicious / potentially unwanted"
