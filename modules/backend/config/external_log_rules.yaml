@@ -221,6 +221,21 @@ native:
       quiet: [{post_body: "user=admin&password=hunter2&submit=Login"}, {post_body: '{"query": "status", "page": 2}'},
               {post_body: "c2VhcmNo"}]
 
+  - id: fortios-admin-api-bypass
+    title: "FortiOS admin API auth bypass (CVE-2022-40684)"
+    reason: "a request to FortiOS/FortiProxy's admin-user API carrying the exploit's own User-Agent: the auth-bypass that adds an SSH key to the admin account"
+    fields: [url, uri, uri_path, cs-uri-stem, http.url, url.path, request_uri, c-uri, url.original]
+    match: '(https?://)?[^/]*/api/v2/cmdb/system/admin(/.*)?'
+    and:
+      - fields: [user_agent, useragent, c-useragent, cs(user-agent), http_user_agent, http.http_user_agent,
+                 user_agent.original, requestclientapplication]
+        match: 'Report Runner|Node\.js'
+    severity: high
+    examples:
+      fires: [{url: "2.1.22.1/api/v2/cmdb/system/admin/admin", user_agent: "Report Runner", http_method: "put"}]
+      quiet: [{url: "2.1.22.1/api/v2/cmdb/system/admin/admin", user_agent: "Mozilla/5.0 (Windows NT 10.0)"},
+              {url: "fw.corp/api/v2/monitor/system/status", user_agent: "Report Runner"}]
+
   - id: firewall-threat-detection
     title: "Firewall threat detection / IPS event"
     reason: "the firewall's own threat detection (rate exceeded: scanning or DoS) or built-in IPS signature fired (Cisco ASA 733100 / 4000xx)"
@@ -308,7 +323,10 @@ layouts:
                nat_src_ip, nat_dst_ip, policy_rule, src_user, dst_user, application, vsys, src_zone, dst_zone,
                inbound_if, outbound_if, log_action, future_use_3, session_id, repeat_count, src_port, dst_port,
                nat_src_port, nat_dst_port, flags, protocol, action, url, threat_content_name, category, severity,
-               direction, sequence, action_flags, src_location, dst_location]
+               direction, sequence, action_flags, src_location, dst_location, future_use_5, content_type, pcap_id,
+               file_digest, cloud, url_index, user_agent, file_type, x_forwarded_for, referer, sender, subject,
+               recipient, report_id, dg_1, dg_2, dg_3, dg_4, vsys_name, device_name, future_use_6, src_vm_uuid,
+               dst_vm_uuid, http_method]
   - id: umbrella-dns-csv
     reason: "Cisco Umbrella DNS log export (no header), documented field order"
     line: '^"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}","[^"]*","[^"]*","[\d.]+","[\d.]+","(?:Allowed|Blocked)"'
