@@ -1,0 +1,37 @@
+title: MacOS Hidden Files and Directories
+id: 51c43b7b-e406-45d2-9bad-5c67f07e6528
+status: experimental
+description: 'The following analytic detects suspicious creation of hidden files and directories, which may indicate an attacker''s
+  attempt to conceal malicious activities or unauthorized data.
+
+  Hidden files and directories are often used to evade detection by security tools and administrators, providing a stealthy
+  means for storing malware, logs, or sensitive information.
+
+  By monitoring for unusual or unauthorized creation of hidden files and directories, this analytic helps identify potential
+  attempts to hide or unauthorized creation of hidden files and directories, and helps identify potential attempts to hide
+  malicious operations, enabling security teams to uncover and address hidden threats effectively.'
+references:
+- https://research.splunk.com/51c43b7b-e406-45d2-9bad-5c67f07e6528/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1564.001
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    CommandLine: '*chflags *'
+  sel2:
+    CommandLine: '* hidden*'
+  sel3:
+    CommandLine: '*xattr *'
+  sel4:
+    CommandLine: '* -wx *'
+  sel5:
+    CommandLine: '*com.apple.FinderInfo*'
+  condition: ((sel1 and sel2) or (sel3 and sel4 and sel5))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1564.001/osquery_hidden_files/osquery.log

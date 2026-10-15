@@ -1,0 +1,32 @@
+title: Loading Of Dynwrapx Module
+id: eac5e8ba-4857-11ec-9371-acde48001122
+status: experimental
+description: The following analytic detects the loading of the dynwrapx.dll module, which is associated with the DynamicWrapperX
+  ActiveX component. This detection leverages Sysmon EventCode 7 to identify processes that load or register dynwrapx.dll.
+  This activity is significant because DynamicWrapperX can be used to call Windows API functions in scripts, making it a potential
+  tool for malicious actions. If confirmed malicious, this could allow an attacker to execute arbitrary code, escalate privileges,
+  or maintain persistence on the host. Immediate investigation of parallel processes and registry modifications is recommended.
+references:
+- https://research.splunk.com/eac5e8ba-4857-11ec-9371-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1055.001
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    ImageLoaded: '*\\dynwrapx.dll'
+  sel3:
+    OriginalFileName: dynwrapx.dll
+  sel4:
+    Product: DynamicWrapperX
+  condition: (sel1 and ((sel2 or sel3) or sel4))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/remcos/remcos_dynwrapx/sysmon_dynwraper.log

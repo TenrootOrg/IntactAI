@@ -1,0 +1,31 @@
+title: Windows Root Domain linked policies Discovery
+id: 80ffaede-1f12-49d5-a86e-b4b599b68b3c
+status: experimental
+description: The following analytic detects the use of the `[Adsisearcher]` type accelerator in PowerShell to query Active
+  Directory for root domain linked policies. It leverages PowerShell Script Block Logging (EventCode=4104) to identify this
+  activity. This behavior is significant as it may indicate an attempt by adversaries or Red Teams to gain situational awareness
+  and perform Active Directory Discovery. If confirmed malicious, this activity could allow attackers to map out domain policies,
+  potentially aiding in further exploitation or lateral movement within the network.
+references:
+- https://research.splunk.com/80ffaede-1f12-49d5-a86e-b4b599b68b3c/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1087.002
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*[adsisearcher]*'
+  sel3:
+    ScriptBlockText: '*.SearchRooT*'
+  sel4:
+    ScriptBlockText: '*.gplink*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1087.002/adsi_discovery/windows-powershell-xml1.log

@@ -1,0 +1,34 @@
+title: Linux Data Destruction Command
+id: b11d3979-b2f7-411b-bb1a-bd00e642173b
+status: experimental
+description: 'The following analytic detects the execution of a Unix shell command designed to wipe root directories on a
+  Linux host.
+
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on the ''rm'' command with the ''--no-preserve-root''
+  option.
+
+  This activity is significant as it indicates potential data destruction attempts, often associated with malware like Awfulshred.
+
+  If confirmed malicious, this behavior could lead to severe data loss, system instability, and compromised integrity of the
+  affected Linux host.
+
+  Immediate investigation and response are crucial to mitigate potential damage.'
+references:
+- https://research.splunk.com/b11d3979-b2f7-411b-bb1a-bd00e642173b/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1485
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image: '*/rm'
+  sel2:
+    CommandLine: '* --no-preserve-root*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/awfulshred/test1/sysmon_linux.log

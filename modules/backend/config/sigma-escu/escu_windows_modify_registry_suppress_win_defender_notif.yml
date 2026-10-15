@@ -1,0 +1,30 @@
+title: Windows Modify Registry Suppress Win Defender Notif
+id: e3b42daf-fff4-429d-bec8-2a199468cea9
+status: experimental
+description: The following analytic detects modifications in the Windows registry to suppress Windows Defender notifications.
+  It leverages data from the Endpoint.Registry datamodel, specifically targeting changes to the "Notification_Suppress" registry
+  value. This activity is significant because adversaries, including those deploying Azorult malware, use this technique to
+  bypass Windows Defender and disable critical notifications. If confirmed malicious, this behavior could allow attackers
+  to evade detection, maintain persistence, and execute further malicious activities without alerting the user or security
+  tools.
+references:
+- https://research.splunk.com/e3b42daf-fff4-429d-bec8-2a199468cea9/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Windows Defender\\UX Configuration\\Notification_Suppress*'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/azorult/sysmon.log

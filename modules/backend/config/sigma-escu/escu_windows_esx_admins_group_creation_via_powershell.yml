@@ -1,0 +1,31 @@
+title: Windows ESX Admins Group Creation via PowerShell
+id: f48a5557-be06-4b96-b8e8-be563e387620
+status: experimental
+description: This analytic detects attempts to create an "ESX Admins" group using PowerShell commands. This activity may indicate
+  an attempt to exploit the VMware ESXi Active Directory Integration Authentication Bypass vulnerability (CVE-2024-37085).
+  Attackers can use this method to gain unauthorized access to ESXi hosts by recreating the 'ESX Admins' group after its deletion
+  from Active Directory.
+references:
+- https://research.splunk.com/f48a5557-be06-4b96-b8e8-be563e387620/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1136.002
+- attack.t1136.001
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*New-ADGroup*'
+  sel3:
+    ScriptBlockText: '*New-LocalGroup*'
+  sel4:
+    ScriptBlockText: '*ESX Admins*'
+  condition: (sel1 and (sel2 or sel3) and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1136.001/atomic_red_team/windows-powershell-esxadmins.log

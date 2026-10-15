@@ -1,0 +1,34 @@
+title: UAC Bypass With Colorui COM Object
+id: 2bcccd20-fc2b-11eb-8d22-acde48001122
+status: experimental
+description: The following analytic detects a potential UAC bypass using the colorui.dll COM Object. It leverages Sysmon EventCode
+  7 to identify instances where colorui.dll is loaded by a process other than colorcpl.exe, excluding common system directories.
+  This activity is significant because UAC bypass techniques are often used by malware, such as LockBit ransomware, to gain
+  elevated privileges without user consent. If confirmed malicious, this could allow an attacker to execute code with higher
+  privileges, leading to further system compromise and persistence within the environment.
+references:
+- https://research.splunk.com/2bcccd20-fc2b-11eb-8d22-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1218.003
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    ImageLoaded: '*\\colorui.dll'
+  sel3:
+    Image: '*\\colorcpl.exe'
+  sel4:
+    Image:
+    - '*\\windows\\*'
+    - '*\\program files*'
+  condition: (sel1 and sel2 and not sel3 and not (sel4))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1546.015/uac_colorui/windows-sysmon.log

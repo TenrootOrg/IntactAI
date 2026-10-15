@@ -1,0 +1,26 @@
+title: Windows Steal Authentication Certificates Export Certificate
+id: e39dc429-c2a5-4f1f-9c3c-6b211af6b332
+status: experimental
+description: The following analytic detects the use of the PowerShell cmdlet 'export-certificate' executed via the command
+  line, indicating an attempt to export a certificate from the local Windows Certificate Store. This detection leverages data
+  from Endpoint Detection and Response (EDR) agents, focusing on process execution logs and command-line arguments. Exporting
+  certificates is significant as it may indicate credential theft or preparation for man-in-the-middle attacks. If confirmed
+  malicious, this activity could allow an attacker to impersonate users, decrypt sensitive communications, or gain unauthorized
+  access to systems and data.
+references:
+- https://research.splunk.com/e39dc429-c2a5-4f1f-9c3c-6b211af6b332/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1649
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*export-certificate*'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1649/atomic_red_team/export_certificate_windows-sysmon.log

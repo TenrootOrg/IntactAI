@@ -1,0 +1,41 @@
+title: Windows Information Discovery Fsutil
+id: 2181f261-93e6-4166-a5a9-47deac58feff
+status: experimental
+description: 'The following analytic identifies the execution of the Windows built-in tool FSUTIL with the "FSINFO" or "Volume"
+  parameters, in order to discover file system and disk information.
+
+  This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process execution logs that
+  include command-line details.
+
+  Monitoring this activity is significant because FSUTIL can be abused by adversaries to gather detailed information about
+  the file system, aiding in further exploitation.
+
+  If confirmed malicious, this activity could enable attackers to map the file system, identify valuable data, and plan subsequent
+  actions such as privilege escalation or persistence.'
+references:
+- https://research.splunk.com/2181f261-93e6-4166-a5a9-47deac58feff/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1082
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\fsutil.exe'
+  sel2:
+    OriginalFileName: fsutil.exe
+  sel3:
+    CommandLine: '*fsinfo*'
+  sel4:
+    CommandLine: '*volume*'
+  sel5:
+    CommandLine:
+    - '*diskfree*'
+    - '*list*'
+  condition: ((sel1 or sel2) and (sel3 or (sel4 and sel5)))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/winpeas/winpeas_fsutil/fsutil-fsinfo-sysmon.log

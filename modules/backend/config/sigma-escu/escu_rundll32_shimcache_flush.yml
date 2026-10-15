@@ -1,0 +1,29 @@
+title: Rundll32 Shimcache Flush
+id: a913718a-25b6-11ec-96d3-acde48001122
+status: experimental
+description: The following analytic detects the execution of a suspicious rundll32 command line used to clear the shim cache.
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process execution logs and command-line
+  arguments. This activity is significant because clearing the shim cache is an anti-forensic technique aimed at evading detection
+  and removing forensic artifacts. If confirmed malicious, this action could hinder incident response efforts, allowing an
+  attacker to cover their tracks and maintain persistence on the compromised machine.
+references:
+- https://research.splunk.com/a913718a-25b6-11ec-96d3-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\rundll32.exe'
+  sel2:
+    OriginalFileName: RUNDLL32.EXE
+  sel3:
+    CommandLine: '*apphelp.dll,ShimFlushCache*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/shimcache_flush/sysmon.log

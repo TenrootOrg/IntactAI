@@ -1,0 +1,38 @@
+title: Windows Suspicious Child Process of Consent.EXE
+id: 8194b5d4-41ae-4ce7-adfb-92d375e341d2
+status: experimental
+description: 'The following analytic detects unexpected child processes spawned by consent.exe, the Windows UAC consent dialog
+  binary.
+
+  Consent.exe is responsible solely for rendering the UAC elevation prompt and should not spawn child processes under normal
+  operating conditions; child process creation from this parent is a known indicator of UAC bypass and privilege escalation
+  techniques.
+
+  The detection identifies any executable launched as a child of consent.exe, excluding the expected WerFault.exe error reporting
+  process, which may legitimately appear in crash scenarios.
+
+  This behavior is associated with UAC bypass exploits and has been observed in multiple post-exploitation frameworks as a
+  means of obtaining elevated privileges without triggering a visible UAC prompt.'
+references:
+- https://research.splunk.com/8194b5d4-41ae-4ce7-adfb-92d375e341d2/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+- attack.t1548.002
+- attack.t1059
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\consent.exe'
+  sel2:
+    Image: '*.exe'
+  sel3:
+    Image: '*\\WerFault.exe'
+  condition: (sel1 and sel2 and not (sel3))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/windows_suspicious_child_of_consent_exe/snapattack_windows.log

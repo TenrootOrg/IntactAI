@@ -1,0 +1,52 @@
+title: Linux Suspicious Redis Activity
+id: 098bbfa8-a591-44ab-9ec0-ae8ee82b4450
+status: experimental
+description: The following analytic detects Redis processes spawning a system shell command. This can indicate exploitation
+  activity of a redis server to gain code execution.
+references:
+- https://research.splunk.com/098bbfa8-a591-44ab-9ec0-ae8ee82b4450/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1505
+- attack.t1210
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    ParentImage:
+    - '*/redis-sentinel'
+    - '*/redis-server'
+  sel2:
+    ParentImage: '*/bin/redis*'
+  sel3:
+    Image:
+    - '*/awk'
+    - '*/bash'
+    - '*/curl'
+    - '*/dash'
+    - '*/gawk'
+    - '*/id'
+    - '*/ifconfig'
+    - '*/lua'
+    - '*/nc'
+    - '*/ncat'
+    - '*/netcat'
+    - '*/openssl'
+    - '*/perl'
+    - '*/php'
+    - '*/python'
+    - '*/python2'
+    - '*/python3'
+    - '*/ruby'
+    - '*/sh'
+    - '*/socat'
+    - '*/wget'
+    - '*/whoami'
+    - '*/zsh'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1505/linux_suspicious_redis_activity/snapattack_linux.log

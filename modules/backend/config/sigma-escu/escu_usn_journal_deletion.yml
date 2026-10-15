@@ -1,0 +1,30 @@
+title: USN Journal Deletion
+id: b6e0ff70-b122-4227-9368-4cf322ab43c3
+status: experimental
+description: The following analytic detects the deletion of the USN Journal using the fsutil.exe utility. It leverages data
+  from Endpoint Detection and Response (EDR) agents, focusing on process execution logs that include command-line details.
+  This activity is significant because the USN Journal maintains a log of all changes made to files on the disk, and its deletion
+  can be an indicator of an attempt to cover tracks or hinder forensic investigations. If confirmed malicious, this action
+  could allow an attacker to obscure their activities, making it difficult to trace file modifications and potentially compromising
+  incident response efforts.
+references:
+- https://research.splunk.com/b6e0ff70-b122-4227-9368-4cf322ab43c3/
+author: Splunk Security Content (Apache-2.0), David Dorsey, Splunk
+tags:
+- attack.t1070
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\fsutil.exe'
+  sel2:
+    CommandLine: '*usn*'
+  sel3:
+    CommandLine: '*deletejournal*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1070/atomic_red_team/windows-sysmon.log

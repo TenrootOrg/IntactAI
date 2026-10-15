@@ -1,0 +1,36 @@
+title: Windows Disable or Modify Tools Via Taskkill
+id: a43ae66f-c410-4b3d-8741-9ce1ad17ddb0
+status: experimental
+description: The following analytic identifies the use of taskkill.exe to forcibly terminate processes. It leverages data
+  from Endpoint Detection and Response (EDR) agents, focusing on command-line executions that include specific taskkill parameters.
+  This activity is significant because it can indicate attempts to disable security tools or disrupt legitimate applications,
+  a common tactic in malware operations. If confirmed malicious, this behavior could allow attackers to evade detection, disrupt
+  system stability, and potentially gain further control over the compromised system.
+references:
+- https://research.splunk.com/a43ae66f-c410-4b3d-8741-9ce1ad17ddb0/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\taskkill.exe'
+  sel2:
+    CommandLine:
+    - '* /f*'
+    - '* /t*'
+  sel3:
+    CommandLine:
+    - '* /im*'
+    - '* /pid*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/taskkill/taskkill_im.log
+x-intact-burst: false
+x-intact: 'Fired 1 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

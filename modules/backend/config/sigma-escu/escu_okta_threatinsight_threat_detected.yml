@@ -1,0 +1,25 @@
+title: Okta ThreatInsight Threat Detected
+id: 140504ae-5fe2-4d65-b2bc-a211813fbca6
+status: experimental
+description: The following analytic identifies threats detected by Okta ThreatInsight, such as password spraying, login failures,
+  and high counts of unknown user login attempts. It leverages Okta Identity Management logs, specifically focusing on security.threat.detected
+  events. This activity is significant for a SOC as it highlights potential unauthorized access attempts and credential-based
+  attacks. If confirmed malicious, these activities could lead to unauthorized access, data breaches, and further exploitation
+  of compromised accounts, posing a significant risk to the organization's security posture.
+references:
+- https://research.splunk.com/140504ae-5fe2-4d65-b2bc-a211813fbca6/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Mauricio Velazco, Splunk
+tags:
+- attack.t1078.004
+logsource:
+  product: okta
+  service: okta
+detection:
+  sel1:
+    eventType: security.threat.detected
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1078.004/okta_threatinsight_threat_detected/okta_threatinsight_threat_detected.log

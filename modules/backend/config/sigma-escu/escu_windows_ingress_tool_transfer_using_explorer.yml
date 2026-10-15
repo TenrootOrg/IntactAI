@@ -1,0 +1,36 @@
+title: Windows Ingress Tool Transfer Using Explorer
+id: 76753bab-f116-4ea3-8fb9-89b638be58a9
+status: experimental
+description: The following analytic identifies instances where the Windows Explorer process (explorer.exe) is executed with
+  a URL in its command line. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on
+  process execution logs. This activity is significant because adversaries, such as those using DCRat malware, may abuse explorer.exe
+  to open URLs with the default browser, which is an uncommon and suspicious behavior. If confirmed malicious, this technique
+  could allow attackers to download and execute malicious payloads, leading to potential system compromise and further malicious
+  activities.
+references:
+- https://research.splunk.com/76753bab-f116-4ea3-8fb9-89b638be58a9/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1105
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\explorer.exe'
+  sel2:
+    OriginalFileName: explorer.exe
+  sel3:
+    ParentImage:
+    - '*\\userinit.exe'
+    - '*\\svchost.exe'
+  sel4:
+    CommandLine:
+    - '* http://*'
+    - '* https://*'
+  condition: ((sel1 or sel2) and not (sel3) and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/dcrat/dcrat_explorer_url/sysmon.log

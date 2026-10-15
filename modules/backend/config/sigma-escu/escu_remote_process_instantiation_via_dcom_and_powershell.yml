@@ -1,0 +1,40 @@
+title: Remote Process Instantiation via DCOM and PowerShell
+id: d4f42098-4680-11ec-ad07-3e22fbd008af
+status: experimental
+description: The following analytic detects the execution of `powershell.exe` with arguments used to start a process on a
+  remote endpoint by abusing the DCOM protocol, specifically targeting ShellExecute and ExecuteShellCommand. It leverages
+  data from Endpoint Detection and Response (EDR) agents, focusing on process names, parent processes, and command-line executions.
+  This activity is significant as it indicates potential lateral movement and remote code execution attempts by adversaries.
+  If confirmed malicious, this could allow attackers to execute arbitrary code remotely, escalate privileges, and move laterally
+  within the network, posing a severe security risk.
+references:
+- https://research.splunk.com/d4f42098-4680-11ec-ad07-3e22fbd008af/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1021.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\pwsh.exe'
+  sel2:
+    Image: '*\\powershell.exe'
+  sel3:
+    OriginalFileName: pwsh.dll
+  sel4:
+    OriginalFileName: PowerShell.EXE
+  sel5:
+    OriginalFileName: powershell_ise.EXE
+  sel6:
+    Image: '*\\powershell_ise.exe'
+  sel7:
+    CommandLine: '*Document.ActiveView.ExecuteShellCommand*'
+  sel8:
+    CommandLine: '*Document.Application.ShellExecute*'
+  condition: ((((((sel1 or sel2) or sel3) or sel4) or sel5) or sel6) and (sel7 or sel8))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.003/lateral_movement/windows-sysmon.log

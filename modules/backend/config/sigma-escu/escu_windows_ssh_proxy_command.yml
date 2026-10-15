@@ -1,0 +1,48 @@
+title: Windows SSH Proxy Command
+id: ac520039-21f1-4567-b528-5b7133dba76f
+status: experimental
+description: 'This detection identifies potential abuse of SSH "ProxyCommand" or "LocalCommand" by monitoring for suspicious
+  process execution patterns.
+
+  Specifically, it looks for instances where ssh.exe (as a parent process) containing "ProxyCommand" or "LocalCommand" in
+  its arguments spawns potentially malicious child processes like mshta, powershell, wscript, or cscript, or processes containing
+  "http" in their command line.
+
+  This technique can be used by attackers to execute arbitrary commands through SSH proxy configurations, potentially enabling
+  command & control activities or remote code execution. The detection focuses on commonly abused Windows scripting engines
+  and web requests that may indicate malicious activity when spawned through SSH proxy commands.'
+references:
+- https://research.splunk.com/ac520039-21f1-4567-b528-5b7133dba76f/
+author: Splunk Security Content (Apache-2.0), Michael Haag, AJ King, Nasreddine Bencherchali, Splunk, Jesse Hunter, Splunk
+  Community Contributor
+tags:
+- attack.t1572
+- attack.t1059.001
+- attack.t1105
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\ssh.exe'
+  sel2:
+    ParentCommandLine: '*ProxyCommand=*'
+  sel3:
+    ParentCommandLine: '* PermitLocalCommand=yes*'
+  sel4:
+    ParentCommandLine: '* LocalCommand=*'
+  sel5:
+    CommandLine:
+    - '*cscript*'
+    - '*http*'
+    - '*mshta*'
+    - '*powershell*'
+    - '*pwsh*'
+    - '*wmic*'
+    - '*wscript*'
+  condition: (sel1 and (sel2 or (sel3 and sel4)) and sel5)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1572/ssh_proxy_command/sshproxycommand_windows-sysmon.log

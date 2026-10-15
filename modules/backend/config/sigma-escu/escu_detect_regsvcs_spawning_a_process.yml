@@ -1,0 +1,26 @@
+title: Detect Regsvcs Spawning a Process
+id: bc477b57-5c21-4ab6-9c33-668772e7f114
+status: experimental
+description: The following analytic identifies regsvcs.exe spawning a child process. This behavior is detected using Endpoint
+  Detection and Response (EDR) telemetry, focusing on process creation events where the parent process is regsvcs.exe. This
+  activity is significant because regsvcs.exe rarely spawns child processes, and such behavior can indicate an attempt to
+  bypass application control mechanisms. If confirmed malicious, this could allow an attacker to execute arbitrary code, potentially
+  leading to privilege escalation or persistent access within the environment. Immediate investigation is recommended to determine
+  the legitimacy of the spawned process and any associated suspicious activities.
+references:
+- https://research.splunk.com/bc477b57-5c21-4ab6-9c33-668772e7f114/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.009
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\regsvcs.exe'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.009/atomic_red_team/windows-sysmon.log

@@ -1,0 +1,33 @@
+title: Windows NorthStar C2 Agent Execution
+id: 5f13d5b2-5181-487b-89eb-e2b471522202
+status: experimental
+description: 'Detects the initial agent or persistent agent processes for Northstar C2 being run.
+
+  NorthStarC2 is an open-source command and control framework developed for penetration testing and red teaming purposes by
+  Engin Demirbilek.
+
+  NorthStar C2 Framework consists of two applications, a server-side GUI web application for managing sessions and a client-side
+  stager to communicate with C2 server.'
+references:
+- https://research.splunk.com/5f13d5b2-5181-487b-89eb-e2b471522202/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1204.002
+- attack.t1547.001
+- attack.t1608
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    OriginalFileName: NorthstarStager.exe
+  sel2:
+    Image:
+    - '*\\NorthstarStager.exe'
+    - '*\\SystemHealthCheck.exe'
+  condition: (sel1 or sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1204.002/snapattack/snapattack.log

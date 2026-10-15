@@ -1,0 +1,34 @@
+title: Windows MSIExec DLLRegisterServer
+id: fdb59aef-d88f-4909-8369-ec2afbd2c398
+status: experimental
+description: The following analytic detects the execution of msiexec.exe with the /y switch parameter, which enables the loading
+  of DLLRegisterServer. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process
+  command-line arguments and parent-child process relationships. This activity is significant because it can indicate an attempt
+  to register malicious DLLs, potentially leading to code execution or persistence on the system. If confirmed malicious,
+  this could allow an attacker to execute arbitrary code, escalate privileges, or maintain persistence within the environment.
+references:
+- https://research.splunk.com/fdb59aef-d88f-4909-8369-ec2afbd2c398/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.007
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\msiexec.exe'
+  sel2:
+    OriginalFileName: msiexec.exe
+  sel3:
+    CommandLine:
+    - '* /y*'
+    - '* -y*'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.007/atomic_red_team/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 8 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

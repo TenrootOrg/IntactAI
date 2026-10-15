@@ -1,0 +1,32 @@
+title: Windows Account Discovery for Sam Account Name
+id: 69934363-e1dd-4c49-8651-9d7663dd4d2f
+status: experimental
+description: The following analytic detects the execution of the PowerView PowerShell cmdlet Get-NetUser, specifically querying
+  for "samaccountname" and "pwdlastset" attributes. It leverages Event ID 4104 from PowerShell Script Block Logging to identify
+  this activity. This behavior is significant as it may indicate an attempt to gather user account information from Active
+  Directory, which is a common reconnaissance step in lateral movement or privilege escalation attacks. If confirmed malicious,
+  this activity could allow an attacker to map out user accounts, potentially leading to further exploitation and unauthorized
+  access within the network.
+references:
+- https://research.splunk.com/69934363-e1dd-4c49-8651-9d7663dd4d2f/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1087
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Get-NetUser*'
+  sel3:
+    ScriptBlockText:
+    - '*samaccountname*'
+    - '*pwdlastset*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1087/powerview_get_netuser_preauthnotrequire/get-netuser-not-require-pwh.log

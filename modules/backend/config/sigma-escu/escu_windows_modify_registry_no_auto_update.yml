@@ -1,0 +1,29 @@
+title: Windows Modify Registry No Auto Update
+id: fbd4f333-17bb-4eab-89cb-860fa2e0600e
+status: experimental
+description: The following analytic identifies a suspicious modification to the Windows registry that disables automatic updates.
+  It detects changes to the registry path `SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU\NoAutoUpdate` with a value
+  of `0x00000001`. This activity is significant as it is commonly used by adversaries, including malware like RedLine Stealer,
+  to evade detection and maintain persistence. If confirmed malicious, this could allow attackers to bypass security updates,
+  leaving the system vulnerable to further exploitation and potential zero-day attacks.
+references:
+- https://research.splunk.com/fbd4f333-17bb-4eab-89cb-860fa2e0600e/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU\\NoAutoUpdate'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/redline/modify_registry/sysmon.log

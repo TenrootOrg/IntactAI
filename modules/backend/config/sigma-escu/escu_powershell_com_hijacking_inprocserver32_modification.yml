@@ -1,0 +1,28 @@
+title: Powershell COM Hijacking InprocServer32 Modification
+id: ea61e291-af05-4716-932a-67faddb6ae6f
+status: experimental
+description: The following analytic detects attempts to modify or add a Component Object Model (COM) entry to the InProcServer32
+  path within the registry using PowerShell. It leverages PowerShell ScriptBlock Logging (EventCode 4104) to identify suspicious
+  script blocks that target the InProcServer32 registry path. This activity is significant because modifying COM objects can
+  be used for persistence or privilege escalation by attackers. If confirmed malicious, this could allow an attacker to execute
+  arbitrary code or maintain persistent access to the compromised system, posing a severe security risk.
+references:
+- https://research.splunk.com/ea61e291-af05-4716-932a-67faddb6ae6f/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1059.001
+- attack.t1546.015
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Software\\Classes\\CLSID\\*\\InProcServer32*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1546.015/atomic_red_team/windows-powershell.log

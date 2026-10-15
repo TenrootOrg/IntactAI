@@ -1,0 +1,38 @@
+title: Linux Suspicious Staging of Alternate System Files
+id: 250fd1b5-e62a-4515-baff-3010b52b4c12
+status: experimental
+description: 'The following analytic detects the creation of sensitive system files such as nsswitch.conf, passwd, shadow,
+  sudoers, and NSS shared libraries outside of their canonical /etc or /var/lib/docker paths.
+
+  This technique is associated with CVE-2025-32463 (chwoot), where an attacker stages a fake root directory containing spoofed
+  system configuration files and NSS libraries to manipulate how privileged processes such as sudo resolve name services,
+  enabling local privilege escalation by hijacking library loading without modifying the real /etc directory.'
+references:
+- https://research.splunk.com/250fd1b5-e62a-4515-baff-3010b52b4c12/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1036
+logsource:
+  category: file_event
+  product: linux
+detection:
+  sel1:
+    TargetFilename:
+    - '*/etc/group'
+    - '*/etc/nsswitch.conf'
+    - '*/etc/pam.conf'
+    - '*/etc/passwd'
+    - '*/etc/shadow'
+    - '*/etc/sudo.conf'
+    - '*/etc/sudoers'
+    - '*/libnss_*'
+  sel2:
+    TargetFilename:
+    - /etc/*
+    - /var/lib/docker/*
+  condition: (sel1 and not (sel2))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036/linux_suspicious_staging_of_alternate_system_files/snapattack_linux.log

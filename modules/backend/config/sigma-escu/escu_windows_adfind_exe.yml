@@ -1,0 +1,60 @@
+title: Windows AdFind Exe
+id: bd3b0187-189b-46c0-be45-f52da2bae67f
+status: experimental
+description: The following analytic identifies the execution of `adfind.exe` standalone or with specific command-line arguments
+  related to Active Directory queries. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process
+  names, command-line arguments, and parent Processes. This activity is significant because `adfind.exe` is a powerful tool
+  often used by threat actors like Wizard Spider and FIN6 to gather sensitive AD information. If confirmed malicious, this
+  activity could allow attackers to map the AD environment, facilitating further attacks such as privilege escalation or lateral
+  movement.
+references:
+- https://research.splunk.com/bd3b0187-189b-46c0-be45-f52da2bae67f/
+author: Splunk Security Content (Apache-2.0), Jose Hernandez, Bhavin Patel, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1018
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\AdFind.exe'
+  sel2:
+    OriginalFileName: AdFind.exe
+  sel3:
+    CommandLine:
+    - '* -f *'
+    - '* /f*'
+  sel4:
+    CommandLine: '*objectcategory=*'
+  sel5:
+    CommandLine:
+    - '* -sc *'
+    - '* /sc *'
+  sel6:
+    CommandLine:
+    - '* -gcb *'
+    - '* /gcb *'
+  sel7:
+    CommandLine:
+    - '* -sc *'
+    - '* /sc *'
+  sel8:
+    CommandLine:
+    - '* trustdmp*'
+    - '* dclist*'
+    - '* dcdmp*'
+    - '* adobjcnt*'
+    - '* adamobjcnt*'
+    - '* sdump*'
+    - '* exchaddresses*'
+    - '* getacl*'
+    - '* domainlist*'
+    - '* export_user*'
+    - '* export_group*'
+    - '* admincountdmp*'
+  condition: ((((sel1 or sel2) or (sel3 and sel4)) or (sel5 and sel6)) or (sel7 and sel8))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1018/atomic_red_team/windows-sysmon.log

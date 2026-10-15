@@ -1,0 +1,29 @@
+title: Windows Remote Services Allow Remote Assistance
+id: 9bce3a97-bc97-4e89-a1aa-ead151c82fbb
+status: experimental
+description: The following analytic detects modifications in the Windows registry to enable remote desktop assistance on a
+  targeted machine. It leverages data from the Endpoint.Registry datamodel, specifically monitoring changes to the "Control\\Terminal
+  Server\\fAllowToGetHelp" registry path. This activity is significant because enabling remote assistance via registry is
+  uncommon and often associated with adversaries or malware like Azorult. If confirmed malicious, this could allow an attacker
+  to remotely access and control the compromised host, leading to potential data exfiltration or further system compromise.
+references:
+- https://research.splunk.com/9bce3a97-bc97-4e89-a1aa-ead151c82fbb/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1021.001
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Control\\Terminal Server\\fAllowToGetHelp*'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/azorult/sysmon.log

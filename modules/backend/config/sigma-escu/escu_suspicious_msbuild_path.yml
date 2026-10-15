@@ -1,0 +1,30 @@
+title: Suspicious msbuild path
+id: f5198224-551c-11eb-ae93-0242ac130002
+status: experimental
+description: The following analytic detects the execution of msbuild.exe from a non-standard path. It leverages data from
+  Endpoint Detection and Response (EDR) agents, focusing on process execution logs that deviate from typical msbuild.exe locations.
+  This activity is significant because msbuild.exe is commonly abused by attackers to execute malicious code, and running
+  it from an unusual path can indicate an attempt to evade detection. If confirmed malicious, this behavior could allow an
+  attacker to execute arbitrary code, potentially leading to system compromise and further malicious activities.
+references:
+- https://research.splunk.com/f5198224-551c-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1036.003
+- attack.t1127.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\msbuild.exe'
+  sel2:
+    OriginalFileName: MSBuild.exe
+  sel3:
+    Image: '*\\framework*\\v*\\*'
+  condition: ((sel1 or sel2) and not sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1127.001/windows-sysmon.log

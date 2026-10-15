@@ -1,0 +1,44 @@
+title: Windows Office Product Spawned Rundll32 With No DLL
+id: f28e787e-69ca-480e-9f98-ab970e6d4bcc
+status: experimental
+description: The following analytic detects any Windows Office Product spawning `rundll32.exe` without a `.dll` file extension.
+  This behavior is identified using Endpoint Detection and Response (EDR) telemetry, focusing on process and parent process
+  relationships. This activity is significant as it is a known tactic of the IcedID malware family, which can lead to unauthorized
+  code execution. If confirmed malicious, this could allow attackers to execute arbitrary code, potentially leading to data
+  exfiltration, system compromise, or further malware deployment. Immediate investigation and containment are recommended.
+references:
+- https://research.splunk.com/f28e787e-69ca-480e-9f98-ab970e6d4bcc/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1566.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage:
+    - '*\\EQNEDT32.exe'
+    - '*\\excel.exe'
+    - '*\\Graph.exe'
+    - '*\\msaccess.exe'
+    - '*\\mspub.exe'
+    - '*\\onenote.exe'
+    - '*\\onenoteim.exe'
+    - '*\\onenotem.exe'
+    - '*\\outlook.exe'
+    - '*\\powerpnt.exe'
+    - '*\\visio.exe'
+    - '*\\winproj.exe'
+    - '*\\winword.exe'
+  sel2:
+    Image: '*\\rundll32.exe'
+  sel3:
+    OriginalFileName: RUNDLL32.EXE
+  sel4:
+    CommandLine: '*.dll*'
+  condition: (sel1 and (sel2 or sel3) and not sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566.001/macro/windows-sysmon_icedid.log

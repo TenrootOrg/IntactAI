@@ -1,0 +1,31 @@
+title: Windows Metasploit Confluence Plugin Execution
+id: 3a3d1f35-5985-4827-b2ad-965467303c59
+status: experimental
+description: 'Detects the malicious java plugin execution used by metasploit for Atlassian Confluence exploitation.
+
+  This usually leads to the download of meterpreter giving the actor full control over the Confluence server.'
+references:
+- https://research.splunk.com/3a3d1f35-5985-4827-b2ad-965467303c59/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1608
+- attack.t1505.003
+- attack.t1190
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\Atlassian\\Confluence\\jre\\bin\\java.exe'
+  sel2:
+    CommandLine: '*-classpath *'
+  sel3:
+    CommandLine: '*\\AppData\\Local\\Temp\\~spawn*'
+  sel4:
+    CommandLine: '*.Payload*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1608/snapattack/snapattack.log

@@ -1,0 +1,32 @@
+title: Windows Spearphishing Attachment Onenote Spawn Mshta
+id: 35aeb0e7-7de5-444a-ac45-24d6788796ec
+status: experimental
+description: The following analytic detects OneNote spawning `mshta.exe`, a behavior often associated with spearphishing attacks.
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process creation events where OneNote is
+  the parent process. This activity is significant as it is commonly used by malware families like TA551, AsyncRat, Redline,
+  and DCRAT to execute malicious scripts. If confirmed malicious, this could allow attackers to execute arbitrary code, potentially
+  leading to data exfiltration, system compromise, or further malware deployment. Immediate investigation and containment
+  are recommended.
+references:
+- https://research.splunk.com/35aeb0e7-7de5-444a-ac45-24d6788796ec/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1566.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage:
+    - '*\\onenote.exe'
+    - '*\\onenotem.exe'
+  sel2:
+    Image: '*\\mshta.exe'
+  sel3:
+    OriginalFileName: MSHTA.EXE
+  condition: (sel1 and (sel2 or sel3))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566.001/onenote_spear_phishing/sysmon.log

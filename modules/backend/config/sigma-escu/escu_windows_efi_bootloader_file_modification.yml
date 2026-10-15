@@ -1,0 +1,29 @@
+title: Windows EFI Bootloader File Modification
+id: 28e1dbcd-9fd2-4de0-a637-f2b30db5dbb9
+status: experimental
+description: 'Detects where a process writes to critical EFI bootloader files (bootmgfw.efi or bootx64.efi) within the \EFI\Boot\
+  directory.
+
+  These files are responsible for initializing the Windows Boot Manager during system startup.
+
+  Modification or replacement of these files is highly unusual in normal operations and may indicate an attempt to install
+  a bootkit, persist malicious code at the firmware level, or otherwise tamper with the system boot process.'
+references:
+- https://research.splunk.com/28e1dbcd-9fd2-4de0-a637-f2b30db5dbb9/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1542.003
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*\\EFI\\Boot\\bootmgfw.efi'
+    - '*\\EFI\\Boot\\bootx64.efi'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1542.003/snapattack/snapattack.log

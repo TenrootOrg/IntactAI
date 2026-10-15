@@ -1,0 +1,100 @@
+title: Windows MSIExec Spawn Discovery Command
+id: e9d05aa2-32f0-411b-930c-5b8ca5c4fcee
+status: experimental
+description: 'The following analytic detects MSIExec spawning multiple discovery commands.
+
+  This behavior is identified using data from Endpoint Detection and Response (EDR) agents, focusing on process creation events
+  where MSIExec is the parent process.
+
+  If confirmed malicious, an attacker could use these discovery commands to gather system information, potentially leading
+  to further exploitation or lateral movement within the network.'
+references:
+- https://research.splunk.com/e9d05aa2-32f0-411b-930c-5b8ca5c4fcee/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1218.007
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\msiexec.exe'
+  sel2:
+    Image:
+    - '*\\arp.exe'
+    - '*\\dsget.exe'
+    - '*\\hostname.exe'
+    - '*\\ipconfig.exe'
+    - '*\\nbtstat.exe'
+    - '*\\netdom.exe'
+    - '*\\nltest.exe'
+    - '*\\ntdsutil.exe'
+    - '*\\qprocess.exe'
+    - '*\\qwinsta.exe'
+    - '*\\systeminfo.exe'
+    - '*\\wmic.exe'
+  sel3:
+    Image:
+    - '*\\bash.exe'
+    - '*\\cmd.exe'
+    - '*\\powershell.exe'
+    - '*\\powershell_ise.exe'
+    - '*\\pwsh.exe'
+  sel4:
+    CommandLine:
+    - '*arp *'
+    - '*dsget*'
+    - '*hostname*'
+    - '*ipconfig*'
+    - '*nbtstat*'
+    - '*netdom*'
+    - '*nltest*'
+    - '*ntdsutil*'
+    - '*qprocess *'
+    - '*qwinsta*'
+    - '*systeminfo*'
+    - '*wmic *'
+  sel5:
+    CommandLine:
+    - '*net *'
+    - '*net.exe *'
+    - '*net1*'
+    - '*net1.exe*'
+  sel6:
+    Image:
+    - '*\\net.exe'
+    - '*\\net1.exe'
+  sel7:
+    CommandLine: '*view*'
+  sel8:
+    CommandLine:
+    - '*reg *'
+    - '*reg.exe *'
+    - '*sc *'
+    - '*sc.exe *'
+  sel9:
+    Image:
+    - '*\\reg.exe'
+    - '*\\sc.exe'
+  sel10:
+    CommandLine: '*query*'
+  sel11:
+    CommandLine: '* /SC *'
+  sel12:
+    CommandLine:
+    - '*query *'
+    - '*query.exe*'
+  sel13:
+    Image: '*\\query.exe'
+  sel14:
+    CommandLine:
+    - '* process'
+    - '* session'
+    - '* user'
+  condition: (sel1 and (sel2 or (sel3 and (((sel4 or ((sel5 or sel6) and sel7)) or ((sel8 or sel9) and sel10 and not (sel11)))
+    or ((sel12 or sel13) and sel14)))))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.007/atomic_red_team/windows-sysmon.log

@@ -1,0 +1,31 @@
+title: Windows XLL File Creation Outside of Typical Location
+id: 7cdbe5e2-878d-4020-94f3-52938760155e
+status: experimental
+description: 'Detects the creation of an XLL file outside of typical locations.
+
+  This can indicate an attempt to abuse Excel COM objects to load and execute a malicious XLL.'
+references:
+- https://research.splunk.com/7cdbe5e2-878d-4020-94f3-52938760155e/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1129
+- attack.t1059
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename: '*.xll'
+  sel2:
+    TargetFilename:
+    - '*:\\Program Files\\Microsoft Office\\*'
+    - '*\\AppData\\Roaming\\Microsoft\\AddIns\\*'
+  condition: (sel1 and not (sel2))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1129/snapattack/snapattack.log
+x-intact-burst: false
+x-intact: 'Fired 1 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

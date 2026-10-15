@@ -1,0 +1,31 @@
+title: Suspicious Rundll32 StartW
+id: 9319dda5-73f2-4d43-a85a-67ce961bddb7
+status: experimental
+description: The following analytic identifies the execution of rundll32.exe with the DLL function names "Start" and "StartW,"
+  commonly associated with Cobalt Strike payloads. This detection leverages data from Endpoint Detection and Response (EDR)
+  agents, focusing on command-line executions and process metadata. This activity is significant as it often indicates the
+  presence of malicious payloads, such as Cobalt Strike, which can lead to unauthorized code execution. If confirmed malicious,
+  this activity could allow attackers to inject shellcode, escalate privileges, and maintain persistence within the environment.
+references:
+- https://research.splunk.com/9319dda5-73f2-4d43-a85a-67ce961bddb7/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.011
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\rundll32.exe'
+  sel2:
+    OriginalFileName: RUNDLL32.EXE
+  sel3:
+    CommandLine:
+    - '*startw'
+    - '*startw *'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.011/atomic_red_team/windows-sysmon.log

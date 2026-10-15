@@ -1,0 +1,32 @@
+title: Bcdedit Command Back To Normal Mode Boot
+id: dc7a8004-0f18-11ec-8c54-acde48001122
+status: experimental
+description: The following analytic detects the execution of a suspicious `bcdedit` command that reconfigures a host from
+  safe mode back to normal boot. This detection leverages Endpoint Detection and Response (EDR) data, focusing on command-line
+  executions involving `bcdedit.exe` with specific parameters. This activity is significant as it may indicate the presence
+  of ransomware, such as BlackMatter, which manipulates boot configurations to facilitate encryption processes. If confirmed
+  malicious, this behavior could allow attackers to maintain control over the boot process, potentially leading to further
+  system compromise and data encryption.
+references:
+- https://research.splunk.com/dc7a8004-0f18-11ec-8c54-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1490
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\bcdedit.exe'
+  sel2:
+    CommandLine: '*/deletevalue*'
+  sel3:
+    CommandLine: '*{current}*'
+  sel4:
+    CommandLine: '*safeboot*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1552.002/autoadminlogon/windows-sysmon.log

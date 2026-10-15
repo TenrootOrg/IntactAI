@@ -1,0 +1,29 @@
+title: Clop Ransomware Known Service Name
+id: 07e08a12-870c-11eb-b5f9-acde48001122
+status: experimental
+description: The following analytic identifies the creation of a service with a known name used by CLOP ransomware for persistence
+  and high-privilege code execution. It detects this activity by monitoring Windows Event Logs (EventCode 7045) for specific
+  service names ("SecurityCenterIBM", "WinCheckDRVs"). This activity is significant because the creation of such services
+  is a common tactic used by ransomware to maintain control over infected systems. If confirmed malicious, this could allow
+  attackers to execute code with elevated privileges, maintain persistence, and potentially disrupt or encrypt critical data.
+references:
+- https://research.splunk.com/07e08a12-870c-11eb-b5f9-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras
+tags:
+- attack.t1543
+logsource:
+  product: windows
+  service: system
+detection:
+  sel1:
+    EventID: '7045'
+  sel2:
+    ServiceName:
+    - SecurityCenterIBM
+    - WinCheckDRVs
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/clop/clop_a/windows-xml.log

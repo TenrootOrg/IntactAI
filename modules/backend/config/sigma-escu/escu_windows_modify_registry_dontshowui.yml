@@ -1,0 +1,29 @@
+title: Windows Modify Registry DontShowUI
+id: 4ff9767b-fdf2-489c-83a5-c6c34412d72e
+status: experimental
+description: The following analytic detects modifications to the Windows Error Reporting registry key "DontShowUI" to suppress
+  error reporting dialogs. It leverages data from the Endpoint datamodel's Registry node to identify changes where the registry
+  value is set to 0x00000001. This activity is significant as it is commonly associated with DarkGate malware, which uses
+  this modification to avoid detection during its installation. If confirmed malicious, this behavior could allow attackers
+  to maintain a low profile, avoiding user alerts and potentially enabling further malicious activities without user intervention.
+references:
+- https://research.splunk.com/4ff9767b-fdf2-489c-83a5-c6c34412d72e/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\\DontShowUI'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/wer_dontshowui/dontshowui_sys.log

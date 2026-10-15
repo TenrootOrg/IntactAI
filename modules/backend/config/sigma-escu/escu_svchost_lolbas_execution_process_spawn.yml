@@ -1,0 +1,106 @@
+title: Svchost LOLBAS Execution Process Spawn
+id: 09e5c72a-4c0d-11ec-aa29-3e22fbd008af
+status: experimental
+description: 'The following analytic detects instances of ''svchost.exe'' spawning Living Off The Land Binaries and Scripts
+  (LOLBAS) processes. It leverages Endpoint Detection and Response (EDR) data to monitor child processes of ''svchost.exe''
+  that match known LOLBAS executables. This activity is significant as adversaries often use LOLBAS techniques to execute
+  malicious code stealthily, potentially indicating lateral movement or code execution attempts.
+
+  If confirmed malicious, this behavior could allow attackers to execute arbitrary commands, escalate privileges, or maintain
+  persistence within the environment, posing a significant security risk.'
+references:
+- https://research.splunk.com/09e5c72a-4c0d-11ec-aa29-3e22fbd008af/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1053.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentCommandLine: '*'
+  sel2:
+    ParentImage: '*\\svchost.exe'
+  sel3:
+    Image:
+    - '*\\At.exe'
+    - '*\\Atbroker.exe'
+    - '*\\Bash.exe'
+    - '*\\Bitsadmin.exe'
+    - '*\\Certoc.exe'
+    - '*\\Cmstp.exe'
+    - '*\\Diskshadow.exe'
+    - '*\\Dnscmd.exe'
+    - '*\\Extexport.exe'
+    - '*\\Forfiles.exe'
+    - '*\\Ftp.exe'
+    - '*\\Gpscript.exe'
+    - '*\\Hh.exe'
+    - '*\\Ie4uinit.exe'
+    - '*\\Ieexec.exe'
+    - '*\\Infdefaultinstall.exe'
+    - '*\\Installutil.exe'
+    - '*\\Mavinject.exe'
+    - '*\\Microsoft.Workflow.Compiler.exe'
+    - '*\\Msbuild.exe'
+    - '*\\Msconfig.exe'
+    - '*\\Msdt.exe'
+    - '*\\Msiexec.exe'
+    - '*\\Netsh.exe'
+    - '*\\Odbcconf.exe'
+    - '*\\OfflineScannerShell.exe'
+    - '*\\Pcalua.exe'
+    - '*\\Pcwrun.exe'
+    - '*\\Pnputil.exe'
+    - '*\\PresentationHost.exe'
+    - '*\\Rasautou.exe'
+    - '*\\Regasm.exe'
+    - '*\\Register-cimprovider.exe'
+    - '*\\Regsvcs.exe'
+    - '*\\Regsvr32.exe'
+    - '*\\Runonce.exe'
+    - '*\\Runscripthelper.exe'
+    - '*\\Schtasks.exe'
+    - '*\\Scriptrunner.exe'
+    - '*\\SettingSyncHost.exe'
+    - '*\\Stordiag.exe'
+    - '*\\Syncappvpublishingserver.exe'
+    - '*\\Ttdinject.exe'
+    - '*\\Mshta.exe'
+    - '*\\Tttracer.exe'
+    - '*\\Verclsid.exe'
+    - '*\\Wab.exe'
+    - '*\\Wmic.exe'
+    - '*\\WorkFolders.exe'
+    - '*\\Wuauclt.exe'
+    - '*\\Xwizard.exe'
+  sel4:
+    ParentCommandLine:
+    - '*-k GPSvcGroup*'
+    - '*-k netsvcs'
+    - '*-k netsvcs -p'
+    - '*-k netsvcs -p -s gpsvc'
+  sel5:
+    Image: '*\\Gpscript.exe'
+  sel6:
+    ParentCommandLine:
+    - '*-k netsvcs'
+    - '*-k netsvcs -p'
+    - '*-k netsvcs -p -s wuauserv'
+    - -k netsvcs -p -s Schedule
+  sel7:
+    Image:
+    - '*\\Wuauclt.exe'
+    - '*\\Schtasks.exe'
+  sel8:
+    ParentCommandLine: '*-k DcomLaunch*'
+  sel9:
+    Image:
+    - '*\\PresentationHost.exe'
+    - '*\\SettingSyncHost.exe'
+  condition: (sel1 and sel2 and sel3 and not ((sel4 and sel5)) and not ((sel6 and sel7)) and not ((sel8 and sel9)))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1053.005/svchost_lolbas_execution_process_spawn/windows-xml.log

@@ -1,0 +1,51 @@
+title: Windows Execution of Microsoft MSC File In Suspicious Path
+id: ac30858b-7c25-4f0a-a7fa-bef036e49dc3
+status: experimental
+description: The following analytic detects when a Microsoft Management Console (MMC) process executes an .msc file in a suspicious
+  path on a Windows system. While .msc files are legitimate components used for system administration, unexpected execution
+  of these files by non-administrative processes or in unusual contexts can indicate malicious activity, such as living-off-the-land
+  attacks, persistence mechanisms, or automated administrative abuse. This detection monitors process creation events, command-line
+  arguments, and parent process relationships to help distinguish normal administrative usage from potential threats. Alerts
+  should be investigated in the context of the process initiating the .msc file, the target system, and any subsequent network
+  or system activity, as routine administrative tasks may also trigger this behavior.
+references:
+- https://research.splunk.com/ac30858b-7c25-4f0a-a7fa-bef036e49dc3/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1218.014
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\mmc.exe'
+  sel2:
+    CommandLine: '*.msc*'
+  sel3:
+    CommandLine:
+    - '*\\PerfLogs\\*'
+    - '*\\programdata\\*'
+    - '*Recycle.bin*'
+    - '*\\Download*'
+    - '*\\temp\\*'
+    - '*\\Users\\Administrator\\Music\\*'
+    - '*\\Users\\Default\\*'
+    - '*\\Users\\Public\\*'
+    - '*:\\Windows\\Prefetch\\*'
+    - '*:\\Windows\\Cursors\\*'
+    - '*:\\Windows\\INF\\*'
+    - '*:\\Windows\\debug\\*'
+    - '*:\\Windows\\fonts\\*'
+    - '*:\\Windows\\Media\\*'
+    - '*:\\Windows\\repair\\*'
+    - '*:\\Windows\\servicing\\*'
+  sel4:
+    CommandLine:
+    - '*C:\\Windows\\System32\\eventvwr.msc*'
+    - '*C:\\Windows\\System32\\certmgr.msc*'
+  condition: (sel1 and sel2 and sel3 and not (sel4))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.014/msc_execution/loaded_msc_mmc.log

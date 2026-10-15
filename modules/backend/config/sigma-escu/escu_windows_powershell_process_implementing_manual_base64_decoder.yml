@@ -1,0 +1,58 @@
+title: Windows PowerShell Process Implementing Manual Base64 Decoder
+id: 08d67349-0808-4f55-b431-1037269fa517
+status: experimental
+description: 'The following analytic identifies Windows PowerShell processes that implement a manual Base64 decoder.
+
+  Threat actors often use Base64 encoding to obfuscate malicious payloads or commands within PowerShell scripts.
+
+  By manually decoding Base64 strings, attackers can evade detection mechanisms that look for standard decoding functions
+  like using the "-enc" flag or the "FromBase64String" function.
+
+  This detection focuses on PowerShell processes that exhibit characteristics of manual Base64 decoding, such as the presence
+  of specific string manipulation methods and bitwise operations.
+
+  Security teams should investigate any instances of such activity, especially if found in conjunction with other suspicious
+  behaviors or on systems that should not be using PowerShell for such tasks.'
+references:
+- https://research.splunk.com/08d67349-0808-4f55-b431-1037269fa517/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali
+tags:
+- attack.t1027.010
+- attack.t1059.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\pwsh.exe'
+  sel2:
+    Image: '*\\powershell.exe'
+  sel3:
+    OriginalFileName: pwsh.dll
+  sel4:
+    OriginalFileName: PowerShell.EXE
+  sel5:
+    OriginalFileName: powershell_ise.EXE
+  sel6:
+    Image: '*\\powershell_ise.exe'
+  sel7:
+    CommandLine: '*ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/*'
+  sel8:
+    CommandLine: '*.Substring(*'
+  sel9:
+    CommandLine: '*.GetString(*'
+  sel10:
+    CommandLine: '*.IndexOf(*'
+  sel11:
+    CommandLine:
+    - '*-shl*'
+    - '*-shr*'
+    - '*-bxor*'
+    - '*-bor*'
+    - '*-band*'
+  condition: ((((((sel1 or sel2) or sel3) or sel4) or sel5) or sel6) and sel7 and sel8 and sel9 and sel10 and sel11)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1027.010/manual_b64_decode_pwsh/manual_b64_decode_pwsh.log

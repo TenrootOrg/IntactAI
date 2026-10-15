@@ -1,0 +1,46 @@
+title: Linux Auditd Database File And Directory Discovery
+id: f616c4f3-bde9-41cf-856c-019b65f668bb
+status: experimental
+description: The following analytic detects suspicious database file and directory discovery activities, which may signal
+  an attacker attempt to locate and assess critical database assets on a compromised system. This behavior is often a precursor
+  to data theft, unauthorized access, or privilege escalation, as attackers seek to identify valuable information stored in
+  databases. By monitoring for unusual or unauthorized attempts to locate database files and directories, this analytic aids
+  in early detection of potential reconnaissance or data breach efforts, enabling security teams to respond swiftly and mitigate
+  the risk of further compromise.
+references:
+- https://research.splunk.com/f616c4f3-bde9-41cf-856c-019b65f668bb/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1083
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    CommandLine:
+    - '*find*'
+    - '*grep*'
+  sel2:
+    CommandLine:
+    - '*.db*'
+    - '*.sql*'
+    - '*.sqlite*'
+    - '*.mdb*'
+    - '*.accdb*'
+    - '*.mdf*'
+    - '*.ndf*'
+    - '*.ldf*'
+    - '*.frm*'
+    - '*.myd*'
+    - '*.myi*'
+    - '*.dbf*'
+    - '*.db2*'
+    - '*.dbc*'
+    - '*.fpt*'
+    - '*.ora*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1083/linux_auditd_find_db/linux_auditd_find_db.log

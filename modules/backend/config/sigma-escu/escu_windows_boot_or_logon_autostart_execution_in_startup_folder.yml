@@ -1,0 +1,25 @@
+title: Windows Boot or Logon Autostart Execution In Startup Folder
+id: 99d157cb-923f-4a00-aee9-1f385412146f
+status: experimental
+description: The following analytic detects the creation of files in the Windows %startup% folder, a common persistence technique.
+  It leverages the Endpoint.Filesystem data model to identify file creation events in this specific directory. This activity
+  is significant because adversaries often use the startup folder to ensure their malicious code executes automatically upon
+  system boot or user logon. If confirmed malicious, this could allow attackers to maintain persistence on the host, potentially
+  leading to further system compromise and unauthorized access to sensitive information.
+references:
+- https://research.splunk.com/99d157cb-923f-4a00-aee9-1f385412146f/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1547.001
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename: '*\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\*'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/chaos_ransomware/sysmon.log

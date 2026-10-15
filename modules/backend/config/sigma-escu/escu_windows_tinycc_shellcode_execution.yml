@@ -1,0 +1,47 @@
+title: Windows TinyCC Shellcode Execution
+id: fdb6774e-e465-4912-86e3-63cf9ab91491
+status: experimental
+description: 'Detects abuse of Tiny-C-Compiler (TinyCC) for shellcode execution, where tcc.exe is renamed to masquerade as
+  svchost.exe and used to compile and execute C source files containing shellcode.
+
+  This technique was observed in the Lotus Blossom Chrysalis backdoor campaign, where attackers renamed "tcc.exe" to "svchost.exe",
+  and executed a file named "conf.c" containing Metasploit block_api shellcode with the flags -nostdlib -run.
+
+  TinyCC is a legitimate C compiler, but its ability to compile and execute code on-the-fly makes it attractive to attackers
+  seeking to evade detection.
+
+  The combination of a renamed compiler binary executing from non-standard locations with suspicious flags is a strong indicator
+  of malicious activity.'
+references:
+- https://research.splunk.com/fdb6774e-e465-4912-86e3-63cf9ab91491/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1059.003
+- attack.t1027
+- attack.t1036
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\svchost.exe'
+    - '*\\tcc.exe'
+  sel2:
+    CommandLine: '* -nostdlib*'
+  sel3:
+    CommandLine: '* -run*'
+  sel4:
+    CommandLine:
+    - '*.c'
+    - '*conf.c*'
+  sel5:
+    Image:
+    - '*:\\Windows\\System32\\*'
+    - '*:\\Windows\\SysWOW64\\*'
+  condition: (sel1 and sel2 and sel3 and sel4 and not (sel5))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.005/lotus_blossom_chrysalis/windows-sysmon.log

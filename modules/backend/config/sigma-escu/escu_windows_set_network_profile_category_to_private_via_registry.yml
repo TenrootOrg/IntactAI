@@ -1,0 +1,37 @@
+title: Windows Set Network Profile Category to Private via Registry
+id: b11bb510-97e1-4b7a-b673-887ab228c280
+status: experimental
+description: The following analytic detects attempts to modify the Windows Registry to change a network profile's category
+  to "Private", which may indicate an adversary is preparing the environment for lateral movement or reducing firewall restrictions.
+  Specifically, this activity involves changes to the Category value within the HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Profiles\{GUID}
+  registry path. A value of 1 corresponds to a private network profile, which typically enables less restrictive firewall
+  policies. While this action can occur during legitimate network configuration, it may also be a sign of malicious behavior
+  when combined with other indicators such as suspicious account activity, unexpected administrative privilege usage, or execution
+  of unsigned binaries. Monitoring for this registry modification—especially outside standard IT processes or correlated with
+  persistence mechanisms—can help identify stealthy post-exploitation activity.
+references:
+- https://research.splunk.com/b11bb510-97e1-4b7a-b673-887ab228c280/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles\\*'
+  sel2:
+    TargetObject: '*\\Category'
+  sel3:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/reg_profiles_private2/reg_profiles_private2.log
+x-intact-burst: false
+x-intact: 'Fired 1 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

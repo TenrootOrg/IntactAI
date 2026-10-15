@@ -1,0 +1,28 @@
+title: Windows PowerView Kerberos Service Ticket Request
+id: 970455a1-4ac2-47e1-a9a5-9e75443ddcb9
+status: experimental
+description: The following analytic detects the execution of the `Get-DomainSPNTicket` commandlet, part of the PowerView tool,
+  by leveraging PowerShell Script Block Logging (EventCode=4104). This commandlet requests Kerberos service tickets for specified
+  service principal names (SPNs). Monitoring this activity is crucial as it can indicate attempts to perform Kerberoasting,
+  a technique used to extract SPN account passwords via cracking tools like hashcat. If confirmed malicious, this activity
+  could allow attackers to gain unauthorized access to sensitive accounts, potentially leading to privilege escalation and
+  further network compromise.
+references:
+- https://research.splunk.com/970455a1-4ac2-47e1-a9a5-9e75443ddcb9/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Splunk
+tags:
+- attack.t1558.003
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Get-DomainSPNTicket*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1558.003/powerview/windows-powershell-xml.log

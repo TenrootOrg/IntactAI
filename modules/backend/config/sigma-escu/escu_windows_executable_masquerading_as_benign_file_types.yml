@@ -1,0 +1,39 @@
+title: Windows Executable Masquerading as Benign File Types
+id: 0470c8e7-dd8d-420f-8302-073e8a2b66f0
+status: experimental
+description: The following analytic detects the presence of executable files masquerading as benign file types on Windows
+  systems. Adversaries employ this technique to evade defenses and trick users into executing malicious code by renaming executables
+  with extensions commonly associated with documents, images, or other non-executable formats (e.g., .pdf, .jpg, .doc, .png).
+references:
+- https://research.splunk.com/0470c8e7-dd8d-420f-8302-073e8a2b66f0/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1036.008
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  sel1:
+    EventID: '29'
+  sel2:
+    TargetFilename:
+    - '*.exe'
+    - '*.dll'
+    - '*.sys'
+    - '*.ocx'
+    - '*.scr'
+    - '*.cpl'
+    - '*.efi'
+    - '*.drv'
+    - '*.bpl'
+    - '*.ax'
+    - '*.ime'
+    - '*.acm'
+    - '*.rll'
+    - '*.tsp'
+  condition: (sel1 and not (sel2))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036.008/masquerading_executable_as_non_exec_file_type/non_exec_ext_but_exec_detected.log

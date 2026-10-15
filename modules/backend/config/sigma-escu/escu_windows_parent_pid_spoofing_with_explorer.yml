@@ -1,0 +1,27 @@
+title: Windows Parent PID Spoofing with Explorer
+id: 17f8f69c-5d00-4c88-9c6f-493bbdef20a1
+status: experimental
+description: The following analytic identifies a suspicious `explorer.exe` process with the `/root` command-line parameter.
+  This detection leverages Endpoint Detection and Response (EDR) telemetry, focusing on process and command-line data. The
+  presence of `/root` in `explorer.exe` is significant as it may indicate parent process spoofing, a technique used by malware
+  to evade detection. If confirmed malicious, this activity could allow an attacker to operate undetected, potentially leading
+  to unauthorized access, privilege escalation, or persistent threats within the environment.
+references:
+- https://research.splunk.com/17f8f69c-5d00-4c88-9c6f-493bbdef20a1/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1134.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*explorer.exe*'
+  sel2:
+    CommandLine: '*/root,*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1134/explorer_root_proc_cmdline/explorer_root.log

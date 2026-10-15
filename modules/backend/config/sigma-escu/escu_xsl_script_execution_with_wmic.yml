@@ -1,0 +1,33 @@
+title: XSL Script Execution With WMIC
+id: 004e32e2-146d-11ec-a83f-acde48001122
+status: experimental
+description: The following analytic detects the execution of an XSL script using the WMIC process, which is often indicative
+  of malicious activity. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line executions
+  involving WMIC and XSL files. This behavior is significant as it has been associated with the FIN7 group, known for using
+  this technique to execute malicious scripts. If confirmed malicious, this activity could allow attackers to execute arbitrary
+  code, potentially leading to system compromise and further malicious actions within the environment.
+references:
+- https://research.splunk.com/004e32e2-146d-11ec-a83f-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1220
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    OriginalFileName: wmic.exe
+  sel3:
+    CommandLine: '*os get*'
+  sel4:
+    CommandLine: '*/format:*'
+  sel5:
+    CommandLine: '*.xsl*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/fin7/fin7_macro_js_1/sysmon.log

@@ -1,0 +1,31 @@
+title: Windows MSC EvilTwin Directory Path Manipulation
+id: 7f6b8a95-3fb7-429a-8c53-e5d4f8d92a10
+status: experimental
+description: The following analytic detects potential MSC EvilTwin loader exploitation, which manipulates directory paths
+  with spaces to bypass security controls. The technique, described as CVE-2025-26633, involves crafting malicious MSC files
+  that leverage MUIPath parameter manipulation. This detection focuses on suspicious MSC file execution patterns with unconventional
+  command-line parameters, particularly those containing unusual spaces in Windows System32 paths or suspicious additional
+  parameters after the MSC file. If confirmed malicious, this behavior could allow an attacker to execute arbitrary code with
+  elevated privileges through DLL side-loading or path traversal techniques.
+references:
+- https://research.splunk.com/7f6b8a95-3fb7-429a-8c53-e5d4f8d92a10/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218
+- attack.t1036.005
+- attack.t1203
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\mmc.exe'
+  condition: sel1
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218/eviltwin/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 42 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

@@ -1,0 +1,39 @@
+title: Windows Service Stop Win Updates
+id: 0dc25c24-6fcf-456f-b08b-dd55a183e4de
+status: experimental
+description: The following analytic detects the disabling of Windows Update services, such as "Update Orchestrator Service
+  for Windows Update," "WaaSMedicSvc," and "Windows Update." It leverages Windows System Event ID 7040 logs to identify changes
+  in service start modes to 'disabled.' This activity is significant as it can indicate an adversary's attempt to evade defenses
+  by preventing critical updates, leaving the system vulnerable to exploits. If confirmed malicious, this could allow attackers
+  to maintain persistence and exploit unpatched vulnerabilities, compromising the integrity and security of the affected host.
+references:
+- https://research.splunk.com/0dc25c24-6fcf-456f-b08b-dd55a183e4de/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1489
+logsource:
+  product: windows
+  service: system
+detection:
+  sel1:
+    EventID: '7040'
+  sel2:
+    service_name:
+    - Update Orchestrator Service for Windows Update
+    - WaaSMedicSvc
+    - Windows Update
+  sel3:
+    param1:
+    - UsoSvc
+    - WaaSMedicSvc
+    - wuauserv
+  sel4:
+    param3: disabled
+  sel5:
+    start_mode: disabled
+  condition: (sel1 and (sel2 or sel3) and (sel4 or sel5))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/redline/win_update_services_stop/system.log

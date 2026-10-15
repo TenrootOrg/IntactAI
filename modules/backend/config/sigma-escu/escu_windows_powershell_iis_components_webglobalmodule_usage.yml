@@ -1,0 +1,31 @@
+title: Windows PowerShell IIS Components WebGlobalModule Usage
+id: 33fc9f6f-0ce7-4696-924e-a69ec61a3d57
+status: experimental
+description: The following analytic detects the usage of PowerShell Cmdlets - New-WebGlobalModule, Enable-WebGlobalModule,
+  and Set-WebGlobalModule, which are used to create, enable, or modify IIS Modules. This detection leverages PowerShell Script
+  Block Logging, specifically monitoring EventCode 4104 for these cmdlets. This activity is significant as adversaries may
+  use these lesser-known cmdlets to manipulate IIS configurations, similar to AppCmd.exe, potentially bypassing traditional
+  defenses. If confirmed malicious, this could allow attackers to persist in the environment, manipulate web server behavior,
+  or escalate privileges.
+references:
+- https://research.splunk.com/33fc9f6f-0ce7-4696-924e-a69ec61a3d57/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1505.004
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText:
+    - '*New-WebGlobalModule*'
+    - '*Enable-WebGlobalModule*'
+    - '*Set-WebGlobalModule*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1505.004/4104_windows-powershell.log

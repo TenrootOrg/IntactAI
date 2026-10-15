@@ -1,0 +1,29 @@
+title: Remote WMI Command Attempt
+id: 272df6de-61f1-4784-877c-1fbc3e2d0838
+status: experimental
+description: The following analytic detects the execution of `wmic.exe` with the `node` switch, indicating an attempt to spawn
+  a local or remote process. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on
+  process creation events and command-line arguments. This activity is significant as it may indicate lateral movement or
+  remote code execution attempts by an attacker. If confirmed malicious, the attacker could gain remote control over the targeted
+  system, execute arbitrary commands, and potentially escalate privileges or persist within the environment.
+references:
+- https://research.splunk.com/272df6de-61f1-4784-877c-1fbc3e2d0838/
+author: Splunk Security Content (Apache-2.0), Rico Valdez, Michael Haag, Splunk
+tags:
+- attack.t1047
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    OriginalFileName: wmic.exe
+  sel3:
+    CommandLine: '*node*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1047/atomic_red_team/windows-sysmon.log

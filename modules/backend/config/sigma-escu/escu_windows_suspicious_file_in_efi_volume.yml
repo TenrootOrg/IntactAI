@@ -1,0 +1,28 @@
+title: Windows Suspicious File in EFI Volume
+id: 4000d728-faaf-44d4-969b-12216f2879e1
+status: experimental
+description: 'Detects data files in the EFI volume.
+
+  This is sometimes indicative of an actor attempting to bypass secure boot through vulnerabilities such as CVE-2024-7344.
+
+  These use vulnerable boot loaders to run malicious system firmware code.'
+references:
+- https://research.splunk.com/4000d728-faaf-44d4-969b-12216f2879e1/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1542.001
+- attack.t1490
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename: '*\\EFI\\Boot\\*'
+  sel2:
+    TargetFilename: '*.dat'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1542.001/snapattack/snapattack.log

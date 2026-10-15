@@ -1,0 +1,37 @@
+title: Windows FFmpeg Audio and Video Device Discovery
+id: 6394c389-3863-4677-bcbd-07d1519b34d2
+status: experimental
+description: This analytic detects the use of FFmpeg (ffmpeg.exe) to enumerate connected audio and video devices on a Windows
+  endpoint. Adversaries and stealers such as SalatStealer abuse FFmpeg's DirectShow (dshow) input interface by invoking it
+  with the -list_devices true and -hide_banner flags from a temporary directory, allowing them to silently discover available
+  webcams, microphones, and capture cards without triggering obvious user-facing activity. Device discovery of this kind maps
+  to MITRE ATT&CK T1125 (Video Capture), where threat actors profile the system's multimedia capabilities as a precursor to
+  covert audio or video surveillance. The combination of an unusual process path (temp), the dshow input filter, and the device-listing
+  arguments is a strong indicator of malicious reconnaissance rather than legitimate administrative use.
+references:
+- https://research.splunk.com/6394c389-3863-4677-bcbd-07d1519b34d2/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1125
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\ffmpeg.exe'
+  sel2:
+    OriginalFileName: ffmpeg.exe
+  sel3:
+    Image: '*\\temp\\*'
+  sel4:
+    CommandLine: '*-list_devices*'
+  sel5:
+    CommandLine: '*-hide_banner*'
+  sel6:
+    CommandLine: '* dshow *'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5 and sel6)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1125/salat_stealer_ffmpeg/ffmpeg_event.log

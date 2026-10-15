@@ -1,0 +1,29 @@
+title: Windows Shell or Script Execution From IIS Directory
+id: f058f7f9-d5cf-4a79-a720-24e93e87c8bf
+status: experimental
+description: 'Detects Windows command tools such as cmd, PowerShell, or pwsh being executed from the IIS installation directory.
+
+  This can be indicative of exploitation of software reliant on IIS such as Exchange.'
+references:
+- https://research.splunk.com/f058f7f9-d5cf-4a79-a720-24e93e87c8bf/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1190
+- attack.t1505.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CurrentDirectory: '*:\\Windows\\System32\\inetsrv\\*'
+  sel2:
+    ParentImage:
+    - '*\\cmd.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/snapattack/snapattack.log

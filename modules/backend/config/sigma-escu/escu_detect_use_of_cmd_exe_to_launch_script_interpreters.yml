@@ -1,0 +1,51 @@
+title: Detect Use of cmd exe to Launch Script Interpreters
+id: b89919ed-fe5f-492c-b139-95dbb162039e
+status: experimental
+description: 'The following detects the execution of cscript.exe or wscript.exe processes spawned by cmd.exe, leveraging Endpoint
+  Detection and Response (EDR) telemetry mapped to the Endpoint data model, with additional contextual filtering to improve
+  fidelity and reduce false positives.
+
+  It focuses on executions originating from user-writable directories such as Users, AppData, Temp, and Downloads, which are
+  commonly abused by attackers to stage and execute malicious scripts, while excluding trusted system paths like C:\Windows\System32\
+  and C:\Program Files\ that are typically associated with legitimate activity.
+
+  The detection also filters out service accounts (e.g., accounts ending with $ or known naming conventions) to minimize noise
+  from automated processes and incorporates command-line context to better assess script execution patterns and identify potentially
+  suspicious behavior.'
+references:
+- https://research.splunk.com/b89919ed-fe5f-492c-b139-95dbb162039e/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Mauricio Velazco, Splunk
+tags:
+- attack.t1059.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\cmd.exe'
+  sel2:
+    Image:
+    - '*\\cscript.exe'
+    - '*\\wscript.exe'
+  sel3:
+    OriginalFileName:
+    - cscript.exe
+    - wscript.exe
+  sel4:
+    CommandLine:
+    - '* "C:\\Program Files (x86)\\*'
+    - '* "C:\\Program Files\\*'
+    - '* "C:\\Windows\\System32\\*'
+    - '* "C:\\Windows\\SysWOW64\\*'
+    - '* C:\\Program Files (x86)\\*'
+    - '* C:\\Program Files\\*'
+    - '* C:\\Windows\\System32\\*'
+    - '* C:\\Windows\\SysWOW64\\*'
+  sel5:
+    User: '*$'
+  condition: (sel1 and (sel2 or sel3) and not (sel4) and not (sel5))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.003/cmd_spawns_cscript/windows-sysmon.log

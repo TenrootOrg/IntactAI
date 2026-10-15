@@ -1,0 +1,26 @@
+title: Windows Potential Web Shell Creation For VMware Workspace ONE
+id: 7d15f645-58cc-4cb7-a9bf-2dcf15bc4b28
+status: experimental
+description: This analytic looks for evidence of web shells being created in the VMware Workspace ONE path on Windows or Linux
+  systems, which has been actively exploited by attackers via CVE-2022-22954.
+references:
+- https://research.splunk.com/7d15f645-58cc-4cb7-a9bf-2dcf15bc4b28/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1505.003
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*/vmware/horizon/workspace/webapps/*'
+    - '*\\vmware\\horizon\\workspace\\webapps\\*'
+  sel2:
+    TargetFilename: '*.jsp'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1505.003/snapattack/snapattack.log

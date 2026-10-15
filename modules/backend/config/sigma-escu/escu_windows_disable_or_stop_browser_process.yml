@@ -1,0 +1,33 @@
+title: Windows Disable or Stop Browser Process
+id: 220d34b7-b6c7-45fe-8dbb-c35cdd9fe6d5
+status: experimental
+description: The following analytic detects the use of the taskkill command in a process command line to terminate several
+  known browser processes, a technique commonly employed by the Braodo stealer malware to steal credentials. By forcefully
+  closing browsers like Chrome, Edge, and Firefox, the malware can unlock files that store sensitive information, such as
+  passwords and login data. This detection focuses on identifying taskkill commands targeting these browsers, signaling malicious
+  intent. Early detection allows security teams to investigate and prevent further credential theft and system compromise.
+references:
+- https://research.splunk.com/220d34b7-b6c7-45fe-8dbb-c35cdd9fe6d5/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*taskkill*'
+  sel2:
+    CommandLine:
+    - '*chrome.exe'
+    - '*firefox.exe'
+    - '*brave.exe'
+    - '*opera.exe'
+    - '*msedge.exe'
+    - '*chromium.exe'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/taskkill_browser/braodo_taskkill.log

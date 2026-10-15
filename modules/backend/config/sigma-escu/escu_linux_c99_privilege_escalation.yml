@@ -1,0 +1,29 @@
+title: Linux c99 Privilege Escalation
+id: e1c6dec5-2249-442d-a1f9-99a4bd228183
+status: experimental
+description: The following analytic detects the execution of the c99 utility with sudo privileges, which can lead to privilege
+  escalation on Linux systems. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process execution
+  logs that include command-line details. This activity is significant because it indicates a potential misuse of the c99
+  utility to gain root access, which is critical for maintaining system security. If confirmed malicious, this could allow
+  an attacker to execute commands as root, potentially compromising the entire system and accessing sensitive information.
+references:
+- https://research.splunk.com/e1c6dec5-2249-442d-a1f9-99a4bd228183/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Splunk
+tags:
+- attack.t1548.003
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    CommandLine: '*c99*'
+  sel2:
+    CommandLine: '*-wrapper*'
+  sel3:
+    CommandLine: '*sudo*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548/c99/sysmon_linux.log

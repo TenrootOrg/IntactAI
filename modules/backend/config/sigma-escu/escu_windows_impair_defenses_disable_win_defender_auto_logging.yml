@@ -1,0 +1,31 @@
+title: Windows Impair Defenses Disable Win Defender Auto Logging
+id: 76406a0f-f5e0-4167-8e1f-337fdc0f1b0c
+status: experimental
+description: The following analytic detects the disabling of Windows Defender logging by identifying changes to the Registry
+  keys DefenderApiLogger or DefenderAuditLogger set to disable. It leverages data from the Endpoint.Registry datamodel to
+  monitor specific registry paths and values. This activity is significant as it is commonly associated with Remote Access
+  Trojan (RAT) malware attempting to evade detection. If confirmed malicious, this action could allow an attacker to conceal
+  their activities, making it harder to detect further malicious actions and maintain persistence on the compromised endpoint.
+references:
+- https://research.splunk.com/76406a0f-f5e0-4167-8e1f-337fdc0f1b0c/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*WMI\\Autologger\\DefenderApiLogger\\Start'
+  sel2:
+    TargetObject: '*WMI\\Autologger\\DefenderAuditLogger\\Start'
+  sel3:
+    Details:
+    - '* (0x00000000)'
+    - '0x00000000'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable_defender_logging/sysmon.log

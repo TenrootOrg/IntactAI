@@ -1,0 +1,40 @@
+title: Windows Process With NamedPipe CommandLine
+id: e64399d4-94a8-11ec-a9da-acde48001122
+status: experimental
+description: 'The following analytic detects processes with command lines containing named pipes. It leverages data from Endpoint
+  Detection and Response (EDR) agents, focusing on process command-line executions.
+
+  This behavior is significant as it is often used by adversaries, such as those behind the Olympic Destroyer malware, for
+  inter-process communication post-injection, aiding in defense evasion and privilege escalation.
+
+  If confirmed malicious, this activity could allow attackers to maintain persistence, escalate privileges, or evade defenses,
+  potentially leading to further compromise of the system.'
+references:
+- https://research.splunk.com/e64399d4-94a8-11ec-a9da-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1055
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*\\\\.\\pipe\\*'
+  sel2:
+    ParentImage:
+    - '*:\\Program Files (x86)\\*'
+    - '*:\\Program Files\\*'
+    - '*:\\Windows\\System32\\*'
+    - '*:\\Windows\\SysWOW64\\*'
+  sel3:
+    Image:
+    - '*:\\Program Files (x86)\\*'
+    - '*:\\Program Files\\*'
+    - '*:\\Windows\\System32\\*'
+    - '*:\\Windows\\SysWOW64\\*'
+  condition: (sel1 and (not (sel2) or not (sel3)))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/olympic_destroyer/sysmon.log

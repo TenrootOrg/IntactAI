@@ -1,0 +1,33 @@
+title: Check Elevated CMD using whoami
+id: a9079b18-1633-11ec-859c-acde48001122
+status: experimental
+description: The following analytic identifies the execution of the "whoami" command with the "/group" flag, where the results
+  are passed to the "find" command in order to look for a the string "12288". This string represents the SID of the group
+  "Mandatory Label\High Mandatory Level" effectively checking if the current process is running as a "High" integrity process
+  or with Administrator privileges. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process
+  and command-line telemetry. This activity is significant because it is commonly used by attackers, such as FIN7, to perform
+  reconnaissance on a compromised host. If confirmed malicious, this behavior could indicate an attacker is assessing their
+  privilege level, potentially leading to further privilege escalation or persistence within the environment.
+references:
+- https://research.splunk.com/a9079b18-1633-11ec-859c-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1033
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*whoami*'
+  sel2:
+    CommandLine: '*/group*'
+  sel3:
+    CommandLine: '* find *'
+  sel4:
+    CommandLine: '*12288*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/fin7/fin7_js_2/sysmon.log

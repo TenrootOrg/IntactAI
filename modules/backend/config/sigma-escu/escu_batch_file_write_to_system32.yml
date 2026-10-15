@@ -1,0 +1,35 @@
+title: Batch File Write to System32
+id: 503d17cb-9eab-4cf8-a20e-01d5c6987ae3
+status: experimental
+description: 'The following analytic detects the creation of a batch file (.bat) within the Windows system directory tree,
+  specifically in the System32 or SysWOW64 folders. It leverages data from the Endpoint datamodel, focusing on process and
+  filesystem events to identify this behavior.
+
+  This activity is significant because writing batch files to system directories can be indicative of malicious intent, such
+  as persistence mechanisms or system manipulation.
+
+  If confirmed malicious, this could allow an attacker to execute arbitrary commands with elevated privileges, potentially
+  compromising the entire system.'
+references:
+- https://research.splunk.com/503d17cb-9eab-4cf8-a20e-01d5c6987ae3/
+author: Splunk Security Content (Apache-2.0), Steven Dick, Michael Haag, Rico Valdez, Splunk
+tags:
+- attack.t1204.002
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*:\\Windows\\System32\\*'
+    - '*:\\Windows\\SysWOW64\\*'
+  sel2:
+    TargetFilename:
+    - '*.bat'
+    - '*.cmd'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1204.002/batch_file_in_system32/windows-sysmon.log

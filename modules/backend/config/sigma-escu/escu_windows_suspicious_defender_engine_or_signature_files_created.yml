@@ -1,0 +1,40 @@
+title: Windows Suspicious Defender Engine or Signature Files Created
+id: 42e848eb-1d5f-4ffb-88c2-088c4a6fdfb3
+status: experimental
+description: 'Detects Windows Defender engine (mpengine.dll) or signature database files (*.vdm) being created by any process
+  that is not a Windows Defender component.
+
+  BlueHammer extracts these files from the downloaded mpam-fe update package into a UUID-named subdirectory of %TEMP% as part
+  of staging the TOCTOU privilege escalation.'
+references:
+- https://research.splunk.com/42e848eb-1d5f-4ffb-88c2-088c4a6fdfb3/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+logsource:
+  product: windows
+  service: sysmon
+  category: file_event
+detection:
+  sel1:
+    EventID: '11'
+  sel2:
+    TargetFilename:
+    - '*\\mpasbase.vdm*'
+    - '*\\mpasdlta.vdm*'
+    - '*\\mpavbase.vdm*'
+    - '*\\mpavdlta.vdm*'
+    - '*\\mpengine.dll*'
+  sel3:
+    Image:
+    - '*:\\ProgramData\\Microsoft\\Windows Defender\\*'
+    - '*:\\Program Files\\Windows Defender\\*'
+  condition: (sel1 and sel2 and not (sel3))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/bluehammer/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 9 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

@@ -1,0 +1,36 @@
+title: Windows Entra User Management Via Azure CLI
+id: f6332409-abeb-42f8-b6a7-76201bdc7a0a
+status: experimental
+description: 'This analytic detects the usage of the Azure CLI to interact with user accounts such as creating or deleting
+  a user.
+
+  Adversaries create new users so that their malicious activity does not interrupt the normal functions of the compromised
+  users and can remain undetected.
+
+  While legitimate administrative use is expected, anomalous execution patterns, unexpected users, or unusual parent processes
+  should be treated as potential indicators of compromise and investigated promptly.'
+references:
+- https://research.splunk.com/f6332409-abeb-42f8-b6a7-76201bdc7a0a/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1136
+- attack.t1078.004
+- attack.t1098
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine:
+    - '*az.cmd*'
+    - '*azure.cli*'
+  sel2:
+    CommandLine: '*ad *'
+  sel3:
+    CommandLine: '* user*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1136/snapattack/snapattack.log

@@ -1,0 +1,30 @@
+title: Get-ForestTrust with PowerShell
+id: 584f4884-0bf1-11ec-a5ec-acde48001122
+status: experimental
+description: The following analytic detects the execution of the Get-ForestTrust command via PowerShell, commonly used by
+  adversaries to gather domain trust information. This detection leverages data from Endpoint Detection and Response (EDR)
+  agents, focusing on process names and command-line executions. Identifying this activity is crucial as it indicates potential
+  reconnaissance efforts to map out domain trusts, which can inform further attacks. If confirmed malicious, this activity
+  could allow attackers to understand domain relationships, aiding in lateral movement and privilege escalation within the
+  network.
+references:
+- https://research.splunk.com/584f4884-0bf1-11ec-a5ec-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1482
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\powershell.exe'
+  sel2:
+    Image: '*\\cmd.exe'
+  sel3:
+    CommandLine: '*get-foresttrust*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1482/discovery/windows-sysmon.log

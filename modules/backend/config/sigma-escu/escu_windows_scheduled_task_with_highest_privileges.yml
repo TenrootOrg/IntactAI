@@ -1,0 +1,29 @@
+title: Windows Scheduled Task with Highest Privileges
+id: 2f15e1a4-0fc2-49dd-919e-cbbe60699218
+status: experimental
+description: The following analytic detects the creation of a new scheduled task with the highest execution privileges via
+  Schtasks.exe. It leverages Endpoint Detection and Response (EDR) logs to monitor for specific command-line parameters ('/rl'
+  and 'highest') in schtasks.exe executions. This activity is significant as it is commonly used in AsyncRAT attacks for persistence
+  and privilege escalation. If confirmed malicious, this could allow an attacker to maintain persistent access and execute
+  tasks with elevated privileges, potentially leading to unauthorized system access and data breaches.
+references:
+- https://research.splunk.com/2f15e1a4-0fc2-49dd-919e-cbbe60699218/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1053.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\schtasks.exe'
+  sel2:
+    CommandLine: '*/rl *'
+  sel3:
+    CommandLine: '* highest *'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1053.005/asyncrat_highest_priv_schtasks/sysmon.log

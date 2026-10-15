@@ -1,0 +1,59 @@
+title: Windows Potato Privilege Escalation Tool Execution
+id: cfde2a20-3737-4760-8498-16e1e6d1672d
+status: experimental
+description: 'Detects execution of known Potato-family privilege escalation tools based on original file name, process name,
+  or binary path.
+
+  A tool class that has been a dominant post-compromise privilege escalation method for over a decade and remains actively
+  used by ransomware operators, red teams, and nation-state actors alike.
+
+  The Potato family exploits Windows token impersonation and privilege abuse to escalate from a service account, IIS worker
+  process, or other restricted context to SYSTEM.
+
+  The core abuse chain across most variants involves tricking a SYSTEM-level process into authenticating to an attacker-controlled
+  endpoint, capturing that authentication, and impersonating the resulting SYSTEM token to spawn an elevated process.'
+references:
+- https://research.splunk.com/cfde2a20-3737-4760-8498-16e1e6d1672d/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    OriginalFileName:
+    - '*CertPotato*'
+    - '*CoercedPotato*'
+    - '*GenericPotato*'
+    - '*GhostPotato*'
+    - '*GodPotato*'
+    - '*HotPotato*'
+    - '*JuicyPotato*'
+    - '*LocalPotato*'
+    - '*LonelyPotato*'
+    - '*RoguePotato*'
+    - '*RottenPotato*'
+    - '*SharpPotato*'
+    - '*SweetPotato*'
+  sel2:
+    Image:
+    - '*CertPotato*'
+    - '*CoercedPotato*'
+    - '*GenericPotato*'
+    - '*GhostPotato*'
+    - '*GodPotato*'
+    - '*HotPotato*'
+    - '*JuicyPotato*'
+    - '*LocalPotato*'
+    - '*LonelyPotato*'
+    - '*RoguePotato*'
+    - '*RottenPotato*'
+    - '*SharpPotato*'
+    - '*SweetPotato*'
+  condition: (sel1 or sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/snapattack/snapattack.log

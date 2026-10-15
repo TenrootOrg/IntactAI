@@ -1,0 +1,38 @@
+title: Windows Chromium Browser No Security Sandbox Process
+id: 314cb263-7eeb-4d45-b693-bb21699c73d2
+status: experimental
+description: The following analytic detects instances where a Chrome or Chromium-based browser is launched with the --no-sandbox
+  flag, a known indicator of potentially malicious or suspicious behavior. While this flag is occasionally used during software
+  development or testing, it is rarely seen in normal user activity. Threat actors often abuse this setting to disable Chrome's
+  built-in security sandbox, making it easier to execute malicious code or escape browser isolation. This behavior is commonly
+  observed in malware droppers or loaders that embed Chromium components for command and control, credential theft, or UI
+  spoofing. Analysts should investigate such events, especially if they originate from unusual parent processes (e.g., powershell.exe,
+  cmd.exe, or unknown binaries), or if accompanied by other indicators such as file drops, process injection, or outbound
+  network activity. Filtering by command-line arguments and process ancestry can help reduce false positives and surface high-fidelity
+  d
+references:
+- https://research.splunk.com/314cb263-7eeb-4d45-b693-bb21699c73d2/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1497
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\Chrome.exe'
+    - '*\\Brave.exe'
+    - '*\\Opera.exe'
+    - '*\\Vivaldi.exe'
+    - '*\\msedge.exe'
+  sel2:
+    CommandLine:
+    - '*--no-sandbox*'
+    - '*--allow-no-sandbox-job*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1497/chrom_no_sandbox/chrome-no_sandbox.log

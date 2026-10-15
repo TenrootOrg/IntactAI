@@ -1,0 +1,39 @@
+title: Linux Auditd Private Keys and Certificate Enumeration
+id: 892eb674-3344-4143-8e52-4775b1daf3f1
+status: experimental
+description: The following analytic detects suspicious attempts to find private keys, which may indicate an attacker's effort
+  to access sensitive cryptographic information. Private keys are crucial for securing encrypted communications and data,
+  and unauthorized access to them can lead to severe security breaches, including data decryption and identity theft. By monitoring
+  for unusual or unauthorized searches for private keys, this analytic helps identify potential threats to cryptographic security,
+  enabling security teams to take swift action to protect the integrity and confidentiality of encrypted information.
+references:
+- https://research.splunk.com/892eb674-3344-4143-8e52-4775b1daf3f1/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1552.004
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    CommandLine:
+    - '*find*'
+    - '*grep*'
+  sel2:
+    CommandLine:
+    - '*.pem*'
+    - '*.cer*'
+    - '*.crt*'
+    - '*.pgp*'
+    - '*.key*'
+    - '*.gpg*'
+    - '*.ppk*'
+    - '*.p12*'
+    - '*.pfx*'
+    - '*.p7b*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1552.004/linux_auditd_find_gpg/auditd_execve_find_gpg.log

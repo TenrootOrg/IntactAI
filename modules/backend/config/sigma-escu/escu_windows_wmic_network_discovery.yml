@@ -1,0 +1,30 @@
+title: Windows Wmic Network Discovery
+id: cce82b81-c716-4b6c-bac9-33e6a6925cc2
+status: experimental
+description: The following analytic detects the execution of Windows Management Instrumentation Command-line (WMIC) commands
+  used for network interface discovery on a Windows system. Specifically, it identifies commands such as “wmic nic” that retrieve
+  detailed information about the network adapters installed on the device. While these commands are commonly used by IT administrators
+  for legitimate network inventory and diagnostics, they can also be leveraged by malicious actors for reconnaissance, enabling
+  them to map network configurations and identify potential targets. Monitoring WMIC network interface queries allows security
+  teams to detect suspicious or unauthorized enumeration activities, supporting early threat identification and response.ß
+references:
+- https://research.splunk.com/cce82b81-c716-4b6c-bac9-33e6a6925cc2/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1082
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    OriginalFileName: wmic.exe
+  sel3:
+    CommandLine: '* nic*'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/lamehug/T1082/wmic_cmd/wmic_cmd.log

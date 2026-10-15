@@ -1,0 +1,26 @@
+title: Windows Indirect Command Execution Via forfiles
+id: 1fdf31c9-ff4d-4c48-b799-0e8666e08787
+status: experimental
+description: The following analytic detects the execution of programs initiated by forfiles.exe. This command is typically
+  used to run commands on multiple files, often within batch scripts. The detection leverages data from Endpoint Detection
+  and Response (EDR) agents, focusing on process creation events where forfiles.exe is the parent process. This activity is
+  significant because forfiles.exe can be exploited to bypass command line execution protections, making it a potential vector
+  for malicious activity. If confirmed malicious, this could allow attackers to execute arbitrary commands, potentially leading
+  to unauthorized access or further system compromise.
+references:
+- https://research.splunk.com/1fdf31c9-ff4d-4c48-b799-0e8666e08787/
+author: Splunk Security Content (Apache-2.0), Eric McGinnis, Splunk
+tags:
+- attack.t1202
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentCommandLine: '*forfiles* /c *'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1202/atomic_red_team/windows-sysmon.log

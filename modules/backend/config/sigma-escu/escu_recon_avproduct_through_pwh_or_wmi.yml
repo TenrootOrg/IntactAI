@@ -1,0 +1,34 @@
+title: Recon AVProduct Through Pwh or WMI
+id: 28077620-c9f6-11eb-8785-acde48001122
+status: experimental
+description: The following analytic detects suspicious PowerShell script execution via EventCode 4104, specifically targeting
+  checks for installed anti-virus products using WMI or PowerShell commands. This detection leverages PowerShell Script Block
+  Logging to identify scripts containing keywords like "SELECT," "WMIC," "AntiVirusProduct," or "AntiSpywareProduct." This
+  activity is significant as it is commonly used by malware and APT actors to map running security applications or services,
+  potentially aiding in evasion techniques. If confirmed malicious, this could allow attackers to disable or bypass security
+  measures, leading to further compromise of the endpoint.
+references:
+- https://research.splunk.com/28077620-c9f6-11eb-8785-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1592
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*SELECT*'
+  sel3:
+    ScriptBlockText: '*WMIC*'
+  sel4:
+    ScriptBlockText: '*AntiVirusProduct*'
+  sel5:
+    ScriptBlockText: '*AntiSpywareProduct*'
+  condition: (sel1 and (sel2 or sel3) and (sel4 or sel5))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/t1592/pwh_av_recon/windows-powershell-xml.log

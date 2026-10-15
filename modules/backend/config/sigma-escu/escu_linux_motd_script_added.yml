@@ -1,0 +1,27 @@
+title: Linux MOTD Script Added
+id: 6dd14256-559b-4364-99d8-0968407b8074
+status: experimental
+description: 'The following analytic detects the creation of a file within the /etc/update-motd.d directory.
+
+  This is used to add scripts that run with Message of the Day (MOTD) when a user logs in.
+
+  This can be used by attackers for persistence if it contains malicious code.'
+references:
+- https://research.splunk.com/6dd14256-559b-4364-99d8-0968407b8074/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1547
+- attack.t1037
+- attack.t1059.004
+logsource:
+  category: file_event
+  product: linux
+detection:
+  sel1:
+    TargetFilename: /etc/update-motd.d/*
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1547/linux_motd_script_added/snapattack_linux.log

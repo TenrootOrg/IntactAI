@@ -1,0 +1,30 @@
+title: Windows PowerView AD Access Control List Enumeration
+id: 39405650-c364-4e1e-a740-32a63ef042a6
+status: experimental
+description: The following analytic detects the execution of PowerView PowerShell cmdlets `Get-ObjectAcl` or `Get-DomainObjectAcl`,
+  which are used to enumerate Access Control List (ACL) permissions for Active Directory objects. It leverages Event ID 4104
+  from PowerShell Script Block Logging to identify this activity. This behavior is significant as it may indicate an attempt
+  to discover weak permissions in Active Directory, potentially leading to privilege escalation. If confirmed malicious, attackers
+  could exploit these permissions to gain unauthorized access or escalate their privileges within the network.
+references:
+- https://research.splunk.com/39405650-c364-4e1e-a740-32a63ef042a6/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1078.002
+- attack.t1069
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*get-objectacl*'
+  sel3:
+    ScriptBlockText: '*Get-DomainObjectAcl*'
+  condition: (sel1 and (sel2 or sel3))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1078.002/powerview_acl_enumeration/windows-powershell.log

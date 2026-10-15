@@ -1,0 +1,48 @@
+title: Windows Process Injection Remote Thread
+id: 8a618ade-ca8f-4d04-b972-2d526ba59924
+status: experimental
+description: The following analytic detects suspicious remote thread execution in processes such as Taskmgr.exe, calc.exe,
+  and notepad.exe, which may indicate process injection by malware like Qakbot. This detection leverages Sysmon EventCode
+  8 to identify remote thread creation in specific target processes. This activity is significant as it often signifies an
+  attempt by malware to inject malicious code into legitimate processes, potentially leading to unauthorized code execution.
+  If confirmed malicious, this could allow attackers to execute arbitrary code, escalate privileges, or maintain persistence
+  on the compromised host.
+references:
+- https://research.splunk.com/8a618ade-ca8f-4d04-b972-2d526ba59924/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1055.002
+logsource:
+  product: windows
+  service: sysmon
+  category: create_remote_thread
+detection:
+  sel1:
+    EventID: '8'
+  sel2:
+    TargetImage:
+    - '*\\calc.exe'
+    - '*\\CalculatorApp.exe'
+    - '*\\cmd.exe'
+    - '*\\dxdiag.exe'
+    - '*\\explorer.exe'
+    - '*\\mobsync.exe'
+    - '*\\msra.exe'
+    - '*\\notepad.exe'
+    - '*\\OneDriveSetup.exe'
+    - '*\\ping.exe'
+    - '*\\powershell.exe'
+    - '*\\rdpclip.exe'
+    - '*\\Taskmgr.exe'
+    - '*\\wermgr.exe'
+    - '*\\win32calc.exe'
+    - '*\\xwizard.exe'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/qakbot/qbot_wermgr2/sysmon_wermgr2.log
+x-intact-burst: false
+x-intact: 'Fired 12 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

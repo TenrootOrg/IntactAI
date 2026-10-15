@@ -1,0 +1,27 @@
+title: Clear Unallocated Sector Using Cipher App
+id: cd80a6ac-c9d9-11eb-8839-acde48001122
+status: experimental
+description: The following analytic detects the execution of `cipher.exe` with the `/w` flag to clear unallocated sectors
+  on a disk. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process names, command-line
+  arguments, and parent processes. This activity is significant because it is a technique used by ransomware to prevent forensic
+  recovery of deleted files. If confirmed malicious, this action could hinder incident response efforts by making it impossible
+  to recover critical data, thereby complicating the investigation and remediation process.
+references:
+- https://research.splunk.com/cd80a6ac-c9d9-11eb-8839-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1070.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\cipher.exe'
+  sel2:
+    CommandLine: '*/w:*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/ransomware_ttp/data1/windows-sysmon.log

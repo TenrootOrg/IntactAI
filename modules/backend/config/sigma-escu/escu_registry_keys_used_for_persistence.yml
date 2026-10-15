@@ -1,0 +1,91 @@
+title: Registry Keys Used For Persistence
+id: f5f6af30-7aa7-4295-bfe9-07fe87c01a4b
+status: experimental
+description: The following analytic identifies modifications to registry keys commonly used for persistence mechanisms. It
+  leverages data from endpoint detection sources like Sysmon or Carbon Black, focusing on specific registry paths known to
+  initiate applications or services during system startup. This activity is significant as unauthorized changes to these keys
+  can indicate attempts to maintain persistence or execute malicious actions upon system boot. If confirmed malicious, this
+  could allow attackers to achieve persistent access, execute arbitrary code, or maintain control over compromised systems,
+  posing a severe threat to system integrity and security.
+references:
+- https://research.splunk.com/f5f6af30-7aa7-4295-bfe9-07fe87c01a4b/
+author: Splunk Security Content (Apache-2.0), Jose Hernandez, David Dorsey, Teoderick Contreras, Rod Soto, Splunk
+tags:
+- attack.t1547.001
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce'
+  sel2:
+    TargetObject: '*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run'
+  sel3:
+    TargetObject: '*\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders\\*'
+  sel4:
+    TargetObject: '*\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders\\*'
+  sel5:
+    TargetObject: '*\\currentversion\\run*'
+  sel6:
+    TargetObject: '*\\currentVersion\\Windows\\Appinit_Dlls*'
+  sel7:
+    TargetObject: '*\\CurrentVersion\\Winlogon\\Shell*'
+  sel8:
+    TargetObject: '*\\CurrentVersion\\Winlogon\\Notify*'
+  sel9:
+    TargetObject: '*\\CurrentVersion\\Winlogon\\Userinit*'
+  sel10:
+    TargetObject: '*\\CurrentVersion\\Winlogon\\VmApplet*'
+  sel11:
+    TargetObject: '*\\currentversion\\policies\\explorer\\run*'
+  sel12:
+    TargetObject: '*\\currentversion\\runservices*'
+  sel13:
+    TargetObject: '*\\SOFTWARE\\Microsoft\\Netsh\\*'
+  sel14:
+    TargetObject: '*\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders\\Common Startup'
+  sel15:
+    TargetObject: '*\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\SharedTaskScheduler'
+  sel16:
+    TargetObject: '*\\Classes\\htmlfile\\shell\\open\\command'
+  sel17:
+    TargetObject: '*Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options*'
+  sel18:
+    TargetObject: '*\\Debugger'
+  sel19:
+    TargetObject: '*\\CurrentControlSet\\Control\\Lsa'
+  sel20:
+    TargetObject: '*\\Security Packages'
+  sel21:
+    TargetObject: '*\\CurrentControlSet\\Control\\Lsa\\OSConfig'
+  sel22:
+    TargetObject: '*\\Security Packages'
+  sel23:
+    TargetObject: '*\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit\\*'
+  sel24:
+    TargetObject: '*currentVersion\\Windows'
+  sel25:
+    TargetObject: '*\\Load'
+  sel26:
+    TargetObject: '*\\CurrentVersion'
+  sel27:
+    TargetObject: '*\\Svchost'
+  sel28:
+    TargetObject: '*\\CurrentControlSet\\Control\\Session Manager'
+  sel29:
+    TargetObject: '*\\BootExecute'
+  sel30:
+    TargetObject: '*\\Software\\Run'
+  sel31:
+    TargetObject: '*\\auto_update'
+  condition: (((((((((((((((((((((((sel1 or sel2) or sel3) or sel4) or sel5) or sel6) or sel7) or sel8) or sel9) or sel10)
+    or sel11) or sel12) or sel13) or sel14) or sel15) or sel16) or (sel17 and sel18)) or (sel19 and sel20)) or (sel21 and
+    sel22)) or sel23) or (sel24 and sel25)) or (sel26 and sel27)) or (sel28 and sel29)) or (sel30 and sel31))
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1547.001/atomic_red_team/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 164 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

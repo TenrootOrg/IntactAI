@@ -1,0 +1,40 @@
+title: Windows Suspicious Process File Path
+id: ecddae4e-3d4b-41e2-b3df-e46a88b38521
+status: experimental
+description: The following analytic identifies processes running from file paths not typically associated with legitimate
+  software. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on specific process paths within
+  the Endpoint data model. This activity is significant because adversaries often use unconventional file paths to execute
+  malicious code without requiring administrative privileges. If confirmed malicious, this behavior could indicate an attempt
+  to bypass security controls, leading to unauthorized software execution, potential system compromise, and further malicious
+  activities within the environment.
+references:
+- https://research.splunk.com/ecddae4e-3d4b-41e2-b3df-e46a88b38521/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1543
+- attack.t1036.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\windows\\fonts\\*'
+    - '*\\users\\public\\*'
+    - '*\\windows\\debug\\*'
+    - '*\\Users\\Administrator\\Music\\*'
+    - '*Recycle.bin*'
+    - '*\\Windows\\Media\\*'
+    - \\Windows\\repair\\*
+    - '*\\PerfLogs\\*'
+    - '*:\\Windows\\Prefetch\\*'
+    - '*:\\Windows\\Cursors\\*'
+    - '*:\\Windows\\INF\\*'
+  sel2:
+    Image: '*\\temp\\*'
+  condition: (sel1 and not (sel2))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036/suspicious_process_path/susp_path_sysmon1.log

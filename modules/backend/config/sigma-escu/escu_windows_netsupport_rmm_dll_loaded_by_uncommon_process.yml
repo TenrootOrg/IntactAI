@@ -1,0 +1,47 @@
+title: Windows NetSupport RMM DLL Loaded By Uncommon Process
+id: 125f96f9-6f34-418b-b868-c4a8d7fb865f
+status: experimental
+description: 'The following analytic detects the loading of specific dynamic-link libraries (DLLs) associated with the NetSupport
+  Remote Manager (RMM) tool by any process on a Windows system.
+
+  Modules such as CryptPak.dll, HTCTL32.DLL, IPCTL32.DLL, keyshowhook.dll, pcicapi.DLL, PCICL32.DLL, and TCCTL32.DLL, are
+  integral to NetSupport''s functionality.
+
+  This detection is particularly valuable when these modules are loaded by processes running from unusual directories (e.g.,
+  Downloads, ProgramData, or user-specific folders) rather than the legitimate Program Files installation path, or by executables
+  that have been renamed but retain the internal "client32" identifier.
+
+  This helps to identify instances where the legitimate NetSupport tool is being misused by adversaries as a Remote Access
+  Trojan (RAT).'
+references:
+- https://research.splunk.com/125f96f9-6f34-418b-b868-c4a8d7fb865f/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1036
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    ImageLoaded:
+    - '*\\CryptPak.dll'
+    - '*\\HTCTL32.DLL'
+    - '*\\pcicapi.dll'
+    - '*\\pcichek.dll'
+    - '*\\PCICL32.DLL'
+    - '*\\TCCTL32.DLL'
+  sel3:
+    Image:
+    - C:\\Program Files\\*
+    - C:\\Program Files (x86)\\*
+  sel4:
+    Signature: NetSupport Ltd*
+  condition: (sel1 and sel2 and not (sel3) and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036/netsupport_modules/net_support_module.log

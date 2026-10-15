@@ -1,0 +1,55 @@
+title: Windows Office Product Spawned Child Process For Download
+id: f02b64b8-cbea-4f75-bf77-7a05111566b1
+status: experimental
+description: The following analytic identifies Office applications spawning child processes to download content via HTTP/HTTPS.
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process creation events where Office applications
+  like Word or Excel initiate network connections, excluding common browsers. This activity is significant as it often indicates
+  the use of malicious documents to execute living-off-the-land binaries (LOLBins) for payload delivery. If confirmed malicious,
+  this behavior could lead to unauthorized code execution, data exfiltration, or further malware deployment, posing a severe
+  threat to the organization's security.
+references:
+- https://research.splunk.com/f02b64b8-cbea-4f75-bf77-7a05111566b1/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1566.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage:
+    - '*\\EQNEDT32.exe'
+    - '*\\excel.exe'
+    - '*\\Graph.exe'
+    - '*\\msaccess.exe'
+    - '*\\mspub.exe'
+    - '*\\onenote.exe'
+    - '*\\onenoteim.exe'
+    - '*\\onenotem.exe'
+    - '*\\outlook.exe'
+    - '*\\powerpnt.exe'
+    - '*\\visio.exe'
+    - '*\\winproj.exe'
+    - '*\\winword.exe'
+  sel2:
+    CommandLine:
+    - '*http:*'
+    - '*https:*'
+  sel3:
+    OriginalFileName:
+    - firefox.exe
+    - chrome.exe
+    - iexplore.exe
+    - msedge.exe
+  sel4:
+    Image:
+    - '*\\firefox.exe'
+    - '*\\chrome.exe'
+    - '*\\iexplore.exe'
+    - '*\\msedge.exe'
+  condition: (sel1 and sel2 and not ((sel3 or sel4)))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566.001/datasets2/windows-sysmon.log

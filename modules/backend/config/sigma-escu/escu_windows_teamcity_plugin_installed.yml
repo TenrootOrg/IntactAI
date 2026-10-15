@@ -1,0 +1,28 @@
+title: Windows TeamCity Plugin Installed
+id: 2fd33fb6-8c72-4e88-869f-b3b516f9f37e
+status: experimental
+description: 'Detects the creation of a plugin zip file under the TeamCity data structure.
+
+  This indicates a new plugin has been installed and can potentially indicate attempts to gain code execution on the TeamCity
+  server if the plugin installation was unexpected.'
+references:
+- https://research.splunk.com/2fd33fb6-8c72-4e88-869f-b3b516f9f37e/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1505.003
+- attack.t1059
+- attack.t1190
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename: '*:\\ProgramData\\JetBrains\\TeamCity\\plugins\\*'
+  sel2:
+    TargetFilename: '*.zip'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1505.003/snapattack/snapattack.log

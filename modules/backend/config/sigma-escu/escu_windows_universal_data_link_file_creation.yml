@@ -1,0 +1,27 @@
+title: Windows Universal Data Link File Creation
+id: aac9ade1-dc8b-4f15-9586-4665d01b8645
+status: experimental
+description: 'Detects the creation of Universal Data Link (UDL) files.
+
+  This could indicate a phishing technique that exploits UDL files, which are typically used in Windows for database connections.
+
+  Attackers might leverage UDL files to bypass email filters and capture user credentials by tricking victims into testing
+  a connection to a malicious server.'
+references:
+- https://research.splunk.com/aac9ade1-dc8b-4f15-9586-4665d01b8645/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1204.002
+- attack.t1566.001
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename: '*.udl'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1204.002/snapattack/snapattack.log

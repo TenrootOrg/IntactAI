@@ -1,0 +1,5 @@
+These rules are translated from Splunk Security Content (https://github.com/splunk/security_content),
+Copyright Splunk Inc., licensed under the Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+Translated to Sigma by scripts/dev/escu_to_sigma.py; each rule shipped here fired on the attack_data
+recording its detection names (scripts/dev/escu_prove.py). Changes: query language (SPL -> Sigma), field
+names (Splunk CIM -> raw log fields), severity (see x-intact in each rule).

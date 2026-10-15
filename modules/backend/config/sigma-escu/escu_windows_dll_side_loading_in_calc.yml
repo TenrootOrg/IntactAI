@@ -1,0 +1,41 @@
+title: Windows DLL Side-Loading In Calc
+id: af01f6db-26ac-440e-8d89-2793e303f137
+status: experimental
+description: The following analytic detects the loading of the "WindowsCodecs.dll" by calc.exe from a non-standard location
+  This could be indicative of a potential DLL side-loading technique. This detection leverages Sysmon EventCode 7 to identify
+  the DLL side-loading activity. In previous versions of the "calc.exe" binary, namely on Windows 7, it was vulnerable to
+  DLL side-loading, where an attacker is able to load an arbitrary DLL named "WindowsCodecs.dll". This technique has been
+  observed in Qakbot malware. This activity is significant as it indicates potential malware execution through a trusted process,
+  which can bypass security controls. If confirmed malicious, this could allow attackers to execute arbitrary code, maintain
+  persistence, and escalate privileges within the environment.
+references:
+- https://research.splunk.com/af01f6db-26ac-440e-8d89-2793e303f137/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1574.001
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    Image: '*\\calc.exe'
+  sel3:
+    ImageLoaded: '*\\WindowsCodecs.dll'
+  sel4:
+    Image:
+    - '*:\\Windows\\System32\\*'
+    - '*:\\Windows\\SysWOW64\\*'
+  sel5:
+    ImageLoaded:
+    - '*:\\Windows\\System32\\*'
+    - '*:\\Windows\\SysWOW64\\*'
+    - '*:\\Windows\\WinSXS\\*'
+  condition: (sel1 and sel2 and sel3 and not (sel4) and not (sel5))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/qakbot/qbot2/sysmon.log

@@ -1,0 +1,32 @@
+title: Windows Guest Account Enabled Via Net.EXE
+id: 4f8cd681-7583-47a0-9f38-6337b7adf48a
+status: experimental
+description: 'By default, the Windows guest account is heavily restricted, with limited permissions and access to system resources.
+
+  However, if the guest account is activated, it can potentially be used to perform malicious activities such as installing
+  malware, deleting files, stealing data, or even taking control of the system.'
+references:
+- https://research.splunk.com/4f8cd681-7583-47a0-9f38-6337b7adf48a/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1078.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\net1.exe'
+  sel2:
+    OriginalFileName: net1.exe
+  sel3:
+    CommandLine: '*user *'
+  sel4:
+    CommandLine: '*guest *'
+  sel5:
+    CommandLine: '*/active:yes*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1078.001/snapattack/snapattack.log

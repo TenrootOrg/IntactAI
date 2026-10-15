@@ -1,0 +1,43 @@
+title: Windows MSI Rollback Script Deleted By Non-Msiexec Process
+id: 6ec7cbda-9547-4f6b-8a00-d1fb4b52c1e9
+status: experimental
+description: 'Detects deletion of a Rollback Script (.rbs) file under C:\Config.Msi, the critical filesystem manipulation
+  step in an MSI Rollback privilege escalation attack that converts an arbitrary file delete primitive into full SYSTEM code
+  execution.
+
+  During a legitimate MSI installation, the Windows Installer service (running as SYSTEM) creates C:\Config.Msi and populates
+  it with a Rollback Script (.rbs) and Rollback File (.rbf).
+
+  These files define exactly how to restore the system to its pre-installation state if the install fails.
+
+  The folder is protected with a strong DACL specifically to prevent tampering by low-privileged users — because whatever
+  is in these files will be executed by the SYSTEM-level Installer service during rollback.'
+references:
+- https://research.splunk.com/6ec7cbda-9547-4f6b-8a00-d1fb4b52c1e9/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1218.007
+- attack.t1068
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  sel1:
+    EventID:
+    - '23'
+    - '26'
+  sel2:
+    TargetFilename: '*:\\Config.Msi\\*'
+  sel3:
+    TargetFilename: '*.rbs'
+  sel4:
+    ProcessName: msiexec.exe
+  condition: (sel1 and sel2 and sel3 and not (sel4))
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.007/snapattack/snapattack.log
+x-intact-burst: false
+x-intact: 'Fired 168 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

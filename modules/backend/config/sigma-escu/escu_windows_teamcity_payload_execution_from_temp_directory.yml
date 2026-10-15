@@ -1,0 +1,33 @@
+title: Windows TeamCity Payload Execution from Temp Directory
+id: 937c59be-0975-4097-ae45-f07c894f9ff4
+status: experimental
+description: 'Detects the bundled TeamCity java executing a payload out of the temp directory.
+
+  This activity can be associated with a malicious plugin installed by metasploit for remote code execution.'
+references:
+- https://research.splunk.com/937c59be-0975-4097-ae45-f07c894f9ff4/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1190
+- attack.t1505.003
+- attack.t1059
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*-classpath *'
+  sel2:
+    CommandLine: '*:\\Windows\\TEMP\\~spawn*'
+  sel3:
+    CommandLine: '*.tmp.dir *'
+  sel4:
+    CommandLine: '*.Payload*'
+  sel5:
+    CommandLine: '*TeamCity*'
+  condition: (sel1 and sel2 and sel3 and sel4 and sel5)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/snapattack/snapattack.log

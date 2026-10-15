@@ -1,0 +1,26 @@
+title: Remcos client registry install entry
+id: f2a1615a-1d63-11ec-97d2-acde48001122
+status: experimental
+description: The following analytic detects the presence of a registry key associated with the Remcos RAT agent on a host.
+  It leverages data from the Endpoint.Processes and Endpoint.Registry data models in Splunk, focusing on instances where the
+  "license" key is found in the "Software\Remcos" path. This behavior is significant as it indicates potential compromise
+  by the Remcos RAT, a remote access Trojan used for unauthorized access and data exfiltration. If confirmed malicious, the
+  attacker could gain control over the system, steal sensitive information, or use the compromised host for further attacks.
+  Immediate investigation and remediation are required.
+references:
+- https://research.splunk.com/f2a1615a-1d63-11ec-97d2-acde48001122/
+author: Splunk Security Content (Apache-2.0), Steven Dick, Bhavin Patel, Rod Soto, Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Software\\Remcos*'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/remcos/remcos_registry/sysmon.log

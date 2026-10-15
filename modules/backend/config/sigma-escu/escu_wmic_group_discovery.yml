@@ -1,0 +1,28 @@
+title: Wmic Group Discovery
+id: 83317b08-155b-11ec-8e00-acde48001122
+status: experimental
+description: The following analytic identifies the use of `wmic.exe` to enumerate local groups on an endpoint. This detection
+  leverages data from Endpoint Detection and Response (EDR) agents, focusing on process execution logs, including command-line
+  details. Monitoring this activity is significant as it can indicate reconnaissance efforts by an attacker to understand
+  group memberships, which could be a precursor to privilege escalation or lateral movement. If confirmed malicious, this
+  activity could allow an attacker to map out privileged groups, aiding in further exploitation and persistence within the
+  environment.
+references:
+- https://research.splunk.com/83317b08-155b-11ec-8e00-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1069.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    CommandLine: '*group get name*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1069.001/atomic_red_team/windows-sysmon.log

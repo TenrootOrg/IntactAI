@@ -1,0 +1,28 @@
+title: Remote System Discovery with Dsquery
+id: 9fb562f4-42f8-4139-8e11-a82edf7ed718
+status: experimental
+description: The following analytic detects the execution of `dsquery.exe` with the `computer` argument, which is used to
+  discover remote systems within a domain. This detection leverages data from Endpoint Detection and Response (EDR) agents,
+  focusing on process names and command-line arguments. Remote system discovery is significant as it indicates potential reconnaissance
+  activities by adversaries or Red Teams to map out network resources and Active Directory structures. If confirmed malicious,
+  this activity could lead to further exploitation, lateral movement, and unauthorized access to critical systems within the
+  network.
+references:
+- https://research.splunk.com/9fb562f4-42f8-4139-8e11-a82edf7ed718/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1018
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\dsquery.exe'
+  sel2:
+    CommandLine: '*computer*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1018/AD_discovery/windows-sysmon.log

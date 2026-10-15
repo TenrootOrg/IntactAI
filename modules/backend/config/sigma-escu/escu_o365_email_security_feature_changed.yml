@@ -1,0 +1,36 @@
+title: O365 Email Security Feature Changed
+id: 4d28013d-3a0f-4d65-a33f-4e8009fee0ae
+status: experimental
+description: The following analytic identifies when specific O365 advanced security settings are altered within the Office
+  365 tenant. If an attacker successfully disables O365 security settings, they can operate within the tenant with reduced
+  risk of detection. This can lead to unauthorized data access, data exfiltration, account compromise, or other malicious
+  activities without leaving a detailed audit trail.
+references:
+- https://research.splunk.com/4d28013d-3a0f-4d65-a33f-4e8009fee0ae/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1685.002
+logsource:
+  product: m365
+  service: audit
+detection:
+  sel1:
+    Workload: Exchange
+  sel2:
+    Operation:
+    - Set-*
+    - Disable-*
+    - New-*
+    - Remove-*
+  sel3:
+    Operation:
+    - '*AntiPhish*'
+    - '*SafeLink*'
+    - '*SafeAttachment*'
+    - '*Malware*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566/o365_various_alerts/o365_various_alerts.log

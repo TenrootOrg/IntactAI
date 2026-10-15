@@ -1,0 +1,42 @@
+title: Windows Time Based Evasion
+id: 34502357-deb1-499a-8261-ffe144abf561
+status: experimental
+description: 'The following analytic detects potentially malicious processes that initiate a ping delay using an invalid IP
+  address.
+
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line executions involving "ping
+  0 -n".
+
+  Malware like NJRAT was observed using this technique to introduce time delays for evasion tactics, such as delaying self-deletion.
+
+  If confirmed malicious, this activity could indicate an active infection attempting to evade detection, potentially leading
+  to further compromise and persistence within the environment.'
+references:
+- https://research.splunk.com/34502357-deb1-499a-8261-ffe144abf561/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1497.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\ping.exe'
+  sel2:
+    ParentCommandLine:
+    - '*ping  0 -n *'
+    - '*ping 0 -n *'
+    - '*ping.exe  0 -n *'
+    - '*ping.exe 0 -n *'
+  sel3:
+    CommandLine:
+    - '*ping  0 -n *'
+    - '*ping 0 -n *'
+    - '*ping.exe  0 -n *'
+    - '*ping.exe 0 -n *'
+  condition: (sel1 and (sel2 or sel3))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1497.003/njrat_ping_delay_before_delete/ping_0.log

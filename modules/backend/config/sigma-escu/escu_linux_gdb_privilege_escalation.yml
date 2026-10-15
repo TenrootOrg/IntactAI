@@ -1,0 +1,31 @@
+title: Linux GDB Privilege Escalation
+id: 310b7da2-ab52-437f-b1bf-0bd458674308
+status: experimental
+description: The following analytic detects the execution of the GNU Debugger (GDB) with specific flags that indicate an attempt
+  to escalate privileges on a Linux system. It leverages Endpoint Detection and Response (EDR) telemetry to identify processes
+  where GDB is run with the `-nx`, `-ex`, and `sudo` flags. This activity is significant because it can allow a user to execute
+  system commands as root, potentially leading to a root shell. If confirmed malicious, this could result in full system compromise,
+  allowing an attacker to gain complete control over the affected endpoint.
+references:
+- https://research.splunk.com/310b7da2-ab52-437f-b1bf-0bd458674308/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Splunk
+tags:
+- attack.t1548.003
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    CommandLine: '*gdb*'
+  sel2:
+    CommandLine: '*-nx*'
+  sel3:
+    CommandLine: '*-ex*!*'
+  sel4:
+    CommandLine: '*sudo*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548/gdb/sysmon_linux.log

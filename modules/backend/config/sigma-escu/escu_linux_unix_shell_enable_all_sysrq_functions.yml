@@ -1,0 +1,34 @@
+title: Linux Unix Shell Enable All SysRq Functions
+id: e7a96937-3b58-4962-8dce-538e4763cf15
+status: experimental
+description: The following analytic detects the execution of a command to enable all SysRq functions on a Linux system, a
+  technique associated with the AwfulShred malware. It leverages Endpoint Detection and Response (EDR) data to identify processes
+  executing the command to pipe bitmask '1' to /proc/sys/kernel/sysrq. This activity is significant as it can indicate an
+  attempt to manipulate kernel system requests, which is uncommon and potentially malicious. If confirmed, this could allow
+  an attacker to reboot the system or perform other critical actions, leading to system instability or further compromise.
+references:
+- https://research.splunk.com/e7a96937-3b58-4962-8dce-538e4763cf15/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1059.004
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image:
+    - '*/dash'
+    - '*/sudo'
+    - '*/bash'
+  sel2:
+    CommandLine:
+    - '* echo 1 &gt; *'
+    - '* echo 1 > *'
+  sel3:
+    CommandLine: '*/proc/sys/kernel/sysrq'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/awfulshred/test2/sysmon_linux.log

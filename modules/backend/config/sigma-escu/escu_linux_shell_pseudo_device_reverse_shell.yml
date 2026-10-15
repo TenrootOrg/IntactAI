@@ -1,0 +1,36 @@
+title: Linux Shell Pseudo Device Reverse Shell
+id: f324bc06-8436-4606-8882-0a8fb480b719
+status: experimental
+description: 'The following analytic detects the use of shell''s /dev/tcp or /dev/udp pseudo-device feature to establish outbound
+  network connections.
+
+  This special file system interface allows opening a network socket and sending or receiving data using simple shell commands.
+
+  Attackers commonly abuse this native shell capability to create reverse shells without requiring external tools such as
+  netcat, by redirecting shell I/O over a TCP or UDP connection to an attacker-controlled host and port.'
+references:
+- https://research.splunk.com/f324bc06-8436-4606-8882-0a8fb480b719/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1059
+- attack.t1048.003
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image:
+    - '*/bash'
+    - '*/dash'
+    - '*/sh'
+    - '*/zsh'
+  sel2:
+    CommandLine:
+    - '*/dev/tcp/*'
+    - '*/dev/udp/*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059/linux_bash_reverse_shell/snapattack_linux.log

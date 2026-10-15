@@ -1,0 +1,27 @@
+title: Windows RDP Bitmap Cache File Creation
+id: 5f8671b6-07a7-425d-b3da-c39a53f2a6ae
+status: experimental
+description: This detection identifies the creation of Remote Desktop Protocol (RDP) bitmap cache files on a Windows system,
+  typically located in the user’s profile under the Terminal Server Client cache directory. These files (*.bmc, cache*.bin)
+  are generated when a user initiates an RDP session using the built-in mstsc.exe client. Their presence can indicate interactive
+  remote access activity and may be useful in detecting lateral movement or unauthorized RDP usage. Monitoring this behavior
+  is especially important, as attackers may attempt to delete or suppress these artifacts to evade forensic analysis.
+references:
+- https://research.splunk.com/5f8671b6-07a7-425d-b3da-c39a53f2a6ae/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1021.001
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*\\Terminal Server Client\\Cache\\*.bmc'
+    - '*\\Terminal Server Client\\Cache\\cache*.bin'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.001/bmc_creation/bmc_creation.log

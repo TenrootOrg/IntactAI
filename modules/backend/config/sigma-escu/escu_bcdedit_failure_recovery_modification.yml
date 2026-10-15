@@ -1,0 +1,29 @@
+title: BCDEdit Failure Recovery Modification
+id: 809b31d2-5462-11eb-ae93-0242ac130002
+status: experimental
+description: The following analytic detects modifications to the Windows error recovery boot configurations using bcdedit.exe
+  with flags such as "recoveryenabled" and "no". It leverages data from Endpoint Detection and Response (EDR) agents, focusing
+  on process names, parent processes, and command-line executions. This activity is significant because ransomware often disables
+  recovery options to prevent system restoration, making it crucial for SOC analysts to investigate. If confirmed malicious,
+  this could hinder recovery efforts, allowing ransomware to cause extensive damage and complicate remediation.
+references:
+- https://research.splunk.com/809b31d2-5462-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1490
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\bcdedit.exe'
+  sel2:
+    CommandLine: '*recoveryenabled*'
+  sel3:
+    CommandLine: '* no*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1490/atomic_red_team/windows-sysmon.log

@@ -1,0 +1,29 @@
+title: Windows Mark Of The Web Bypass
+id: 8ca13343-7405-4916-a2d1-ae34ce0c28ae
+status: experimental
+description: The following analytic identifies a suspicious process that deletes the Mark-of-the-Web (MOTW) data stream. It
+  leverages Sysmon EventCode 23 to detect when a file's Zone.Identifier stream is removed. This activity is significant because
+  it is a common technique used by malware, such as Ave Maria RAT, to bypass security restrictions on files downloaded from
+  the internet. If confirmed malicious, this behavior could allow an attacker to execute potentially harmful files without
+  triggering security warnings, leading to further compromise of the system.
+references:
+- https://research.splunk.com/8ca13343-7405-4916-a2d1-ae34ce0c28ae/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1553.005
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  sel1:
+    EventID:
+    - '23'
+    - '26'
+  sel2:
+    TargetFilename: '*:Zone.Identifier'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1553.005/mark_of_the_web_bypass/possible-motw-deletion.log

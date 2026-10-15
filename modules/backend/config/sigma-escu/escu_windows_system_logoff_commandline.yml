@@ -1,0 +1,39 @@
+title: Windows System LogOff Commandline
+id: 74a8133f-93e7-4b71-9bd3-13a66124fd57
+status: experimental
+description: The following analytic detects the execution of the Windows command line to log off a host machine. It leverages
+  data from Endpoint Detection and Response (EDR) agents, focusing on processes involving `shutdown.exe` with specific parameters.
+  This activity is significant as it is often associated with Advanced Persistent Threats (APTs) and Remote Access Trojans
+  (RATs) like dcrat, which use this technique to disrupt operations, aid in system destruction, or inhibit recovery. If confirmed
+  malicious, this could lead to system downtime, data loss, or hindered incident response efforts.
+references:
+- https://research.splunk.com/74a8133f-93e7-4b71-9bd3-13a66124fd57/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1529
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\shutdown.exe'
+  sel2:
+    OriginalFileName: shutdown.exe
+  sel3:
+    CommandLine: '*shutdown*'
+  sel4:
+    CommandLine:
+    - '* /l*'
+    - '* -l*'
+  sel5:
+    CommandLine:
+    - '* /t*'
+    - '* -t*'
+    - '* /f*'
+    - '* -f*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/dcrat/reboot_logoff_commandline/sysmon.log

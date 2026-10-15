@@ -1,0 +1,24 @@
+title: ESXi Shell Access Enabled
+id: 15e79d0a-c659-42fd-9668-94108528f2ec
+status: experimental
+description: This detection identifies when the ESXi Shell is enabled on a host, which may indicate that a malicious actor
+  is preparing to execute commands locally or establish persistent access. Enabling the shell outside of approved maintenance
+  windows can be a sign of compromise or unauthorized administrative activity.
+references:
+- https://research.splunk.com/15e79d0a-c659-42fd-9668-94108528f2ec/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1021
+logsource:
+  product: esxi
+detection:
+  sel1:
+    text: '*ESXi Shell*'
+  sel2:
+    text: '*has been enabled*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021/esxi_shell_enabled/esxi_shell_enabled.log

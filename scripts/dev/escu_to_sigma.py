@@ -242,6 +242,11 @@ RAW_SOURCES = {
     "cloudtrail": {"product": "aws", "service": "cloudtrail"},
     "linux_auditd": {"product": "linux", "service": "auditd"},
     "okta": {"product": "okta", "service": "okta"},
+    "amazon_security_lake": {"product": "aws", "service": "cloudtrail"},     # CloudTrail as OCSF
+    "github_enterprise": {"product": "github", "service": "audit"},
+    "github_organizations": {"product": "github", "service": "audit"},
+    "zscaler_proxy": {"category": "proxy"},
+    "esxi_syslog": {"product": "esxi"},                 # free-text syslog: Message is the line
 }
 RAW_FIELDS = {   # Splunk add-on names -> the raw / Sigma names our reader keeps
     "EventCode": ("EventID", "raw"), "process_name": ("Image", "name"), "parent_process_name": ("ParentImage", "name"),
@@ -252,10 +257,11 @@ RAW_FIELDS = {   # Splunk add-on names -> the raw / Sigma names our reader keeps
 }
 RAW_FIELDS_BY_SOURCE = {      # names Splunk's add-on gives a field that has another raw name in this log
     "wineventlog_security": {"TargetFilename": ("ObjectName", "raw"), "file_path": ("ObjectName", "raw")},
+    "esxi_syslog": {"Message": ("text", "raw")},
 }
 RAW_IGNORED = {"dest", "src", "host", "sourcetype", "source", "index", "signature_id"}
 OK_PIPES = {"stats", "rename", "table", "fields", "fillnull", "sort", "head", "convert", "collect", "rangemap",
-            "tstats"}
+            "tstats", "rex"}         # rex after the filter only extracts fields to show; "where" stays excluded
 
 
 def translate_raw(doc, macros):

@@ -1,0 +1,35 @@
+title: Spoolsv Writing a DLL - Sysmon
+id: 347fd388-da87-11eb-836d-acde48001122
+status: experimental
+description: The following analytic detects `spoolsv.exe` writing a `.dll` file, which is unusual behavior and may indicate
+  exploitation of vulnerabilities like CVE-2021-34527 (PrintNightmare). This detection leverages Sysmon EventID 11 to monitor
+  file creation events in the `\spool\drivers\x64\` directory. This activity is significant because `spoolsv.exe` typically
+  does not write DLL files, and such behavior could signify an ongoing attack. If confirmed malicious, this could allow an
+  attacker to execute arbitrary code, escalate privileges, or maintain persistence on the compromised system.
+references:
+- https://research.splunk.com/347fd388-da87-11eb-836d-acde48001122/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1547.012
+logsource:
+  product: windows
+  service: sysmon
+  category: file_event
+detection:
+  sel1:
+    EventID: '11'
+  sel2:
+    Image: '*\\spoolsv.exe'
+  sel3:
+    TargetFilename: '*\\spool\\drivers\\x64\\*'
+  sel4:
+    TargetFilename: '*.dll'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1547.012/printnightmare/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 2 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

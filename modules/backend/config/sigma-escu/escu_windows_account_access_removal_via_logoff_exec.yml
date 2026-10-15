@@ -1,0 +1,31 @@
+title: Windows Account Access Removal via Logoff Exec
+id: 223572ab-8768-4e20-9b39-c38707af80dc
+status: experimental
+description: The following analytic detects the process of logging off a user through the use of the quser and logoff commands.
+  By monitoring for these commands, the analytic identifies actions where a user session is forcibly terminated, which could
+  be part of an administrative task or a potentially unauthorized access attempt. This detection helps identify potential
+  misuse or malicious activity where a user’s access is revoked without proper authorization, providing insight into potential
+  security incidents involving account management or session manipulation.
+references:
+- https://research.splunk.com/223572ab-8768-4e20-9b39-c38707af80dc/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1059.001
+- attack.t1531
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\logoff.exe'
+  sel2:
+    ParentImage:
+    - '*\\cmd.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1531/powershell_log_process_tree/powershell_logoff.log

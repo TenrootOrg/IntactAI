@@ -1,0 +1,29 @@
+title: Linux UDEV Rule Created
+id: 94d0e307-beae-4f85-8150-69c169b979c1
+status: experimental
+description: The following analytic detects the creation of files within udev rules directories, including /etc/udev/rules.d
+  and /usr/lib/udev/rules.d. Adversaries abuse udev rules to achieve persistent code execution by embedding RUN+= directives
+  that trigger arbitrary commands whenever a matching device event occurs, such as a USB device being connected or a network
+  interface coming online. Because udev rules execute in the context of the udev daemon with elevated privileges, this technique
+  can provide both persistence and privilege escalation. It is used by post-exploitation frameworks such as PANIX and is effective
+  on headless servers where device events still fire despite no interactive user session.
+references:
+- https://research.splunk.com/94d0e307-beae-4f85-8150-69c169b979c1/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1547
+- attack.t1037
+logsource:
+  category: file_event
+  product: linux
+detection:
+  sel1:
+    TargetFilename:
+    - /etc/udev/rules.d/*
+    - /usr/lib/udev/rules.d/*
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1547/linux_udev_rule_created/snapattack_linux.log

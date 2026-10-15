@@ -1,0 +1,34 @@
+title: Non Chrome Process Accessing Chrome Default Dir
+id: 81263de4-160a-11ec-944f-acde48001122
+status: experimental
+description: The following analytic detects a non-Chrome process accessing files in the Chrome user default folder. It leverages
+  Windows Security Event logs, specifically event code 4663, to identify unauthorized access attempts. This activity is significant
+  because the Chrome default folder contains sensitive user data such as login credentials, browsing history, and cookies.
+  If confirmed malicious, this behavior could indicate an attempt to exfiltrate sensitive information, often associated with
+  RATs, trojans, and advanced persistent threats like FIN7. Such access could lead to data theft and further compromise of
+  the affected system.
+references:
+- https://research.splunk.com/81263de4-160a-11ec-944f-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1555.003
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4663'
+  sel2:
+    ProcessName:
+    - '*\\chrome.exe'
+    - '*\\explorer.exe'
+    - '*sql*'
+    - '*\\dllhost.exe'
+  sel3:
+    ObjectName: '*\\Google\\Chrome\\User Data\\Default*'
+  condition: (sel1 and not (sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1555/non_chrome_process_accessing_chrome_default_dir/windows-xml.log

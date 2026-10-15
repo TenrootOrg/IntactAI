@@ -1,0 +1,64 @@
+title: Linux Suspicious Child Process of PostgreSQL
+id: 6488b83f-8e76-43c3-91ee-c90a6d9e8d62
+status: experimental
+description: 'The following analytic detects PostgreSQL spawning a shell, interpreter, or network utility as a child process.
+
+  When an attacker exploits a remote code execution vulnerability in PostgreSQL (such as via malicious COPY TO/FROM PROGRAM,
+  CVE-2019-9193, or an insecurely configured extension), the database process itself becomes the parent of attacker-controlled
+  commands.
+
+  Legitimate PostgreSQL processes do not normally fork shells or download tools, making this a high-fidelity signal for post-exploitation
+  activity.'
+references:
+- https://research.splunk.com/6488b83f-8e76-43c3-91ee-c90a6d9e8d62/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1190
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    ParentImage:
+    - '*/postgres'
+    - '*/postmaster'
+    - '*/pg_ctl'
+  sel2:
+    ParentImage: '*/bin/postgres'
+  sel3:
+    CurrentDirectory: '*/var/lib/postgresql/*/main*'
+  sel4:
+    Image:
+    - '*/awk'
+    - '*/bash'
+    - '*/curl'
+    - '*/dash'
+    - '*/env'
+    - '*/gawk'
+    - '*/id'
+    - '*/ifconfig'
+    - '*/ksh'
+    - '*/lua'
+    - '*/nc'
+    - '*/ncat'
+    - '*/netcat'
+    - '*/nmap'
+    - '*/openssl'
+    - '*/perl'
+    - '*/php'
+    - '*/python'
+    - '*/python2'
+    - '*/python3'
+    - '*/ruby'
+    - '*/sh'
+    - '*/socat'
+    - '*/tcpdump'
+    - '*/wget'
+    - '*/whoami'
+    - '*/zsh'
+  condition: (((sel1 or sel2) or sel3) and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/linux_suspicious_child_of_postgresql/snapattack_linux.log

@@ -1,0 +1,37 @@
+title: Windows Wermgr Spawning System Integrity Process
+id: d39634c8-7ce7-4503-a5da-73ca3c758fb9
+status: experimental
+description: 'The following analytic detects WerMgr.exe (Windows Error Reporting) spawning a child process running at SYSTEM
+  integrity level.
+
+  WerMgr.exe normally runs at the integrity level of the reporting user or as a background SYSTEM-owned service that does
+  not launch interactive children.
+
+  In the ShieldBreak exploit, WerMgr.exe is manually triggered via the QueueReporting scheduled task and loads an attacker-planted
+  phantom DLL (phoneinfo.dll), which then spawns an elevated shell.
+
+  If confirmed malicious, this activity indicates successful local privilege escalation to SYSTEM.'
+references:
+- https://research.splunk.com/d39634c8-7ce7-4503-a5da-73ca3c758fb9/
+author: Splunk Security Content (Apache-2.0), Onur Mustafa Erdogan, Splunk
+tags:
+- attack.t1068
+- attack.t1134.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\WerMgr.exe'
+  sel2:
+    IntegrityLevel: System
+  sel3:
+    User:
+    - '*$'
+    - System
+  condition: (sel1 and (sel2 or sel3))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/emerging_threats/ShieldBreak/system_integrity_process.log

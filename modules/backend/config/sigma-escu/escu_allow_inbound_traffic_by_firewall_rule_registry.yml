@@ -1,0 +1,34 @@
+title: Allow Inbound Traffic By Firewall Rule Registry
+id: 0a46537c-be02-11eb-92ca-acde48001122
+status: experimental
+description: The following analytic detects suspicious modifications to firewall rule registry settings that allow inbound
+  traffic on specific ports with a public profile. It leverages data from the Endpoint.Registry data model, focusing on registry
+  paths and values indicative of such changes. This activity is significant as it may indicate an adversary attempting to
+  grant remote access to a machine by modifying firewall rules. If confirmed malicious, this could enable unauthorized remote
+  access, potentially leading to further exploitation, data exfiltration, or lateral movement within the network.
+references:
+- https://research.splunk.com/0a46537c-be02-11eb-92ca-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk, Steven Dick
+tags:
+- attack.t1021.001
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\System\\CurrentControlSet\\Services\\SharedAccess\\Parameters\\FirewallPolicy\\FirewallRules\\*'
+  sel2:
+    Details: '*|Action=Allow|*'
+  sel3:
+    Details: '*|Dir=In|*'
+  sel4:
+    Details: '*|LPort=*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/honeypots/casper/datasets1/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 146 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

@@ -1,0 +1,32 @@
+title: Windows Outlook Macro Security Modified
+id: 47872bb4-9987-4c33-a897-4d2d1ac7d4c2
+status: experimental
+description: The following analytic detects the modification of the Windows Registry key "Level" under Outlook Security. This
+  allows macros to execute without warning, which could allow malicious scripts to run without notice. This detection leverages
+  data from the Endpoint.Registry datamodel, specifically looking for the registry value name "Level" with a value of "0x00000001".
+  This activity is significant as it is commonly associated with some malware infections, indicating potential malicious intent
+  to harvest email information.
+references:
+- https://research.splunk.com/47872bb4-9987-4c33-a897-4d2d1ac7d4c2/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1137
+- attack.t1008
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Outlook\\Security*'
+  sel2:
+    TargetObject: '*\\Level'
+  sel3:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/notdoor/macro_security_level/windows-sysmon.log

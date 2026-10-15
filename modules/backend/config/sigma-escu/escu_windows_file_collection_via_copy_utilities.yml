@@ -1,0 +1,54 @@
+title: Windows File Collection Via Copy Utilities
+id: dbdd556d-9da8-4c42-9980-8a3ffe25a758
+status: experimental
+description: 'The following analytic detects the use of Windows command-line copy utilities, such as xcopy, to systematically
+  collect files from user directories and consolidate them into a centralized location on the system. This activity is often
+  indicative of malicious behavior, as threat actors frequently use such commands to gather sensitive information, including
+  documents with .doc, .docx, and .pdf extensions. The detection focuses on identifying recursive copy operations targeting
+  user folders, such as Documents, Desktop, or other directories that commonly store personal or organizational files. Malware
+  that performs this behavior typically attempts to evade detection by using legitimate Windows utilities, executing commands
+  through cmd.exe or other scripting hosts, and writing the collected files to directories like C:\ProgramData or temporary
+  storage locations. Once collected, the information may be staged for exfiltration, used for lateral movement, or leveraged
+  for further compromise of '
+references:
+- https://research.splunk.com/dbdd556d-9da8-4c42-9980-8a3ffe25a758/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1119
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\copy.exe'
+    - '*\\xcopy.exe'
+  sel2:
+    OriginalFileName:
+    - copy.exe
+    - xcopy.exe
+  sel3:
+    CommandLine:
+    - '*.7z*'
+    - '*.bmp*'
+    - '*.db*'
+    - '*.doc*'
+    - '*.gif*'
+    - '*.gz*'
+    - '*.jpg*'
+    - '*.log*'
+    - '*.pdf*'
+    - '*.png*'
+    - '*.ppt*'
+    - '*.rar*'
+    - '*.rtf*'
+    - '*.tar*'
+    - '*.txt*'
+    - '*.xls*'
+    - '*.zip*'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/lamehug/T1119/doc_collection/xcopy_event.log

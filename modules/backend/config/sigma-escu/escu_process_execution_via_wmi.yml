@@ -1,0 +1,30 @@
+title: Process Execution via WMI
+id: 24869767-8579-485d-9a4f-d9ddfd8f0cac
+status: experimental
+description: The following analytic detects the execution of a process by `WmiPrvSE.exe`, indicating potential use of WMI
+  (Windows Management Instrumentation) for process creation. This detection leverages data from Endpoint Detection and Response
+  (EDR) agents, focusing on process and parent process relationships. This activity is significant as WMI can be used for
+  lateral movement, remote code execution, or persistence by attackers. If confirmed malicious, this could allow an attacker
+  to execute arbitrary commands or scripts, potentially leading to further compromise of the affected system or network.
+references:
+- https://research.splunk.com/24869767-8579-485d-9a4f-d9ddfd8f0cac/
+author: Splunk Security Content (Apache-2.0), Rico Valdez, Michael Haag, Splunk
+tags:
+- attack.t1047
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\WmiPrvSE.exe'
+  sel2:
+    CommandLine: '*\\dismhost.exe*'
+  condition: (sel1 and not (sel2))
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1047/atomic_red_team/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 2 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

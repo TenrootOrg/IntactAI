@@ -1,0 +1,35 @@
+title: Windows MMC Loaded Script Engine DLL
+id: 785bbfb5-d404-42d1-ab9d-45c37a2c75cd
+status: experimental
+description: The following analytic identifies when a Windows process loads scripting libraries like jscript.dll or vbscript.dll
+  to execute script code on a target system. While these DLLs are legitimate parts of the operating system, their use by unexpected
+  processes or in unusual contexts can indicate malicious activity, such as script-based malware, living-off-the-land techniques,
+  or automated attacks. This detection monitors which processes load these libraries, along with their command-line arguments
+  and parent processes, to help distinguish normal administrative behavior from potential threats. Alerts should be investigated
+  with attention to the process context and any subsequent network or system activity, as legitimate tools like MMC snap-ins
+  may also trigger this behavior under routine administrative tasks.
+references:
+- https://research.splunk.com/785bbfb5-d404-42d1-ab9d-45c37a2c75cd/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1620
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    Image: '*\\mmc.exe'
+  sel3:
+    ImageLoaded:
+    - '*\\jscript.dll'
+    - '*\\vbscript.dll'
+    - '*\\jscript9.dll'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1620/mmc_script_modules/loaded_module_mmc.log

@@ -1,0 +1,50 @@
+title: MacOS Keychains Dumped
+id: dcb45a09-5e6f-441e-b2f8-cbbf923e36d9
+status: experimental
+description: 'Detects command-line attempts to access or dump macOS Keychain data using native utilities or direct file access.
+
+  This includes credential dumping via the `security` utility (e.g. `dump-keychain -d`), bulk certificate export using `security
+  find-certificate`, and direct file copying of Keychain database files using utilities such as `cat`.
+
+  Keychain files are located in `~/Library/Keychains/`, `/Library/Keychains/`, and `/Network/Library/Keychains/`.
+
+  This technique is commonly associated with post-exploitation credential harvesting, where an attacker with local access
+  seeks to escalate privileges or move laterally by obtaining stored credentials for applications, Wi-Fi networks, system
+  services, and certificates.'
+references:
+- https://research.splunk.com/dcb45a09-5e6f-441e-b2f8-cbbf923e36d9/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Jamie Windley, Splunk
+tags:
+- attack.t1555.001
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    Image: /usr/bin/security
+  sel2:
+    CommandLine: '*dump-keychain*'
+  sel3:
+    CommandLine: '*-d*'
+  sel4:
+    CommandLine: '*find-certificate*'
+  sel5:
+    CommandLine: '*-p*'
+  sel6:
+    CommandLine: '*keychaindump*'
+  sel7:
+    Image:
+    - '*/cat'
+    - '*/cp'
+    - '*/dd'
+    - '*/mv'
+  sel8:
+    CommandLine: '*Library/Keychains/*'
+  sel9:
+    CommandLine: '*.keychain*'
+  condition: (((sel1 and ((sel2 and sel3) or (sel4 and sel5))) or sel6) or (sel7 and sel8 and sel9))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1555.001/osquery_keychains/osquery.log

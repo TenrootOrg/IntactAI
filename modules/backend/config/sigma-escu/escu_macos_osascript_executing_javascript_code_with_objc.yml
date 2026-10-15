@@ -1,0 +1,35 @@
+title: MacOS Osascript Executing JavaScript Code With ObjC
+id: 9ad44dce-7291-47f8-84a7-e343a5147242
+status: experimental
+description: 'This analytic detects the macOS osascript utility executing JavaScript for Automation (JXA) code, identified
+  by
+
+  the "-l JavaScript" interpreter flag, with references to the Objective-C bridge. Adversaries may abuse JXA and
+
+  Objective-C APIs to interact with macOS applications, access native system functionality, execute commands, or
+
+  perform post-exploitation activity.'
+references:
+- https://research.splunk.com/9ad44dce-7291-47f8-84a7-e343a5147242/
+author: Splunk Security Content (Apache-2.0), Radka Viskova, Splunk
+tags:
+- attack.t1059.002
+- attack.t1059.007
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    Image: '*/osascript'
+  sel2:
+    CommandLine: '*-l *'
+  sel3:
+    CommandLine: '* JavaScript*'
+  sel4:
+    CommandLine: '*ObjC.*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.002/osascript_JavaScript_command_execution_Objective_C/osascript_JavaScript_command_execution_Objective_C.log

@@ -1,0 +1,83 @@
+title: Windows Filtering Platform Policy Added to Block EDR Process
+id: 1dea4856-f096-4e9d-9bd3-22c568dac5fe
+status: experimental
+description: 'Detects the modification of a Windows Filtering Platform Policy to block the communication of known EDR processes.
+
+  This can be used by attackers to impair the functionality of these tools and to hide their activities on the machine.'
+references:
+- https://research.splunk.com/1dea4856-f096-4e9d-9bd3-22c568dac5fe/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Parameters\\FirewallPolicy\\FirewallRules*'
+  sel2:
+    Details: '*Action=Block*'
+  sel3:
+    Details: '*App=*'
+  sel4:
+    Details:
+    - '*AmSvc.exe*'
+    - '*cb.exe*'
+    - '*CETASvc.exe*'
+    - '*CNTAoSMgr.exe*'
+    - '*CrAmTray.exe*'
+    - '*CrsSvc.exe*'
+    - '*CybereasonAV.exe*'
+    - '*CylanceSvc.exe*'
+    - '*cyserver.exe*'
+    - '*CyveraService.exe*'
+    - '*CyvrFsFlt.exe*'
+    - '*EIConnector.exe*'
+    - '*ekrn.exe*'
+    - '*elastic-agent.exe*'
+    - '*elastic-endpoint.exe*'
+    - '*EndpointBasecamp.exe*'
+    - '*ExecutionPreventionSvc.exe*'
+    - '*filebeat.exe*'
+    - '*fortiedr.exe*'
+    - '*hurukai.exe*'
+    - '*LogProcessorService.exe*'
+    - '*MsMpEng.exe*'
+    - '*MsSense.exe*'
+    - '*Ntrtscan.exe*'
+    - '*PccNTMon.exe*'
+    - '*QualysAgent.exe*'
+    - '*RepMgr.exe*'
+    - '*RepUtils.exe*'
+    - '*RepUx.exe*'
+    - '*RepWAV.exe*'
+    - '*RepWSC.exe*'
+    - '*SenseCncProxy.exe*'
+    - '*SenseIR.exe*'
+    - '*SenseNdr.exe*'
+    - '*SenseSampleUploader.exe*'
+    - '*SentinelAgent.exe*'
+    - '*SentinelAgentWorker.exe*'
+    - '*SentinelBrowserNativeHost.exe*'
+    - '*SentinelHelperService.exe*'
+    - '*SentinelServiceHost.exe*'
+    - '*SentinelStaticEngine.exe*'
+    - '*SentinelStaticEngineScanner.exe*'
+    - '*sfc.exe*'
+    - '*TaniumClient.exe*'
+    - '*TaniumCX.exe*'
+    - '*TaniumDetectEngine.exe*'
+    - '*TMBMSRV.exe*'
+    - '*TmCCSF.exe*'
+    - '*TmListen.exe*'
+    - '*TmWSCSvc.exe*'
+    - '*Traps.exe*'
+    - '*winlogbeat.exe*'
+    - '*WSCommunicator.exe*'
+    - '*xagt.exe*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562/snapattack/snapattack.log

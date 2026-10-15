@@ -1,0 +1,27 @@
+title: Windows AppCertDLL Modification Via Command Line
+id: 3ba73a2b-3396-47e4-bdef-c80e6a7895c0
+status: experimental
+description: 'This analytic detects attempts to modify AppCertDLL registry keys via some command line utility. Values under
+  this key are used to specify DLLs loaded by the Windows Session Manager.
+
+  Such modifications can be abused by attackers to load malicious code early in the system startup process, enabling persistent
+  malware execution with high privileges.
+
+  If confirmed malicious, this behavior may lead to system compromise, persistence, and the evasion of security controls.'
+references:
+- https://research.splunk.com/3ba73a2b-3396-47e4-bdef-c80e6a7895c0/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1546.009
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*\\Control\\Session Manager\\AppCertDLLs*'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1546.009/snapattack/snapattack.log

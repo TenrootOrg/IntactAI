@@ -1,0 +1,38 @@
+title: Windows Remote Assistance Spawning Process
+id: ced50492-8849-11ec-9f68-acde48001122
+status: experimental
+description: The following analytic detects Microsoft Remote Assistance (msra.exe) spawning PowerShell.exe or cmd.exe as a
+  child process. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process creation
+  events where msra.exe is the parent process. This activity is significant because msra.exe typically does not spawn command-line
+  interfaces, indicating potential process injection or misuse. If confirmed malicious, an attacker could use this technique
+  to execute arbitrary commands, escalate privileges, or maintain persistence on the compromised system.
+references:
+- https://research.splunk.com/ced50492-8849-11ec-9f68-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1055
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\msra.exe'
+  sel2:
+    Image:
+    - '*\\cmd.exe'
+    - '*\\powershell.exe'
+    - '*\\powershell_ise.exe'
+    - '*\\pwsh.exe'
+    - '*\\sh.exe'
+    - '*\\bash.exe'
+    - '*\\wscript.exe'
+    - '*\\cscript.exe'
+    - '*\\wt.exe'
+    - '*\\WindowsTerminal.exe'
+    - '*\\mshta.exe'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1055/msra/msra-windows-sysmon.log

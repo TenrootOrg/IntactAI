@@ -1,0 +1,45 @@
+title: MacOS Osascript Displaying Suspicious User Prompt
+id: d565ae18-7db6-460c-a2eb-a7109f18bc5e
+status: experimental
+description: 'The following analytic detects the execution of the macOS osascript utility with AppleScript commands that display
+  a dialog or alert containing potentially deceptive, credential-related, or security-themed content.
+
+  Adversaries may abuse osascript to present fake system messages or credential prompts and trick users into disclosing sensitive
+  information.
+
+  This detection is based on command-line content and should be reviewed with the parent process, executing user, script content,
+  and surrounding endpoint activity.'
+references:
+- https://research.splunk.com/d565ae18-7db6-460c-a2eb-a7109f18bc5e/
+author: Splunk Security Content (Apache-2.0), Radka Viskova, Splunk
+tags:
+- attack.t1059.002
+- attack.t1056.002
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    Image: '*/osascript'
+  sel2:
+    CommandLine:
+    - '*display alert*'
+    - '*display dialog*'
+  sel3:
+    CommandLine:
+    - '*access System*'
+    - '*authentication*'
+    - '*credentials*'
+    - '*critical update*'
+    - '*needs your attention*'
+    - '*password*'
+    - '*security update*'
+    - '*system error*'
+    - '*verify*'
+    - '*with hidden answer*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.002/osascript/osascript_prompts_user.log

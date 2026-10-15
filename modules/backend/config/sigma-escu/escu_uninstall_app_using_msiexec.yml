@@ -1,0 +1,31 @@
+title: Uninstall App Using MsiExec
+id: 1fca2b28-f922-11eb-b2dd-acde48001122
+status: experimental
+description: The following analytic detects the uninstallation of applications using msiexec with specific command-line arguments.
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process execution logs that include command-line
+  details. This activity is significant because it is an uncommon practice in enterprise environments and has been associated
+  with malicious behavior, such as disabling antivirus software. If confirmed malicious, this could allow an attacker to remove
+  security software, potentially leading to further compromise and persistence within the network.
+references:
+- https://research.splunk.com/1fca2b28-f922-11eb-b2dd-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1218.007
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\msiexec.exe'
+  sel2:
+    CommandLine: '* /qn *'
+  sel3:
+    CommandLine: '*/X*'
+  sel4:
+    CommandLine: '*REBOOT=*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/conti/conti_leak/windows-sysmon.log

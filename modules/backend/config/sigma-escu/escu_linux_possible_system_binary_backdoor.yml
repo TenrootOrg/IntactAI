@@ -1,0 +1,36 @@
+title: Linux Possible System Binary Backdoor
+id: a806d611-ea81-4d8a-9b9b-fbf5b6ec520a
+status: experimental
+description: 'The following analytic detects the creation or overwrite of commonly targeted Linux system binaries such as
+  cat, ls, cp, ps, mv, netstat, ss, and lsof.
+
+  Adversaries may replace these utilities with backdoored versions to hide malicious activity, harvest credentials, or maintain
+  persistence while appearing to use legitimate system tools.
+
+  This technique is associated with rootkit deployment and post-exploitation frameworks such as PANIX.'
+references:
+- https://research.splunk.com/a806d611-ea81-4d8a-9b9b-fbf5b6ec520a/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1036
+- attack.t1059.004
+logsource:
+  category: file_event
+  product: linux
+detection:
+  sel1:
+    TargetFilename:
+    - /usr/bin/cat
+    - /usr/bin/cp
+    - /usr/bin/ls
+    - /usr/bin/lsof
+    - /usr/bin/mv
+    - /usr/bin/netstat
+    - /usr/bin/ps
+    - /usr/bin/ss
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036/linux_possible_system_binary_backdoor/snapattack_linux.log

@@ -1,0 +1,25 @@
+title: Print Processor Registry Autostart
+id: 1f5b68aa-2037-11ec-898e-acde48001122
+status: experimental
+description: The following analytic detects suspicious modifications or new entries in the Print Processor registry path.
+  It leverages registry activity data from the Endpoint data model to identify changes in the specified registry path. This
+  activity is significant because the Print Processor registry is known to be exploited by APT groups like Turla for persistence
+  and privilege escalation. If confirmed malicious, this could allow an attacker to execute a malicious DLL payload by restarting
+  the spoolsv.exe process, leading to potential control over the compromised machine.
+references:
+- https://research.splunk.com/1f5b68aa-2037-11ec-898e-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1547.012
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Control\\Print\\Environments\\Windows x64\\Print Processors*'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1547.012/print_reg/sysmon_print.log

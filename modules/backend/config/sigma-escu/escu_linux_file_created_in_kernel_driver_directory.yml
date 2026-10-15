@@ -1,0 +1,25 @@
+title: Linux File Created In Kernel Driver Directory
+id: b85bbeec-6326-11ec-9311-acde48001122
+status: experimental
+description: The following analytic detects the creation of files in the Linux kernel/driver directory. It leverages filesystem
+  data to identify new files in this critical directory. This activity is significant because the kernel/driver directory
+  is typically reserved for kernel modules, and unauthorized file creation here can indicate a rootkit installation. If confirmed
+  malicious, this could allow an attacker to gain high-level privileges, potentially compromising the entire system by executing
+  code at the kernel level.
+references:
+- https://research.splunk.com/b85bbeec-6326-11ec-9311-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1547.006
+logsource:
+  category: file_event
+  product: linux
+detection:
+  sel1:
+    TargetFilename: '*/kernel/drivers/*'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1547.006/loading_linux_kernel_module/sysmon_linux.log

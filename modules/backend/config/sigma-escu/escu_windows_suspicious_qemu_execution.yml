@@ -1,0 +1,40 @@
+title: Windows Suspicious QEMU Execution
+id: c4c0a2d4-0675-4fde-97b7-115145ba257c
+status: experimental
+description: 'Detects execution of the QEMU binary and an image file with the -nographic flag.
+
+  This causes it to run in the background without any display.
+
+  This has been observed as a persistence and initial access technique by some threat actors to install a rogue linux virtual
+  machine'
+references:
+- https://research.splunk.com/c4c0a2d4-0675-4fde-97b7-115145ba257c/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1204.002
+- attack.t1001
+- attack.t1036
+- attack.t1564.006
+logsource:
+  product: windows
+  service: sysmon
+  category: process_creation
+detection:
+  sel1:
+    EventID: '1'
+  sel2:
+    CommandLine: '*-nographic*'
+  sel3:
+    CommandLine: '*.img*'
+  sel4:
+    Description: '*QEMU machine*'
+  sel5:
+    Product: QEMU
+  sel6:
+    Company: '*qemu*'
+  condition: (sel1 and sel2 and sel3 and ((sel4 or sel5) or sel6))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1204.002/snapattack/snapattack.log

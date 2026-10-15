@@ -1,0 +1,50 @@
+title: Windows SCCM Smsexec Spawned a Suspicious Child Process
+id: 72091a05-3008-4330-b43e-f5e070134ec1
+status: experimental
+description: 'The following analytic detects shells, scripting engines, and common post-exploitation utilities spawned as
+  child processes of smsexec.exe.
+
+  smsexec.exe is the core SCCM SMS Executive service process and has no legitimate reason to launch interactive shells or
+  scripting interpreters.
+
+  An attacker who plants a malicious adsource.dll in the SCCMProvider bin\X64 directory will obtain code execution in the
+  SCCM service context, typically resulting in a SYSTEM-level child process being spawned under smsexec.exe.
+
+  If confirmed malicious, this activity represents successful exploitation of the SCCM SMS Executive service and should be
+  treated as a full host compromise.'
+references:
+- https://research.splunk.com/72091a05-3008-4330-b43e-f5e070134ec1/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1574.001
+- attack.t1068
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\smsexec.exe'
+  sel2:
+    Image:
+    - '*\\bitsadmin.exe'
+    - '*\\certutil.exe'
+    - '*\\cmd.exe'
+    - '*\\conhost.exe'
+    - '*\\cscript.exe'
+    - '*\\curl.exe'
+    - '*\\mshta.exe'
+    - '*\\net.exe'
+    - '*\\net1.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+    - '*\\reg.exe'
+    - '*\\regsvr32.exe'
+    - '*\\rundll32.exe'
+    - '*\\wmic.exe'
+    - '*\\wscript.exe'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1574.002/sccm_adsource_dll/sysmon.log

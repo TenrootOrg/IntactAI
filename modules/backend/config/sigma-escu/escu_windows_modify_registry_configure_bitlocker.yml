@@ -1,0 +1,48 @@
+title: Windows Modify Registry Configure BitLocker
+id: bd1c770f-1b55-411e-b49e-20d07bcac5f8
+status: experimental
+description: This analytic is developed to detect suspicious registry modifications targeting BitLocker settings. The malware
+  ShrinkLocker alters various registry keys to change how BitLocker handles encryption, potentially bypassing TPM requirements,
+  enabling BitLocker without TPM, and enforcing specific startup key and PIN configurations. Such modifications can weaken
+  system security, making it easier for unauthorized access and data breaches. Detecting these changes is crucial for maintaining
+  robust encryption and data protection.
+references:
+- https://research.splunk.com/bd1c770f-1b55-411e-b49e-20d07bcac5f8/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Policies\\Microsoft\\FVE\\*'
+  sel2:
+    TargetObject:
+    - '*\\EnableBDEWithNoTPM'
+    - '*\\EnableNonTPM'
+    - '*\\UseAdvancedStartup'
+  sel3:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  sel4:
+    TargetObject: '*\\Policies\\Microsoft\\FVE\\*'
+  sel5:
+    TargetObject:
+    - '*\\UsePIN'
+    - '*\\UsePartialEncryptionKey'
+    - '*\\UseTPM'
+    - '*\\UseTPMKey'
+    - '*\\UseTPMKeyPIN'
+    - '*\\UseTPMPIN'
+  sel6:
+    Details:
+    - '* (0x00000002)'
+    - '0x00000002'
+  condition: ((sel1 and sel2 and sel3) or (sel4 and sel5 and sel6))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/bitlocker_registry_setting/fve-reg.log

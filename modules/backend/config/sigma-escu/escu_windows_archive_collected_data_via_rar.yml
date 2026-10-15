@@ -1,0 +1,39 @@
+title: Windows Archive Collected Data via Rar
+id: 2015de95-fe91-413d-9d62-2fe011b67e82
+status: experimental
+description: The following analytic identifies the execution of RAR utilities to archive files on a system. It leverages data
+  from Endpoint Detection and Response (EDR) agents, focusing on process names, GUIDs, and command-line arguments. This activity
+  is significant as threat actors, including red-teamers and malware like DarkGate, use RAR archiving to compress and exfiltrate
+  collected data from compromised hosts. If confirmed malicious, this behavior could lead to the unauthorized transfer of
+  sensitive information to command and control servers, posing a severe risk to data confidentiality and integrity.
+references:
+- https://research.splunk.com/2015de95-fe91-413d-9d62-2fe011b67e82/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1560.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\Rar.exe'
+  sel2:
+    OriginalFileName: Rar.exe
+  sel3:
+    CommandLine: '*a*'
+  sel4:
+    CommandLine: '* -ep1*'
+  sel5:
+    CommandLine: '* -r*'
+  sel6:
+    CommandLine: '* -y*'
+  sel7:
+    CommandLine: '* -v5m*'
+  sel8:
+    CommandLine: '* -m1*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5 and sel6 and sel7 and sel8)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1560.001/archive_utility_darkgate/rar_sys.log

@@ -1,0 +1,31 @@
+title: Windows Outlook LoadMacroProviderOnBoot Persistence
+id: 93c91139-01f8-4905-802b-0d106f026b13
+status: experimental
+description: The following analytic detects the modification of the Windows Registry key "LoadMacroProviderOnBoot" under Outlook.
+  This enables automatic loading of macros, which could allow malicious scripts to run without notice. This detection leverages
+  data from the Endpoint.Registry datamodel to search for this key being enabled. This activity is significant as it is commonly
+  associated with some malware infections, indicating potential malicious intent to harvest email information.
+references:
+- https://research.splunk.com/93c91139-01f8-4905-802b-0d106f026b13/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1112
+- attack.t1137
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Outlook\\*'
+  sel2:
+    TargetObject: '*\\LoadMacroProviderOnBoot'
+  sel3:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/notdoor/loadmacroprovideronboot/windows-sysmon.log

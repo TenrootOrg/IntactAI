@@ -1,0 +1,27 @@
+title: Windows File Share Discovery With Powerview
+id: a44c0be1-d7ab-41e4-92fd-aa9af4fe232c
+status: experimental
+description: The following analytic detects the execution of the Invoke-ShareFinder PowerShell cmdlet from PowerView. This
+  detection leverages PowerShell Script Block Logging to identify instances where this specific command is executed. Monitoring
+  this activity is crucial as it indicates an attempt to enumerate network file shares, which may contain sensitive information
+  such as backups, scripts, and credentials. If confirmed malicious, this activity could enable an attacker to escalate privileges
+  or move laterally within the network, potentially compromising additional systems and sensitive data.
+references:
+- https://research.splunk.com/a44c0be1-d7ab-41e4-92fd-aa9af4fe232c/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1135
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: Invoke-ShareFinder*
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1135/powerview_sharefinder/windows-powershell.log

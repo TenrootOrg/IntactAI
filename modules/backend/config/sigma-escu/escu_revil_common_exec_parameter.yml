@@ -1,0 +1,28 @@
+title: Revil Common Exec Parameter
+id: 85facebe-c382-11eb-9c3e-acde48001122
+status: experimental
+description: The following analytic detects the execution of command-line parameters commonly associated with REVIL ransomware,
+  such as "-nolan", "-nolocal", "-fast", and "-full". It leverages data from Endpoint Detection and Response (EDR) agents,
+  focusing on process execution logs mapped to the `Processes` node of the `Endpoint` data model. This activity is significant
+  because these parameters are indicative of ransomware attempting to encrypt files on a compromised machine. If confirmed
+  malicious, this could lead to widespread data encryption, rendering critical files inaccessible and potentially causing
+  significant operational disruption.
+references:
+- https://research.splunk.com/85facebe-c382-11eb-9c3e-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1204
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '* -nolan *'
+  sel2:
+    CommandLine: '* -nolocal *'
+  condition: (sel1 or sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/revil/inf1/windows-sysmon.log

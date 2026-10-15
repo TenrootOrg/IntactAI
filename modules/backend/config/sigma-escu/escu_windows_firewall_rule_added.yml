@@ -1,0 +1,26 @@
+title: Windows Firewall Rule Added
+id: efc25501-4e75-4075-8cc5-ac80f2847d80
+status: experimental
+description: This detection identifies instances where a Windows Firewall rule is added by monitoring Event ID 4946 in the
+  Windows Security Event Log. Firewall rule modifications can indicate legitimate administrative actions, but they may also
+  signal unauthorized changes, misconfigurations, or malicious activity such as attackers allowing traffic for backdoors or
+  persistence mechanisms. By analyzing fields like RuleName, RuleId, Computer, and ProfileChanged, security teams can determine
+  whether the change aligns with expected behavior. Correlating with user activity and process execution can help distinguish
+  false positives from real threats, ensuring better visibility into potential security risks.
+references:
+- https://research.splunk.com/efc25501-4e75-4075-8cc5-ac80f2847d80/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1686
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4946'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.004/firewall_win_event/added_rule/MPSSVC_Rule-Level_Policy_Change-4946.log

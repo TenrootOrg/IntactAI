@@ -1,0 +1,35 @@
+title: Windows Cabinet File Extraction Via Expand
+id: 4e3e3b8c-6d3a-4b47-9f5a-9e3e0a0a6f2f
+status: experimental
+description: 'Detects usage of expand.exe to extract Microsoft Cabinet (CAB) archives, with
+
+  emphasis on extractions into `C:\\ProgramData` or similar staging locations. In
+
+  recent APT37 activity, a CAB payload (e.g., wonder.cab) was expanded into
+
+  ProgramData prior to persistence and execution. This behavior is a strong signal
+
+  for ingress tool transfer and staging of payloads.'
+references:
+- https://research.splunk.com/4e3e3b8c-6d3a-4b47-9f5a-9e3e0a0a6f2f/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1105
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\expand.exe'
+  sel2:
+    CommandLine: '*-F:*'
+  sel3:
+    CommandLine: '*/F:*'
+  sel4:
+    CommandLine: '*\\ProgramData\\*'
+  condition: (sel1 and (sel2 or sel3) and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1140/atomic_red_team/expand_windows-sysmon.log

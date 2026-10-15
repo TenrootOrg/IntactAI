@@ -1,0 +1,61 @@
+title: Windows Mustang Panda USB Tool Execution
+id: e66a167f-6506-4e5b-8e4d-1b04940c70be
+status: experimental
+description: 'Detects known executables used for infection or DLL side loading by Mustang Panda being launched from a non-C:\
+  location.
+
+  This can indicate a compromise via USB, or external storage device.
+
+  You will have to adapt this detection if you do not use C:\ as the root device.'
+references:
+- https://research.splunk.com/e66a167f-6506-4e5b-8e4d-1b04940c70be/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1574.001
+- attack.t1204.002
+- attack.t1020
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: C:\\*
+  sel2:
+    Image:
+    - '*atkexComSvcRes.exe'
+    - '*AtlTraceTool8.exe'
+    - '*browser.ex'
+    - '*CefSub.exe'
+    - '*dabs.ex'
+    - '*FacialFeatureDemo.exe'
+    - '*GoogleUpdate*.exe'
+    - '*GUP.exe'
+    - '*HPCustParticUI.exe'
+    - '*install_.exe'
+    - '*mcsync.ex'
+    - '*melt_64.exe'
+    - '*mscorsvw.exe'
+    - '*OleView.exe'
+    - '*piz.exe'
+    - '*PlugInInstallerUtility2.exe'
+    - '*rar330.exe'
+    - '*Samvd.exe'
+    - '*scx.exe'
+    - '*spoololk.exe'
+    - '*Symantec.exe'
+    - '*SymantecHp.exe'
+    - '*Symantecs.exe'
+    - '*Symantecsy.exe'
+    - '*upservice.exe'
+    - '*vivaldi.exe'
+    - '*wsc_proxy.exe'
+    - '*ygfdt.exe'
+  condition: (not (sel1) and sel2)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1574.002/snapattack/snapattack.log
+x-intact-burst: false
+x-intact: 'Fired 12698 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only,
+  not counted toward a burst.'

@@ -1,0 +1,26 @@
+title: Get-DomainTrust with PowerShell
+id: 4fa7f846-054a-11ec-a836-acde48001122
+status: experimental
+description: The following analytic identifies the execution of the Get-DomainTrust command from PowerView using PowerShell,
+  which is used to gather domain trust information. This detection leverages data from Endpoint Detection and Response (EDR)
+  agents, focusing on process and command-line telemetry. This activity is significant as it indicates potential reconnaissance
+  efforts by an adversary to understand domain trust relationships, which can inform lateral movement strategies. If confirmed
+  malicious, this could allow attackers to map out the network, identify potential targets, and plan further attacks, potentially
+  compromising additional systems within the domain.
+references:
+- https://research.splunk.com/4fa7f846-054a-11ec-a836-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1482
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*get-domaintrust*'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1482/discovery/windows-sysmon.log

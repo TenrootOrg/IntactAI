@@ -1,0 +1,27 @@
+title: AWS Exfiltration via Bucket Replication
+id: eeb432d6-2212-43b6-9e89-fcd753f7da4c
+status: experimental
+description: The following analytic detects API calls to enable S3 bucket replication services. It leverages AWS CloudTrail
+  logs to identify `PutBucketReplication` events, focusing on fields like `bucketName`, `ReplicationConfiguration.Rule.Destination.Bucket`,
+  and user details. This activity is significant as it can indicate unauthorized data replication, potentially leading to
+  data exfiltration. If confirmed malicious, attackers could replicate sensitive data to external accounts, leading to data
+  breaches and compliance violations.
+references:
+- https://research.splunk.com/eeb432d6-2212-43b6-9e89-fcd753f7da4c/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Splunk
+tags:
+- attack.t1537
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  sel1:
+    eventName: PutBucketReplication
+  sel2:
+    eventSource: s3.amazonaws.com
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1119/aws_exfil_datasync/cloudtrail.json

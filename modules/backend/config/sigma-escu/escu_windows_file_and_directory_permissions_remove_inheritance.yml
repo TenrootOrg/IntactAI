@@ -1,0 +1,30 @@
+title: Windows File and Directory Permissions Remove Inheritance
+id: 9b62da2c-e442-474f-83ca-fac4dabab1b3
+status: experimental
+description: The following analytic detects the removal of permission inheritance using ICACLS. This analytic identifies instances
+  where ICACLS is used to remove permission inheritance from files or directories. The /inheritance:r flag, which strips inherited
+  permissions while optionally preserving or altering explicit permissions, is monitored to detect changes that may restrict
+  access or establish isolated permission configurations. Removing inheritance can be a legitimate administrative action but
+  may also indicate an attempt to conceal malicious activity or bypass inherited security controls.
+references:
+- https://research.splunk.com/9b62da2c-e442-474f-83ca-fac4dabab1b3/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1222.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\icacls.exe'
+    - '*\\cacls.exe'
+    - '*\\xcacls.exe'
+  sel2:
+    CommandLine: '*/inheritance:r*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1222.001/icacls_inheritance/icacls_process_1.log

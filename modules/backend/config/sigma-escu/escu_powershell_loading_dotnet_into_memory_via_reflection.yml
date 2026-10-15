@@ -1,0 +1,40 @@
+title: PowerShell Loading DotNET into Memory via Reflection
+id: 85bc3f30-ca28-11eb-bd21-acde48001122
+status: experimental
+description: 'The following analytic detects the use of PowerShell scripts to load .NET assemblies into memory via reflection,
+  a technique often used in malicious activities such as those by Empire and Cobalt Strike.
+
+  It leverages PowerShell Script Block Logging (EventCode=4104) to capture and analyze the full command executed.
+
+  This behavior is significant as it can indicate advanced attack techniques aiming to execute code in memory, bypassing traditional
+  defenses.
+
+  If confirmed malicious, this activity could lead to unauthorized code execution, privilege escalation, and persistent access
+  within the environment.'
+references:
+- https://research.splunk.com/85bc3f30-ca28-11eb-bd21-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Teoderick Contreras Splunk
+tags:
+- attack.t1059.001
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText:
+    - '*.LoadFrom(*'
+    - '*.LoadModule(*'
+    - '*.LoadWithPartialName*'
+    - '*Reflection.Assembly.Load*'
+    - '*Reflection.Assembly]::(''daoL''[-1..-4] -join '''')*'
+    - '*Reflection.Assembly]::Load*'
+    - '*ReflectionOnlyLoad*'
+    - '*UnsafeLoadFrom*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/powershell_script_block_logging/reflection.log

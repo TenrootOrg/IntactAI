@@ -1,0 +1,36 @@
+title: Suspicious Rundll32 no Command Line Arguments
+id: e451bd16-e4c5-4109-8eb1-c4c6ecf048b4
+status: experimental
+description: 'The following analytic detects the execution of rundll32.exe without any command line arguments.
+
+  This behavior is identified using Endpoint Detection and Response (EDR) telemetry, focusing on process execution logs.
+
+  It is significant because rundll32.exe typically requires command line arguments to function properly, and its absence is
+  often associated with malicious activities, such as those performed by Cobalt Strike.
+
+  If confirmed malicious, this activity could indicate an attempt to execute arbitrary code, potentially leading to credential
+  dumping, unauthorized file writes, or other malicious actions.'
+references:
+- https://research.splunk.com/e451bd16-e4c5-4109-8eb1-c4c6ecf048b4/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.011
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\rundll32.exe'
+  sel2:
+    OriginalFileName: RUNDLL32.EXE
+  sel3:
+    CommandLine:
+    - '*rundll32'
+    - '*rundll32.exe'
+    - '*rundll32.exe"'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.011/atomic_red_team/windows-sysmon.log

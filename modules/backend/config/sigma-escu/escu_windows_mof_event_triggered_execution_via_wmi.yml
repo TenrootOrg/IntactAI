@@ -1,0 +1,35 @@
+title: Windows MOF Event Triggered Execution via WMI
+id: e59b5a73-32bf-4467-a585-452c36ae10c1
+status: experimental
+description: The following analytic detects the execution of MOFComp.exe loading a MOF file, often triggered by cmd.exe or
+  powershell.exe, or from unusual paths like User Profile directories. It leverages Endpoint Detection and Response (EDR)
+  data, focusing on process names, parent processes, and command-line executions. This activity is significant as it may indicate
+  an attacker using WMI for persistence or lateral movement. If confirmed malicious, it could allow the attacker to execute
+  arbitrary code, maintain persistence, or escalate privileges within the environment.
+references:
+- https://research.splunk.com/e59b5a73-32bf-4467-a585-452c36ae10c1/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1546.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage:
+    - '*\\cmd.exe'
+    - '*\\powershell.exe'
+  sel2:
+    Image: '*\\mofcomp.exe'
+  sel3:
+    Image: '*\\mofcomp.exe'
+  sel4:
+    CommandLine:
+    - '*\\AppData\\Local\\*'
+    - '*\\Users\\Public\\*'
+  condition: ((sel1 and sel2) or (sel3 and sel4))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1546.003/atomic_red_team/mofcomp.log

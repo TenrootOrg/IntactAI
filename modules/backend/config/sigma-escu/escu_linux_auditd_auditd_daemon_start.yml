@@ -1,0 +1,27 @@
+title: Linux Auditd Auditd Daemon Start
+id: 6b0cb0ff-9a7e-4475-a687-43827fdb31d6
+status: experimental
+description: The following analytic detects the (re)initialization of the Linux audit daemon (auditd) by identifying log entries
+  of type DAEMON_START. This event indicates that the audit subsystem has resumed logging after being stopped or has started
+  during system boot. While DAEMON_START may be expected during reboots or legitimate configuration changes, it can also signal
+  attempts to re-enable audit logging after evasion, or restarts with modified or reduced rule sets. Monitoring this event
+  in correlation with DAEMON_END, DAEMON_ABORT, and auditctl activity provides visibility into the continuity and integrity
+  of audit logs. Frequent or unexplained DAEMON_START events should be investigated, especially if they are not accompanied
+  by valid administrative or system activity.
+references:
+- https://research.splunk.com/6b0cb0ff-9a7e-4475-a687-43827fdb31d6/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685.004
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    type: DAEMON_START
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.012/auditd_daemon_type/linux_auditd_daemon.log

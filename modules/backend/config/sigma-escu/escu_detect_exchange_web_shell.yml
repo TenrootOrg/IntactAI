@@ -1,0 +1,35 @@
+title: Detect Exchange Web Shell
+id: 8c14eeee-2af1-4a4b-bda8-228da0f4862a
+status: experimental
+description: The following analytic identifies the creation of suspicious .aspx files in known drop locations for Exchange
+  exploitation, specifically targeting paths associated with HAFNIUM group and vulnerabilities like ProxyShell and ProxyNotShell.
+  It leverages data from the Endpoint datamodel, focusing on process and filesystem events. This activity is significant as
+  it may indicate a web shell deployment, a common method for persistent access and remote code execution. If confirmed malicious,
+  attackers could gain unauthorized access, execute arbitrary commands, and potentially escalate privileges within the Exchange
+  environment.
+references:
+- https://research.splunk.com/8c14eeee-2af1-4a4b-bda8-228da0f4862a/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Shannon Davis, David Dorsey, Splunk
+tags:
+- attack.t1133
+- attack.t1190
+- attack.t1505.003
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*\\HttpProxy\\owa\\auth\\*'
+    - '*\\inetpub\\wwwroot\\aspnet_client\\*'
+    - '*\\HttpProxy\\OAB\\*'
+  sel2:
+    TargetFilename:
+    - '*.aspx'
+    - '*.ashx'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1505.003/windows-sysmon_proxylogon.log

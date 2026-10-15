@@ -1,0 +1,37 @@
+title: Linux Auditd Edit Cron Table Parameter
+id: f4bb7321-7e64-4d1e-b1aa-21f8b019a91f
+status: experimental
+description: The following analytic detects the suspicious editing of cron jobs in Linux using the crontab command-line parameter
+  (-e). It identifies this activity by monitoring command-line executions involving 'crontab' and the edit parameter. This
+  behavior is significant for a SOC as cron job manipulations can indicate unauthorized persistence attempts or scheduled
+  malicious actions. If confirmed malicious, this activity could lead to system compromise, unauthorized access, or broader
+  network compromise.
+references:
+- https://research.splunk.com/f4bb7321-7e64-4d1e-b1aa-21f8b019a91f/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1053.003
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    type: SYSCALL
+  sel2:
+    syscall:
+    - rename
+    - execve
+  sel3:
+    comm: crontab
+  sel4:
+    exe: '*/crontab'
+  sel5:
+    success: 'yes'
+  sel6:
+    UID: daemon
+  condition: (sel1 and sel2 and (sel3 or sel4) and sel5 and not (sel6))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1053.003/linux_auditd_crontab_edit_new/linux_auditd_new_crontab.log

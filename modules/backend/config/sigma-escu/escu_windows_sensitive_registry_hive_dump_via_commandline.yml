@@ -1,0 +1,47 @@
+title: Windows Sensitive Registry Hive Dump Via CommandLine
+id: 5aaff29d-0cce-405b-9ee8-5d06b49d045e
+status: experimental
+description: The following analytic detects the use of `reg.exe` to export Windows Registry hives, which may contain sensitive
+  credentials. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line executions
+  involving `save` or `export` actions targeting the `sam`, `system`, or `security` hives. This activity is significant as
+  it indicates potential offline credential access attacks, often executed from untrusted processes or scripts. If confirmed
+  malicious, attackers could gain access to credential data, enabling further compromise and lateral movement within the network.
+references:
+- https://research.splunk.com/5aaff29d-0cce-405b-9ee8-5d06b49d045e/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Patrick Bareiss, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1003.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\reg.exe'
+  sel2:
+    OriginalFileName: reg.exe
+  sel3:
+    CommandLine:
+    - '*save*'
+    - '*export*'
+  sel4:
+    Image: '*\\regedit.exe'
+  sel5:
+    OriginalFileName: REGEDIT.exe
+  sel6:
+    CommandLine:
+    - '*/E *'
+    - '*-E *'
+  sel7:
+    CommandLine:
+    - '*HKEY_LOCAL_MACHINE\\SAM*'
+    - '*HKEY_LOCAL_MACHINE\\Security*'
+    - '*HKEY_LOCAL_MACHINE\\System*'
+    - '*HKLM\\SAM*'
+    - '*HKLM\\Security*'
+    - '*HKLM\\System*'
+  condition: ((((sel1 or sel2) and sel3) or ((sel4 or sel5) and sel6)) and sel7)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1003.002/atomic_red_team/windows-sysmon.log

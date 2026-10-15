@@ -1,0 +1,30 @@
+title: Windows Remote Host Computer Management Access
+id: 455da527-0047-4610-a3ca-b4a005c2d346
+status: experimental
+description: The following analytic detects the use of mmc.exe to launch Computer Management (compmgmt.msc) and connect to
+  a remote machine. This technique allows administrators to access system management tools, including Event Viewer, Services,
+  Shared Folders, and Local Users & Groups, without initiating a full remote desktop session. While commonly used for legitimate
+  administrative purposes, adversaries may leverage this method for remote reconnaissance, privilege escalation, or persistence.
+  Monitoring the execution of mmc.exe with the /computer:{hostname/ip} argument can help detect unauthorized system administration
+  attempts or lateral movement within a network.
+references:
+- https://research.splunk.com/455da527-0047-4610-a3ca-b4a005c2d346/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1021.006
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\mmc.exe'
+  sel2:
+    CommandLine: '*compmgmt.msc *'
+  sel3:
+    CommandLine: '*/computer:*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.006/compmgtm_access/compmgmt_load.log

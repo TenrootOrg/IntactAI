@@ -1,0 +1,31 @@
+title: Linux Possible Access To Sudoers File
+id: 4479539c-71fc-11ec-b2e2-acde48001122
+status: experimental
+description: The following analytic detects potential access or modification of the /etc/sudoers file on a Linux system. It
+  leverages data from Endpoint Detection and Response (EDR) agents, focusing on processes like "cat," "nano," "vim," and "vi"
+  accessing the /etc/sudoers file. This activity is significant because the sudoers file controls user permissions for executing
+  commands with elevated privileges. If confirmed malicious, an attacker could gain persistence or escalate privileges, compromising
+  the security of the targeted host.
+references:
+- https://research.splunk.com/4479539c-71fc-11ec-b2e2-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1548.003
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image:
+    - '*/cat'
+    - '*/nano*'
+    - '*/vim*'
+    - '*/vi*'
+  sel2:
+    CommandLine: '*/etc/sudoers*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1003.008/copy_file_stdoutpipe/sysmon_linux.log

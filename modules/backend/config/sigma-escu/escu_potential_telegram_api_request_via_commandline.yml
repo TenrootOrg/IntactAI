@@ -1,0 +1,30 @@
+title: Potential Telegram API Request Via CommandLine
+id: d6b0d627-d0bf-46b1-936f-c48284767d21
+status: experimental
+description: The following analytic detects the presence of "api.telegram.org" in the CommandLine of a process. It leverages
+  data from Endpoint Detection and Response (EDR) agents, focusing on process execution logs that include command-line details.
+  This activity can be significant as the telegram API has been used as an exfiltration mechanism or even as a C2 channel.
+  If confirmed malicious, this could allow an attacker or malware to exfiltrate data or receive additional C2 instruction,
+  potentially leading to further compromise and persistence within the network.
+references:
+- https://research.splunk.com/d6b0d627-d0bf-46b1-936f-c48284767d21/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk, Zaki Zarkasih Al Mustafa
+tags:
+- attack.t1102.002
+- attack.t1041
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*api.telegram.org*'
+  sel2:
+    CommandLine:
+    - '*-osint -url*'
+    - '* --single-argument*'
+  condition: (sel1 and not (sel2))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1102.002/telegram_api_cli/telegram_cli.log

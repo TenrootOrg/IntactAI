@@ -1,0 +1,27 @@
+title: Fsutil Zeroing File
+id: 4e5e024e-fabb-11eb-8b8f-acde48001122
+status: experimental
+description: The following analytic detects the execution of the 'fsutil' command with the 'setzerodata' parameter, which
+  zeros out a target file. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process
+  names and command-line arguments. This activity is significant because it is a technique used by ransomware, such as LockBit,
+  to evade detection by erasing its malware path after encrypting the host. If confirmed malicious, this action could hinder
+  forensic investigations and allow attackers to cover their tracks, complicating incident response efforts.
+references:
+- https://research.splunk.com/4e5e024e-fabb-11eb-8b8f-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1070
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\fsutil.exe'
+  sel2:
+    CommandLine: '*setzerodata*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1070/fsutil_file_zero/windows-sysmon.log

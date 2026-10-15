@@ -1,0 +1,29 @@
+title: Windows Modify Registry LongPathsEnabled
+id: 36f9626c-4272-4808-aadd-267acce681c0
+status: experimental
+description: The following analytic detects a modification to the Windows registry setting "LongPathsEnabled," which allows
+  file paths longer than 260 characters. This detection leverages data from the Endpoint.Registry datamodel, focusing on changes
+  to the specific registry path and value. This activity is significant because adversaries, including malware like BlackByte,
+  exploit this setting to bypass file path limitations, potentially aiding in evasion techniques. If confirmed malicious,
+  this modification could facilitate the execution of long-path payloads, aiding in persistence and further system compromise.
+references:
+- https://research.splunk.com/36f9626c-4272-4808-aadd-267acce681c0/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\CurrentControlSet\\Control\\FileSystem\\LongPathsEnabled'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/blackbyte/longpathsenabled/longpath_sysmon.log

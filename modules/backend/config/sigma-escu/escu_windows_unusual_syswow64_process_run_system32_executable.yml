@@ -1,0 +1,30 @@
+title: Windows Unusual SysWOW64 Process Run System32 Executable
+id: e4602172-db86-4315-86df-da66fb40bcde
+status: experimental
+description: The following analytic detects an unusual process execution pattern where a process running from C:\Windows\SysWOW64\
+  attempts to execute a binary from C:\Windows\System32\. In a typical Windows environment, 32-bit processes under SysWOW64
+  should primarily interact with 32-bit binaries within the same directory. However, an execution flow where a 32-bit process
+  spawns a 64-bit binary from System32 can indicate potential process injection, privilege escalation, evasion techniques,
+  or unauthorized execution hijacking.
+references:
+- https://research.splunk.com/e4602172-db86-4315-86df-da66fb40bcde/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1036.009
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\Windows\\SysWOW64\\*'
+  sel2:
+    CommandLine: '*windows\\system32\\*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036.009/32bit_process_execute_64bit/32bit_spawn_64bit.log
+x-intact-burst: false
+x-intact: 'Fired 30 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

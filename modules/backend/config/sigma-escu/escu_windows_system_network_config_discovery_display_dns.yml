@@ -1,0 +1,30 @@
+title: Windows System Network Config Discovery Display DNS
+id: e24f0a0e-41a9-419f-9999-eacab15efc36
+status: experimental
+description: The following analytic identifies the execution of the "ipconfig /displaydns" command, which retrieves DNS reply
+  information using the built-in Windows tool IPConfig. This detection leverages data from Endpoint Detection and Response
+  (EDR) agents, focusing on process command-line executions. Monitoring this activity is significant as threat actors and
+  post-exploitation tools like WINPEAS often abuse this command to gather network information. If confirmed malicious, this
+  activity could allow attackers to map the network, identify DNS servers, and potentially facilitate further network-based
+  attacks or lateral movement.
+references:
+- https://research.splunk.com/e24f0a0e-41a9-419f-9999-eacab15efc36/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1016
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\ipconfig.exe'
+  sel2:
+    OriginalFileName: ipconfig.exe
+  sel3:
+    CommandLine: '*/displaydns*'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/winpeas/sysmon.log

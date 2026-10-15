@@ -1,0 +1,31 @@
+title: Linux Auditd Service Started
+id: b5eed06d-5c97-4092-a3a1-fa4b7e77c71a
+status: experimental
+description: The following analytic detects the suspicious service started. This behavior is critical for a SOC to monitor
+  because it may indicate attempts to gain unauthorized access or maintain control over a system. Such actions could be signs
+  of malicious activity. If confirmed, this could lead to serious consequences, including a compromised system, unauthorized
+  access to sensitive data, or even a wider breach affecting the entire network. Detecting and responding to these signs early
+  is essential to prevent potential security incidents.
+references:
+- https://research.splunk.com/b5eed06d-5c97-4092-a3a1-fa4b7e77c71a/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1569.002
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    proctitle:
+    - '*systemctl *'
+    - '*service *'
+  sel2:
+    proctitle:
+    - '* start*'
+    - '* enable*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1569.002/linux_service_start/auditd_proctitle_service_start.log

@@ -1,0 +1,30 @@
+title: Windows Impair Defense Disable Win Defender Signature Retirement
+id: 7567a72f-bada-489d-aef1-59743fb64a66
+status: experimental
+description: The following analytic detects modifications to the Windows registry that disable Windows Defender Signature
+  Retirement. It leverages data from the Endpoint.Registry data model, specifically monitoring changes to the DisableSignatureRetirement
+  registry setting. This activity is significant because disabling signature retirement can prevent Windows Defender from
+  removing outdated antivirus signatures, potentially reducing its effectiveness in detecting threats. If confirmed malicious,
+  this action could allow an attacker to evade detection by using older, less relevant signatures, thereby compromising the
+  system's security posture.
+references:
+- https://research.splunk.com/7567a72f-bada-489d-aef1-59743fb64a66/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Windows Defender\\NIS\\Consumers\\IPS\\DisableSignatureRetirement'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable-windows-security-defender-features/windefender-bypas-2-sysmon.log

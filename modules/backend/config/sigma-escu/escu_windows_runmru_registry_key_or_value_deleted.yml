@@ -1,0 +1,30 @@
+title: Windows RunMRU Registry Key or Value Deleted
+id: e651795f-b2c9-4a84-a18a-b901018a3bfa
+status: experimental
+description: The following analytic detects the deletion or modification of Most Recently Used (MRU) command entries stored
+  within the Windows Registry. Adversaries often clear these registry keys, such as HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU,
+  to remove forensic evidence of commands executed via the Windows Run dialog or other system utilities. This activity aims
+  to obscure their actions, hinder incident response efforts, and evade detection. Detection focuses on monitoring for changes
+  (deletion of values or modification of the MRUList value) to these specific registry paths, particularly when performed
+  by unusual processes or outside of typical user behavior. Anomalous deletion events can indicate an attempt at defense evasion
+  or post-exploitation cleanup by a malicious actor.
+references:
+- https://research.splunk.com/e651795f-b2c9-4a84-a18a-b901018a3bfa/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_delete
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RunMRU*'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/delete_runmru_reg/runmru_deletion.log
+x-intact-burst: false
+x-intact: 'Fired 9 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

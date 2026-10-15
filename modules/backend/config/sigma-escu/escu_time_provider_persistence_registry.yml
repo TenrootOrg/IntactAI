@@ -1,0 +1,41 @@
+title: Time Provider Persistence Registry
+id: 5ba382c4-2105-11ec-8d8f-acde48001122
+status: experimental
+description: 'The following analytic detects suspicious modifications to the time provider registry for persistence and autostart.
+  It leverages data from the Endpoint.Registry data model, focusing on changes to the "CurrentControlSet\\Services\\W32Time\\TimeProviders"
+  registry path.
+
+  This activity is significant because such modifications are uncommon and can indicate an attempt to establish persistence
+  on a compromised host.
+
+  If confirmed malicious, this technique allows an attacker to maintain access and execute code automatically upon system
+  boot, potentially leading to further exploitation and control over the affected system.'
+references:
+- https://research.splunk.com/5ba382c4-2105-11ec-8d8f-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk, Steven Dick
+tags:
+- attack.t1547.003
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\*'
+  sel2:
+    TargetObject: '*\\DllName'
+  sel3:
+    Details:
+    - '* (%SystemRoot%\\System32\\vmictimeprovider.dll)'
+    - '%SystemRoot%\\System32\\vmictimeprovider.dll'
+    - '* (%SystemRoot%\\System32\\w32time.dll)'
+    - '%SystemRoot%\\System32\\w32time.dll'
+    - '* (C:\\Windows\\System32\\vmictimeprovider.dll)'
+    - C:\\Windows\\System32\\vmictimeprovider.dll
+    - '* (C:\\Windows\\System32\\w32time.dll)'
+    - C:\\Windows\\System32\\w32time.dll
+  condition: (sel1 and sel2 and not (sel3))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1547.003/timeprovider_reg/sysmon.log

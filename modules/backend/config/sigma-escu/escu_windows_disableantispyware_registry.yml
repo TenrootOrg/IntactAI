@@ -1,0 +1,30 @@
+title: Windows DisableAntiSpyware Registry
+id: 23150a40-9301-4195-b802-5bb4f43067fb
+status: experimental
+description: The following analytic detects the modification of the Windows Registry key "DisableAntiSpyware" being set to
+  disable. This detection leverages data from the Endpoint.Registry datamodel, specifically looking for the registry value
+  name "DisableAntiSpyware" with a value of "0x00000001". This activity is significant as it is commonly associated with Ryuk
+  ransomware infections, indicating potential malicious intent to disable Windows Defender. If confirmed malicious, this action
+  could allow attackers to disable critical security defenses, facilitating further malicious activities such as data encryption,
+  exfiltration, or additional system compromise.
+references:
+- https://research.splunk.com/23150a40-9301-4195-b802-5bb4f43067fb/
+author: Splunk Security Content (Apache-2.0), Rod Soto, Jose Hernandez, Michael Haag, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\DisableAntiSpyware'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/atomic_red_team/windows-sysmon.log

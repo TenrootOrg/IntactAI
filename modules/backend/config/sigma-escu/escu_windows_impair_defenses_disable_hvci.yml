@@ -1,0 +1,29 @@
+title: Windows Impair Defenses Disable HVCI
+id: b061dfcc-f0aa-42cc-a6d4-a87f172acb79
+status: experimental
+description: The following analytic detects the disabling of Hypervisor-protected Code Integrity (HVCI) by monitoring changes
+  in the Windows registry. It leverages data from the Endpoint datamodel, specifically focusing on registry paths and values
+  related to HVCI settings. This activity is significant because HVCI helps protect the kernel and system processes from tampering
+  by malicious code. If confirmed malicious, disabling HVCI could allow attackers to execute unsigned kernel-mode code, potentially
+  leading to kernel-level rootkits or other severe security breaches.
+references:
+- https://research.splunk.com/b061dfcc-f0aa-42cc-a6d4-a87f172acb79/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity\\Enabled'
+  sel2:
+    Details:
+    - '* (0x00000000)'
+    - '0x00000000'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/atomic_red_team/hvci_windows-sysmon.log

@@ -1,0 +1,32 @@
+title: Windows ClipBoard Data via Get-ClipBoard
+id: ab73289e-2246-4de0-a14b-67006c72a893
+status: experimental
+description: 'The following analytic detects the execution of the PowerShell command ''Get-Clipboard'' to retrieve clipboard
+  data.
+
+  It leverages PowerShell Script Block Logging (EventCode 4104) to identify instances where this command is used.
+
+  This activity is significant because it can indicate an attempt to steal sensitive information such as usernames, passwords,
+  or other confidential data copied to the clipboard.
+
+  If confirmed malicious, this behavior could lead to unauthorized access to sensitive information, potentially compromising
+  user accounts and other critical assets.'
+references:
+- https://research.splunk.com/ab73289e-2246-4de0-a14b-67006c72a893/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1115
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Get-Clipboard*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/winpeas/powershell/windows-powershell-xml2.log

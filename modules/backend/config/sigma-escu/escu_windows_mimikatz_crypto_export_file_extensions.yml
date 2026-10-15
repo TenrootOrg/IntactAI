@@ -1,0 +1,32 @@
+title: Windows Mimikatz Crypto Export File Extensions
+id: 3a9a6806-16a8-4cda-8d73-b49d10a05b16
+status: experimental
+description: The following analytic detects the creation of files with extensions commonly associated with the Mimikatz Crypto
+  module. It leverages the Endpoint.Filesystem data model to identify specific file names indicative of certificate export
+  activities. This behavior is significant as it may indicate the use of Mimikatz to export cryptographic keys, which is a
+  common tactic for credential theft. If confirmed malicious, this activity could allow an attacker to exfiltrate sensitive
+  cryptographic material, potentially leading to unauthorized access and further compromise of the environment.
+references:
+- https://research.splunk.com/3a9a6806-16a8-4cda-8d73-b49d10a05b16/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1649
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*.keyx.rsa.pvk'
+    - '*sign.rsa.pvk'
+    - '*sign.dsa.pvk'
+    - '*dsa.ec.p8k'
+    - '*dh.ec.p8k'
+    - '*.pfx'
+    - '*.der'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1649/atomic_red_team/certwrite_windows-sysmon.log

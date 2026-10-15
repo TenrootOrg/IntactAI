@@ -1,0 +1,29 @@
+title: Windows SharePoint Spinstall0 Webshell File Creation
+id: 7a0dda67-4cc7-4113-b3bd-b3f1489a98bf
+status: experimental
+description: This detection identifies the creation or modification of the "spinstall0.aspx" webshell file in Microsoft SharePoint
+  directories. This file is a known indicator of compromise associated with the exploitation of CVE-2025-53770 (ToolShell
+  vulnerability). Attackers exploit the vulnerability to drop webshells that provide persistent access to compromised SharePoint
+  servers, allowing them to execute arbitrary commands, access sensitive data, and move laterally within the network.
+references:
+- https://research.splunk.com/7a0dda67-4cc7-4113-b3bd-b3f1489a98bf/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1190
+- attack.t1505.003
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename: '*\\spinstall0.aspx'
+  sel2:
+    TargetFilename: '*\\microsoft shared\\Web Server Extensions\\16\\TEMPLATE\\LAYOUTS*'
+  sel3:
+    TargetFilename: '*\\microsoft shared\\Web Server Extensions\\15\\TEMPLATE\\LAYOUTS*'
+  condition: (sel1 and (sel2 or sel3))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1505.003/sharepoint_webshell/sysmon_spinstall0.log

@@ -1,0 +1,32 @@
+title: Windows MSIExec Unregister DLLRegisterServer
+id: a27db3c5-1a9a-46df-a577-765d3f1a3c24
+status: experimental
+description: The following analytic detects the use of msiexec.exe with the /z switch parameter, which is used to unload DLLRegisterServer.
+  This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process execution logs, including
+  command-line arguments. This activity is significant because unloading DLLRegisterServer can be indicative of an attempt
+  to deregister a DLL, potentially disrupting legitimate services or hiding malicious activity. If confirmed malicious, this
+  could allow an attacker to disable security controls, evade detection, or disrupt system functionality, leading to further
+  compromise of the environment.
+references:
+- https://research.splunk.com/a27db3c5-1a9a-46df-a577-765d3f1a3c24/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.007
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\msiexec.exe'
+  sel2:
+    OriginalFileName: msiexec.exe
+  sel3:
+    CommandLine:
+    - '*/z*'
+    - '*-z*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.007/atomic_red_team/windows-sysmon.log

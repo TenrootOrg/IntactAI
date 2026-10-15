@@ -1,0 +1,28 @@
+title: Services Escalate Exe
+id: c448488c-b7ec-11eb-8253-acde48001122
+status: experimental
+description: The following analytic identifies the execution of a randomly named binary via `services.exe`, indicative of
+  privilege escalation using Cobalt Strike's `svc-exe`. This detection leverages data from Endpoint Detection and Response
+  (EDR) agents, focusing on process lineage and command-line executions. This activity is significant as it often follows
+  initial access, allowing adversaries to escalate privileges and establish persistence. If confirmed malicious, this behavior
+  could enable attackers to execute arbitrary code, maintain long-term access, and potentially move laterally within the network,
+  posing a severe threat to the organization's security.
+references:
+- https://research.splunk.com/c448488c-b7ec-11eb-8253-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1548
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\services.exe'
+  sel2:
+    Image: '*admin$*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1055/cobalt_strike/windows-sysmon.log

@@ -1,0 +1,35 @@
+title: Windows Potential Cloudflared Tunnel Execution
+id: 2e29b58e-0f5a-42fc-b435-0fdce8862831
+status: experimental
+description: 'This analytic detects command-line arguments associated with the cloudflared client used to create Cloudflare
+  tunnels.
+
+  Cloudflared is functionally very similar to ngrok, an ingress-as-a-service tool.
+
+  Cloudflared reaches out to the Cloudflare Edge Servers, creating an outbound connection over HTTPS(HTTP2/QUIC), where the
+  tunnel''s controller makes services or private networks accessible.'
+references:
+- https://research.splunk.com/2e29b58e-0f5a-42fc-b435-0fdce8862831/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1572
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*tunnel*'
+  sel2:
+    CommandLine: '*run*'
+  sel3:
+    CommandLine: '*token*'
+  sel4:
+    CommandLine: '*--url*'
+  sel5:
+    CommandLine: '*localhost*'
+  condition: (sel1 and ((sel2 and sel3) or (sel4 and sel5)))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1572/snapattack/snapattack.log

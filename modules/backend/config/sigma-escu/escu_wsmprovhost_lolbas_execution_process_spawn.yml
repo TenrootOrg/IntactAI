@@ -1,0 +1,83 @@
+title: Wsmprovhost LOLBAS Execution Process Spawn
+id: 2eed004c-4c0d-11ec-93e8-3e22fbd008af
+status: experimental
+description: The following analytic identifies `Wsmprovhost.exe` spawning a LOLBAS execution process. It leverages Endpoint
+  Detection and Response (EDR) data to detect when `Wsmprovhost.exe` spawns child processes that are known LOLBAS (Living
+  Off the Land Binaries and Scripts) executables. This activity is significant because it may indicate an adversary using
+  Windows Remote Management (WinRM) to execute code on remote endpoints, a common technique for lateral movement. If confirmed
+  malicious, this could allow attackers to execute arbitrary code, escalate privileges, or maintain persistence within the
+  environment.
+references:
+- https://research.splunk.com/2eed004c-4c0d-11ec-93e8-3e22fbd008af/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1021.006
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\wsmprovhost.exe'
+  sel2:
+    Image:
+    - '*\\Regsvcs.exe'
+    - '*\\Ftp.exe'
+    - '*\\OfflineScannerShell.exe'
+    - '*\\Rasautou.exe'
+    - '*\\Schtasks.exe'
+    - '*\\Xwizard.exe'
+    - '*\\Dllhost.exe'
+    - '*\\Pnputil.exe'
+    - '*\\Atbroker.exe'
+    - '*\\Pcwrun.exe'
+    - '*\\Ttdinject.exe'
+    - '*\\Mshta.exe'
+    - '*\\Bitsadmin.exe'
+    - '*\\Certoc.exe'
+    - '*\\Ieexec.exe'
+    - '*\\Microsoft.Workflow.Compiler.exe'
+    - '*\\Runscripthelper.exe'
+    - '*\\Forfiles.exe'
+    - '*\\Msbuild.exe'
+    - '*\\Register-cimprovider.exe'
+    - '*\\Tttracer.exe'
+    - '*\\Ie4uinit.exe'
+    - '*\\Bash.exe'
+    - '*\\Hh.exe'
+    - '*\\SettingSyncHost.exe'
+    - '*\\Cmstp.exe'
+    - '*\\Mmc.exe'
+    - '*\\Stordiag.exe'
+    - '*\\Scriptrunner.exe'
+    - '*\\Odbcconf.exe'
+    - '*\\Extexport.exe'
+    - '*\\Msdt.exe'
+    - '*\\WorkFolders.exe'
+    - '*\\Diskshadow.exe'
+    - '*\\Mavinject.exe'
+    - '*\\Regasm.exe'
+    - '*\\Gpscript.exe'
+    - '*\\Rundll32.exe'
+    - '*\\Regsvr32.exe'
+    - '*\\Msiexec.exe'
+    - '*\\Wuauclt.exe'
+    - '*\\Presentationhost.exe'
+    - '*\\Wmic.exe'
+    - '*\\Runonce.exe'
+    - '*\\Syncappvpublishingserver.exe'
+    - '*\\Verclsid.exe'
+    - '*\\Infdefaultinstall.exe'
+    - '*\\Explorer.exe'
+    - '*\\Installutil.exe'
+    - '*\\Netsh.exe'
+    - '*\\Wab.exe'
+    - '*\\Dnscmd.exe'
+    - '*\\At.exe'
+    - '*\\Pcalua.exe'
+    - '*\\Msconfig.exe'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.006/lateral_movement_lolbas/windows-sysmon.log

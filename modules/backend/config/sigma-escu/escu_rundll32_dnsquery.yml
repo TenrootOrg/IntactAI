@@ -1,0 +1,28 @@
+title: Rundll32 DNSQuery
+id: f1483f5e-ee29-11eb-9d23-acde48001122
+status: experimental
+description: The following analytic detects a suspicious `rundll32.exe` process making HTTP connections and performing DNS
+  queries to web domains. It leverages Sysmon EventCode 22 logs to identify these activities. This behavior is significant
+  as it is commonly associated with IcedID malware, where `rundll32.exe` checks internet connectivity and communicates with
+  C&C servers to download configurations and other components. If confirmed malicious, this activity could allow attackers
+  to establish persistence, download additional payloads, and exfiltrate sensitive data, posing a severe threat to the network.
+references:
+- https://research.splunk.com/f1483f5e-ee29-11eb-9d23-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1218.011
+logsource:
+  product: windows
+  service: sysmon
+  category: dns_query
+detection:
+  sel1:
+    EventID: '22'
+  sel2:
+    Image: '*\\rundll32.exe'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/icedid/inf_icedid/windows-sysmon.log

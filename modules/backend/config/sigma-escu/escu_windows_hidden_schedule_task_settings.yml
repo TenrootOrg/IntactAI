@@ -1,0 +1,29 @@
+title: Windows Hidden Schedule Task Settings
+id: 0b730470-5fe8-4b13-93a7-fe0ad014d0cc
+status: experimental
+description: The following analytic detects the creation of hidden scheduled tasks on Windows systems, which are not visible
+  in the UI. It leverages Windows Security EventCode 4698 to identify tasks where the 'Hidden' setting is enabled. This behavior
+  is significant as it may indicate malware activity, such as Industroyer2, or the use of living-off-the-land binaries (LOLBINs)
+  to download additional payloads. If confirmed malicious, this activity could allow attackers to execute code stealthily,
+  maintain persistence, or further compromise the system by downloading additional malicious payloads.
+references:
+- https://research.splunk.com/0b730470-5fe8-4b13-93a7-fe0ad014d0cc/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1053
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4698'
+  sel2:
+    TaskContent:
+    - '*&lt;Hidden&gt;true&lt;/Hidden&gt;*'
+    - '*<Hidden>true</Hidden>*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1053/hidden_schedule_task/inno_schtask.log

@@ -1,0 +1,31 @@
+title: Windows Autostart Execution LSASS Driver Registry Modification
+id: 57fb8656-141e-4d8a-9f51-62cff4ecb82a
+status: experimental
+description: The following analytic detects modifications to undocumented registry keys that allow a DLL to load into lsass.exe,
+  potentially capturing credentials. It leverages the Endpoint.Registry data model to identify changes to \CurrentControlSet\Services\NTDS\DirectoryServiceExtPt
+  or \CurrentControlSet\Services\NTDS\LsaDbExtPt. This activity is significant as it indicates a possible attempt to inject
+  malicious code into the Local Security Authority Subsystem Service (LSASS), which can lead to credential theft. If confirmed
+  malicious, this could allow attackers to gain unauthorized access to sensitive information and escalate privileges within
+  the environment.
+references:
+- https://research.splunk.com/57fb8656-141e-4d8a-9f51-62cff4ecb82a/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1547.008
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject:
+    - '*\\CurrentControlSet\\Services\\NTDS\\DirectoryServiceExtPt'
+    - '*\\CurrentControlSet\\Services\\NTDS\\LsaDbExtPt'
+  condition: sel1
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1547.008/atomic_red_team/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 4 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

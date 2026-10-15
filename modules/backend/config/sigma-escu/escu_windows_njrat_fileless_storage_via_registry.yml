@@ -1,0 +1,31 @@
+title: Windows Njrat Fileless Storage via Registry
+id: a5fffbbd-271f-4980-94ed-4fbf17f0af1c
+status: experimental
+description: The following analytic detects suspicious registry modifications indicative of NjRat's fileless storage technique.
+  It leverages the Endpoint.Registry data model to identify specific registry paths and values commonly used by NjRat for
+  keylogging and executing DLL plugins. This activity is significant as it helps evade traditional file-based detection systems,
+  making it crucial for SOC analysts to monitor. If confirmed malicious, this behavior could allow attackers to persist on
+  the host, execute arbitrary code, and capture sensitive keystrokes, leading to potential data breaches and further system
+  compromise.
+references:
+- https://research.splunk.com/a5fffbbd-271f-4980-94ed-4fbf17f0af1c/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1027.011
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\[kl]'
+  sel2:
+    Details:
+    - '*[ENTER]*'
+    - '*[TAP]*'
+    - '*[Back]*'
+  condition: (sel1 or sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1027.011/njrat_fileless_registry_entry/njrat_registry.log

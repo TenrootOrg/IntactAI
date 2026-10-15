@@ -1,0 +1,41 @@
+title: Windows Cloud Files Filter Loaded by Uncommon Process
+id: 77b85062-274e-43a5-9dab-c25862b85291
+status: experimental
+description: 'The following analytic detects "cldapi.dll" being loaded by a process not associated with legitimate cloud sync
+  activity.
+
+  The Windows Cloud Files API (cldapi.dll) is abused by several local privilege escalation exploits.'
+references:
+- https://research.splunk.com/77b85062-274e-43a5-9dab-c25862b85291/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1543.003
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    ImageLoaded: '*\\cldapi.dll'
+  sel3:
+    Image:
+    - '*\\box.exe'
+    - '*\\dropbox.exe'
+    - '*\\googledrivefs.exe'
+    - '*\\icloud.exe'
+    - '*\\onedrive*.exe'
+    - C:\\Windows\\explorer.exe
+    - C:\\Windows\\System32\\*
+    - C:\\Windows\\Syswow64\\*
+    - C:\\Windows\\WinSxS\\*
+  condition: (sel1 and sel2 and not (sel3))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/redsun/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 14 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

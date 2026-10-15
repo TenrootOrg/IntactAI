@@ -1,0 +1,31 @@
+title: MacOS Log Removal
+id: a7f2e891-3c4d-4a1b-9e6f-2b8d0c5a1f3e
+status: experimental
+description: 'Detects the deletion or modification of logs on MacOS systems by identifying execution of the rm command with
+  command-line arguments referencing system.log or audit-related paths.
+
+  Adversaries may remove or alter log files to cover their tracks and hinder detection and forensic analysis. This behavior
+  commonly occurs during post-exploitation cleanup.'
+references:
+- https://research.splunk.com/a7f2e891-3c4d-4a1b-9e6f-2b8d0c5a1f3e/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1070
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    CommandLine: '*system.log*'
+  sel2:
+    CommandLine: '*rm *'
+  sel3:
+    CommandLine: '*audit*'
+  sel4:
+    CommandLine: '* -s *'
+  condition: (sel1 and (sel2 or (sel3 and sel4)))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1070/osquery_log_removal/osquery.log

@@ -250,3 +250,79 @@ actions, not attacks; they stay searchable.
   AWS-side format string.
 - A severity scale is inferred from the values in the file. Carbon Black's 1-10 scale is read as 1-5 when a file
   holds only small values.
+
+## Coverage on Splunk attack_data (2026-10-15)
+
+[splunk/attack_data](https://github.com/splunk/attack_data) (Apache-2.0) holds a recording of real attack
+technique execution for most of Splunk's detections: 1,249 datasets, 1,316 data files, 345 ATT&CK techniques.
+Every file was attached as a case attaches one, and run through the whole pipeline: reader, vendor verdicts,
+Sigma and behaviour rules. A file counts as detected when at least one detection of medium or higher came out.
+Downloads are in `~/datasets/splunk-attack-data/`, outside the repo; the harness is in the session scratchpad.
+
+| | Before | After |
+|---|---|---|
+| Recordings detected | 637 of 1,275 (49%) | 836 of 1,275 (66%) |
+| ATT&CK techniques with at least one detected recording | 222 of 310 (71%) | 256 of 310 (83%) |
+
+**What changed.** Seven reader and engine gaps that the recordings exposed were fixed:
+- Windows event XML lost the whole file on one bad character.
+- Sysmon for Linux was read as Windows.
+- osquery process events were not recognised.
+- CloudTrail delivered as OCSF (AWS Security Lake) was not recognised.
+- `Provider_Name`, used by 86 SigmaHQ rules, was not resolved.
+- Splunk's add-on field names were not mapped.
+- ESXi syslog lost its message: a line split into columns or key=value pairs left the ESXi rules nothing
+  to match.
+
+Separately, 976 of Splunk's own detections now run as Sigma (`modules/backend/config/sigma-escu/`):
+- **544 at medium:** TTP detections, plus 13 Linux auditd anomalies that are rarely benign.
+- **432 at low:** "Anomaly" signals, plus 29 TTPs that fired on benign Windows activity.
+
+Low rules are context. A host that gets three different ones within an hour gets a "Burst of suspicious
+activity" detection.
+
+**How the Splunk rules were chosen.** `scripts/dev/escu_to_sigma.py` translates detections that are plain
+conditions. `escu_prove.py` keeps only rules that fire on the recording their detection names. `escu_benign.py`
+runs them over 1.24 M benign Windows events (the Nextron workstation and DC captures), and demotes to low any
+rule that fires there.
+
+**Not covered yet.**
+- About 900 Splunk detections are skipped. They count over time (thresholds), use lookups or computed fields,
+  or read a source with no profile yet: Kubernetes audit, Duo, Google Workspace login, Cisco eStreamer.
+- 95 Windows recordings had no rule at any level. Hand-written behaviour rules now detect 11 of them:
+  Kerberoasting, ticket sweeps over many computers, user enumeration, KrbRelayUp, DACL changes, hidden
+  objects, AdminSDHolder. The rest still need rules.
+- 78 recordings are covered only at low.
+- The benign check is Windows only. The promoted Linux auditd rules have no benign corpus to run against,
+  and no benign capture holds Kerberos (4768/4769) or directory-change (5136) events, so those rules have no
+  false-positive measure yet.
+
+**Benign, whole pipeline.** The 1.24 M benign events through reader, verdicts, Sigma and behaviour rules give
+44 detections from 16 rules, mostly real admin actions in the captures (a Sysmon config change, an event log
+cleared). There are no bursts. Before the five noisiest SigmaHQ rules were demoted and noisy low rules were
+kept out of bursts, it was 940 detections and 15 bursts.
+
+| Source type (Splunk) | Recordings | Detected | Share |
+|---|---|---|---|
+| XmlWinEventLog | 735 | 574 | 78% |
+| sysmon:linux | 104 | 67 | 64% |
+| auditd | 98 | 43 | 43% |
+| o365:management:activity | 51 | 20 | 39% |
+| azure:monitor:aad | 44 | 26 | 59% |
+| aws:cloudtrail | 40 | 19 | 47% |
+| aws:cloudtrail:lake | 25 | 12 | 48% |
+| vmw-syslog | 23 | 18 | 78% |
+| osquery:results | 21 | 10 | 47% |
+| suricata | 19 | 5 | 26% |
+| linux_secure | 18 | 11 | 61% |
+| nginx:plus:access | 15 | 4 | 26% |
+| OktaIM2:log | 14 | 10 | 71% |
+| cisco:duo:administrator | 11 | 3 | 27% |
+| __json | 8 | 0 | 0% |
+| gws:reports:login | 5 | 2 | 40% |
+| crowdstrike:events:sensor | 4 | 4 | 100% |
+| gsuite:gmail:bigquery | 4 | 0 | 0% |
+| bro:conn:json | 3 | 1 | 33% |
+| iis | 3 | 0 | 0% |
+| linux_messages_syslog | 3 | 1 | 33% |
+| XmlWinEventLog:Microsoft-Windows-Sysmon/Operational | 3 | 2 | 66% |

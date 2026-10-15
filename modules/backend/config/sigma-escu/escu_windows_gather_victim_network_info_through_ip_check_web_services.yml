@@ -1,0 +1,58 @@
+title: Windows Gather Victim Network Info Through Ip Check Web Services
+id: 70f7c952-0758-46d6-9148-d8969c4481d1
+status: experimental
+description: The following analytic detects processes attempting to connect to known IP check web services. This behavior
+  is identified using Sysmon EventCode 22 logs, specifically monitoring DNS queries to services like "wtfismyip.com" and "ipinfo.io".
+  This activity is significant as it is commonly used by malware, such as Trickbot, for reconnaissance to determine the infected
+  machine's IP address. If confirmed malicious, this could allow attackers to gather network information, aiding in further
+  attacks or lateral movement within the network.
+references:
+- https://research.splunk.com/70f7c952-0758-46d6-9148-d8969c4481d1/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1590.005
+logsource:
+  product: windows
+  service: sysmon
+  category: dns_query
+detection:
+  sel1:
+    EventID: '22'
+  sel2:
+    QueryName:
+    - '*wtfismyip.com'
+    - '*checkip.*'
+    - '*ipecho.net'
+    - '*ipinfo.io'
+    - '*api.ipify.org'
+    - '*icanhazip.com'
+    - '*ip.anysrc.com'
+    - '*api.ip.sb'
+    - ident.me
+    - www.myexternalip.com
+    - '*zen.spamhaus.org'
+    - '*cbl.abuseat.org'
+    - '*b.barracudacentral.org'
+    - '*dnsbl-1.uceprotect.net'
+    - '*spam.dnsbl.sorbs.net'
+    - '*iplogger.org*'
+    - '*ip-api.com*'
+    - '*geoip.*'
+    - '*icanhazip.*'
+    - '*ipwho.is*'
+    - '*ifconfig.me*'
+    - '*myip.com*'
+    - '*ipstack.com*'
+    - '*myexternalip.com*'
+    - '*ip-api.io*'
+    - '*trackip.net*'
+    - '*ipgeolocation.io*'
+    - '*ipfind.io*'
+    - '*freegeoip.app*'
+    - '*ipv4bot.whatismyipaddress.com*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/azorult/sysmon.log

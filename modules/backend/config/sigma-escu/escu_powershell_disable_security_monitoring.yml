@@ -1,0 +1,83 @@
+title: Powershell Disable Security Monitoring
+id: c148a894-dd93-11eb-bf2a-acde48001122
+status: experimental
+description: 'The following analytic identifies attempts to disable Windows Defender
+
+  real-time behavior monitoring via PowerShell commands. It detects the use of specific
+
+  `Set-MpPreference` parameters that disable various security features. This activity
+
+  is significant as it is commonly used by malware such as RATs, bots, or Trojans
+
+  to evade detection by disabling antivirus protections. If confirmed malicious, this
+
+  action could allow an attacker to operate undetected, leading to potential data
+
+  exfiltration, further system compromise, or persistent access within the environment.'
+references:
+- https://research.splunk.com/c148a894-dd93-11eb-bf2a-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\pwsh.exe'
+  sel2:
+    Image: '*\\powershell.exe'
+  sel3:
+    OriginalFileName: pwsh.dll
+  sel4:
+    OriginalFileName: PowerShell.EXE
+  sel5:
+    OriginalFileName: powershell_ise.EXE
+  sel6:
+    Image: '*\\powershell_ise.exe'
+  sel7:
+    CommandLine: '*Set-MpPreference*'
+  sel8:
+    CommandLine:
+    - '*DisableArchiveScanning*'
+    - '*DisableBehaviorMonitoring*'
+    - '*DisableBlockAtFirstSeen*'
+    - '*DisableCatchupFullScan*'
+    - '*DisableCatchupQuickScan*'
+    - '*DisableIOAVProtection*'
+    - '*DisableRealtimeMonitoring*'
+    - '*DisableRemovableDriveScanning*'
+    - '*DisableRestorePoint*'
+    - '*DisableScanningMappedNetworkDrivesForFullScan*'
+    - '*DisableScanningNetworkFiles*'
+    - '*DisableScriptScanning*'
+    - '*drdsc*'
+    - '*dsnf *'
+    - '*drtm *'
+    - '*dioavp *'
+    - '*dscrptsc *'
+    - '*dbaf *'
+    - '*darchsc *'
+    - '*dcfsc *'
+    - '*dbm *'
+  sel9:
+    CommandLine:
+    - '* $true*'
+    - '* 1*'
+  sel10:
+    CommandLine: '*PUAProtection*'
+  sel11:
+    CommandLine: '*disable*'
+  sel12:
+    CommandLine: '*CloudBlockLevel*'
+  sel13:
+    CommandLine:
+    - '* $false*'
+    - '* 0*'
+  condition: ((((((sel1 or sel2) or sel3) or sel4) or sel5) or sel6) and sel7 and (((sel8 and sel9) or (sel10 and sel11))
+    or (sel12 and sel13)))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/pwh_defender_disabling/windows-sysmon.log

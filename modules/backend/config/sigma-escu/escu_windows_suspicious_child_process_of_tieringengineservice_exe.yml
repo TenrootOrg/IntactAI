@@ -1,0 +1,50 @@
+title: Windows Suspicious Child Process of TieringEngineService.exe
+id: 69edec6c-877e-4423-9b9b-025b589123a8
+status: experimental
+description: 'Detects the RedSun privilege escalation exploit delivering a SYSTEM-level shell to the attacker''s session.
+
+  RedSun replaces the legitimate TieringEngineService.exe with a malicious binary, which launches a process as SYSTEM, usually
+  some sort of shell or shell spawner (conhost.exe, cmd.exe, PowerShell, etc.) in the attacker''s active session.'
+references:
+- https://research.splunk.com/69edec6c-877e-4423-9b9b-025b589123a8/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\TieringEngineService.exe'
+  sel2:
+    CommandLine:
+    - '*bitsadmin.exe*'
+    - '*cmd.exe*'
+    - '*conhost.exe*'
+    - '*cscript.exe*'
+    - '*curl.exe*'
+    - '*powershell.exe*'
+    - '*pwsh.exe*'
+    - '*rundll32.exe*'
+    - '*wmic.exe*'
+  sel3:
+    Image:
+    - '*\\bitsadmin.exe'
+    - '*\\cmd.exe'
+    - '*\\conhost.exe'
+    - '*\\cscript.exe'
+    - '*\\curl.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+    - '*\\rundll32.exe'
+    - '*\\wmic.exe'
+  sel4:
+    User:
+    - '*AUTHORITY*'
+    - '*System*'
+  condition: (sel1 and (sel2 or sel3) and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/redsun/windows-sysmon.log

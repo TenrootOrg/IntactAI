@@ -1,0 +1,36 @@
+title: Windows Security Support Provider Reg Query
+id: 31302468-93c9-4eca-9ae3-2d41f53a4e2b
+status: experimental
+description: The following analytic identifies command-line activity querying the registry for Security Support Providers
+  (SSPs) related to Local Security Authority (LSA) protection and configuration. This detection leverages Endpoint Detection
+  and Response (EDR) telemetry, focusing on processes accessing specific LSA registry paths. Monitoring this activity is crucial
+  as adversaries and post-exploitation tools like winpeas may use it to gather information on LSA protections, potentially
+  leading to credential theft. If confirmed malicious, attackers could exploit this to scrape password hashes or plaintext
+  passwords from memory, significantly compromising system security.
+references:
+- https://research.splunk.com/31302468-93c9-4eca-9ae3-2d41f53a4e2b/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1547.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\reg.exe'
+  sel2:
+    OriginalFileName: reg.exe
+  sel3:
+    CommandLine: '* query *'
+  sel4:
+    CommandLine: '*\\SYSTEM\\CurrentControlSet\\Control\\LSA*'
+  sel5:
+    CommandLine:
+    - '*RunAsPPL*'
+    - '*LsaCfgFlags*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/winpeas/sysmon.log

@@ -1,0 +1,33 @@
+title: Windows OneDrive Share Mounted via Net
+id: af1fe9eb-911c-4679-a475-a1193b12e4d1
+status: experimental
+description: 'The following analytic detects the use of net.exe or net1.exe to mount a OneDrive share as a network drive.
+
+  This behavior may indicate an attempt to stage, access, or exfiltrate data through a cloud-hosted WebDAV path rather than
+  a traditional file share.
+
+  If confirmed malicious, an attacker could use the mounted share to move data outside the environment over trusted cloud
+  infrastructure.'
+references:
+- https://research.splunk.com/af1fe9eb-911c-4679-a475-a1193b12e4d1/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1567.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\net1.exe'
+  sel2:
+    OriginalFileName: net1.exe
+  sel3:
+    CommandLine: '*use*'
+  sel4:
+    CommandLine: '*https://d.docs.live.net*'
+  condition: ((sel1 or sel2) and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1567.002/snapattack/snapattack.log

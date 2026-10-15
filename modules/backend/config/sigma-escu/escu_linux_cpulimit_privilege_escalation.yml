@@ -1,0 +1,31 @@
+title: Linux Cpulimit Privilege Escalation
+id: d4e40b7e-aad3-4a7d-aac8-550ea5222be5
+status: experimental
+description: The following analytic detects the use of the 'cpulimit' command with specific flags ('-l', '-f') executed with
+  'sudo' privileges. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process command-line
+  arguments and execution details. This activity is significant because if 'cpulimit' is granted sudo rights, a user can potentially
+  execute system commands as root, leading to privilege escalation. If confirmed malicious, this could allow an attacker to
+  gain root access, execute arbitrary commands, and fully compromise the affected system.
+references:
+- https://research.splunk.com/d4e40b7e-aad3-4a7d-aac8-550ea5222be5/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Splunk
+tags:
+- attack.t1548.003
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    CommandLine: '*cpulimit*'
+  sel2:
+    CommandLine: '*-l*'
+  sel3:
+    CommandLine: '*-f*'
+  sel4:
+    CommandLine: '*sudo*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548/cpulimit/sysmon_linux.log

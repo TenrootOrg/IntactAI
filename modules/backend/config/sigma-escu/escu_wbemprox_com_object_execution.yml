@@ -1,0 +1,45 @@
+title: Wbemprox COM Object Execution
+id: 9d911ce0-c3be-11eb-b177-acde48001122
+status: experimental
+description: The following analytic detects a suspicious process loading a COM object from wbemprox.dll, fastprox.dll, or
+  wbemcomn.dll. It leverages Sysmon EventCode 7 to identify instances where these DLLs are loaded by processes not typically
+  associated with them, excluding known legitimate processes and directories. This activity is significant as it may indicate
+  an attempt by threat actors to abuse COM objects for privilege escalation or evasion of detection mechanisms. If confirmed
+  malicious, this could allow attackers to gain elevated privileges or maintain persistence within the environment, posing
+  a significant security risk.
+references:
+- https://research.splunk.com/9d911ce0-c3be-11eb-b177-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1218.003
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    ImageLoaded:
+    - '*\\fastprox.dll'
+    - '*\\wbemprox.dll'
+    - '*\\wbemcomn.dll'
+  sel3:
+    Image:
+    - '*\\wmiprvse.exe'
+    - '*\\WmiApSrv.exe'
+    - '*\\unsecapp.exe'
+  sel4:
+    Image:
+    - '*\\windows\\*'
+    - '*\\program files*'
+    - '*\\wbem\\*'
+  condition: (sel1 and sel2 and not (sel3) and not (sel4))
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/revil/inf2/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 30 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

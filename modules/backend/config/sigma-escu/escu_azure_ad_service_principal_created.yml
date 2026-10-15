@@ -1,0 +1,26 @@
+title: Azure AD Service Principal Created
+id: f8ba49e7-ffd3-4b53-8f61-e73974583c5d
+status: experimental
+description: The following analytic detects the creation of a Service Principal in an Azure AD environment. It leverages Azure
+  Active Directory events ingested through EventHub, specifically monitoring the "Add service principal" operation. This activity
+  is significant because Service Principals can be used by adversaries to establish persistence and bypass multi-factor authentication
+  and conditional access policies. If confirmed malicious, this could allow attackers to maintain single-factor access to
+  the Azure AD environment, potentially leading to unauthorized access to resources and prolonged undetected activity.
+references:
+- https://research.splunk.com/f8ba49e7-ffd3-4b53-8f61-e73974583c5d/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Mauricio Velazco, Splunk
+tags:
+- attack.t1136.003
+logsource:
+  product: azure
+detection:
+  sel1:
+    operationName: Add service principal
+  sel2:
+    properties.initiatedBy.user.id: '*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1136.003/azure_ad_add_service_principal/azure-audit.log

@@ -1,0 +1,30 @@
+title: Linux Possible Nimbuspwn Privilege Escalation
+id: 24a540b7-6eec-4972-ad85-1f2232f9a849
+status: experimental
+description: 'The following analytic detects directory traversal attempts associated with Nimbuspwn, a Linux privilege escalation
+  vulnerability affecting the networkd-dispatcher service.
+
+  Nimbuspwn exploits weaknesses in the networkd-dispatcher service to traverse directories and execute arbitrary code with
+  elevated privileges.
+
+  If confirmed malicious, this activity could allow an attacker to escalate privileges to root, potentially leading to full
+  system compromise, persistent unauthorized access, and the ability to deploy additional malicious payloads.'
+references:
+- https://research.splunk.com/24a540b7-6eec-4972-ad85-1f2232f9a849/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    CommandLine: '*networkd-dispatcher*'
+  sel2:
+    CommandLine: '*../*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/linux_possible_nimbuspwn_directory_traversal/snapattack_linux.log

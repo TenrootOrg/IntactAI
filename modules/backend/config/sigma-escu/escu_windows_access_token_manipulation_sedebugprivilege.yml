@@ -1,0 +1,34 @@
+title: Windows Access Token Manipulation SeDebugPrivilege
+id: 6ece9ed0-5f92-4315-889d-48560472b188
+status: experimental
+description: The following analytic detects a process enabling the "SeDebugPrivilege" privilege token. It leverages Windows
+  Security Event Logs with EventCode 4703, filtering out common legitimate processes. This activity is significant because
+  SeDebugPrivilege allows a process to inspect and modify the memory of other processes, potentially leading to credential
+  dumping or code injection. If confirmed malicious, an attacker could gain extensive control over system processes, enabling
+  them to escalate privileges, persist in the environment, or access sensitive information.
+references:
+- https://research.splunk.com/6ece9ed0-5f92-4315-889d-48560472b188/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1134.002
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4703'
+  sel2:
+    EnabledPrivilegeList: '*SeDebugPrivilege*'
+  sel3:
+    ProcessName:
+    - '*\\Program File*'
+    - '*\\System32\\lsass.exe*'
+    - '*\\SysWOW64\\lsass.exe*'
+    - '*\\SysWOW64\\svchost.exe*'
+    - '*\\System32\\svchost.exe*'
+  condition: (sel1 and sel2 and not (sel3))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/brute_ratel/sedebugprivilege_token/security-xml.log

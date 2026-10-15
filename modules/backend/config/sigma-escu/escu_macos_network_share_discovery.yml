@@ -1,0 +1,24 @@
+title: MacOS Network Share Discovery
+id: a5f5fe52-8e50-4fb0-ad1b-780be6c0d857
+status: experimental
+description: Identifies execution of network share enumeration commands (smbutil, showmount) that can be leveraged by adversaries
+  to discover accessible SMB and NFS resources, supporting internal reconnaissance and potential lateral movement.
+references:
+- https://research.splunk.com/a5f5fe52-8e50-4fb0-ad1b-780be6c0d857/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1135
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    CommandLine:
+    - '*showmount *'
+    - '*smbutil *'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1135/osquery_share_discovery/osquery.log

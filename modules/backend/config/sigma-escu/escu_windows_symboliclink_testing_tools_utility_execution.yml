@@ -1,0 +1,42 @@
+title: Windows SymbolicLink-Testing-Tools Utility Execution
+id: f1926fc8-f98d-473c-b4f4-465645b8e66a
+status: experimental
+description: 'Detects the execution of tools from the `symboliclink-testing-tools` toolkit.
+
+  This toolkit is often used for exploiting Windows symbolic link, junction, and oplock vulnerabilities to achieve local privilege
+  escalation from a standard user to SYSTEM.
+
+  Symbolic link attacks against Windows exploit a class of logical vulnerability where a SYSTEM or administrator-level process
+  performs a file operation on a path that a low-privileged attacker can redirect using a combination of NTFS junctions, object
+  manager symbolic links, and opportunistic locks (oplocks).
+
+  By chaining these primitives a standard user can redirect a privileged file write, delete, or read to an arbitrary path,
+  effectively turning a narrow file operation vulnerability into arbitrary write or code execution as SYSTEM.'
+references:
+- https://research.splunk.com/f1926fc8-f98d-473c-b4f4-465645b8e66a/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1222
+- attack.t1564.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\BaitAndSwitch.exe'
+    - '*\\CreateDosDeviceSymlink.exe'
+    - '*\\CreateMountPoint.exe'
+    - '*\\CreateNtfsSymlink.exe'
+    - '*\\CreateObjectDirectory.exe'
+    - '*\\CreateRegSymlink.exe'
+    - '*\\DeleteMountPoint.exe'
+    - '*\\DumpReparsePoint.exe'
+    - '*\\NativeSymlink.exe'
+    - '*\\SetOpLock.exe'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1222/snapattack/snapattack.log

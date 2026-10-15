@@ -1,0 +1,32 @@
+title: Linux Deletion Of Services
+id: b509bbd3-0331-4aaa-8e4a-d2affe100af6
+status: experimental
+description: The following analytic detects the deletion of services on a Linux machine. It leverages filesystem event logs
+  to identify when service files within system directories (e.g., /etc/systemd/, /lib/systemd/, /run/systemd/) are deleted.
+  This activity is significant because attackers may delete or modify services to disable security features or evade defenses.
+  If confirmed malicious, this behavior could indicate an attempt to impair system functionality or execute a destructive
+  payload, potentially leading to system instability or data loss. Immediate investigation is required to determine the responsible
+  process and user.
+references:
+- https://research.splunk.com/b509bbd3-0331-4aaa-8e4a-d2affe100af6/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1070.004
+- attack.t1485
+logsource:
+  category: file_delete
+  product: linux
+detection:
+  sel1:
+    TargetFilename:
+    - /etc/systemd/*
+    - '*/lib/systemd/*'
+    - '*/run/systemd/*'
+  sel2:
+    TargetFilename: '*.service'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/acidrain/sysmon_linux.log

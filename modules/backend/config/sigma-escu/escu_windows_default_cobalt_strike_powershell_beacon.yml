@@ -1,0 +1,31 @@
+title: Windows Default Cobalt Strike PowerShell Beacon
+id: 25b6329b-d6b7-4ccd-9ac2-6ca1dfd2b0c1
+status: experimental
+description: 'Detects default function and variable names known to be used by the Cobalt Strike PowerShell beacon.
+
+  This beacon is used to gain command and control on a victim.'
+references:
+- https://research.splunk.com/25b6329b-d6b7-4ccd-9ac2-6ca1dfd2b0c1/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1059.001
+- attack.t1204.002
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText:
+    - '*func_get_proc_address*'
+    - '*$var_unsafe_native_methods*'
+    - '*$var_gpa.Invoke*'
+    - '*func_get_delegate_type*'
+    - '*$var_type_builder*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/snapattack/snapattack.log

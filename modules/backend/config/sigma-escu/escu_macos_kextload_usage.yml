@@ -1,0 +1,29 @@
+title: MacOS Kextload Usage
+id: 9d680775-84a6-4625-a8ea-8182b9427ce4
+status: experimental
+description: 'Detects execution of the kextload command on macOS systems. The kextload utility is used to manually load kernel
+  extensions (KEXTs) into the macOS kernel, which can introduce privileged code at the kernel level.
+
+  While legitimate for driver installation and system administration, misuse may indicate attempts to install unauthorized,
+  malicious, or persistence-enabling kernel extensions.'
+references:
+- https://research.splunk.com/9d680775-84a6-4625-a8ea-8182b9427ce4/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1543
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    Image: '*/kextload'
+  sel2:
+    CommandLine:
+    - '*-help*'
+    - '* -h *'
+  condition: (sel1 and not (sel2))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1543/osquery_ketxload/osquery.log

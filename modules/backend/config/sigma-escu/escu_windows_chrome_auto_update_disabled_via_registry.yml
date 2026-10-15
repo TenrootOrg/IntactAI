@@ -1,0 +1,43 @@
+title: Windows Chrome Auto-Update Disabled via Registry
+id: 619eac6c-0f03-4699-ae29-5f337877bcf9
+status: experimental
+description: 'The following analytic detects modifications to Windows registry values that disable Google Chrome auto-updates.
+
+  Changes to values such as DisableAutoUpdateChecksCheckboxValue = 1, Update{8A69D345-D564-463C-AFF1-A69D9E530F96} = 0, UpdateDefault
+  = 0, and AutoUpdateCheckPeriodMinutes = 0 can prevent Chrome from receiving security updates.
+
+  This behavior may indicate attempts to bypass update policies, maintain unauthorized extensions, or facilitate malware persistence.
+
+  Monitoring these registry changes helps identify potential policy violations or malicious activity targeting browser security.'
+references:
+- https://research.splunk.com/619eac6c-0f03-4699-ae29-5f337877bcf9/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1185
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Google\\Update*'
+  sel2:
+    TargetObject: '*\\DisableAutoUpdateChecksCheckboxValue'
+  sel3:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  sel4:
+    TargetObject:
+    - '*\\AutoUpdateCheckPeriodMinutes'
+    - '*\\Update{8A69D345-D564-463C-AFF1-A69D9E530F96}'
+    - '*\\UpdateDefault'
+  sel5:
+    Details:
+    - '* (0x00000000)'
+    - '0x00000000'
+  condition: (sel1 and ((sel2 and sel3) or (sel4 and sel5)))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1185/disable_chrome_update/disable_chrome_update.log

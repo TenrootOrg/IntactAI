@@ -1,0 +1,36 @@
+title: Windows For Loop Usage Within Cmd.exe To Execute Commands
+id: a4ce9079-fc8f-4749-982a-13197c8cf977
+status: experimental
+description: 'The following analytic identifies the use of a `for /f` loop with the `delims=` option within `cmd.exe`, a technique
+  commonly used to parse and extract data from the output of other commands.
+
+  Adversaries and malicious scripts leverage this pattern to programmatically process command output for discovery, data extraction,
+  or execution purposes while evading simpler detection logic.'
+references:
+- https://research.splunk.com/a4ce9079-fc8f-4749-982a-13197c8cf977/
+author: Splunk Security Content (Apache-2.0), Onur Mustafa Erdogan, Splunk
+tags:
+- attack.t1059.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentCommandLine: '*for /f*'
+  sel2:
+    ParentCommandLine: '*delims=*'
+  sel3:
+    User: SYSTEM
+  sel4:
+    User: '*$'
+  sel5:
+    ParentCommandLine:
+    - '*__VIARelease*'
+    - '*:\\Program Files\\Microsoft SQL Server\\*'
+    - '*^| findstr *'
+  condition: (sel1 and sel2 and not (sel3) and not (sel4) and not (sel5))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.003/cmd_for_loop/cmd_for_loop.log

@@ -1,0 +1,37 @@
+title: Windows Registry SIP Provider Modification
+id: 3b4e18cb-497f-4073-85ad-1ada7c2107ab
+status: experimental
+description: The following analytic detects modifications to the Windows Registry SIP Provider. It leverages Sysmon EventID
+  7 to monitor registry changes in paths and values related to Cryptography Providers and OID Encoding Types. This activity
+  is significant as it may indicate an attempt to subvert trust controls, a common tactic for bypassing security measures
+  and maintaining persistence. If confirmed malicious, an attacker could manipulate the system's cryptographic functions,
+  potentially leading to unauthorized access, data theft, or other damaging outcomes. Review the modified registry paths and
+  concurrent processes to identify the attack source.
+references:
+- https://research.splunk.com/3b4e18cb-497f-4073-85ad-1ada7c2107ab/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1553.003
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject:
+    - '*\\SOFTWARE\\Microsoft\\Cryptography\\Providers\\*'
+    - '*\\SOFTWARE\\Microsoft\\Cryptography\\OID\\EncodingType*'
+    - '*\\SOFTWARE\\WOW6432Node\\Microsoft\\Cryptography\\Providers\\*'
+    - '*\\SOFTWARE\\WOW6432Node\\Microsoft\\Cryptography\\OID\\EncodingType*'
+  sel2:
+    TargetObject:
+    - '*\\Dll'
+    - '*\\$DLL'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1553.003/sip/sip_windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 104 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

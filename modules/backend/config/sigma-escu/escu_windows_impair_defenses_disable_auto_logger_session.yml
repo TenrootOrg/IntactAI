@@ -1,0 +1,37 @@
+title: Windows Impair Defenses Disable Auto Logger Session
+id: dc6a5613-d024-47e7-9997-ab6477a483d3
+status: experimental
+description: The following analytic detects the disabling of an AutoLogger session or one of its providers, by identifying
+  changes to the Registry values "Start" and "Enabled" part of the "\WMI\Autologger\" key path. It leverages data from the
+  Endpoint.Registry datamodel to monitor specific registry paths and values. This activity is significant as attackers and
+  adversaries can leverage this in order to evade defense and blind EDRs and log ingest tooling. If confirmed malicious, this
+  action could allow an attacker to conceal their activities, making it harder to detect further malicious actions and maintain
+  persistence on the compromised endpoint.
+references:
+- https://research.splunk.com/dc6a5613-d024-47e7-9997-ab6477a483d3/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\WMI\\Autologger\\*'
+  sel2:
+    TargetObject: '*\\Start'
+  sel3:
+    TargetObject: '*\\Enabled'
+  sel4:
+    Details:
+    - '* (0x00000000)'
+    - '0x00000000'
+  condition: (sel1 and (sel2 or sel3) and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable_defender_logging/sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 4 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

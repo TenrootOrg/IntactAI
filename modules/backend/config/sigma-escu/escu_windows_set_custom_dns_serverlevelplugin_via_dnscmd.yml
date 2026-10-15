@@ -1,0 +1,32 @@
+title: Windows Set Custom DNS ServerLevelPlugin Via Dnscmd
+id: 9add7765-4af5-45aa-a078-3b32de303e3e
+status: experimental
+description: 'The following analytic detects command-line usage of dnscmd.exe to configure the Microsoft DNS ServerLevelPluginDll
+  setting.
+
+  This setting allows the DNS service to load an arbitrary DLL, which can be abused by attackers with DNS administrative privileges
+  to execute code in the context of the DNS service.
+
+  If confirmed malicious, this activity could enable persistence, privilege escalation, or domain controller compromise through
+  malicious DLL loading.'
+references:
+- https://research.splunk.com/9add7765-4af5-45aa-a078-3b32de303e3e/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1574
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\dnscmd.exe'
+  sel2:
+    CommandLine: '*/config *'
+  sel3:
+    CommandLine: '*/serverlevelplugindll *'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1574/snapattack/snapattack.log

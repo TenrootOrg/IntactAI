@@ -1,0 +1,35 @@
+title: Windows Non-System Process Querying Definition Update
+id: 9d375cfd-c9a5-48ff-b875-9bcaf6b63265
+status: experimental
+description: 'Detects DNS queries to definitionupdates.microsoft.com or the go.microsoft.com fwlink redirect used for WD update
+  downloads, when the querying process is not a Windows system component.
+
+  BlueHammer utilizes these definition updates as part of its exploit chain.'
+references:
+- https://research.splunk.com/9d375cfd-c9a5-48ff-b875-9bcaf6b63265/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+- attack.t1071.001
+logsource:
+  product: windows
+  service: sysmon
+  category: dns_query
+detection:
+  sel1:
+    EventID: '22'
+  sel2:
+    QueryName: '*definitionupdates.microsoft.com*'
+  sel3:
+    Image:
+    - C:\\Program Files\\Microsoft Office\\*
+    - C:\\Program Files\\Windows Defender\\*
+    - C:\\ProgramData\\Microsoft\\Windows Defender\\*
+    - C:\\Windows\\System32\\*
+    - C:\\Windows\\SysWOW64\\*
+  condition: (sel1 and sel2 and not (sel3))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/bluehammer/windows-sysmon.log
