@@ -122,6 +122,13 @@ class Shapes(unittest.TestCase):
         rows = [{"timestamp": "2026-10-01T10:05:00Z", "severity": 4, "DeviceName": "WS01", "Title": "x"}] * 3
         self.assertEqual("severity", X.detect_columns(rows)["severity"], "an EDR's 1..5 still counts")
 
+    def test_a_relay_is_not_the_subject(self):
+        """A container's / collector's host name says where the log passed, not
+        which machine the event is about."""
+        rows = [{"time": "2026-10-01T10:05:00Z", "container.host_name": "k8s-node-7", "device_name": "WS01.corp.local",
+                 "collector.hostname": "siem-collector-1", "type_id": 8031}] * 3
+        self.assertEqual("device_name", X.detect_columns(rows)["host"])
+
     def test_gzip_and_utf16_are_read(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "a.gz")

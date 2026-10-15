@@ -681,6 +681,9 @@ def _norm_name(k) -> str:
     return re.sub(r"[^a-z0-9]", "", k.lower())
 
 
+_INFRA = re.compile(r"(container|collector|observer|proxy|logging|forwarder|relay)$")
+
+
 def _cands(col):
     """[(field, rank)] for a column name: the whole name, else its longest known
     dotted suffix (never a bare vague word)."""
@@ -689,6 +692,10 @@ def _cands(col):
         return _CANDS[whole]
     parts = str(col).split(".")
     for i in range(1, len(parts)):
+        # The relay is not the subject: Symantec SES's container.host_name is the
+        # container's, its device_name the endpoint's.
+        if _INFRA.search(_norm_name("".join(parts[:i]))):
+            break
         suf = _norm_name("".join(parts[i:]))
         if suf in _CANDS and not (i == len(parts) - 1 and suf in _VAGUE):
             return _CANDS[suf]
