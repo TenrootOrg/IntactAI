@@ -54,7 +54,7 @@ IGNORED = {"Registry.action", "Filesystem.action", "Processes.action", "Processe
            "Filesystem.dest", "Processes.vendor_product"}      # true for every row Sigma sees
 CATEGORY = {"Endpoint.Processes": "process_creation", "Endpoint.Registry": "registry_event",
             "Endpoint.Filesystem": "file_event", "Web": "web", "Network_Resolution": "dns"}
-TOKEN = re.compile(r'\s*(\(|\)|`[^`]+`|"(?:[^"\\]|\\.)*"|[^\s()=!,]+(?:\s*(?:!=|=)\s*(?:"(?:[^"\\]|\\.)*"|[^\s()]+))?|,|IN\b)',
+TOKEN = re.compile(r'\s*(\(|\)|`[^`]+`|"[\w.{}]+"\s*(?:!=|=)\s*(?:"(?:[^"\\]|\\.)*"|[^\s()]+)|"(?:[^"\\]|\\.)*"|[^\s()=!,]+(?:\s*(?:!=|=)\s*(?:"(?:[^"\\]|\\.)*"|[^\s()]+))?|,|IN\b)',
                    re.I)
 
 
@@ -98,6 +98,13 @@ def unq(v):
 
 
 def leaf(field, op, values, product):
+    if "{}" in field:
+        # Splunk's multivalue path: "user.groups{}" = any element. A list of plain
+        # values is one joined string here ("a, b"), so an element is a contained value.
+        if not field.endswith("{}") or "{}" in field[:-2]:
+            raise Skip(f"list of objects {field}")
+        field = field[:-2]
+        values = [v if v.startswith("*") and v.endswith("*") else f"*{v}*" for v in values]
     if field in IGNORED or field in RAW_IGNORED and "Processes.process" not in FIELDS:
         return None
     if field == "errorCode" and [v.lower() for v in values] == ["success"]:
@@ -175,10 +182,10 @@ class Parser:
             if self.take() != ")":
                 raise Skip("unbalanced parentheses")
             return e
-        m = re.match(r'([\w.]+)\s*(!=|=)\s*(.+)$', t, re.S)
+        m = re.match(r'"?([\w.{}]+)"?\s*(!=|=)\s*(.+)$', t, re.S)
         if m:
             return leaf(m.group(1), m.group(2), [unq(m.group(3))], self.product)
-        if re.fullmatch(r"[\w.]+", t) and (self.peek() or "").upper() == "IN":
+        if re.fullmatch(r"[\w.{}]+", t) and (self.peek() or "").upper() == "IN":
             self.take()
             if self.take() != "(":
                 raise Skip("IN without a list")
@@ -259,6 +266,10 @@ RAW_SOURCES = {
     "github_enterprise": {"product": "github", "service": "audit"},
     "github_organizations": {"product": "github", "service": "audit"},
     "zscaler_proxy": {"category": "proxy"},
+    "wineventlog_application": {"product": "windows", "service": "application"},
+    "ntlm_audit": {"product": "windows", "service": "ntlm"},
+    "ms_defender": {"product": "windows", "service": "windefend"},
+    "kube_audit": {"product": "kubernetes", "service": "audit"},
     "esxi_syslog": {"product": "esxi"},                 # free-text syslog: Message is the line
 }
 RAW_FIELDS = {   # Splunk add-on names -> the raw / Sigma names our reader keeps
@@ -271,10 +282,60 @@ RAW_FIELDS = {   # Splunk add-on names -> the raw / Sigma names our reader keeps
 RAW_FIELDS_BY_SOURCE = {      # names Splunk's add-on gives a field that has another raw name in this log
     "wineventlog_security": {"TargetFilename": ("ObjectName", "raw"), "file_path": ("ObjectName", "raw")},
     "esxi_syslog": {"Message": ("text", "raw")},
+    "github_organizations": {"vendor_action": ("action", "raw")},     # the add-on renames GitHub's action
 }
 RAW_IGNORED = {"dest", "src", "host", "sourcetype", "source", "index", "signature_id"}
+# Pipes after the filter that only shape what is shown (extract, compute, rename, count,
+# enrich): the rows they show are the rows the filter kept. Any pipe that can drop rows
+# (where, search, regex, a join) is not here, so the detection is skipped.
 OK_PIPES = {"stats", "rename", "table", "fields", "fillnull", "sort", "head", "convert", "collect", "rangemap",
-            "tstats", "rex"}         # rex after the filter only extracts fields to show; "where" stays excluded
+            "tstats", "rex", "eval", "spath", "bin", "bucket", "dedup", "lookup", "mvexpand", "eventstats",
+            "streamstats", "iplocation", "makemv", "nomv", "mvcombine", "strcat", "xmlkv", "outputlookup"}
+
+
+def split_pipes(s):
+    """SPL pipeline -> commands, splitting on | outside double quotes (a regex
+    alternation "(key|pem|pfx)" is not a pipe)."""
+    return [m.group(0) for m in re.finditer(r'(?:"(?:[^"\\]|\\.)*"|[^|"])+', s)] or [""]
+
+
+_REGEX_PIPE = re.compile(r'regex\s+([\w.]+)\s*(!?=)\s*"((?:[^"\\]|\\.)*)"\s*$', re.S)
+
+
+def check_pipes(pipes):
+    """The pipes after the filter: raise Skip if one can drop rows we cannot express;
+    return the `| regex field="..."` filters, which Sigma can (field|re)."""
+    regexes = []
+    for p in pipes:
+        cmd = p.strip().split(" ", 1)[0].lower()
+        if cmd.startswith("`"):
+            if not re.match(r"`(security_content_ctime|\w+_filter|drop_dm_object_name)", cmd):
+                raise Skip(f"macro after the filter: {cmd}")
+            continue
+        if cmd == "regex":
+            m = _REGEX_PIPE.match(p.strip())
+            if not m:
+                raise Skip("regex pipe not read")
+            # SPL string: \" is a quote and \\ one backslash; the rest is the PCRE as written.
+            regexes.append((m.group(1), m.group(2) == "!=", m.group(3).replace('\\"', '"').replace("\\\\", "\\")))
+            continue
+        if cmd not in OK_PIPES:
+            raise Skip(f"logic after the filter: {cmd}")
+    return regexes
+
+
+def with_regexes(tree, regexes, field_of):
+    """AND the regex pipes into the condition tree (no wildcard shaping: a pattern is a pattern)."""
+    if not regexes:
+        return tree
+    leaves = []
+    for f, neg, pat in regexes:
+        try:
+            re.compile(pat)
+        except re.error:
+            raise Skip(f"regex Python cannot read: {pat[:40]}")
+        leaves.append({"field": field_of(f) + "|re", "values": [pat], "neg": neg})
+    return ("and", [tree] + leaves)
 
 
 def translate_raw(doc, macros):
@@ -282,15 +343,8 @@ def translate_raw(doc, macros):
     m = re.match(r"`(\w+)`\s*(.*)$", s, re.S)
     if not m or m.group(1) not in RAW_SOURCES:
         raise Skip("raw search on a source with no Sigma log source")
-    first, *pipes = m.group(2).split("|")
-    for p in pipes:
-        cmd = p.strip().split(" ", 1)[0].lower()
-        if cmd.startswith("`"):
-            if not re.match(r"`(security_content_ctime|\w+_filter|drop_dm_object_name)", cmd):
-                raise Skip(f"macro after the filter: {cmd}")
-            continue
-        if cmd not in OK_PIPES:
-            raise Skip(f"logic after the filter: {cmd}")
+    first, *pipes = split_pipes(m.group(2))
+    regexes = check_pipes(pipes)
     product = RAW_SOURCES[m.group(1)].get("product")
     cond = expand(first.strip(), macros)
     if not cond.strip():
@@ -302,10 +356,11 @@ def translate_raw(doc, macros):
         FIELDS.update(RAW_FIELDS_BY_SOURCE.get(m.group(1), {}))
         toks = tokens(cond)
         for t in toks:                                 # every term must be field op value / IN / boolean
-            if not (t in ("(", ")", ",") or t.upper() in ("AND", "OR", "NOT", "IN") or re.match(r"[\w.]+\s*(!=|=)", t)
-                    or t.startswith('"') or re.fullmatch(r"[\w.]+", t)):
+            if not (t in ("(", ")", ",") or t.upper() in ("AND", "OR", "NOT", "IN") or re.match(r'"?[\w.{}]+"?\s*(!=|=)', t)
+                    or t.startswith('"') or re.fullmatch(r"[\w.{}]+", t)):
                 raise Skip(f"free-text term {t!r}")
         tree = RawParser(toks, product).expr()
+        tree = with_regexes(tree, regexes, lambda f: FIELDS.get(f, (f,))[0])
     finally:
         FIELDS.clear()
         FIELDS.update(saved)
@@ -335,7 +390,7 @@ SYSMON_CATEGORY = {"1": "process_creation", "2": "file_change", "3": "network_co
 class RawParser(Parser):
     def factor(self):
         t = self.peek()
-        if t and re.fullmatch(r"[\w.]+", t) and t.upper() not in ("NOT", "AND", "OR", "IN") \
+        if t and re.fullmatch(r"[\w.{}]+", t) and t.upper() not in ("NOT", "AND", "OR", "IN") \
                 and (self.t[self.i + 1] if self.i + 1 < len(self.t) else "").upper() != "IN":
             raise Skip(f"bare term {t!r}")
         return super().factor()
@@ -348,9 +403,14 @@ def translate(doc, macros):
     if not m:
         sels, condition, logsource = translate_raw(doc, macros)
         return _rule(doc, sels, condition, logsource)
-    rest = s[m.end():]
-    if re.search(r"\|\s*(where|search|eval|lookup|join|rex|stats|eventstats|streamstats|inputlookup|append)\b", rest, re.I):
-        raise Skip("logic after the data-model search")
+    regexes = check_pipes(split_pipes(s[m.end():])[1:])        # [0] is the rest of the BY clause
+    obj = {"network_resolution": "DNS"}.get(m.group(1).lower(), m.group(1).split(".")[-1])
+
+    def field_of(f):                                 # drop_dm_object_name: "process" is Processes.process
+        for k in (f"{obj}.{f}", f):
+            if k in FIELDS:
+                return FIELDS[k][0]
+        raise Skip(f"no Sigma field for regex on {f}")
     name = str(doc.get("name") or "")
     product = ("linux" if re.match(r"linux\b", name, re.I) else "macos" if re.match(r"macos\b", name, re.I)
                else "windows")
@@ -358,6 +418,7 @@ def translate(doc, macros):
     category = CATEGORY[next(k for k in CATEGORY if k.lower() == m.group(1).lower())]
     if category in ("web", "dns"):                    # network data: no operating system
         tree = Parser(tokens(cond), "network").expr()
+        tree = with_regexes(tree, regexes, field_of)
         sels, condition = to_sigma(tree)
         return _rule(doc, sels, condition, {"category": category})
     # The action names WHICH event: a deletion is its own Sysmon event (23 / 12-delete).
@@ -366,6 +427,7 @@ def translate(doc, macros):
     elif re.search(r'Registry\.action\s*=\s*"?deleted', cond, re.I):
         category = "registry_delete"
     tree = Parser(tokens(cond), product).expr()
+    tree = with_regexes(tree, regexes, field_of)
     sels, condition = to_sigma(tree)
     return _rule(doc, sels, condition, {"category": category, "product": product})
 

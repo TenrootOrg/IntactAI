@@ -44,10 +44,12 @@ def rows_of(url):
             f.write(data)
     text = X.read_text(p)
     fm, rows, left = X.read(text)
+    # As the pipeline does: a structure that yields nothing usable is not one (a short
+    # syslog file can pass for a CSV), and then every line is read as text.
+    if not (rows and X.recognized(X.normalize(rows, X.detect_columns(rows)))):
+        rows, left = [], text.splitlines()
     ev = [X.sigma_event(X._flat(r)) for r in rows]   # the form sigma_pass matches
-    # Lines no reader took go on as text (the pipeline's no-model path), as does a
-    # file no reader took at all.
-    ev += [X.sigma_event(r["raw"]) for r in X.indicator_rows(left if rows else text.splitlines())]
+    ev += [X.sigma_event(r["raw"]) for r in X.indicator_rows(left)]   # lines no reader took (no-model path)
     if len(rows_cache) > 30:
         rows_cache.clear()
     rows_cache[url] = ev

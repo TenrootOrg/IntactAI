@@ -1,0 +1,31 @@
+title: Zscaler Potentially Abused File Download
+id: b0c21379-f4ba-4bac-a958-897e260f964a
+status: experimental
+description: The following analytic identifies the download of potentially malicious file types, such as .scr, .dll, .bat,
+  and .lnk, within a network. It leverages web proxy logs from Zscaler, focusing on blocked actions and analyzing fields like
+  deviceowner, user, urlcategory, url, dest, and filename. This activity is significant as these file types are often used
+  to spread malware, posing a threat to network security. If confirmed malicious, this activity could lead to malware execution,
+  data compromise, or further network infiltration.
+references:
+- https://research.splunk.com/b0c21379-f4ba-4bac-a958-897e260f964a/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Rod Soto, Splunk
+tags:
+- attack.t1566
+logsource:
+  category: proxy
+detection:
+  sel1:
+    url:
+    - '*.scr'
+    - '*.dll'
+    - '*.bat'
+    - '*.lnk'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566/zscalar_web_proxy/zscalar_web_proxy.json
+x-intact-burst: false
+x-intact: 'Fired 158 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

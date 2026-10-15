@@ -1,0 +1,28 @@
+title: GitHub Enterprise Disable IP Allow List
+id: afed020e-edcd-4913-a675-cebedf81d4fb
+status: experimental
+description: The following analytic identifies when an IP allow list is disabled in GitHub Enterprise. The detection monitors
+  GitHub Enterprise audit logs for actions related to disabling IP allow lists at the organization or enterprise level. This
+  behavior is concerning because IP allow lists are a critical security control that restricts access to GitHub Enterprise
+  resources to only trusted IP addresses. When disabled, it could indicate an attacker attempting to bypass access controls
+  to gain unauthorized access from untrusted networks. The impact includes potential exposure of sensitive code repositories
+  and GitHub Enterprise resources to access from any IP address. SOC teams should investigate such events, especially if they
+  were not pre-approved changes, as they may indicate compromise of admin credentials or malicious insider activity.
+references:
+- https://research.splunk.com/afed020e-edcd-4913-a675-cebedf81d4fb/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1685
+- attack.t1195
+logsource:
+  product: github
+  service: audit
+detection:
+  sel1:
+    action: ip_allow_list.disable
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/github_disable_ip_allow_list/github.json

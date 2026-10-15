@@ -36,7 +36,9 @@ detection:
     - '*\\sc.exe'
     - '*\\wmic.exe'
     - '*\\wscript.exe'
-  condition: (not sel1 and sel2)
+  sel3:
+    CommandLine|re: (\b)\w+(\.\w+)?:\w+(\.\w{2,4})(?!\.)(\b|\s|&)
+  condition: ((not sel1 and sel2) and sel3)
 level: low
 x-escu:
   type: TTP

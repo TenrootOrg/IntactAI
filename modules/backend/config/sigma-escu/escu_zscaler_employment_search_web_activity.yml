@@ -1,0 +1,25 @@
+title: Zscaler Employment Search Web Activity
+id: 5456bdef-d765-4565-8e1f-61ca027bc50e
+status: experimental
+description: The following analytic identifies web activity related to employment searches within a network. It leverages
+  Zscaler web proxy logs, focusing on entries categorized as 'Job/Employment Search'. Key data points such as device owner,
+  user, URL category, destination URL, and IP are analyzed. This detection is significant for SOCs as it helps monitor potential
+  insider threats by identifying users who may be seeking new employment. If confirmed malicious, this activity could indicate
+  a risk of data exfiltration or other insider threats, potentially leading to sensitive information leakage or other security
+  breaches.
+references:
+- https://research.splunk.com/5456bdef-d765-4565-8e1f-61ca027bc50e/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Rod Soto, Splunk
+tags:
+- attack.t1566
+logsource:
+  category: proxy
+detection:
+  sel1:
+    urlsupercategory: Job/Employment Search
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566/zscalar_web_proxy/zscalar_web_proxy.json

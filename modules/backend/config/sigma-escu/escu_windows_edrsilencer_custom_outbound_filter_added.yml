@@ -1,0 +1,40 @@
+title: Windows EDRSilencer Custom Outbound Filter Added
+id: 67fea630-445d-4c70-a7d0-584fddb93b86
+status: experimental
+description: 'The following analytic detects the EDRSilencer-specific Windows Filtering Platform filter name "Custom Outbound
+  Filter" when it is configured with a block action.
+
+  EDRSilencer creates WFP filters to block outbound traffic from EDR and security agent processes, impairing endpoint telemetry
+  without requiring the tool binary to keep its original process name.
+
+  EventCode 5447 identifies creation of the runtime filter with ChangeType %%16384, while EventCode 5441 can show the same
+  persistent filter when the Base Filtering Engine starts.'
+references:
+- https://research.splunk.com/67fea630-445d-4c70-a7d0-584fddb93b86/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1685
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '5447'
+  sel2:
+    ChangeType:
+    - '%%16384'
+    - Add
+  sel3:
+    EventID: '5441'
+  sel4:
+    Action:
+    - '%%16389'
+    - Block
+  sel5:
+    FilterName: Custom Outbound Filter
+  condition: (((sel1 and sel2) or sel3) and sel4 and sel5)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1685/edr_silencer/windows-security-xml.log

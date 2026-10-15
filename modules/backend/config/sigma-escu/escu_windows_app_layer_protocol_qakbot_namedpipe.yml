@@ -1,0 +1,46 @@
+title: Windows App Layer Protocol Qakbot NamedPipe
+id: 63a2c15e-9448-43c5-a4a8-9852266aaada
+status: experimental
+description: The following analytic detects a suspicious process creating or connecting to a potential Qakbot named pipe.
+  It leverages Sysmon EventCodes 17 and 18, focusing on specific processes known to be abused by Qakbot and identifying randomly
+  generated named pipes in GUID form. This activity is significant as Qakbot malware uses named pipes for inter-process communication
+  after code injection, facilitating data theft. If confirmed malicious, this behavior could indicate a Qakbot infection,
+  leading to unauthorized data access and potential exfiltration from the compromised host.
+references:
+- https://research.splunk.com/63a2c15e-9448-43c5-a4a8-9852266aaada/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1071
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  sel1:
+    EventID:
+    - '17'
+    - '18'
+  sel2:
+    EventType:
+    - CreatePipe
+    - ConnectPipe
+  sel3:
+    Image:
+    - '*\\calc.exe'
+    - '*\\notepad.exe'
+    - '*\\rdpclip.exe'
+    - '*\\explorer.exe'
+    - '*\\wermgr.exe'
+    - '*\\ping.exe'
+    - '*\\OneDriveSetup.exe'
+    - '*\\dxdiag.exe'
+    - '*\\mobsync.exe'
+    - '*\\msra.exe'
+    - '*\\xwizard.exe'
+  sel4:
+    PipeName|re: ^\\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{8}
+  condition: ((sel1 and sel2 and sel3) and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/qakbot/sysmon.log

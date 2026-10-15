@@ -1,0 +1,26 @@
+title: Zscaler Scam Destinations Threat Blocked
+id: a0c21379-f4ba-4bac-a958-897e260f964a
+status: experimental
+description: The following analytic identifies blocked scam-related activities detected by Zscaler within a network. It leverages
+  web proxy logs to examine actions flagged as scam threats, focusing on data points such as device owner, user, URL category,
+  destination URL, and IP. This detection is significant for SOC as it helps in the early identification and mitigation of
+  scam activities, ensuring network safety. If confirmed malicious, this activity could indicate attempts to deceive users,
+  potentially leading to data theft or financial loss.
+references:
+- https://research.splunk.com/a0c21379-f4ba-4bac-a958-897e260f964a/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Rod Soto, Splunk
+tags:
+- attack.t1566
+logsource:
+  category: proxy
+detection:
+  sel1:
+    action: blocked
+  sel2:
+    threatname: '*scam*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566/zscalar_web_proxy/zscalar_web_proxy.json

@@ -1,0 +1,27 @@
+title: Kubernetes Unauthorized Access
+id: 9b5f1832-e8b9-453f-93df-07a3d6a72a45
+status: experimental
+description: The following analytic detects unauthorized access attempts to Kubernetes by analyzing Kubernetes audit logs.
+  It identifies anomalies in access patterns by examining the source of requests and their response statuses. This activity
+  is significant for a SOC as it may indicate an attacker attempting to infiltrate the Kubernetes environment. If confirmed
+  malicious, such access could lead to unauthorized control over Kubernetes resources, potentially compromising sensitive
+  systems or data within the cluster.
+references:
+- https://research.splunk.com/9b5f1832-e8b9-453f-93df-07a3d6a72a45/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1204
+logsource:
+  product: kubernetes
+  service: audit
+detection:
+  sel1:
+    verb: create
+  sel2:
+    responseStatus.reason: Forbidden
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1204/kubernetes_unauthorized_access/kubernetes_unauthorized_access.json

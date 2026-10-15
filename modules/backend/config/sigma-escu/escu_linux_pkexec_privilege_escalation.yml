@@ -17,7 +17,9 @@ logsource:
 detection:
   sel1:
     Image: '*/pkexec'
-  condition: sel1
+  sel2:
+    CommandLine|re: (^.{1}$)
+  condition: (sel1 and sel2)
 level: medium
 x-escu:
   type: TTP

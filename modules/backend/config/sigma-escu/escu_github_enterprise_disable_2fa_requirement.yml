@@ -1,0 +1,31 @@
+title: GitHub Enterprise Disable 2FA Requirement
+id: 5a773226-ebd7-480c-a819-fccacfeddcd9
+status: experimental
+description: The following analytic detects when two-factor authentication (2FA) requirements are disabled in GitHub Enterprise.
+  The detection monitors GitHub Enterprise audit logs for 2FA requirement changes by tracking actor details, organization
+  information, and associated metadata. For a SOC, identifying disabled 2FA requirements is critical as it could indicate
+  attempts to weaken account security controls. Two-factor authentication is a fundamental security control that helps prevent
+  unauthorized access even if passwords are compromised. Disabling 2FA requirements could allow attackers to more easily compromise
+  accounts through password-based attacks. The impact of disabled 2FA includes increased risk of account takeover, potential
+  access to sensitive code and intellectual property, and compromise of the software supply chain. This activity could be
+  part of a larger attack chain where an adversary first disables security controls before attempting broader account compromises.
+references:
+- https://research.splunk.com/5a773226-ebd7-480c-a819-fccacfeddcd9/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1685
+- attack.t1195
+logsource:
+  product: github
+  service: audit
+detection:
+  sel1:
+    action: org.disable_two_factor_requirement
+  sel2:
+    action: business.disable_two_factor_requirement
+  condition: (sel1 or sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/github_disable_two_factor_requirement/github.json

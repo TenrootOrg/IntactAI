@@ -1,0 +1,31 @@
+title: Windows Steal Authentication Certificates - ESC1 Abuse
+id: cbe761fc-d945-4c8c-a71d-e26d12255d32
+status: experimental
+description: The following analytic detects when a new certificate is requested or granted against Active Directory Certificate
+  Services (AD CS) using a Subject Alternative Name (SAN). It leverages Windows Security Event Codes 4886 and 4887 to identify
+  these actions. This activity is significant because improperly configured certificate templates can be exploited for privilege
+  escalation and environment compromise. If confirmed malicious, an attacker could gain elevated privileges or persist within
+  the environment, potentially leading to unauthorized access to sensitive information and further exploitation.
+references:
+- https://research.splunk.com/cbe761fc-d945-4c8c-a71d-e26d12255d32/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1649
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID:
+    - '4886'
+    - '4887'
+  sel2:
+    Attributes: '*SAN:*upn*'
+  sel3:
+    Attributes: '*CertificateTemplate:*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1649/certify_abuse/certify_esc1_abuse_winsecurity.log

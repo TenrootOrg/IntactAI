@@ -1,0 +1,27 @@
+title: Azure AD Device Code Authentication
+id: d68d8732-6f7e-4ee5-a6eb-737f2b990b91
+status: experimental
+description: The following analytic identifies Azure Device Code Phishing attacks, which can lead to Azure Account Take-Over
+  (ATO). It leverages Azure AD SignInLogs to detect suspicious authentication requests using the device code authentication
+  protocol. This activity is significant as it indicates potential bypassing of Multi-Factor Authentication (MFA) and Conditional
+  Access Policies (CAPs) through phishing emails. If confirmed malicious, attackers could gain unauthorized access to Azure
+  AD, Exchange mailboxes, and Outlook Web Application (OWA), leading to potential data breaches and unauthorized data access.
+references:
+- https://research.splunk.com/d68d8732-6f7e-4ee5-a6eb-737f2b990b91/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Gowthamaraj Rajendran,  Splunk
+tags:
+- attack.t1528
+- attack.t1566.002
+logsource:
+  product: azure
+detection:
+  sel1:
+    category: SignInLogs
+  sel2:
+    properties.authenticationProtocol: deviceCode
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1528/device_code_authentication/azure-audit.log

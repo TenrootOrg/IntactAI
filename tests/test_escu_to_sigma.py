@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""scripts/dev/escu_to_sigma.py: the SPL shapes that once translated wrong or not at
+all. A wrong translation ships a detection that fires on everything (Notepad with
+no arguments lost its regex and matched every Notepad), so each shape is pinned."""
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "dev"))
+import escu_to_sigma as T  # noqa: E402
+
+
+def tr(search, name="Test", typ="TTP"):
+    return T.translate({"name": name, "id": "x", "type": typ, "search": search}, {})
+
+
+class Translate(unittest.TestCase):
+    def test_a_regex_pipe_is_kept(self):
+        r = tr('| tstats count FROM datamodel=Endpoint.Processes WHERE Processes.process_name=notepad.exe '
+               'BY Processes.process | `drop_dm_object_name(Processes)` | regex process="(?i)(notepad\\.exe.{0,4}$)"'
+               ' | `notepad_filter`')
+        d = r["detection"]
+        self.assertEqual("(?i)(notepad\\.exe.{0,4}$)", d["sel2"]["CommandLine|re"])
+        self.assertEqual("(sel1 and sel2)", d["condition"])
+
+    def test_a_pipe_inside_quotes_is_not_a_pipe(self):
+        self.assertEqual(['a=1 ', ' regex process="(key|pem)" ', ' stats count'],
+                         T.split_pipes('a=1 | regex process="(key|pem)" | stats count'))
+
+    def test_a_filtering_pipe_is_skipped(self):
+        with self.assertRaises(T.Skip):
+            tr('`wineventlog_security` EventCode=4625 | stats count by user | where count > 5')
+
+    def test_display_pipes_keep_the_filter(self):
+        r = tr('`wineventlog_security` EventCode=4728 | eval x=1 | rename a as b | stats count by user')
+        self.assertEqual({"EventID": "4728"}, r["detection"]["sel1"])
+
+    def test_web_data_model_is_any_http_log(self):
+        r = tr('| tstats count FROM datamodel=Web WHERE Web.url="*/x.vm*" Web.status IN (200, unknown) '
+               'BY Web.src | `drop_dm_object_name("Web")`')
+        self.assertEqual({"category": "web"}, r["logsource"])
+        self.assertEqual({"c-uri": "*/x.vm*"}, r["detection"]["sel1"])
+        self.assertEqual([None, "200"], r["detection"]["sel2"]["sc-status"])     # unknown = no status
+
+    def test_quoted_field_and_multivalue_path(self):
+        r = tr('`kube_audit` "objectRef.resource"=cronjobs user.groups{} IN ("system:unauthenticated")')
+        self.assertEqual({"product": "kubernetes", "service": "audit"}, r["logsource"])
+        self.assertEqual({"objectRef.resource": "cronjobs"}, r["detection"]["sel1"])
+        self.assertEqual({"user.groups": "*system:unauthenticated*"}, r["detection"]["sel2"])
+
+    def test_a_list_of_objects_is_skipped(self):
+        with self.assertRaises(T.Skip):
+            tr('`o365_management_activity` ModifiedProperties{}.Name=X')
+
+
+if __name__ == "__main__":
+    unittest.main()

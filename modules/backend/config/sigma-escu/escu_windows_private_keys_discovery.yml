@@ -43,7 +43,11 @@ detection:
     - '*.pgp*'
     - '*.ppk*'
     - '*.rdg*'
-  condition: (sel1 and sel2)
+  sel3:
+    CommandLine|re: (?i)[^\.\-\_\$a-zA-Z](dir\s|findstr)
+  sel4:
+    CommandLine|re: (?i)\.(?:rdg|gpg|pgp|p12|der|csr|cer|ovpn|key|ppk|p12|pem|pfx|p7b|asc)\b
+  condition: ((sel1 and sel2) and sel3 and sel4)
 level: low
 x-escu:
   type: Anomaly

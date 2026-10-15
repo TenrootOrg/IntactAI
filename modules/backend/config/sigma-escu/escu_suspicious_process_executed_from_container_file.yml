@@ -1,0 +1,36 @@
+title: Suspicious Process Executed From Container File
+id: d8120352-3b62-411c-8cb6-7b47584dd5e8
+status: experimental
+description: The following analytic identifies a suspicious process executed from within common container/archive file types
+  such as ZIP, ISO, IMG, and others. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process
+  names and command-line executions. This activity is significant as it is a common technique used by adversaries to execute
+  scripts or evade defenses. If confirmed malicious, this behavior could allow attackers to execute arbitrary code, escalate
+  privileges, or persist within the environment, posing a significant security risk.
+references:
+- https://research.splunk.com/d8120352-3b62-411c-8cb6-7b47584dd5e8/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1204.002
+- attack.t1036.008
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine:
+    - '*.ZIP\\*'
+    - '*.ISO\\*'
+    - '*.IMG\\*'
+    - '*.CAB\\*'
+    - '*.TAR\\*'
+    - '*.GZ\\*'
+    - '*.RAR\\*'
+    - '*.7Z\\*'
+  sel2:
+    CommandLine|re: (?i).*\.(zip|iso|img|cab|tar|gz|rar|7z)\\.+\.(bat|bin|cab|cmd|com|cpl|ex_|exe|gadget|inf1|ins|inx|htm|html|isu|jar|job|js|jse|lnk|msc|msi|msp|mst|paf|pif|ps1|reg|rgs|scr|sct|shb|shs|u3p|vb|vbe|vbs|vbscript|ws|wsf|wsh)"?$
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/gootloader/partial_ttps/windows-sysmon.log

@@ -1,0 +1,24 @@
+title: Windows SQL Server Startup Procedure
+id: 7bec7c5c-2262-4adb-ba56-c8028512bc58
+status: experimental
+description: This detection identifies when a startup procedure is registered or executed in SQL Server. Startup procedures
+  automatically execute when SQL Server starts, making them an attractive persistence mechanism for attackers. The detection
+  monitors for suspicious stored procedure names and patterns that may indicate malicious activity, such as attempts to execute
+  operating system commands or gain elevated privileges.
+references:
+- https://research.splunk.com/7bec7c5c-2262-4adb-ba56-c8028512bc58/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1505.001
+logsource:
+  product: windows
+  service: application
+detection:
+  sel1:
+    EventID: '17135'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1505.001/simulation/sql_startupprocedure_widows-application.log

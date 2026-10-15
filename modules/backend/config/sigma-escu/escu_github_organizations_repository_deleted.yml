@@ -1,0 +1,30 @@
+title: GitHub Organizations Repository Deleted
+id: 9ff4ca95-fdae-4eea-9ffa-6d8e1c202a71
+status: experimental
+description: The following analytic identifies when a repository is deleted within a GitHub organization. The detection monitors
+  GitHub Organizations audit logs for repository deletion events by tracking actor details, repository information, and associated
+  metadata. This behavior is concerning for SOC teams as malicious actors may attempt to delete repositories to destroy source
+  code, intellectual property, or evidence of compromise. Repository deletion can result in permanent loss of code, documentation,
+  and project history if proper backups are not maintained. Additionally, unauthorized repository deletion could indicate
+  account compromise, insider threats, or attempts to disrupt business operations. The impact of a repository deletion attack
+  includes loss of intellectual property, disruption to development workflows, and potential financial losses from lost work.
+  Early detection of unauthorized repository deletions allows security teams to investigate potential compromises and restore
+  from back
+references:
+- https://research.splunk.com/9ff4ca95-fdae-4eea-9ffa-6d8e1c202a71/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1485
+- attack.t1195
+logsource:
+  product: github
+  service: audit
+detection:
+  sel1:
+    action: repo.destroy
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1485/github_delete_repository/github.json

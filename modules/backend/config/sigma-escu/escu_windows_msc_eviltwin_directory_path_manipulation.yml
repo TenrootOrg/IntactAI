@@ -20,7 +20,9 @@ logsource:
 detection:
   sel1:
     Image: '*\\mmc.exe'
-  condition: sel1
+  sel2:
+    CommandLine|re: (?i).*mmc\.exe.*((Windows\s+\\System32)|(Windows\s+System32)|(\\Windows\s+\\System32)|(Program\s+Files\s+\\)|(Program\s+Files\s+\(\w+\)\s+\\)|(Progra~1\s+\\))
+  condition: (sel1 and sel2)
 level: low
 x-escu:
   type: TTP
