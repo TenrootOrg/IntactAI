@@ -179,6 +179,15 @@ class EachProductsOwnVerdict(unittest.TestCase):
         row["process_publisher"] = '[{"Name": "Sysmon64", "State": "stopped"}]'
         self.assertTrue(detections(_jl(row, row, row)))
 
+    def test_a_name_alone_does_not_regrade_what_the_product_graded(self):
+        """Sophos Central puts a threat name on events it grades low; with no
+        stated severity, the name alone is still a detection."""
+        row = {"when": "2026-10-01T10:05:00Z", "endpoint_id": "e1", "type": "Event::Endpoint::Threat",
+               "threat": "Troj/Agent-AAA", "severity": "low", "source": "CORP\\jdoe"}
+        self.assertEqual([], detections(_jl(row, row, row)))
+        del row["severity"]
+        self.assertEqual(["Troj/Agent-AAA"], sorted({d["rule"] for d in detections(_jl(row, row, row))}))
+
     def test_a_number_or_flag_is_titled_with_its_field(self):
         d = detections(_jl(*[{"EdgeStartTimestamp": 1790849100000000000, "ClientIP": ATK, "WAFAttackScore": 4}] * 3))
         self.assertEqual("WAFAttackScore = 4", d[0]["rule"])

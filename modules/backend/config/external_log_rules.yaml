@@ -97,12 +97,15 @@ native:
     reason: "the product named the threat it found (AV / IPS / proxy threat name)"
     fields: [threatName, threat, virusName, malwareName, malwareFamily, attack, attackName,
              threatContentName, detection, signatureMsg, ipsSignature, avName, spywareName]
-    match: '(?!(none|n/?a|-|0|unknown|null|not ?found|clean|\(9999\)|allowed)$).*[A-Za-z].*'
+    match: '(?!(none|n/?a|-|0|unknown|unknown threat|null|not ?found|clean|\(9999\)|allowed)$).*[A-Za-z].*'
     severity: medium
+    # A name alone is the signal only where the product states no severity:
+    # Sophos Central fills threat on a "user auto-created" event it grades low.
+    only_without_severity: true
     examples:
       fires: [{threatname: "Win32.Backdoor.CobaltStrike"}, {attack: "Backdoor.Cobalt.Strike.Beacon"},
               {"Threat/Content Name": "Cobalt Strike C2"}]
-      quiet: [{threatname: "None"}, {threat: "-"}, {threatname: "N/A"}]
+      quiet: [{threatname: "None"}, {threat: "-"}, {threatname: "N/A"}, {threat: "Unknown Threat"}]
 
   - id: waf-attack-score
     reason: "the WAF scored the request as an attack (Cloudflare: 1-20 = attack)"

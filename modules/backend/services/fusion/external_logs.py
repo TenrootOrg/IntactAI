@@ -995,7 +995,8 @@ def rules() -> dict:
                            "fields": {_norm_name(f) for f in r["fields"]},
                            "rx": re.compile(f"(?:{r['match']})", re.I),
                            "severity": r.get("severity") if r.get("severity") in _SEV_RANK else "medium",
-                           "nested_only": bool(r.get("nested_only"))})
+                           "nested_only": bool(r.get("nested_only")),
+                           "only_without_severity": bool(r.get("only_without_severity"))})
         except re.error as e:
             print(f"[EXTERNAL-LOGS] rule {r.get('id')} skipped, bad match: {e}", flush=True)
     beh = {}
@@ -1101,9 +1102,11 @@ def _verdict(n, hits):
     """The product's own verdict raises the row to a detection: severity = the higher
     of what the row states and what the verdict rule is worth; the title is the
     product's own words when the row has no rule column."""
+    stated = n.get("severity")
+    if stated:                  # the product graded the row: a presence-only rule does not regrade it
+        hits = [h for h in hits if not h[0].get("only_without_severity")]
     if not hits:
         return
-    stated = n.get("severity")
     top = max(hits, key=lambda h: _SEV_RANK[h[0]["severity"]])
     if _SEV_RANK[top[0]["severity"]] > _SEV_RANK.get(n.get("severity") or "informational", 0):
         n["severity"] = top[0]["severity"]
