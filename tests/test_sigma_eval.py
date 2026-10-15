@@ -281,6 +281,16 @@ class JsonInsideAField(unittest.TestCase):
         self.assertFalse(S.evaluate(X.sigma_event(dict(self.ROW, description='{"require_lock": true}')), [r], {}))
 
 
+class TrimmedO365Export(unittest.TestCase):
+    def test_operation_and_organisation_without_workload_is_m365(self):
+        ev = {"ObjectId": "Federation", "Operation": "Add-FederatedDomain",
+              "OrganizationName": "contoso.onmicrosoft.com", "UserId": "NT AUTHORITY\\SYSTEM (w3wp)"}
+        r = S.compile_rule({"title": "t", "id": "x", "level": "medium",
+                            "logsource": {"product": "m365", "service": "audit"},
+                            "detection": {"sel": {"Operation": "Add-FederatedDomain"}, "condition": "sel"}})
+        self.assertTrue(S.evaluate(ev, [r], {}))
+
+
 class EsxiSyslog(unittest.TestCase):
     """ESXi lines read as structure (key=value, or columns split on spaces) lost the
     message the ESXi rules match: all 23 Splunk ESXi detections were silent."""

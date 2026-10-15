@@ -637,7 +637,10 @@ def profiles(row) -> set:
         out.add(("azure", None, "activitylogs"))
     if _has(ev, "riskEventType"):
         out.add(("azure", None, "riskdetection"))
-    if _has(ev, "Workload") and _has(ev, "Operation"):
+    # O365 Management Activity: Workload, or (a field-trimmed export) RecordType /
+    # the organisation next to Operation and UserId.
+    if _has(ev, "Operation") and (_has(ev, "Workload") or (_has(ev, "UserId") and _has(
+            ev, "RecordType", "OrganizationId", "OrganizationName"))):
         out.add(("m365", None, "threat_management"))
         out.add(("m365", None, "audit"))
     if _has(ev, "protoPayload.methodName", "protoPayload.serviceName"):
