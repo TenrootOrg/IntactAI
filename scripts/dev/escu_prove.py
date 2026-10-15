@@ -6,7 +6,7 @@ outside the repo (~/datasets/splunk-attack-data/escu-tests), never executed.
 
   python3 scripts/dev/escu_prove.py <rules dir> <results.jsonl>
 """
-import hashlib, json, os, sys, urllib.request
+import hashlib, json, os, re, sys, urllib.request
 here = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [os.path.join(here, "../../tests"), os.path.join(here, "../../modules/backend")]
 import _optional_deps  # noqa
@@ -27,6 +27,10 @@ def rows_of(url):
     if url in rows_cache:
         return rows_cache[url]
     p = os.path.join(CACHE, hashlib.sha1(url.encode()).hexdigest()[:16] + "_" + os.path.basename(url))
+    # The coverage run (one folder per technique / dataset) may hold it already.
+    m = re.search(r"/attack_techniques/([^/]+)/([^/]+)/([^/]+)$", url)
+    if m and os.path.exists(os.path.join(os.path.dirname(CACHE), *m.groups())):
+        p = os.path.join(os.path.dirname(CACHE), *m.groups())
     if os.path.exists(p + ".truncated"):
         p += ".truncated"
     if not os.path.exists(p):
@@ -38,8 +42,12 @@ def rows_of(url):
             p += ".truncated"
         with open(p, "wb") as f:
             f.write(data)
-    fm, rows, _ = X.read(X.read_text(p))
-    ev = [X._flat(r) for r in rows]
+    text = X.read_text(p)
+    fm, rows, left = X.read(text)
+    ev = [X.sigma_event(X._flat(r)) for r in rows]   # the form sigma_pass matches
+    # Lines no reader took go on as text (the pipeline's no-model path), as does a
+    # file no reader took at all.
+    ev += [X.sigma_event(r["raw"]) for r in X.indicator_rows(left if rows else text.splitlines())]
     if len(rows_cache) > 30:
         rows_cache.clear()
     rows_cache[url] = ev

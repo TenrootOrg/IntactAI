@@ -353,6 +353,11 @@ def _kv_row(line):
     pre = line[:line.find(pairs[0][0] + "=")].strip()
     if pre:
         row["syslog_header"] = pre
+    # Words after the last pair are the message itself (ESXi Hostd: "sub=... user=root]
+    # Event 105 : ESXi Shell ... has been enabled"); the pairs alone lose it.
+    last = list(_KV.finditer(line))[-1]
+    if len(line[last.end():].split()) >= 3:
+        row["_line"] = line
     return row
 
 
@@ -944,11 +949,13 @@ def recognized(rows) -> bool:
     # structure when they also give a time; else they are text lines, and the free
     # text readers (sign-in phrases, keyword rules) do better with them.
     raw0 = rows[0].get("raw") or {}
-    unnamed = isinstance(raw0, dict) and raw0 and all(re.fullmatch(r"c\d+|_line|syslog_header", str(c))
-                                                     for c in raw0)
+    unnamed = isinstance(raw0, dict) and raw0 and all(_UNNAMED.fullmatch(str(c)) for c in raw0)
     if unnamed and sum(1 for r in rows if r["n"].get("ts")) < 0.5 * k:
         return False
     return j >= 0.5 * k
+
+
+_UNNAMED = re.compile(r"c\d+|_line|syslog_header")
 
 
 def _sev_scale(col, vals):
@@ -1493,6 +1500,20 @@ def _model(case_id, run_id, log):
             (lambda o: investigate._revert_obj(o, mask)) if mask is not None else None)
 
 
+def sigma_event(raw):
+    """The form of a row a Sigma rule is matched against: the row as the product
+    wrote it, or -- for a free-text line -- its text."""
+    text = raw.get("text") if set(raw) <= {"line", "text"} else None
+    # A line split on spaces (c1, c2, ... -- ESXi, appliance syslog) has no field a
+    # rule can name: its only matchable form is the line itself.
+    if text is None and raw.get("_line"):
+        if all(_UNNAMED.fullmatch(str(c)) for c in raw):
+            text = raw["_line"]
+        else:                           # named fields AND a message: rules may read either
+            return {**raw, "_text": raw["_line"], "text": raw["_line"]}
+    return {"_text": text, "text": text} if text is not None else raw
+
+
 def sigma_pass(out, log=None) -> dict:
     """Run the community Sigma rules (SigmaHQ, /opt/sigma-rules) over every row --
     the structured row as the product wrote it, a free-text line as text. A hit
@@ -1516,9 +1537,8 @@ def sigma_pass(out, log=None) -> dict:
             _verdict(r["n"], native_hits({"text": raw["text"]}, ncache))
     for i, r in enumerate(out):
         raw = r.get("raw") or {}
-        ev = {"_text": raw["text"], "text": raw["text"]} if set(raw) <= {"line", "text"} and "text" in raw else raw
         try:
-            hits = sigma_eval.evaluate(ev, loaded["rules"], cache)
+            hits = sigma_eval.evaluate(sigma_event(raw), loaded["rules"], cache)
         except Exception:                                  # noqa: BLE001 -- one row, never the file
             continue
         if not hits:

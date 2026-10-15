@@ -682,6 +682,10 @@ def profiles(row) -> set:
         # A free-text line: the keyword rules of the syslog services it may come from.
         for svc in (None, "auth", "sshd", "syslog", "sudo", "cron", "vsftpd", "guacamole", "clamav"):
             out.add(("linux", None, svc))
+        # ESXi syslog too. Not decided by the line's content: profiles are cached per
+        # row SHAPE and every free-text row has one shape. The ESXi rules match
+        # ESXi-only text (esxcli ..., vob.user.ssh.enabled), so other lines stay quiet.
+        out.add(("esxi", None, None))
     return out
 
 

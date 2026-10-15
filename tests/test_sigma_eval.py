@@ -173,6 +173,32 @@ class NoisyRulesAreContext(unittest.TestCase):
         self.assertEqual(["sigma (context): t"], out[0]["n"]["detected_by"])
 
 
+class EsxiSyslog(unittest.TestCase):
+    """ESXi lines read as structure (key=value, or columns split on spaces) lost the
+    message the ESXi rules match: all 23 Splunk ESXi detections were silent."""
+    HOSTD = ("May  7 17:58:34 192.168.8.233 2025-05-07T17:58:32.450Z localhost Hostd[263168]: [Originator@6876 "
+             "sub=Vimsvc.ha-eventmgr opID=esxui-6fd9 sid=5290e005 user=root] Event 105 : ESXi Shell for the "
+             "host localhost.lan has been enabled")
+    VOBD = ("May  7 17:58:30 192.168.8.233 2025-05-07T17:58:28.526Z localhost vobd[262381]:  [UserLevelCorrelator] "
+            "621288555us: [vob.user.ssh.enabled] SSH access has been enabled")
+
+    def fires(self, raw, text):
+        r = S.compile_rule({"title": "t", "id": "x", "level": "medium", "logsource": {"product": "esxi"},
+                            "detection": {"sel": {"text": text}, "condition": "sel"}})
+        return bool(S.evaluate(X.sigma_event(X._flat(raw)), [r], {}))
+
+    def test_message_after_key_value_pairs(self):
+        self.assertTrue(self.fires(X._kv_row(self.HOSTD), "*ESXi Shell*has been enabled*"))
+
+    def test_line_split_into_unnamed_columns(self):
+        fm, rows, _ = X.read("\n".join([self.VOBD] * 3))
+        self.assertEqual("space", fm)
+        self.assertTrue(self.fires(rows[0], "*SSH access has been enabled"))
+
+    def test_plain_key_value_keeps_no_line(self):
+        self.assertNotIn("_line", X._kv_row("date=2025-01-01 srcip=1.2.3.4 dstip=5.6.7.8 action=deny"))
+
+
 @unittest.skipUnless(os.path.isdir("/opt/sigma-rules/regression_data"), "SigmaHQ rules not installed here")
 class SigmaHQRegression(unittest.TestCase):
     def test_every_regression_event_fires_its_rule(self):
