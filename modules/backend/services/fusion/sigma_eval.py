@@ -173,6 +173,35 @@ _KNOWN_MODS = {"contains", "startswith", "endswith", "all", "re", "i", "m", "s",
                "cased", "fieldref"}
 
 
+_PLAIN_MODS = {"contains", "startswith", "endswith", "cased"}
+
+
+def _fast_list(mods, vals):
+    """ONE test for a list of plain values (no wildcard, no encoding, not |all) --
+    the common case, and the costly one: a user-agent rule lists hundreds of
+    strings. equals = a set lookup, startswith / endswith = one call with a
+    tuple, contains = one combined regex. Same meaning as testing them one by
+    one; None when the list is not of that kind."""
+    if len(vals) < 2 or any(m not in _PLAIN_MODS for m in mods):
+        return None
+    if any(not isinstance(v, (str, int)) or isinstance(v, bool) or _has_wild(str(v)) for v in vals):
+        return None
+    cased = "cased" in mods
+    lits = [_unescape(str(v)) if cased else _unescape(str(v)).lower() for v in vals]
+    low = (lambda v: str(v)) if cased else (lambda v: str(v).lower())
+    if "contains" in mods:
+        rx = re.compile("|".join(re.escape(x) for x in sorted(set(lits), key=len, reverse=True)))
+        return lambda v, rx=rx, low=low: rx.search(low(v)) is not None
+    if "startswith" in mods:
+        t = tuple(lits)
+        return lambda v, t=t, low=low: low(v).startswith(t)
+    if "endswith" in mods:
+        t = tuple(lits)
+        return lambda v, t=t, low=low: low(v).endswith(t)
+    fs = frozenset(lits)
+    return lambda v, fs=fs, low=low: low(v) in fs
+
+
 def _field_cond(spec, values):
     """One `field|mods: values` entry -> callable(event) -> bool."""
     parts = str(spec).split("|")
@@ -187,6 +216,14 @@ def _field_cond(spec, values):
             a = ev.get(field)
             return a is not None and any(str(ev.get(r)) == str(a) for r in refs)
         return fr
+    fast = _fast_list(mods, vals)
+    if fast is not None:
+        def cond_fast(ev, field=field, fast=fast):
+            v = ev.get(field)
+            if isinstance(v, list):
+                return any(fast(x) for x in v if x is not None)
+            return v is not None and fast(v)
+        return cond_fast
     tests = [_matcher(mods, v) for v in vals]
     if tests and isinstance(tests[0], tuple):
         want = tests[0][1]
