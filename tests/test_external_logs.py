@@ -218,6 +218,15 @@ class Shapes(unittest.TestCase):
         self.assertIn("event.parameters", r)                # the JSON text stays
         self.assertNotIn("x.a", X._flat({"x": [{"a": 1, "b": 2, "c": 3, "d": 4}]}))   # not pairs
 
+    def test_a_change_list_has_old_and_new_fields(self):
+        r = X._flat({"Operation": "Update user.", "ModifiedProperties": [
+            {"Name": "StrongAuthenticationMethod", "NewValue": "[{MethodType: 6}]", "OldValue": "[]"}]})
+        self.assertEqual("[{MethodType: 6}]", r["ModifiedProperties.StrongAuthenticationMethod.NewValue"])
+        self.assertEqual("[]", r["ModifiedProperties.StrongAuthenticationMethod.OldValue"])
+        r = X._flat({"targetResources": {"modifiedProperties": [
+            {"displayName": "AccountEnabled", "oldValue": "[false]", "newValue": "[true]"}]}})
+        self.assertEqual("[true]", r["targetResources.modifiedProperties.AccountEnabled.NewValue"])
+
     def test_squid_native_access_log(self):
         # Padded columns and "TCP_MISS/200": read as unnamed columns, no web rule saw it.
         text = "\n".join(["1157689312.049   5006 10.105.21.199 TCP_MISS/200 19763 CONNECT login.yahoo.com:443 "

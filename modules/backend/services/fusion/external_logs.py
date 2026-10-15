@@ -210,15 +210,32 @@ _PAIR_NAME = ("name", "key", "Name", "Key")
 _PAIR_VALUE = ("value", "Value", "multiValue", "boolValue", "intValue", "multiIntValue")
 
 
+_CHANGE_NAME = ("Name", "name", "displayName", "DisplayName")
+_CHANGE_SIDES = (("NewValue", "newValue"), ("OldValue", "oldValue"))
+
+
 def _name_value_pairs(items):
-    """[{"name": "a", "value": 1}, ...] -> {"a": 1}; None when the list is anything else."""
+    """[{"name": "a", "value": 1}, ...] -> {"a": 1}; a change list (O365
+    ModifiedProperties [{"Name", "NewValue", "OldValue"}], Entra modifiedProperties
+    [{"displayName", "newValue", "oldValue"}]) -> {"a.NewValue": .., "a.OldValue": ..}.
+    None when the list is anything else."""
     out = {}
     for it in items:
         if not isinstance(it, dict):
             return None
-        n = next((it[k] for k in _PAIR_NAME if k in it), None)
+        n = next((it[k] for k in _CHANGE_NAME + _PAIR_NAME if k in it), None)
+        if not isinstance(n, str) or not n:
+            return None
+        sides = [(side[0], next((it[k] for k in side if k in it), None)) for side in _CHANGE_SIDES]
+        if any(k in it for side in _CHANGE_SIDES for k in side):
+            if len(it) > 3:
+                return None
+            for label, v in sides:
+                if v not in (None, ""):
+                    out[f"{n}.{label}"] = v
+            continue
         vals = [it[k] for k in _PAIR_VALUE if k in it]
-        if not isinstance(n, str) or not n or len(vals) != 1 or len(it) > 3:
+        if len(vals) != 1 or len(it) > 3:
             return None
         v = vals[0]
         out[n] = ", ".join(str(x) for x in v) if isinstance(v, list) else v
