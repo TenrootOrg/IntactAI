@@ -223,6 +223,31 @@ class WebUrlParts(unittest.TestCase):
                                      "sc-status": "200", "c-ip": "10.0.0.1"}))
 
 
+class KubernetesAudit(unittest.TestCase):
+    def test_an_api_server_audit_event_runs_the_kubernetes_rules(self):
+        ev = {"kind": "Event", "apiVersion": "audit.k8s.io/v1", "auditID": "a9157591", "verb": "create",
+              "user": {"username": "kubernetes-admin"}, "sourceIPs": ["176.95.188.101"],
+              "objectRef": {"resource": "pods", "namespace": "default", "name": "privileged-the-pod"},
+              "requestObject": {"spec": {"containers": [{"securityContext": {"privileged": True}}]}}}
+        r = S.compile_rule({"title": "t", "id": "x", "level": "high",
+                            "logsource": {"product": "kubernetes", "service": "audit"},
+                            "detection": {"sel": {"verb": "create", "objectRef.resource": "pods"},
+                                          "condition": "sel"}})
+        self.assertTrue(S.evaluate(X._flat(ev), [r], {}))
+
+
+class CiscoSecureFirewall(unittest.TestCase):
+    def test_an_estreamer_record_runs_the_secure_firewall_rules(self):
+        ev = {"EventType": "IntrusionEvent", "DeviceUUID": "11bc8e94", "ConnectionID": 1882,
+              "InitiatorIP": "23.48.99.12", "ResponderIP": "172.16.3.110", "SignatureID": 65118}
+        r = S.compile_rule({"title": "t", "id": "x", "level": "high",
+                            "logsource": {"product": "cisco", "service": "secure_firewall"},
+                            "detection": {"sel": {"EventType": "IntrusionEvent", "SignatureID": "65118"},
+                                          "condition": "sel"}})
+        self.assertTrue(S.evaluate(ev, [r], {}))
+        self.assertFalse(S.evaluate(dict(ev, SignatureID=1), [r], {}))
+
+
 class EsxiSyslog(unittest.TestCase):
     """ESXi lines read as structure (key=value, or columns split on spaces) lost the
     message the ESXi rules match: all 23 Splunk ESXi detections were silent."""

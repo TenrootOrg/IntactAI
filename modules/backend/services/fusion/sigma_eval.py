@@ -641,6 +641,10 @@ def profiles(row) -> set:
         out.add(("aws", None, "cloudtrail"))                # the same log as OCSF (AWS Security Lake)
     if _has(ev, "action") and _has(ev, "actor", "actor_id") and _has(ev, "org", "repo", "business", "@timestamp"):
         out.add(("github", None, "audit"))
+    if _has(ev, "EventType") and _has(ev, "InitiatorIP") and _has(ev, "DeviceUUID", "ConnectionID"):
+        out.add(("cisco", None, "secure_firewall"))         # FTD / FMC eStreamer record
+    if _has(ev, "verb") and _has(ev, "objectRef.resource") and _has(ev, "auditID"):
+        out.add(("kubernetes", None, "audit"))              # API server audit event (audit.k8s.io)
     if _has(ev, "type") and re.match(r"audit\(", str(ev.get("msg") or "")):
         out.add(("linux", None, "auditd"))
     if _has(ev, "id.orig_h"):
