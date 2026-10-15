@@ -280,6 +280,33 @@ class ActiveDirectoryPermissions(unittest.TestCase):
             self.assertEqual([], found(jl(self.change("CN=x,DC=corp,DC=local", sd, sd + added))), added)
 
 
+class Kerberos(unittest.TestCase):
+    """No benign corpus here holds 4768/4769 (Kerberos auditing off on both hosts)."""
+
+    def tgs(self, t, user, svc, enc="0x12"):
+        return {"SystemTime": iso(BASE + t), "EventID": "4769", "Channel": "Security", "Computer": "DC01",
+                "TargetUserName": f"{user}@CORP.LOCAL", "ServiceName": svc, "TicketEncryptionType": enc,
+                "IpAddress": "::ffff:10.0.0.5", "Status": "0x0"}
+
+    def test_kerberoasting_and_a_computer_sweep(self):
+        evs = [self.tgs(i * 5, "jdoe", f"svc_sql{i}", "0x17") for i in range(12)]
+        self.assertIn(("Possible Kerberoasting (RC4 service tickets)", "high"), found(jl(evs)))
+        evs = [self.tgs(i * 5, "jdoe", f"WS{i:03d}$") for i in range(30)]
+        self.assertIn(("Kerberos tickets for many computers", "medium"), found(jl(evs)))
+
+    def test_ordinary_ticket_use_stays_quiet(self):
+        evs = [self.tgs(i * 30, f"user{i % 20}", ["cifs/fs01", "http/intranet", "ldap/dc01"][i % 3])
+               for i in range(200)]
+        evs += [self.tgs(i * 30, "jdoe", "krbtgt") for i in range(50)]
+        self.assertEqual([], found(jl(evs)))
+
+    def test_user_enumeration(self):
+        evs = [{"SystemTime": iso(BASE + i * 3), "EventID": "4768", "Channel": "Security", "Computer": "DC01",
+                "TargetUserName": f"guess{i}", "Status": "0x6", "IpAddress": f"::ffff:{ATK}"} for i in range(15)]
+        self.assertEqual([("Kerberos user enumeration", "medium")], found(jl(evs)))
+        self.assertEqual([], found(jl(evs[:5])), "a few typos are not enumeration")
+
+
 class SuspiciousBurst(unittest.TestCase):
     """Low signals add up per host, like Splunk's risk-based alerting."""
 

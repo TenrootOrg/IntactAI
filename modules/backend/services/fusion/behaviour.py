@@ -45,6 +45,8 @@ DEFAULTS = {
     # operator working the box.
     "suspicious-burst": {"distinct": 3, "window_s": 3600, "severity": "medium"},
     "ad-acl-change": {"severity": "medium"},
+    "kerberos-ticket-burst": {"services": 10, "window_s": 600, "severity": "medium"},
+    "kerberos-user-enum": {"names": 10, "window_s": 600, "severity": "medium"},
     "dns-tunnel": {"subdomains": 100, "window_s": 3600, "long_label": 40, "long_queries": 20,
                    "severity": "medium"},
 }
@@ -672,6 +674,68 @@ def ad_acl_change(rows, p):
     return out
 
 
+# -- Kerberos (Security 4768 / 4769) -----------------------------------------------------
+def _krb_user(v):
+    return str(v or "").split("@", 1)[0].strip().lower()
+
+
+def kerberos_ticket_burst(rows, p):
+    """One account asking for service tickets to many DIFFERENT services in a short
+    window: Kerberoasting (RC4 tickets) or a sweep of computer accounts (discovery)."""
+    groups: dict = {}
+    for i, r in enumerate(rows):
+        raw = r.get("raw") or {}
+        if str(raw.get("EventID")) != "4769" or str(raw.get("Status") or "0x0").lower() not in ("0x0", "0"):
+            continue
+        svc = str(raw.get("ServiceName") or "").strip()
+        t = _t((r.get("n") or {}).get("ts"))
+        if not svc or svc.lower().startswith("krbtgt") or t is None:
+            continue
+        groups.setdefault(_krb_user(raw.get("TargetUserName")), []).append(
+            (t, svc.lower(), str(raw.get("TicketEncryptionType") or "").lower(), (r.get("n") or {}).get("ts"), i))
+    out = []
+    for user, items in groups.items():
+        best = _densest(items, p["window_s"], lambda x: x[1], p["services"])
+        if not best:
+            continue
+        svcs = {x[1] for x in best[1]}
+        rc4 = sum(1 for x in best[1] if x[2] in ("0x17", "0x18"))
+        computers = sum(1 for s_ in svcs if s_.endswith("$"))
+        if rc4:
+            title, sev = "Possible Kerberoasting (RC4 service tickets)", "high"
+        elif computers >= 0.8 * len(svcs):
+            title, sev = "Kerberos tickets for many computers", p["severity"]
+        else:
+            title, sev = "Unusual number of Kerberos service tickets", p["severity"]
+        out.append(_row("kerberos-ticket-burst", title, sev, [(x[3], x[4]) for x in best[1]], {"user": user},
+                        f"{user} requested tickets for {len(svcs)} different services within "
+                        f"{p['window_s'] // 60} min" + (f", {rc4} of them RC4" if rc4 else "")))
+    return out
+
+
+def kerberos_user_enum(rows, p):
+    """Pre-authentication for many names that do not exist (4768, 0x6) from one address."""
+    groups: dict = {}
+    for i, r in enumerate(rows):
+        raw = r.get("raw") or {}
+        if str(raw.get("EventID")) != "4768" or str(raw.get("Status") or "").lower() != "0x6":
+            continue
+        t = _t((r.get("n") or {}).get("ts"))
+        if t is None:
+            continue
+        src = str(raw.get("IpAddress") or "").replace("::ffff:", "")
+        groups.setdefault(src, []).append((t, _krb_user(raw.get("TargetUserName")), (r.get("n") or {}).get("ts"), i))
+    out = []
+    for src, items in groups.items():
+        best = _densest(items, p["window_s"], lambda x: x[1], p["names"])
+        if best:
+            out.append(_row("kerberos-user-enum", "Kerberos user enumeration", p["severity"],
+                            [(x[2], x[3]) for x in best[1]], {"src_ip": src or None},
+                            f"{src or 'one address'} tried {best[0]} account names that do not exist "
+                            f"within {p['window_s'] // 60} min"))
+    return out
+
+
 def suspicious_burst(rows, p):
     """Several different low-level Sigma signals on one host within a window."""
     groups: dict = {}
@@ -729,6 +793,8 @@ def run(rows, params=None, log=None) -> list:
                            ("dns-ptr-sweep", dns_ptr_sweep, rows),
                            ("suspicious-burst", suspicious_burst, rows),
                            ("ad-acl-change", ad_acl_change, rows),
+                           ("kerberos-ticket-burst", kerberos_ticket_burst, rows),
+                           ("kerberos-user-enum", kerberos_user_enum, rows),
                            ("dns-tunnel", dns_tunnel, rows)):
         if name in off:
             continue

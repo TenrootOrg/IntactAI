@@ -298,6 +298,29 @@ native:
       quiet: [{Action: "None", Definition: "Default Impersonation Definition"},
               {Action: "Hold", Definition: "Default Spam Definition"}]
 
+  - id: kerberos-local-relay
+    title: "Kerberos logon by SYSTEM from the machine itself (relay)"
+    reason: "a network logon (type 3) of SYSTEM authenticated by Kerberos from 127.0.0.1: Kerberos relayed to the local host (KrbRelayUp) to become SYSTEM"
+    fields: [IpAddress]
+    match: '127\.0\.0\.1|::1'
+    and:
+      - fields: [AuthenticationPackageName]
+        match: 'Kerberos'
+      - fields: [LogonType]
+        match: '3'
+      - fields: [TargetUserSid]
+        match: 'S-1-5-18|NT AUTHORITY\\SYSTEM'
+    severity: high
+    examples:
+      fires: [{EventID: "4624", LogonType: "3", AuthenticationPackageName: "Kerberos", IpAddress: "127.0.0.1",
+               TargetUserSid: "S-1-5-18", TargetUserName: "WS01$"}]
+      quiet: [{EventID: "4624", LogonType: "3", AuthenticationPackageName: "Kerberos", IpAddress: "10.0.0.5",
+               TargetUserSid: "S-1-5-18"},
+              {EventID: "4624", LogonType: "3", AuthenticationPackageName: "NTLM", IpAddress: "127.0.0.1",
+               TargetUserSid: "S-1-5-18"},
+              {EventID: "4624", LogonType: "3", AuthenticationPackageName: "Kerberos", IpAddress: "127.0.0.1",
+               TargetUserSid: "S-1-5-21-1-2-3-1104"}]
+
   - id: firewall-threat-detection
     title: "Firewall threat detection / IPS event"
     reason: "the firewall's own threat detection (rate exceeded: scanning or DoS) or built-in IPS signature fired (Cisco ASA 733100 / 4000xx)"
@@ -360,6 +383,8 @@ behaviour:
   c2-retry:         {attempts: 200, window_s: 3600, failed_share: 0.5, severity: medium}
   suspicious-burst: {distinct: 3, window_s: 3600, severity: medium}
   ad-acl-change:    {severity: medium}       # AdminSDHolder: high
+  kerberos-ticket-burst: {services: 10, window_s: 600, severity: medium}   # RC4: high
+  kerberos-user-enum: {names: 10, window_s: 600, severity: medium}
   web-scan:         {paths: 50, window_s: 600, severity: medium}
   web-login-brute-force: {posts: 20, window_s: 600, severity: medium}
   dns-ptr-sweep:    {lookups: 100, window_s: 600, severity: medium}
