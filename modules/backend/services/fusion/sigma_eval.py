@@ -24,7 +24,12 @@ import ipaddress
 import os
 import re
 
-RULE_DIRS = ("/opt/sigma-rules/rules", "/opt/sigma-rules/rules-emerging-threats")
+# Splunk Security Content detections translated to Sigma and proved on their own
+# attack_data recordings (scripts/dev/escu_to_sigma.py, escu_prove.py). Bundled in
+# the image, so they run where /opt/sigma-rules is not installed too.
+BUNDLED = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                       "config", "sigma-escu")
+RULE_DIRS = ("/opt/sigma-rules/rules", "/opt/sigma-rules/rules-emerging-threats", BUNDLED)
 LEVELS = {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 MIN_LEVEL = "medium"                 # below it a rule is context, never a detection
 _CACHE = {"key": None, "rules": [], "skipped": {}}
@@ -402,6 +407,14 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
 # style names; a Security 4688 event, a proxy export or a DNS log spells them
 # otherwise (the role pySigma's processing pipelines play).
 ALIASES = {
+    # CloudTrail in OCSF (AWS Security Lake): the CloudTrail names Sigma rules use
+    "eventname": ["api.operation"], "eventsource": ["api.service.name"],
+    "errorcode": ["api.response.error"], "errormessage": ["api.response.message"],
+    "useragent": ["http_request.user_agent"], "sourceipaddress": ["src_endpoint.ip"],
+    "useridentity.type": ["actor.user.type"], "useridentity.arn": ["actor.user.uid"],
+    "useridentity.accountid": ["actor.user.account.uid"], "recipientaccountid": ["cloud.account.uid"],
+    "requestparameters": ["api.request.data"], "responseelements": ["api.response.data"],
+    "awsregion": ["cloud.region"],
     # process telemetry: Security 4688, Defender XDR, CrowdStrike FDR, Elastic, generic
     "image": ["newprocessname", "folderpath", "imagefilename", "process.executable", "processpath",
               "actor_process_image_path", "exe", "columns.path"],
@@ -600,6 +613,8 @@ def profiles(row) -> set:
     if _has(ev, "eventSource") and _has(ev, "eventName") and _has(ev, "awsRegion", "userIdentity.type",
                                                                    "recipientAccountId"):
         out.add(("aws", None, "cloudtrail"))
+    if _has(ev, "api.operation") and str(ev.get("metadata.product.name") or "").lower() == "cloudtrail":
+        out.add(("aws", None, "cloudtrail"))                # the same log as OCSF (AWS Security Lake)
     if _has(ev, "action") and _has(ev, "actor", "actor_id") and _has(ev, "org", "repo", "business", "@timestamp"):
         out.add(("github", None, "audit"))
     if _has(ev, "type") and re.match(r"audit\(", str(ev.get("msg") or "")):
