@@ -129,6 +129,14 @@ class Shapes(unittest.TestCase):
                  "collector.hostname": "siem-collector-1", "type_id": 8031}] * 3
         self.assertEqual("device_name", X.detect_columns(rows)["host"])
 
+    def test_one_bad_spot_in_event_xml_loses_only_itself(self):
+        ev = ("<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='P'/>"
+              "<EventID>4104</EventID><Channel>Microsoft-Windows-PowerShell/Operational</Channel></System>"
+              "<EventData><Data Name='ScriptBlockText'>Get-DomainComputer {n}</Data></EventData></Event>")
+        text = "\r\n".join([ev.format(n=1), "garbage & < here", ev.format(n=2), ev.format(n=3).replace("</Data>", "")])
+        rows = X._xml_rows(text)
+        self.assertEqual(["Get-DomainComputer 1", "Get-DomainComputer 2"], [r["ScriptBlockText"] for r in rows])
+
     def test_gzip_and_utf16_are_read(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "a.gz")

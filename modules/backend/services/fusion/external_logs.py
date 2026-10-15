@@ -423,12 +423,21 @@ def _xml_rows(text):
     body = re.sub(r"<\?xml[^>]*\?>", "", body)
     try:
         root = ET.fromstring(body)
+        evs = [root] if root.tag == "Event" else root.findall(".//Event")
     except ET.ParseError:
         try:                                    # one <Event> per line, no root (Splunk XmlWinEventLog)
             root = ET.fromstring(f"<Events>{body}</Events>")
+            evs = root.findall(".//Event")
         except ET.ParseError:
-            return []
-    evs = [root] if root.tag == "Event" else root.findall(".//Event")
+            # One bad byte anywhere -- between events, or inside one -- failed the
+            # WHOLE file: a 65-event PowerShell export read as nothing. Each event
+            # on its own; only a broken one is lost.
+            evs = []
+            for chunk in re.findall(r"<Event[\s>].*?</Event>", body, re.S):
+                try:
+                    evs.append(ET.fromstring(chunk))
+                except ET.ParseError:
+                    continue
     rows = []
     for ev in evs[:MAX_ROWS]:
         r = {}
