@@ -139,9 +139,16 @@ def auth_event(r):
         if not user or str(user).endswith("$"):          # a machine account's logon
             return None
         outcome = _WIN_LOGON[eid]
-        if outcome is None:                              # 4768 / 4776: the status says
-            st = str(raw.get("Status") or raw.get("ResultCode") or "0x0").lower()
-            outcome = "ok" if st in ("0x0", "0", "") else "fail"
+        if eid in ("4768", "4771", "4776"):              # the status says -- and only a WRONG
+            st = str(raw.get("Status") or raw.get("ResultCode") or "0x0").lower()   # PASSWORD is a failure
+            if st in ("0x0", "0", ""):
+                outcome = "ok" if eid != "4771" else None
+            elif st in ("0x18", "0xc000006a"):
+                outcome = "fail"
+            else:                                        # 0x6 / 0xc0000064: no such account --
+                return None                              # enumeration (kerberos-user-enum), not a guess
+            if outcome is None:
+                return None
         src = n.get("src_ip") or raw.get("IpAddress")
         src = None if str(src) in ("-", "::1", "127.0.0.1", "") else src
         return ts, str(user).lower(), src, outcome, False
