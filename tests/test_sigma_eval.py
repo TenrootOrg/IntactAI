@@ -291,6 +291,27 @@ class TrimmedO365Export(unittest.TestCase):
         self.assertTrue(S.evaluate(ev, [r], {}))
 
 
+class CiscoAsaSyslog(unittest.TestCase):
+    """ASA lines are text; the ASA rules name message_id and command, which Splunk's
+    add-on extracts. Three phrasings of an executed command (111008 / 111010 / 111009)."""
+    def fires(self, line):
+        r = S.compile_rule({"title": "t", "id": "x", "level": "medium",
+                            "logsource": {"product": "cisco", "service": "asa"},
+                            "detection": {"sel": {"message_id": ["111008", "111010", "111009"],
+                                                  "command": ["*no logging*", "show eigrp*"]},
+                                          "condition": "sel"}})
+        return bool(S.evaluate(X.sigma_event({"line": 1, "text": line}), [r], {}))
+
+    def test_the_command_in_each_phrasing(self):
+        self.assertTrue(self.fires("Oct 30 11:04:25 1.2.3.4 :2025-10-30T11:04:10Z: %ASA-5-111008: User 'admin' "
+                                   "executed the 'no logging host inside 10.0.0.9' command."))
+        self.assertTrue(self.fires("%ASA-5-111010: User 'admin', running 'N/A' from IP 89.245.16.3, "
+                                   "executed 'no logging trap'"))
+        self.assertTrue(self.fires("ciscoasa : %ASA-7-111009: User 'enable_15' executed cmd: show eigrp interfaces"))
+        self.assertFalse(self.fires("%ASA-5-111008: User 'admin' executed the 'logging enable' command."))
+        self.assertFalse(self.fires("sshd[1]: executed the 'no logging' command"))     # not an ASA line
+
+
 class EsxiSyslog(unittest.TestCase):
     """ESXi lines read as structure (key=value, or columns split on spaces) lost the
     message the ESXi rules match: all 23 Splunk ESXi detections were silent."""

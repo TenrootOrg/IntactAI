@@ -1589,6 +1589,27 @@ def _model(case_id, run_id, log):
             (lambda o: investigate._revert_obj(o, mask)) if mask is not None else None)
 
 
+_ASA_ID = re.compile(r"%(?:ASA|FTD)-\d-(\d{6}):")
+_ASA_CMD = re.compile(r"executed the '(.*)' command\.?\s*$|, executed '(.*)'\s*$|executed cmd: (.*?)\s*$")
+_ASA_USER = re.compile(r"\bUser '([^']+)'")
+
+
+def _asa_fields(text):
+    """A Cisco ASA / FTD syslog line: the fields Splunk's add-on extracts from it
+    (message_id, command, user), which the ASA rules name."""
+    m = _ASA_ID.search(text)
+    if not m:
+        return {}
+    out = {"message_id": m.group(1)}
+    c = _ASA_CMD.search(text)
+    if c:
+        out["command"] = next(g for g in c.groups() if g is not None)
+    u = _ASA_USER.search(text)
+    if u:
+        out["user"] = u.group(1)
+    return out
+
+
 def sigma_event(raw):
     """The form of a row a Sigma rule is matched against: the row as the product
     wrote it, or -- for a free-text line -- its text."""
@@ -1601,7 +1622,7 @@ def sigma_event(raw):
         else:                           # named fields AND a message: rules may read either
             return {**raw, "_text": raw["_line"], "text": raw["_line"]}
     if text is not None:
-        return {"_text": text, "text": text}
+        return {"_text": text, "text": text, **_asa_fields(text)}
     # A field holding a JSON object as text (Duo's description, a nested audit detail):
     # its keys are fields too (description.require_lock), as Splunk's spath reads them.
     more = {}

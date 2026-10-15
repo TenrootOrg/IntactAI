@@ -715,6 +715,8 @@ def profiles(row) -> set:
         # row SHAPE and every free-text row has one shape. The ESXi rules match
         # ESXi-only text (esxcli ..., vob.user.ssh.enabled), so other lines stay quiet.
         out.add(("esxi", None, None))
+    if _has(ev, "_text") and _has(ev, "message_id") and re.search(r"%(ASA|FTD)-\d-", str(ev.get("_text"))):
+        out.add(("cisco", None, "asa"))                     # ASA / FTD syslog (fields from sigma_event)
     return out
 
 
