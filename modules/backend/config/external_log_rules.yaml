@@ -199,16 +199,19 @@ native:
   - id: http-method-not-a-method
     title: "Non-standard HTTP method"
     reason: "HTTP methods are upper-case tokens (GET, POST, PROPFIND); a random mixed-case verb carrying a body is malware using HTTP as a covert channel"
+    # Both cases required: FortiGate's "method" is the admin login method
+    # (jsconsole, https, ssh) on rows that also carry a url. All-lower-case
+    # junk verbs are the trade.
     fields: [http_method, method, cs-method, http.http_method, request_method, http.request.method]
-    match: '(?-i:[A-Za-z]*[a-z][A-Za-z]*)'
+    match: '(?-i:(?=[A-Za-z]*[a-z])(?=[A-Za-z]*[A-Z])[A-Za-z]{3,})'
     and:
       - fields: [uri, uri_path, cs-uri-stem, url, http.url, url.path, request_uri, c-uri, url.original]
         match: '/.*|https?://.*'
     severity: medium
     examples:
-      fires: [{method: "hfKyMa", uri: "/", host: "www.sysmelook.com"}, {cs-method: "get", cs-uri-stem: "/x"}]
+      fires: [{method: "hfKyMa", uri: "/", host: "www.sysmelook.com"}, {cs-method: "cxkdRBtq", cs-uri-stem: "/x"}]
       quiet: [{method: "GET", uri: "/"}, {method: "PROPFIND", uri: "/dav/"}, {method: "M-SEARCH", uri: "*"},
-              {method: "password", user: "root"}]
+              {method: "password", user: "root"}, {method: "jsconsole", url: "/api/v2/monitor"}]
 
   - id: encoded-post-body
     title: "Encoded blob POSTed to a web page"
