@@ -65,9 +65,9 @@ _NAMES = {
     "src_ip": "sourceip srcip src sourceaddress clientip cip callerip callersourceip ipaddress "
               "srcendpointip srcaddr sourceipaddress clientipaddress requestip principalip idorigh "
               "actionlocalip localaddressip4 devicelocalip deviceinternalip senderip fromip "
-              "useripaddress originip ipaddr accessdeviceip threattargetipv4address ip",
+              "useripaddress originip ipaddr accessdeviceip threattargetipv4address localipaddress ip",
     "dst_ip": "destinationip destip dstip dst dest destinationaddress serverip sip dstendpointip "
-              "remoteip remoteaddress actionremoteip idresph dstaddr destinationipaddress targetip",
+              "remoteip remoteaddress remoteipaddress actionremoteip idresph dstaddr destinationipaddress targetip",
     "src_port": "sourceport srcport spt clientport srcendpointport idorigp",
     "dst_port": "destinationport destport dstport dpt serverport dstendpointport idrespp port",
     "action": "action eventaction act disposition outcome eventoutcome result deviceaction "
@@ -83,7 +83,7 @@ _NAMES = {
             "processhashsha256 sha256hash hashsha256 hash sha1 md5 filehash imphash",
     "rule": "ruledescription alertname alerttitle rulename alarmrulename detectionname threatname "
             "riskname threatcontentname signaturename signaturemsg protectionname riskeventtype displaymessage "
-            "displayname title rule signature alert detectname detection attack threat reason "
+            "displayname title rule signature alert detectname detection attack threat reason circumstances "
             "eventname cefname name model tactic category eventtype",
     "severity": "severityname severity eventseverity alertseverity threatseverity crlevel "
                 "risklevelduringsignin risklevel severitylevel confidencelevel rulelevel cefseverity "
@@ -929,6 +929,9 @@ def _severity(v, scale) -> str | None:
         return None
     if s in _SEV_WORDS:
         return _SEV_WORDS[s]
+    m = re.fullmatch(r"[a-z_]*_(\w+?)", s)      # API enums: SEVERITY_LEVEL_HIGH, THREAT_SEVERITY_MEDIUM
+    if m and m.group(1) in _SEV_WORDS:
+        return _SEV_WORDS[m.group(1)]
     try:
         n = float(s)
     except ValueError:
