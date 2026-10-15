@@ -246,6 +246,42 @@ native:
       quiet: [{url: "2.1.22.1/api/v2/cmdb/system/admin/admin", user_agent: "Mozilla/5.0 (Windows NT 10.0)"},
               {url: "fw.corp/api/v2/monitor/system/status", user_agent: "Report Runner"}]
 
+  - id: sonicwall-attack-category
+    reason: "SonicOS logs every event with a category bitmask; 32 is \"Attacks\" (port scans, floods, IPS hits). msg names it"
+    fields: [c]
+    match: '32'
+    and:
+      - fields: [sn]
+        match: '\w{6,}'
+      - fields: [m]
+        match: '\d+'
+    severity: medium
+    examples:
+      fires: [{id: "firewall", sn: "0000A0AAAA00", pri: "1", c: "32", m: "83", msg: "Probable port scan detected"}]
+      quiet: [{id: "firewall", sn: "0000A0AAAA00", pri: "6", c: "1024", m: "97", msg: "Connection Closed"},
+              {c: "32", m: "83"}]
+
+  - id: juniper-security-event
+    title: "Firewall security engine detection"
+    reason: "Juniper SRX structured syslog names the engine and verdict in its message ID: antivirus hit, ATP sandbox malware, IDP application-DDoS attack"
+    fields: [syslog_header]
+    match: '.*\b(AV_VIRUS_DETECTED\w*|AAMW_MALWARE_EVENT_LOG|IDP_APPDDOS_APP_ATTACK_EVENT|ANTIVIRUS_SCAN_\w*VIRUS\w*)\b.*'
+    severity: high
+    examples:
+      fires: [{syslog_header: "<12>1 2010-02-08T08:29:28.565Z SRX650-1 RT_UTM - AV_VIRUS_DETECTED_MT [junos@67.43.156.15"}]
+      quiet: [{syslog_header: "<12>1 2016-02-18T01:32:50.391Z srx RT_UTM - WEBFILTER_URL_PERMITTED [junos@1"},
+              {syslog_header: "<14>1 2013-12-14T16:06:59Z srx RT_FLOW - RT_FLOW_SESSION_CREATE [junos@1"}]
+
+  - id: sandbox-verdict-malicious
+    title: "Sandbox verdict: malicious"
+    reason: "Juniper ATP Cloud (AAMW) scores a file 1-10; 7 and above is malware"
+    fields: [verdict-number, verdictNumber, threat-level]
+    match: '([7-9]|10)'
+    severity: high
+    examples:
+      fires: [{verdict-number: "8", action: "BLOCK", file-category: "executable"}]
+      quiet: [{verdict-number: "2", action: "PERMIT"}]
+
   - id: firewall-threat-detection
     title: "Firewall threat detection / IPS event"
     reason: "the firewall's own threat detection (rate exceeded: scanning or DoS) or built-in IPS signature fired (Cisco ASA 733100 / 4000xx)"

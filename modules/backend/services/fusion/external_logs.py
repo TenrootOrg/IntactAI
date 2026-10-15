@@ -1141,8 +1141,11 @@ def _verdict(n, hits):
         # words (a threat name, an event type); a number or flag says nothing
         # alone: "WAFAttackScore = 4".
         r, v, k = top
+        msg = str(n.get("message") or "").strip()
         n["rule"] = r.get("title") or (v if re.search(r"[A-Za-z]{3}", v) and len(v) <= 120
                                         and not re.fullmatch(r"true|yes", v, re.I)
+                                        # a bare code ("c = 32"): the row's own message names it
+                                        else msg if 8 <= len(msg) <= 160
                                         else f"{str(k).rsplit('.', 1)[-1]} = {v[:80]}")
     n["detected_by"] = sorted({h[0]["id"] for h in hits})
 
