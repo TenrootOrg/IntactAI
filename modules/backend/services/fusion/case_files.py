@@ -90,7 +90,8 @@ def with_log_status(items) -> list:
         run = get_automation_run(x["run_id"], with_logs=False) or {}
         det = run.get("details") or {}
         x["log"] = {"status": run.get("status") or "missing", "error": run.get("error") or "",
-                    **{k: det.get(k) for k in ("format", "via", "rows", "alerts", "first_ts", "last_ts")}}
+                    **{k: det.get(k) for k in ("format", "via", "rows", "alerts", "first_ts", "last_ts",
+                                               "data_type", "leftover_lines", "row_errors")}}
     return items
 
 
@@ -127,8 +128,8 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
     if not st.get_case(case_id):
         return {"error": "case not found"}
     data_type = _s(data_type, 20)
-    if data_type and data_type not in external_logs.DATA_TYPES:
-        return {"error": f"data_type must be one of: {', '.join(external_logs.DATA_TYPES)}"}
+    if data_type and data_type != "auto" and data_type not in external_logs.DATA_TYPES:
+        return {"error": f"data_type must be auto or one of: {', '.join(external_logs.DATA_TYPES)}"}
     name, description = _s(name, 200), _s(description, 1000)
     link = {}
     if _s(finding_id, 100):

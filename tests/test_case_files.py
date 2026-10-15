@@ -178,6 +178,8 @@ class Evidence(unittest.TestCase):
                          (it["data_type"], it["run_id"], it["ai"], it["log"]["status"]))
         self.assertIn("data_type", case_files.add("c1", io.BytesIO(b"x"), "a.log", name="n", description="d",
                                                   data_type="pcap")["error"])
+        self.assertNotIn("error", case_files.add("c1", io.BytesIO(b"x"), "b.log", name="n", description="d",
+                                                 data_type="auto"))
         case_files.update("c1", it["id"], {"ai": False})
         upd.assert_called_with("external_log_9", "running", details={"use_in_analysis": False}, force=True)
         self.assertEqual(["velociraptor_collection_1"], self.d["fused_run_ids"], "the case shows it as changed")
@@ -269,7 +271,8 @@ console.log(JSON.stringify([all, one, bad, form, linked]));""")
         out = self.run_js("""
 const it=(id,log,ai)=>({id,name:'FW '+id,description:'d',file_name:'fw.csv',size:9,sha256:'ab'.repeat(32),kind:'text',ai,host:'',time:'',source:'other',source_other:'',finding_id:'',data_type:'firewall',log});
 curInfo={case_id:'c1', case_files:[it('0123456789b1',{status:'completed',rows:1200,alerts:3,via:'llm',first_ts:'2026-10-01T10:00:00',last_ts:'2026-10-02T11:00:00'},true),
-  it('0123456789b2',{status:'running'},false), it('0123456789b3',{status:'failed',error:'empty file'},true)]};
+  it('0123456789b2',{status:'running'},false), it('0123456789b3',{status:'failed',error:'empty file'},true),
+  {...it('0123456789b4',{status:'completed',rows:5,via:'parser',data_type:'idp',leftover_lines:2,row_errors:1},true),data_type:'auto'}]};
 renderEvidence(curInfo); const page=OUT;
 console.log(JSON.stringify([page, _evFields('evn',{},true,false), _evFields('eva',{},true,true)]));""")
         page, form, linked = out
@@ -279,10 +282,14 @@ console.log(JSON.stringify([page, _evFields('evn',{},true,false), _evFields('eva
         self.assertIn("each value checked against its line", page)
         self.assertIn("reading the file…", page)
         self.assertIn("could not be read: empty file", page)
-        self.assertEqual(3, page.count("Use in analysis</label>"))
+        self.assertEqual(4, page.count("Use in analysis</label>"))
+        self.assertIn("Log data · Identity provider (Okta, Entra…)", page, "an auto item shows the type found")
+        self.assertIn("2 other line(s) kept", page)
+        self.assertIn("1 unreadable row(s) kept as text", page)
         self.assertIn("evUseInAnalysis('0123456789b1',this.checked)", page)
         self.assertIn('id="evn-dtype"', form)
         self.assertIn('<option value="edr">Log data — EDR alerts', form)
+        self.assertIn('<option value="auto">Log data — any kind', form)
         self.assertNotIn("dtype", linked, "attached to a Timeline event it is evidence, not a log")
 
     def test_a_deleted_pictures_link_is_named_not_requested(self):

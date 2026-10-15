@@ -1106,7 +1106,8 @@ function _evSrc(k, other){ return (k==='other'||!EV_SOURCES.some(([x])=>x===k)) 
 function _evFields(pre, v, withFile, linked){
   const o=(k,l,cur)=>`<option value="${k}" ${cur===k?'selected':''}>${l}</option>`;
   return `${withFile?`<label>File <span style="color:var(--muted);font-weight:400">— or paste a picture (Ctrl+V)</span></label><input type="file" id="${pre}-file" onchange="window._evPasted=null;const n=document.getElementById('${pre}-pasted');if(n)n.textContent=''"/><div id="${pre}-pasted" style="font-size:11px;color:#3fb950"></div>`:''}
-    ${withFile&&!linked?`<label>What is it</label><select id="${pre}-dtype"><option value="">Evidence — a picture, e-mail or document (report only)</option>${EV_LOGTYPES.map(([k,l])=>`<option value="${k}">Log data — ${l}: read and used in the analysis</option>`).join('')}</select>`:''}
+    ${withFile&&!linked?`<label>What is it</label><select id="${pre}-dtype"><option value="">Evidence — a picture, e-mail or document (report only)</option><option value="auto">Log data — any kind (SIEM, firewall, EDR, identity…): detect it automatically</option>${EV_LOGTYPES.map(([k,l])=>`<option value="${k}">Log data — ${l}</option>`).join('')}</select>
+    <div class="cfghint">Log data is read whatever its format (CSV, JSON, CEF, syslog…) and used in the analysis; the type only names its findings.</div>`:''}
     <label>Name ${linked&&withFile?'<span style="color:var(--muted);font-weight:400">— optional; made from the event if empty</span>':'<span style="color:var(--crit)">*</span> <span style="color:var(--muted);font-weight:400">— what it is; the report uses it</span>'}</label>
     <input id="${pre}-name" maxlength="200" value="${esc(v.name||'')}" placeholder="${linked&&withFile?'e.g. “Mimikatz Execution via PowerShell — screenshot”':'e.g. AnyDesk silent-install prompt on the desktop'}"/>
     <label>Description ${linked?'<span style="color:var(--muted);font-weight:400">— optional</span>':'<span style="color:var(--crit)">*</span>'}</label>
@@ -1133,11 +1134,11 @@ function _evThumb(x){
 }
 function _evLog(x){
   if(!x.data_type) return '';
-  const L=x.log||{}, t=(EV_LOGTYPES.find(([k])=>k===x.data_type)||[,'Logs'])[1];
+  const L=x.log||{}, dt=L.data_type||x.data_type, t=dt==='auto'?'detecting the type…':(EV_LOGTYPES.find(([k])=>k===dt)||[,'Logs'])[1];
   const busy=L.status==='running'||L.status==='pending';
   const st=busy?'<span style="color:var(--muted)">reading the file…</span>'
     :L.status==='failed'?`<span style="color:var(--crit)">could not be read: ${esc(L.error||'')}</span>`
-    :L.status==='completed'?`${(+L.rows||0).toLocaleString()} row(s)${L.alerts?` · <b>${(+L.alerts).toLocaleString()} alert(s)</b>`:''} · ${esc(EV_VIA[L.via]||L.via||'')}${L.first_ts?` · ${esc(String(L.first_ts).slice(0,16))} → ${esc(String(L.last_ts||'').slice(0,16))}`:''}`
+    :L.status==='completed'?`${(+L.rows||0).toLocaleString()} row(s)${L.alerts?` · <b>${(+L.alerts).toLocaleString()} alert(s)</b>`:''} · ${esc(EV_VIA[L.via]||L.via||'')}${L.first_ts?` · ${esc(String(L.first_ts).slice(0,16))} → ${esc(String(L.last_ts||'').slice(0,16))}`:''}${L.leftover_lines?` · <span title="Lines that did not fit the file's structure — read by the model or kept as text">${(+L.leftover_lines).toLocaleString()} other line(s) kept</span>`:''}${L.row_errors?` · <span style="color:var(--warn,#d29922)" title="Rows with values the reader could not take — kept as text with their indicators">${(+L.row_errors).toLocaleString()} unreadable row(s) kept as text</span>`:''}`
     :'<span style="color:var(--muted)">not parsed</span>';
   return `<div style="font-size:12px;margin:3px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
     <span style="border:1px solid var(--bd);border-radius:10px;padding:0 7px;font-size:11px" title="Log data: parsed into the case and fused like a collection">Log data · ${esc(t)}</span><span>${st}</span>

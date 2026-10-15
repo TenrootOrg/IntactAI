@@ -193,6 +193,18 @@ class IngestAndSearch(unittest.TestCase):
         self.assertEqual("WS01", rows[0]["n"]["host"])
         self.assertEqual("mimi.exe", rows[0]["raw"]["FileName"], "the original row is kept for evidence")
 
+    def test_the_type_can_be_left_to_the_reader(self):
+        from unittest import mock
+        src = os.path.join(self.tmp, "x.csv")
+        with open(src, "w") as f:
+            f.write(DEFENDER)
+        with mock.patch.object(X, "_model", lambda *a: None):
+            s = X.ingest("c", "external_log_1", src, "auto", lambda m, l="info": self.logs.append(m))
+        self.assertEqual("edr", s["data_type"])
+        with open(os.path.join(self.tmp, "external_log_1", "raw_results.json")) as f:
+            self.assertIn("External.edr", json.load(f))
+        self.assertIn("this looks like EDR data", self.logs)
+
     def test_free_text_with_no_model_keeps_indicator_lines(self):
         s, rows = self._ingest(FREE)
         self.assertEqual(("indicators", 2), (s["via"], s["rows"]))

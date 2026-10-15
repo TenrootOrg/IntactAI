@@ -74,7 +74,7 @@ _NAMES = {
                "initiatingprocessfilename parentprocessname exe filename app",
     "cmdline": "commandline cmdline processcommandline actorprocesscommandline "
                "initiatingprocesscommandline processcmdline command",
-    "url": "url urlfull requesturl clientrequesturi request uri csuri urloriginal",
+    "url": "url urlfull requesturl clientrequesturi request uri csuri csuristem urloriginal",
     "domain": "domain dnsquestionname query queryname urldomain clientrequesthost requesthost "
               "destinationhostname dhost fqdn sni servername",
     "hash": "sha256 sha256hashdata processsha256 actionfilesha256 filesha256 filehashsha256 "
@@ -697,6 +697,29 @@ def detect_columns(rows, sample=300) -> dict:
     return out
 
 
+def guess_type(rows) -> str:
+    """The kind of log, from what its rows hold -- so the analyst does not have to
+    say. Only labels depend on it ("EDR: ..."), never what is read or joined."""
+    if not rows:
+        return "other"
+    k = len(rows)
+    score = {"edr": 0, "idp": 0, "proxy": 0, "firewall": 0}
+    for r in rows[:5000]:
+        n = r.get("n") or {}
+        if n.get("hash") or n.get("process") or n.get("cmdline") or n.get("hashes"):
+            score["edr"] += 1
+        elif n.get("url") or n.get("domain"):
+            score["proxy"] += 1
+        elif n.get("host") and n.get("severity") and not n.get("dst_ip"):
+            score["edr"] += 1                      # an alert about a machine
+        elif n.get("user") and n.get("src_ip") and not n.get("dst_ip"):
+            score["idp"] += 1                      # a sign-in: who, from where
+        elif n.get("src_ip") and n.get("dst_ip"):
+            score["firewall"] += 1
+    best = max(score, key=score.get)
+    return best if score[best] >= 0.3 * min(k, 5000) else "other"
+
+
 def recognized(rows) -> bool:
     """Understood well enough to fuse, judged on the NORMALIZED rows: most of them
     have a time and something that can join the case."""
@@ -1109,6 +1132,10 @@ def ingest(case_id, run_id, path, data_type, log) -> dict:
         out, summary["via"], st = _free_text(text.splitlines(), model, log, why)
         if st:
             summary["llm"] = st
+    if data_type not in DATA_TYPES:                    # "auto": the analyst left it to us
+        data_type = guess_type(out)
+        log(f"this looks like {DATA_TYPES[data_type]} data", "info")
+    summary["data_type"] = data_type
     tss = sorted(r["n"]["ts"] for r in out if r["n"].get("ts"))
     summary.update(rows=len(out), first_ts=tss[0] if tss else None, last_ts=tss[-1] if tss else None,
                    alerts=sum(1 for r in out if r["n"].get("severity") in ("medium", "high", "critical")),
@@ -1128,8 +1155,8 @@ def start(case_id, item, data_type) -> str:
     import threading
     from services.workflow_service import add_log_to_run, create_automation_run, update_run_status
     from . import case_files
-    label = DATA_TYPES.get(data_type, "Logs")
-    rid = create_automation_run(RUN_TYPE, f"{label} log: {item['name']}", case_id=case_id, details={
+    label = DATA_TYPES.get(data_type, "Log data")
+    rid = create_automation_run(RUN_TYPE, f"{label}: {item['name']}", case_id=case_id, details={
         "file_id": item["id"], "file_name": item["file_name"], "data_type": data_type,
         "use_in_analysis": True})
     path = case_files.path_of(case_id, item["id"])
