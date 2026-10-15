@@ -118,6 +118,10 @@ class WhichRulesRun(unittest.TestCase):
                       P({"ProcessCommandLine": "cmd /c x", "FolderPath": "C:\\Windows\\cmd.exe"}),
                       "EDR process telemetry")
         self.assertEqual(set(), P({"foo": "bar"}))
+        lin = P({"EventID": "1", "Channel": "Linux-Sysmon/Operational", "Provider": "Linux-Sysmon",
+                 "Image": "/bin/dd", "CommandLine": "dd of=/dev/sda if=/dev/zero"})
+        self.assertIn(("linux", "process_creation", "sysmon"), lin, "Sysmon for Linux is Linux")
+        self.assertFalse([p for p in lin if p[0] == "windows"], lin)
 
     def test_a_proxy_rule_never_fires_on_another_products_fields(self):
         r = {**rule({"s": {"c-useragent": "curl*"}, "condition": "s"}), "product": None, "category": "proxy"}

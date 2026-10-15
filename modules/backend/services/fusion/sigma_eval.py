@@ -540,12 +540,17 @@ def profiles(row) -> set:
             eid = int(str(eid).strip())
         except ValueError:
             eid = None
+        # Sysmon for Linux shares the event IDs, on channel "Linux-Sysmon/Operational":
+        # profiled as Windows, no Linux Sigma rule ever ran on it (2026-10-15).
+        lin = "linux-sysmon" in chan or "linux-sysmon" in prov
+        osname = "linux" if lin else "windows"
         svc = _CHANNELS.get(chan)
-        out.add(("windows", None, svc))
+        if not lin:
+            out.add(("windows", None, svc))
         if "sysmon" in chan or "sysmon" in prov:
             cat = _SYSMON.get(eid)
             if cat:
-                out.add(("windows", cat, "sysmon"))
+                out.add((osname, cat, "sysmon"))
                 if cat in _REGISTRY:
                     out.add(("windows", "registry_event", "sysmon"))
                 if eid == 12:                          # Sysmon 12 = a key or value added OR deleted
