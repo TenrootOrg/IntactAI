@@ -173,6 +173,48 @@ class NoisyRulesAreContext(unittest.TestCase):
         self.assertEqual(["sigma (context): t"], out[0]["n"]["detected_by"])
 
 
+class SuricataHttp(unittest.TestCase):
+    """Suricata writes HTTP as http.url / http.http_method / http.status: the web
+    rules named none of them, so no SigmaHQ or Splunk web rule saw Suricata."""
+    EVE = {"event_type": "http", "src_ip": "10.0.0.5", "dest_ip": "10.0.0.9",
+           "http": {"hostname": "wiki", "url": "/template/aui/text-inline.vm", "http_method": "POST",
+                    "http_user_agent": "python-requests/2.31", "status": 200}}
+
+    def test_a_web_server_rule_matches_suricata_http(self):
+        r = S.compile_rule({"title": "t", "id": "x", "level": "high", "logsource": {"category": "webserver"},
+                            "detection": {"sel": {"cs-uri-query|contains": "/template/aui/text-inline.vm",
+                                                  "cs-method": "POST", "sc-status": [200, 202]},
+                                          "condition": "sel"}})
+        self.assertTrue(S.evaluate(X._flat(self.EVE), [r], {}))
+
+
+class WebUrlParts(unittest.TestCase):
+    """nginx (uri_path, uri_query) and IIS (cs-uri-stem, cs-uri-query) split the URL;
+    a rule on the whole URL never matched them."""
+    def fires(self, row):
+        r = S.compile_rule({"title": "t", "id": "x", "level": "high", "logsource": {"category": "web"},
+                            "detection": {"sel": {"c-uri": "*.jsp?cmd=*", "cs-method": "GET"},
+                                          "condition": "sel"}})
+        return bool(S.evaluate(row, [r], {}))
+
+    def test_nginx_path_and_query(self):
+        self.assertTrue(self.fires({"uri_path": "/shell.jsp", "uri_query": "cmd=whoami", "http_method": "GET",
+                                    "status": "500", "src_ip": "73.245.172.254"}))
+
+    def test_iis_stem_and_query(self):
+        self.assertTrue(self.fires({"cs-uri-stem": "/shell.jsp", "cs-uri-query": "cmd=id", "cs-method": "GET",
+                                    "sc-status": "200", "c-ip": "10.0.0.1"}))
+
+    def test_a_firewall_url_log_is_web_too(self):
+        self.assertTrue(self.fires({"url": "gw.example.com/shell.jsp?cmd=id", "http_method": "get",
+                                    "user_agent": "curl/8", "src": "1.2.3.4", "dst": "5.6.7.8",
+                                    "dst_port": "443", "action": "allow"}))
+
+    def test_no_query_is_the_path_alone(self):
+        self.assertFalse(self.fires({"cs-uri-stem": "/shell.jsp", "cs-uri-query": "-", "cs-method": "GET",
+                                     "sc-status": "200", "c-ip": "10.0.0.1"}))
+
+
 class EsxiSyslog(unittest.TestCase):
     """ESXi lines read as structure (key=value, or columns split on spaces) lost the
     message the ESXi rules match: all 23 Splunk ESXi detections were silent."""

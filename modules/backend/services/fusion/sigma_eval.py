@@ -443,13 +443,13 @@ ALIASES = {
                           "parentcommandline"],
     "user": ["subjectusername", "targetusername", "accountname", "user.name", "username"],
     "originalfilename": ["processversioninfooriginalfilename", "process.pe.original_file_name"],
-    "c-uri": ["url", "uri", "requesturl", "url.full", "url.original", "clientrequesturi", "cs-uri-stem"],
-    "c-uri-query": ["cs-uri-query", "url.query", "query_string"],
+    "c-uri": ["url", "uri", "requesturl", "url.full", "url.original", "clientrequesturi"],
+    "c-uri-query": ["cs-uri-query", "url.query", "query_string", "uri_query"],
     "c-uri-stem": ["cs-uri-stem", "url.path", "uri_path"],
     # Network HTTP (Suricata http.url, Zeek uri) keeps path and query in ONE field;
     # the web server rules that look at either are contains-style, so it serves both.
-    "cs-uri-query": ["c-uri-query", "url.query", "query_string", "url", "uri"],
-    "cs-uri-stem": ["c-uri-stem", "url.path", "uri", "clientrequesturi", "url"],
+    "cs-uri-query": ["c-uri-query", "url.query", "query_string", "uri_query", "url", "uri"],
+    "cs-uri-stem": ["c-uri-stem", "url.path", "uri_path", "uri", "clientrequesturi", "url"],
     "c-useragent": ["useragent", "user_agent", "http_user_agent", "cs(user-agent)", "user_agent.original",
                     "http.user_agent",
                     "clientrequestuseragent", "cs-user-agent", "c-user-agent"],
@@ -500,6 +500,12 @@ class Event:
                 return self._low[name]
             if name in self._last:
                 return self._last[name]
+        if f == "c-uri":
+            # IIS / W3C and nginx keep path and query apart ("/shell.jsp", "cmd=id");
+            # a rule on the whole URL ("*.jsp?cmd=*") reads them joined, as a proxy writes it.
+            path, query = self.get("c-uri-stem"), self.get("c-uri-query")
+            if path not in (None, "", "-"):
+                return f"{path}?{query}" if query not in (None, "", "-") else path
         return None
 
     def texts_lower(self):
@@ -705,7 +711,10 @@ class _Lazy(dict):
 
 def _applies(rule, profs) -> bool:
     for p, c, s in profs:
-        if (rule["product"] in (None, p) and rule["category"] in (None, c) and rule["service"] in (None, s)
+        # "web" is Splunk's Web data model (rules from sigma-escu): any HTTP record, a
+        # proxy's or firewall's URL log as much as a web server's access log.
+        cat_ok = rule["category"] in (None, c) or (rule["category"] == "web" and c in ("proxy", "webserver"))
+        if (rule["product"] in (None, p) and cat_ok and rule["service"] in (None, s)
                 and (rule["product"] or rule["category"] or rule["service"])):
             return True
     return False
