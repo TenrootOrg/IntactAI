@@ -29,6 +29,8 @@ DEFAULTS = {
     "host-sweep": {"hosts": 25, "window_s": 300, "severity": "medium"},
     "beaconing": {"connections": 20, "min_span_s": 1800, "max_jitter": 0.2, "min_interval_s": 10,
                   "max_interval_s": 3600, "severity": "medium"},
+    "outbound-flood": {"connections": 1000, "window_s": 60, "severity": "high"},
+    "c2-retry": {"attempts": 200, "window_s": 3600, "failed_share": 0.5, "severity": "medium"},
     "web-scan": {"paths": 50, "window_s": 600, "severity": "medium"},
     "web-login-brute-force": {"posts": 20, "window_s": 600, "severity": "medium"},
     "dns-ptr-sweep": {"lookups": 100, "window_s": 600, "severity": "medium"},
@@ -280,12 +282,72 @@ def mfa_fatigue(auth, p):
     return out
 
 
+_FAILED_STATE = re.compile(r"^(S0|REJ|RSTOS0|RSTRH|SH|SHR|OTH)$")      # Zeek conn_state: never answered
+_FAILED_ACTION = re.compile(r"\b(deny|denied|drop(ped)?|reject(ed)?|block(ed)?|reset)\b", re.I)
+
+
+def _failed(n, raw):
+    """A connection that never got through (unanswered, refused, dropped)."""
+    st = str((raw or {}).get("conn_state") or "")
+    if st:
+        return bool(_FAILED_STATE.match(st))
+    return bool(_FAILED_ACTION.search(str(n.get("action") or "")))
+
+
 def _flows(rows):
     for i, r in enumerate(rows):
         n = r.get("n") or {}
         t = _t(n.get("ts"))
         if t is not None and n.get("src_ip") and (n.get("dst_ip") or n.get("domain")):
-            yield t, n.get("src_ip"), n.get("dst_ip"), n.get("dst_port"), n.get("domain"), n.get("ts"), i
+            yield t, n.get("src_ip"), n.get("dst_ip"), n.get("dst_port"), n.get("domain"), n.get("ts"), i, \
+                _failed(n, r.get("raw"))
+
+
+def _public(ip):
+    return bool(ip) and keys.classify_indicator(ip) == "ip"
+
+
+def outbound_flood(flows, p):
+    """One source hammering one destination across the network edge: a host in
+    a DDoS (or the victim of one). Internal-to-internal is left out -- a proxy
+    or load balancer talks to its backends that way all day."""
+    groups: dict = {}
+    for f in flows:
+        if f[2] and (_public(f[1]) != _public(f[2])):
+            groups.setdefault((f[1], f[2]), []).append(f)
+    out = []
+    for (src, dst), items in groups.items():
+        if len(items) < p["connections"]:
+            continue
+        win = max(_windows([(i[0], i) for i in items], p["window_s"]), key=len)
+        if len(win) >= p["connections"]:
+            members = [(w[1][5], w[1][6]) for w in win]
+            out.append(_row("outbound-flood", "Connection flood", p["severity"], members,
+                            {"src_ip": src, "dst_ip": dst},
+                            f"{src} opened {len(win):,} connections to {dst} within {p['window_s']}s"))
+    return out
+
+
+def c2_retry(flows, p, flood_pairs=()):
+    """A host trying the same outside address and port again and again, mostly
+    without an answer: malware retrying its command server."""
+    groups: dict = {}
+    for f in flows:
+        if f[2] and f[3] and _public(f[2]) and not _public(f[1]):
+            groups.setdefault((f[1], f[2], f[3]), []).append(f)
+    out = []
+    for (src, dst, port), items in groups.items():
+        if len(items) < p["attempts"] or (src, dst) in flood_pairs:    # a flood is not a retry
+            continue
+        win = max(_windows([(i[0], i) for i in items], p["window_s"]), key=len)
+        failed = sum(1 for w in win if w[1][7])
+        if len(win) >= p["attempts"] and failed >= p["failed_share"] * len(win):
+            members = [(w[1][5], w[1][6]) for w in win]
+            out.append(_row("c2-retry", "Repeated failed connections to an outside host", p["severity"], members,
+                            {"src_ip": src, "dst_ip": dst, "dst_port": port},
+                            f"{src} tried {dst}:{port} {len(win):,} times within {p['window_s'] // 60} min, "
+                            f"{failed:,} without an answer"))
+    return out
 
 
 def port_scan(flows, p):
@@ -329,7 +391,7 @@ def host_sweep(flows, p):
                 best = (len(hosts), items[start:end + 1])
         if best:
             members = [(i[5], i[6]) for i in best[1]]
-            out.append(_row("host-sweep", f"Host sweep on port {port}", p["severity"], members,
+            out.append(_row("host-sweep", "Host sweep", p["severity"], members,
                             {"src_ip": src, "dst_port": port}, f"{src} reached {best[0]} different hosts on port {port}"))
     return out
 
@@ -508,6 +570,10 @@ def run(rows, params=None, log=None) -> list:
                            ("distributed-spray", lambda a, p: distributed_spray(a, p, spray_srcs), auth),
                            ("mfa-fatigue", mfa_fatigue, auth), ("port-scan", port_scan, flows),
                            ("host-sweep", host_sweep, flows), ("beaconing", beaconing, flows),
+                           ("outbound-flood", outbound_flood, flows),
+                           ("c2-retry", lambda f, p: c2_retry(f, p, {(x["n"].get("src_ip"), x["n"].get("dst_ip"))
+                                                                     for x in found if x["raw"]["behaviour"] ==
+                                                                     "outbound-flood"}), flows),
                            ("web-scan", web_scan, rows), ("web-login-brute-force", web_login_brute_force, rows),
                            ("dns-ptr-sweep", dns_ptr_sweep, rows),
                            ("dns-tunnel", dns_tunnel, rows)):

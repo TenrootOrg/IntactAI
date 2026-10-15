@@ -212,6 +212,8 @@ behaviour:
   port-scan:        {ports: 25, window_s: 300, severity: medium}
   host-sweep:       {hosts: 25, window_s: 300, severity: medium}
   beaconing:        {connections: 20, min_span_s: 1800, max_jitter: 0.2, min_interval_s: 10, max_interval_s: 3600, severity: medium}
+  outbound-flood:   {connections: 1000, window_s: 60, severity: high}
+  c2-retry:         {attempts: 200, window_s: 3600, failed_share: 0.5, severity: medium}
   web-scan:         {paths: 50, window_s: 600, severity: medium}
   web-login-brute-force: {posts: 20, window_s: 600, severity: medium}
   dns-ptr-sweep:    {lookups: 100, window_s: 600, severity: medium}

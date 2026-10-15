@@ -112,10 +112,25 @@ class Network(unittest.TestCase):
 
     def test_internal_host_sweep(self):
         evs = [flow(BASE + i * 3, "10.0.0.66", f"10.0.1.{i}", 445) for i in range(30)]
-        self.assertIn(("Host sweep on port 445", "medium"), found(jl(evs)))
+        self.assertIn(("Host sweep", "medium"), found(jl(evs)))
 
     def test_browsing_is_no_sweep(self):
         evs = [flow(BASE + i * 4, "10.0.0.66", f"151.101.{i}.140", 443) for i in range(60)]
+        self.assertEqual([], found(jl(evs)))
+
+    def test_flood_and_c2_retry(self):
+        evs = [flow(BASE + i * 0.02, "10.0.0.9", "123.59.209.185", 80) for i in range(1500)]
+        evs += [{"ts": BASE + i * 5, "id.orig_h": "10.0.0.9", "id.resp_h": "185.244.25.235", "id.orig_p": 40000 + i,
+                 "id.resp_p": 6667, "proto": "tcp", "conn_state": "S0"} for i in range(300)]
+        got = found(jl(evs))
+        self.assertIn(("Connection flood", "high"), got)
+        self.assertIn(("Repeated failed connections to an outside host", "medium"), got)
+        self.assertEqual(1, sum(1 for t, _ in got if t == "Repeated failed connections to an outside host"),
+                         "the flood target is not also a retry")
+
+    def test_busy_but_answered_traffic_stays_quiet(self):
+        evs = [{"ts": BASE + i * 5, "id.orig_h": "10.0.0.9", "id.resp_h": "151.101.1.140", "id.orig_p": 40000 + i,
+                "id.resp_p": 443, "proto": "tcp", "conn_state": "SF"} for i in range(400)]
         self.assertEqual([], found(jl(evs)))
 
     def test_beaconing(self):
