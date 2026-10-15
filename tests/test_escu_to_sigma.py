@@ -75,6 +75,15 @@ class Translate(unittest.TestCase):
             tr('`amazon_security_lake` api.operation=ModifySnapshotAttribute | spath input=api.request.data '
                'path=createVolumePermission.add.items{}.group output=group | search group=all')
 
+    def test_a_where_on_raw_fields_is_regexes(self):
+        r = tr('`wineventlog_security` EventCode=4781 | where match(TargetSid, "S-1-5-21-.*-50[0-4]$") '
+               '| stats count by user')
+        self.assertEqual({"TargetSid|re": "S-1-5-21-.*-50[0-4]$"}, r["detection"]["sel2"])
+        with self.assertRaises(T.Skip):        # a computed field
+            tr('`wineventlog_security` EventCode=4625 | stats count by user | where count > 5')
+        with self.assertRaises(T.Skip):        # one field against another
+            tr('`wineventlog_security` EventCode=4728 | where lower(user)=lower(src_user)')
+
     def test_a_list_of_objects_is_skipped(self):
         with self.assertRaises(T.Skip):
             tr('`o365_management_activity` ModifiedProperties{}.Name=X')

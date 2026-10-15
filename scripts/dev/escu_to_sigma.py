@@ -313,6 +313,20 @@ def split_pipes(s):
 _REGEX_PIPE = re.compile(r'regex\s+([\w.]+)\s*(!?=)\s*"((?:[^"\\]|\\.)*)"\s*$', re.S)
 
 
+def _unwrap(x):
+    """'( a AND b )' -> 'a AND b': only a pair of parentheses around the whole."""
+    x = x.strip()
+    while x.startswith("(") and x.endswith(")"):
+        depth = 0
+        for i, ch in enumerate(x):
+            depth += ch == "("
+            depth -= ch == ")"
+            if depth == 0 and i < len(x) - 1:
+                return x
+        x = x[1:-1].strip()
+    return x
+
+
 def check_pipes(pipes, searches=None):
     """The pipes after the filter: raise Skip if one can drop rows we cannot express;
     return the `| regex field="..."` filters, which Sigma can (field|re). With a
@@ -337,6 +351,24 @@ def check_pipes(pipes, searches=None):
         if cmd.startswith("`"):
             if not re.match(r"`(security_content_ctime|\w+_filter|drop_dm_object_name)", cmd):
                 raise Skip(f"macro after the filter: {cmd}")
+            continue
+        if cmd == "where" and not renamed and not spath:
+            # where on the log's own fields (nothing computed yet): AND-ed match() / like()
+            # are regexes; anything else (counts, field = other field) is not expressible.
+            parts = re.split(r"\s+AND\s+", _unwrap(p.strip()[len("where"):]), flags=re.I)
+            got = []
+            for part in parts:
+                part = _unwrap(part)
+                mm = re.fullmatch(r'match\(\s*([\w.]+)\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)', part)
+                ml = re.fullmatch(r'like\(\s*([\w.]+)\s*,\s*"([^"]*)"\s*\)', part)
+                if mm:
+                    got.append((mm.group(1), False, mm.group(2).replace('\\"', '"').replace("\\\\", "\\")))
+                elif ml:
+                    rx = "^" + "".join(".*" if c == "%" else "." if c == "_" else re.escape(c) for c in ml.group(2)) + "$"
+                    got.append((ml.group(1), False, rx))
+                else:
+                    raise Skip(f"logic after the filter: where {part[:40]}")
+            regexes += got
             continue
         if cmd == "regex":
             m = _REGEX_PIPE.match(p.strip())

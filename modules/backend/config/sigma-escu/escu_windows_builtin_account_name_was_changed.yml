@@ -1,0 +1,34 @@
+title: Windows Builtin Account Name Was Changed
+id: 65e6e8b9-c68c-460f-beb8-48cfe91b4d21
+status: experimental
+description: 'The following analytic detects renaming of Windows built-in accounts via Event ID 4781.
+
+  It identifies renames targeting accounts with well-known reserved RIDs (500-504): Administrator, Guest, krbtgt, DefaultAccount,
+  and WDAGUtilityAccount, by matching the TargetSid field against the S-1-5-21-*-50[0-4] pattern.
+
+  Attackers commonly rename the built-in Administrator account to evade detections that alert on the literal account name,
+  while retaining the full privileges of the RID-500 account.
+
+  Renaming Guest, krbtgt, or other reserved accounts is highly unusual in any legitimate environment.'
+references:
+- https://research.splunk.com/65e6e8b9-c68c-460f-beb8-48cfe91b4d21/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1078.003
+- attack.t1036.010
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4781'
+  sel2:
+    TargetSid: S-1-5-21-*
+  sel3:
+    TargetSid|re: S-1-5-21-.*-50[0-4]$
+  condition: ((sel1 and sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1078.003/builtin_account_rename/windows_security.log

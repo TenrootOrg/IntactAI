@@ -1,0 +1,38 @@
+title: Impacket Lateral Movement smbexec CommandLine Parameters
+id: bb3c1bac-6bdf-4aa0-8dc9-068b8b712a76
+status: experimental
+description: The following analytic identifies suspicious command-line parameters associated with the use of Impacket's smbexec.py
+  for lateral movement. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on specific command-line
+  patterns indicative of Impacket tool usage. This activity is significant as both Red Teams and adversaries use Impacket
+  for remote code execution and lateral movement. If confirmed malicious, this activity could allow attackers to execute commands
+  on remote endpoints, potentially leading to unauthorized access, data exfiltration, or further compromise of the network.
+references:
+- https://research.splunk.com/bb3c1bac-6bdf-4aa0-8dc9-068b8b712a76/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1021.002
+- attack.t1021.003
+- attack.t1047
+- attack.t1543.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\cmd.exe'
+  sel2:
+    CommandLine|re: (?i)cmd\.exe\s+\/Q\s+\/c
+  sel3:
+    CommandLine|re: (?i)echo\s+cd
+  sel4:
+    CommandLine|re: (?i)\__output
+  sel5:
+    CommandLine|re: (?i)C:\\Windows\\[a-zA-Z]{1,8}\.bat
+  sel6:
+    CommandLine|re: \\127\.0\.0\.1\.*
+  condition: (sel1 and sel2 and sel3 and sel4 and sel5 and sel6)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.002/atomic_red_team/smbexec_windows-sysmon.log
