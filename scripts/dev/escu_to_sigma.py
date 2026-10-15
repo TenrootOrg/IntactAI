@@ -280,6 +280,7 @@ RAW_SOURCES = {
     "kube_audit": {"product": "kubernetes", "service": "audit"},
     "cisco_secure_firewall": {"product": "cisco", "service": "secure_firewall"},
     "cisco_duo_administrator": {"product": "cisco", "service": "duo"},
+    "cisco_asa": {"product": "cisco", "service": "asa"},
     "gws_reports_login": {"product": "google_workspace", "service": "google_workspace.admin"},   # Reports API
     "gws_reports_admin": {"product": "google_workspace", "service": "google_workspace.admin"},
     "esxi_syslog": {"product": "esxi"},                 # free-text syslog: Message is the line

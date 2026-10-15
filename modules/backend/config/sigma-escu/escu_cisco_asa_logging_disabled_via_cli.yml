@@ -1,0 +1,42 @@
+title: Cisco ASA - Logging Disabled via CLI
+id: 7b4c9f3e-5a88-4b7b-9c4b-94d8e5d67201
+status: experimental
+description: 'This analytic detects the disabling of logging functionality on a Cisco ASA device
+
+  through CLI commands. Adversaries or malicious insiders may attempt to disable logging
+
+  to evade detection and hide malicious activity. The detection looks for specific ASA
+
+  syslog message IDs (111010, 111008) associated with command execution,
+
+  combined with suspicious commands such as `no logging`, `logging disable`,
+
+  `clear logging`, or `no logging host`. Disabling logging on a firewall or security device
+
+  is a strong indicator of defense evasion.'
+references:
+- https://research.splunk.com/7b4c9f3e-5a88-4b7b-9c4b-94d8e5d67201/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Micheal Haag, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1685
+logsource:
+  product: cisco
+  service: asa
+detection:
+  sel1:
+    message_id:
+    - '111008'
+    - '111010'
+  sel2:
+    command:
+    - '*no logging*'
+    - '*logging disable*'
+    - '*clear logging*'
+    - '*no logging host*'
+    - '*no logging trap*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_asa/generic/cisco_asa_generic_logs.log

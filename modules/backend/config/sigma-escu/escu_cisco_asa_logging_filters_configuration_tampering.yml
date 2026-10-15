@@ -1,0 +1,52 @@
+title: Cisco ASA - Logging Filters Configuration Tampering
+id: b87b48a8-6d1a-4280-9cf1-16a950dbf901
+status: experimental
+description: 'This analytic detects tampering with logging filter configurations on Cisco ASA devices via CLI or ASDM.
+
+  Adversaries may reduce logging levels or disable specific log categories to evade detection, hide their activities, or prevent
+  security monitoring systems from capturing evidence of their actions. By lowering logging verbosity, attackers can operate
+  with reduced visibility to security teams.
+
+  The detection monitors for logging configuration commands (message ID 111008 or 111010) that modify logging destinations
+  (asdm, console, history, mail, monitor, trap) without setting them to higher severity levels (5-notifications, 6-informational,
+  7-debugging), which may indicate an attempt to reduce logging verbosity.
+
+  Investigate unauthorized logging configuration changes that reduce verbosity, especially changes performed by non-administrative
+  accounts, during unusual hours, or without corresponding change management approval.'
+references:
+- https://research.splunk.com/b87b48a8-6d1a-4280-9cf1-16a950dbf901/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1685
+logsource:
+  product: cisco
+  service: asa
+detection:
+  sel1:
+    message_id:
+    - '111008'
+    - '111010'
+  sel2:
+    command: logging *
+  sel3:
+    command:
+    - '*asdm*'
+    - '*console*'
+    - '*history*'
+    - '*mail*'
+    - '*monitor*'
+    - '*trap*'
+  sel4:
+    command:
+    - '*notifications*'
+    - '*informational*'
+    - '*debugging*'
+    - '* 5*'
+    - '* 6*'
+    - '* 7*'
+  condition: (sel1 and sel2 and sel3 and not (sel4))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_asa/generic/cisco_asa_generic_logs.log

@@ -1,0 +1,35 @@
+title: Cisco ASA - User Account Lockout Threshold Exceeded
+id: 3e8f9c2a-6d4b-4a7e-9c5f-1b8d7e3a9f2c
+status: experimental
+description: 'This analytic detects user account lockouts on Cisco ASA devices resulting from excessive failed authentication
+  attempts.
+
+  Account lockouts may indicate brute force attacks, password spraying campaigns, credential stuffing attempts using compromised
+  credentials from external breaches, or misconfigured automation attempting authentication with incorrect credentials. These
+  activities represent attempts to gain unauthorized access to network infrastructure.
+
+  The detection monitors for ASA message ID 113006, which is generated when a user account is locked out after exceeding the
+  configured maximum number of failed authentication attempts, capturing the locked account name and the failure threshold
+  that was exceeded.
+
+  Investigate account lockouts for privileged or administrative accounts, multiple simultaneous lockouts affecting different
+  accounts (suggesting password spraying), lockouts originating from unusual source IP addresses, lockouts during off-hours,
+  or patterns suggesting automated '
+references:
+- https://research.splunk.com/3e8f9c2a-6d4b-4a7e-9c5f-1b8d7e3a9f2c/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1110.001
+- attack.t1110.003
+logsource:
+  product: cisco
+  service: asa
+detection:
+  sel1:
+    message_id: '113006'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_asa/generic/cisco_asa_generic_logs.log

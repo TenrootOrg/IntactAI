@@ -1,0 +1,53 @@
+title: Cisco ASA - Device File Copy to Remote Location
+id: 8a9e5f2b-6d4c-4e7f-9b3a-1c8d7f5e2a9b
+status: experimental
+description: 'This analytic detects file copy operations to remote locations on Cisco ASA devices via CLI or ASDM.
+
+  Adversaries may exfiltrate device files including configurations, logs, packet captures, or system data to remote servers
+  using protocols like TFTP, FTP, HTTP, HTTPS, SMB, or SCP. While legitimate backups to centralized servers are common, copies
+  to unexpected destinations may indicate data exfiltration to attacker-controlled infrastructure.
+
+  The detection monitors for command execution events (message ID 111008 or 111010) containing copy commands with remote protocol
+  indicators (tftp:, ftp:, http:, https:, smb:, scp:).
+
+  Investigate copies to unexpected destinations, from non-administrative accounts, or outside approved maintenance windows.
+
+  We recommend adapting the detection filters to exclude known legitimate backup activities.'
+references:
+- https://research.splunk.com/8a9e5f2b-6d4c-4e7f-9b3a-1c8d7f5e2a9b/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1005
+- attack.t1041
+- attack.t1048.003
+logsource:
+  product: cisco
+  service: asa
+detection:
+  sel1:
+    message_id:
+    - '111008'
+    - '111010'
+  sel2:
+    command: copy *
+  sel3:
+    command:
+    - '*running-config*'
+    - '*startup-config*'
+    - '*/pcap capture:*'
+    - '* disk0:*'
+    - '* flash:*'
+    - '* system:*'
+  sel4:
+    command:
+    - '*ftp:*'
+    - '*http:*'
+    - '*https:*'
+    - '*smb:*'
+    - '*scp:*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_asa/generic/cisco_asa_generic_logs.log
