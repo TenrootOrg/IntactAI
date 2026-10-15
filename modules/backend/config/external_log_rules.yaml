@@ -321,6 +321,18 @@ native:
               {EventID: "4624", LogonType: "3", AuthenticationPackageName: "Kerberos", IpAddress: "127.0.0.1",
                TargetUserSid: "S-1-5-21-1-2-3-1104"}]
 
+  - id: impacket-remote-exec
+    title: "Impacket remote execution (smbexec / wmiexec / dcomexec)"
+    reason: "cmd.exe /Q /c writing its output to \\\\host\\ADMIN$\\__<time> or \\\\host\\C$\\__output: the file Impacket's exec tools read back over SMB. SigmaHQ's rule looks only for \\\\127.0.0.1\\, and smbexec names the host"
+    fields: [CommandLine, ProcessCommandLine, cmdline, text]
+    match: '.*\bcmd(\.exe)?"?\s+/Q\s+/c\s.*\\\\[^\\\s]+\\(ADMIN|C)\$\\__.*'
+    severity: high
+    examples:
+      fires: [{CommandLine: 'C:\Windows\system32\cmd.exe /Q /c echo cd  ^> \\AR-WIN-DC\C$\__output 2^>^&1 > C:\Windows\TnMtjHgN.bat & C:\Windows\system32\cmd.exe /Q /c C:\Windows\TnMtjHgN.bat'},
+              {CommandLine: 'cmd.exe /Q /c whoami 1> \\127.0.0.1\ADMIN$\__1567439113.54 2>&1'}]
+      quiet: [{CommandLine: 'cmd.exe /Q /c copy \\fileserver\C$\deploy\setup.msi C:\Temp\'},
+              {CommandLine: 'cmd.exe /c dir \\dc01\ADMIN$\'}]
+
   - id: firewall-threat-detection
     title: "Firewall threat detection / IPS event"
     reason: "the firewall's own threat detection (rate exceeded: scanning or DoS) or built-in IPS signature fired (Cisco ASA 733100 / 4000xx)"
