@@ -330,43 +330,93 @@ def _xml_rows(text):
     return rows
 
 
+def _guard(fn, ln):
+    """One line through one reader; a line that breaks the reader is a leftover,
+    never the end of the file."""
+    try:
+        return fn(ln)
+    except Exception:                                      # noqa: BLE001
+        return None
+
+
+def _is_header(vals) -> bool:
+    """A second header in the middle of a CSV (two exports pasted together, or a
+    product update that added columns): unique words, most of them known names."""
+    vals = [str(v).strip() for v in vals]
+    if len(vals) < 2 or len(set(vals)) != len(vals) or not all(vals):
+        return False
+    if any(_shape(v) for v in vals):
+        return False
+    return sum(1 for v in vals if _cands(v)) >= 0.5 * len(vals)
+
+
 def _delimited(lines):
     """CSV / TSV / space-separated, with a header line, a `#fields` header (Zeek,
     W3C) or none at all (the columns are then named c1..cN and found by value).
-    Returns (format, rows) or None."""
+    Returns (format, rows, leftover lines) or None.
+
+    Built to survive a file that changes under it: a row with an extra column keeps
+    it (_extra1...), a short row keeps what it has, a new header line (two exports
+    in one file, a product update) switches the columns from there on, and a line
+    that fits nothing is a leftover -- read by the model or kept as text -- never
+    dropped."""
     fields = next((ln for ln in lines[:20] if re.match(r"#\s*fields:?\s", ln, re.I)), None)
     body = [ln for ln in lines if not ln.startswith("#")]
     if not body:
         return None
     if fields:
-        names = re.split(r"\t|\s+", re.sub(r"#\s*fields:?\s*", "", fields, flags=re.I).strip())
-        delim = "\t" if "\t" in body[0] else None
-        rows = []
-        for ln in body[:MAX_ROWS]:
+        rows, left, names, delim = [], [], None, "\t" if "\t" in body[0] else None
+        for ln in lines[:MAX_ROWS]:
+            if re.match(r"#\s*fields:?\s", ln, re.I):
+                names = re.split(r"\t|\s+", re.sub(r"#\s*fields:?\s*", "", ln, flags=re.I).strip())
+                continue
+            if ln.startswith("#") or not names:
+                continue
             vals = ln.split("\t") if delim else ln.split()
             if len(vals) == len(names):
                 rows.append(dict(zip(names, vals)))
-        return ("zeek" if delim else "w3c", rows) if rows else None
+            else:
+                left.append(ln)
+        return ("zeek" if delim else "w3c", rows, left) if rows else None
     sample = body[:50]
     dialect = None
     try:
         dialect = csv.Sniffer().sniff("\n".join(sample), delimiters=",\t;|")
     except csv.Error:
-        pass
+        # The sniffer gives up on rows of different lengths -- exactly the file a
+        # product update leaves behind. Take the separator most lines carry.
+        best = max(",\t;|", key=lambda d: sum(1 for ln in sample if d in ln))
+        if sum(1 for ln in sample if best in ln) >= 0.8 * len(sample):
+            class _D(csv.excel):
+                delimiter = best
+            dialect = _D
     if dialect is not None:
-        first = next(csv.reader([body[0]], dialect))
+        try:
+            first = next(csv.reader([body[0]], dialect))
+        except (csv.Error, StopIteration):
+            first = []
         if len(first) >= 2:
             looks_data = any(_shape(v) in ("ip", "time") for v in first)
             names = [f"c{i + 1}" for i in range(len(first))] if looks_data else first
             if len(set(names)) == len(names) and all(str(h).strip() for h in names):
-                start = 0 if looks_data else 1
-                rows = []
-                for vals in csv.reader(body[start:start + MAX_ROWS], dialect):
-                    if len(vals) == len(names):
-                        rows.append(dict(zip(names, vals)))
-                good = [r for r in rows if sum(1 for v in r.values() if v) >= 2]
-                if good and len(good) >= 0.8 * max(1, len(body) - start):
-                    return ("tsv" if dialect.delimiter == "\t" else "csv"), good
+                rows, left = [], []
+                try:
+                    for vals in csv.reader(body[0 if looks_data else 1:][:MAX_ROWS], dialect):
+                        if not looks_data and _is_header(vals) and vals != names:
+                            names = vals
+                            continue
+                        if sum(1 for v in vals if str(v).strip()) < 2:
+                            if any(str(v).strip() for v in vals):
+                                left.append(dialect.delimiter.join(vals))
+                            continue
+                        r = dict(zip(names, vals))
+                        for i, v in enumerate(vals[len(names):], 1):
+                            r[f"_extra{i}"] = v
+                        rows.append(r)
+                except csv.Error:
+                    pass
+                if rows and len(rows) >= 0.6 * max(1, len(rows) + len(left)):
+                    return ("tsv" if dialect.delimiter == "\t" else "csv"), rows, left
     # whitespace columns: the same count on (nearly) every line
     counts = [len(ln.split()) for ln in sample]
     n = max(set(counts), key=counts.count)
@@ -374,15 +424,17 @@ def _delimited(lines):
         first = body[0].split()
         named = all(re.fullmatch(r"[A-Za-z_][\w.\-()]*", t) for t in first) and len(set(first)) == len(first)
         names = first if named else [f"c{i + 1}" for i in range(n)]
-        rows = []
+        rows, left = [], []
         for ln in body[1 if named else 0:][:MAX_ROWS]:
             vals = ln.split()
             if len(vals) == n:
                 r = dict(zip(names, vals))
                 r["_line"] = ln
                 rows.append(r)
+            else:
+                left.append(ln)
         if rows:
-            return "space", rows
+            return "space", rows, left
     return None
 
 
@@ -398,61 +450,65 @@ def _syslog_ts(header):
 
 
 def parse(text) -> tuple[str, list]:
-    """(format, rows). format is "" when no structure was found -- the caller then
-    has free text. Rows are flat dicts of the file's own columns."""
+    """(format, rows) -- see read()."""
+    return read(text)[:2]
+
+
+def read(text) -> tuple[str, list, list]:
+    """(format, rows, leftover lines). format is "" when no structure was found --
+    the caller then has free text. Rows are flat dicts of the file's own columns.
+    Leftovers are the lines of a structured file that its reader could not take
+    (a plain syslog line among CEF, a broken JSON line, a row from another
+    product): they go to the model or are kept as text, never dropped."""
     s = text.lstrip()
     if s[:1] in "[{":
         try:
             recs = _json_records(json.loads(s))
-            rows = [_flat(r) for r in recs if isinstance(r, dict)]
+            rows = [r for r in (_guard(_flat, r) for r in recs if isinstance(r, dict)) if r]
             if rows:
-                return "json", rows[:MAX_ROWS]
-        except ValueError:
+                return "json", rows[:MAX_ROWS], []
+        except (ValueError, RecursionError):
             pass
     if s[:1] == "<" and re.search(r"<Event[\s>]", s[:2000]):
-        rows = _xml_rows(s)
+        rows = _guard(_xml_rows, s) or []
         if rows:
-            return "xml", rows
+            return "xml", rows, []
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
-        return "", []
+        return "", [], []
     sample = [ln for ln in lines[:400] if not ln.startswith("#")] or lines[:400]
 
     def share(fn):
-        return sum(1 for ln in sample if fn(ln)) / len(sample)
+        return sum(1 for ln in sample if _guard(fn, ln)) / len(sample)
 
-    def _is_json_obj(ln):
+    def _json_obj(ln):
         ln = ln.strip()
         if not ln.startswith("{"):
-            return False
-        try:
-            return isinstance(json.loads(ln), dict)
-        except ValueError:
-            return False
-    if share(_is_json_obj) >= 0.8:
-        rows = []
+            return None
+        o = json.loads(ln)
+        return _flat(o) if isinstance(o, dict) else None
+
+    def by_line(fn):
+        rows, left = [], []
         for ln in lines[:MAX_ROWS]:
-            try:
-                o = json.loads(ln)
-            except ValueError:
-                continue
-            if isinstance(o, dict):
-                rows.append(_flat(o))
-        return "jsonl", rows
-    if share(lambda ln: _json_in_line(ln) is not None) >= 0.8:
-        return "syslog-json", [r for r in (_json_in_line(ln) for ln in lines[:MAX_ROWS]) if r]
-    if share(lambda ln: bool(_CEF.search(ln))) >= 0.6:
-        fmt = "cef" if "CEF:" in "".join(sample) else "leef"
-        return fmt, [r for r in (_cef_row(ln) for ln in lines[:MAX_ROWS]) if r]
+            r = _guard(fn, ln)
+            (rows.append(r) if r else left.append(ln))
+        return rows, left
+    for fmt, fn, need in (("jsonl", _json_obj, 0.8), ("syslog-json", _json_in_line, 0.8),
+                          ("cef", _cef_row, 0.6)):
+        if share(fn) >= need:
+            if fmt == "cef" and "CEF:" not in "".join(sample):
+                fmt = "leef"
+            return (fmt, *by_line(fn))
     # Delimited before key=value: a CSV of URLs is full of "=".
     if share(lambda ln: _kv_row(ln) is None) >= 0.5 or any(ln.startswith("#") for ln in lines[:20]):
-        got = _delimited(lines)
+        got = _guard(_delimited, lines)
         if got:
             return got
-    if share(lambda ln: _kv_row(ln) is not None) >= 0.6:
-        return "kv", [r for r in (_kv_row(ln) for ln in lines[:MAX_ROWS]) if r]
-    got = _delimited(lines)
-    return got if got else ("", [])
+    if share(_kv_row) >= 0.6:
+        return ("kv", *by_line(_kv_row))
+    got = _guard(_delimited, lines)
+    return got if got else ("", [], [])
 
 
 # -- what each column is ------------------------------------------------------------
@@ -477,7 +533,14 @@ def _cands(col):
 
 def _shape(v) -> str | None:
     """What a single value looks like: ip / time / user / hash / url / domain /
-    severity / None."""
+    severity / None. Never raises: one odd value cannot stop the detection."""
+    try:
+        return _shape_of(v)
+    except Exception:                                      # noqa: BLE001
+        return None
+
+
+def _shape_of(v) -> str | None:
     s = str(v).strip().strip('"')
     if not s or len(s) > 300:
         return None
@@ -500,6 +563,13 @@ def _shape(v) -> str | None:
 
 
 def _fits(field, vals, col) -> bool:
+    try:
+        return _fits_values(field, vals, col)
+    except Exception:                                      # noqa: BLE001 -- an odd value: not this column
+        return False
+
+
+def _fits_values(field, vals, col) -> bool:
     """Do a column's sampled values fit the field its NAME suggests? A name match
     alone was wrong often enough (an "ip" that holds host names, a "level" that
     holds syslog levels, "source" that is an account in one product and a host in
@@ -534,16 +604,45 @@ _ORDER = ("ts", "src_ip", "dst_ip", "hash", "severity", "user", "host", "domain"
           "process", "rule", "action", "src_port", "dst_port", "message")
 
 
+def _spread(rows, n):
+    """Rows to judge columns on: the start of the file and an even spread over the
+    rest, so a column a product update added halfway through is seen too."""
+    if len(rows) <= n:
+        return rows
+    head = rows[:n // 2]
+    step = max(1, (len(rows) - len(head)) // (n - len(head)))
+    return head + rows[len(head)::step][:n - len(head)]
+
+
 def detect_columns(rows, sample=300) -> dict:
     """{field: column}. Each field takes its best-ranked NAMED column whose values
     fit it (_fits); a field no name filled takes a column whose values have its
     SHAPE (>=80% IPs, times, accounts...) -- the first IP-shaped column is the
-    source, the second the destination."""
+    source, the second the destination.
+
+    "_alt": {field: [columns]} -- the other columns that name the same field. A
+    file whose product renamed a field midway ("src_ip" for a month, then
+    "source.ip") fills the field from whichever the row has."""
     cols: dict = {}
-    for r in rows[:sample]:
-        for k in r:
-            cols.setdefault(k, None)
-    vals = {k: [r.get(k) for r in rows[:sample] if r.get(k) not in (None, "")] for k in cols}
+    seen = set()
+    for r in rows:                                     # every column, even one that appears late
+        sig = tuple(r)
+        if sig not in seen:
+            seen.add(sig)
+            for k in sig:
+                cols.setdefault(k, None)
+            if len(seen) > 5000:                       # a JSON with free-form keys: stop counting
+                break
+    pick = _spread(rows, sample)
+    vals = {k: [r.get(k) for r in pick if r.get(k) not in (None, "")] for k in cols}
+    for k in cols:                                     # a late column: look for its values
+        if len(vals[k]) < 3:
+            for r in rows:
+                v = r.get(k)
+                if v not in (None, ""):
+                    vals[k].append(v)
+                    if len(vals[k]) >= 50:
+                        break
     by_field: dict = {}
     for k in cols:
         for f, rank in _cands(k):
@@ -564,6 +663,16 @@ def detect_columns(rows, sample=300) -> dict:
                 out[f] = k
                 used.add(k)
                 break
+    # The other columns that NAME a field already filled are its fallbacks (a
+    # field renamed midway), reserved before the value-shape pass could give one
+    # to another field -- the old "src_ip" must not become the destination.
+    alt = {}
+    for f, col in list(out.items()):
+        more = [k for _, k in sorted(by_field.get(f, [])) if k not in used
+                and (len(vals[k]) < 3 or _fits(f, vals[k], k))]
+        if more:
+            alt[f] = more
+            used.update(more)
     shapes: dict = {}
     for k in cols:
         if k in used or k == "_line" or len(vals[k]) < 1:
@@ -583,6 +692,8 @@ def detect_columns(rows, sample=300) -> dict:
             out[f] = ips.pop(0)
     if "message" not in out and "_line" in cols:
         out["message"] = "_line"
+    if alt:
+        out["_alt"] = alt
     return out
 
 
@@ -643,10 +754,17 @@ def _severity(v, scale) -> str | None:
     return ("low" if n < 40 else "medium" if n < 70 else "high" if n < 90 else "critical")  # 0..100 risk
 
 
-def normalize(rows, mapping) -> list:
+def normalize(rows, mapping, stats=None) -> list:
     """[{"n": {field: value}, "raw": row}] -- `n` holds only fields that have a value.
     Indicators inside free text (the message, _raw, a nested JSON list) are added
-    as the list fields, so a SIEM export whose substance sits in _raw still joins."""
+    as the list fields, so a SIEM export whose substance sits in _raw still joins.
+
+    A row that cannot be read (a value of a type nothing expected) keeps its
+    indicators and its raw form; it is counted in stats["row_errors"], never the
+    end of the file."""
+    stats = {} if stats is None else stats
+    alt = mapping.get("_alt") or {}
+    mapping = {f: c for f, c in mapping.items() if f != "_alt"}
     scale = 0
     sc = mapping.get("severity")
     if sc:
@@ -654,46 +772,61 @@ def normalize(rows, mapping) -> list:
     # W3C / IIS / FortiGate split the moment into a "date" and a "time" column.
     tcol = next((k for k in (rows[0] if rows else {}) if _norm_name(k) == "time"), None) \
         if _norm_name(mapping.get("ts", "")) == "date" else None
-    mapped = set(mapping.values())
+    mapped = set(mapping.values()) | {c for cs in alt.values() for c in cs}
     out = []
     for r in rows:
-        n = {}
-        for f, col in mapping.items():
-            v = r.get(col)
-            if v in (None, ""):
-                continue
-            if f == "ts":
-                v = _ts(f"{v} {r.get(tcol)}" if tcol and r.get(tcol) else v)
-            elif f == "severity":
-                v = _severity(v, scale)
-            elif f in ("src_ip", "dst_ip"):
-                m = _IPV4.search(str(v))
-                v = m.group(0) if m else None
-            elif f == "host":
-                v = str(v).strip().rsplit("\\", 1)[-1]         # "CORP\\WS01" -> WS01
-            elif f == "domain":
-                v = str(v).strip().rstrip(".")
-            else:
-                v = str(v).strip()[:4000]
-            if v:
-                n[f] = v
-        # A "domain" that is no public domain is a host name (CEF dhost is either).
-        if n.get("domain") and keys.classify_indicator(n["domain"]) != "domain":
-            d = n.pop("domain")
-            n.setdefault("host", d)
-        if not n.get("ts"):
-            t = _syslog_ts(r.get("syslog_header"))
-            if t:
-                n["ts"] = t
-        free = [str(r[c]) for c in r if c in (mapping.get("message"),) or (
-            c not in mapped and isinstance(r[c], str) and r[c][:2] == "[{")]
-        if free:
-            ind = indicators(" ".join(free))
-            for k, v in ind.items():
-                if v:
-                    n[k] = v
-        out.append({"n": n, "raw": r})
+        try:
+            out.append({"n": _norm_row(r, mapping, alt, scale, tcol, mapped), "raw": r})
+        except Exception:                                  # noqa: BLE001 -- one row, not the file
+            stats["row_errors"] = stats.get("row_errors", 0) + 1
+            try:
+                n = {k: v for k, v in indicators(json.dumps(r, default=str)).items() if v}
+            except Exception:                              # noqa: BLE001
+                n = {}
+            out.append({"n": n, "raw": r})
     return out
+
+
+def _norm_row(r, mapping, alt, scale, tcol, mapped):
+    """One row's normalized fields (normalize() guards it)."""
+    n = {}
+    for f, col in mapping.items():
+        v = r.get(col)
+        if v in (None, ""):
+            v = next((r.get(c) for c in alt.get(f, ()) if r.get(c) not in (None, "")), None)
+        if v in (None, ""):
+            continue
+        if f == "ts":
+            v = _ts(f"{v} {r.get(tcol)}" if tcol and r.get(tcol) else v)
+        elif f == "severity":
+            v = _severity(v, scale)
+        elif f in ("src_ip", "dst_ip"):
+            m = _IPV4.search(str(v))
+            v = m.group(0) if m else None
+        elif f == "host":
+            v = str(v).strip().rsplit("\\", 1)[-1]         # "CORP\\WS01" -> WS01
+        elif f == "domain":
+            v = str(v).strip().rstrip(".")
+        else:
+            v = str(v).strip()[:4000]
+        if v:
+            n[f] = v
+    # A "domain" that is no public domain is a host name (CEF dhost is either).
+    if n.get("domain") and keys.classify_indicator(n["domain"]) != "domain":
+        d = n.pop("domain")
+        n.setdefault("host", d)
+    if not n.get("ts"):
+        t = _syslog_ts(r.get("syslog_header"))
+        if t:
+            n["ts"] = t
+    free = [str(r[c]) for c in r if c in (mapping.get("message"),) or (
+        c not in mapped and isinstance(r[c], str) and r[c][:2] == "[{")]
+    if free:
+        ind = indicators(" ".join(free))
+        for k, v in ind.items():
+            if v:
+                n[k] = v
+    return n
 
 
 # -- free text --------------------------------------------------------------------
@@ -905,50 +1038,81 @@ def _model(case_id, run_id, log):
             (lambda o: investigate._revert_obj(o, mask)) if mask is not None else None)
 
 
+def _free_text(lines, model, log, what):
+    """Lines no structure reader took: the case's model reads them when it can
+    (every value checked against its line), else every line carrying an IP,
+    account, hash or domain is kept. Returns (rows, how, model stats or None)."""
+    if not lines:
+        return [], None, None
+    if model:
+        call, mask, revert = model
+        log(f"{what} — reading {len(lines):,} line(s) with the case's model"
+            + (" (masked)" if mask is not None else ""), "info")
+        try:
+            out, st = llm_extract(lines, call=call, mask=mask, revert=revert, log=log)
+            log(f"model: {st['events']} event(s) from {st['lines_read']:,} line(s); "
+                f"{st['dropped']} event(s) and {st['values_dropped']} value(s) dropped "
+                f"because the cited line does not say them", "info")
+            if st["lines_read"] < len(lines):
+                rest = indicator_rows(lines[st["lines_read"]:])
+                for r in rest:
+                    r["raw"]["line"] += st["lines_read"]
+                out += rest
+                log(f"lines after {st['lines_read']:,} were not sent to the model; "
+                    f"{len(rest):,} of them carry indicators and are kept", "warning")
+            return out, "llm", st
+        except Exception as e:                             # noqa: BLE001 -- a model failure keeps the file
+            log(f"the model could not read them ({e}) — kept as indicator lines", "warning")
+    out = indicator_rows(lines)
+    log(f"{what} — kept {len(out):,} of {len(lines):,} line(s): those carrying an IP, account, "
+        f"hash or domain", "info")
+    return out, "indicators", None
+
+
 def ingest(case_id, run_id, path, data_type, log) -> dict:
     """Parse one attached file into rows and write them where fusion reads a run's
-    rows (downloads/<run>/raw_results.json). Returns the summary kept on the run."""
+    rows (downloads/<run>/raw_results.json). Returns the summary kept on the run.
+
+    Whatever part of a file can be read is used: rows the structure reader took
+    are normalized (a row that breaks is counted and kept as text); lines it could
+    not take, and a file it could not read at all, go to the model or are kept as
+    indicator lines."""
     import os
     text = read_text(path)
-    fmt, rows = parse(text)
+    fmt, rows, left = read(text)
     mapping = detect_columns(rows) if rows else {}
-    summary = {"format": fmt or "text", "mapping": mapping}
-    out = normalize(rows, mapping) if rows else []
+    summary = {"format": fmt or "text", "mapping": {f: c for f, c in mapping.items() if f != "_alt"}}
+    stats: dict = {}
+    out = normalize(rows, mapping, stats) if rows else []
+    model = None
     if out and recognized(out):
         summary["via"] = "parser"
         log(f"read {len(out):,} {fmt.upper()} row(s); columns: "
-            + ", ".join(f"{f}={c}" for f, c in mapping.items()), "info")
+            + ", ".join(f"{f}={c}" for f, c in summary["mapping"].items())
+            + ("; also from " + ", ".join(f"{f}={'/'.join(c)}" for f, c in mapping["_alt"].items())
+               if mapping.get("_alt") else ""), "info")
+        if stats.get("row_errors"):
+            log(f"{stats['row_errors']:,} row(s) had values the reader could not take — kept as text "
+                f"with their indicators", "warning")
+        if left:
+            model = _model(case_id, run_id, log)
+            extra, how, st = _free_text(left, model, log, f"{len(left):,} line(s) did not fit the "
+                                        f"{fmt.upper()} structure")
+            out += extra
+            summary["leftover_lines"], summary["leftover_via"] = len(left), how
+            if st:
+                summary["llm"] = st
     else:
-        lines = text.splitlines()
         why = (f"{fmt.upper()} rows with no time or no host/user/IP column" if rows
                else "no known structure")
         model = _model(case_id, run_id, log)
-        if model:
-            call, mask, revert = model
-            log(f"{why} — reading it with the case's model ({len(lines):,} line(s)"
-                + (", masked" if mask is not None else "") + ")", "info")
-            try:
-                out, st = llm_extract(lines, call=call, mask=mask, revert=revert, log=log)
-                summary["via"], summary["llm"] = "llm", st
-                log(f"model: {st['events']} event(s) from {st['lines_read']:,} line(s); "
-                    f"{st['dropped']} event(s) and {st['values_dropped']} value(s) dropped "
-                    f"because the cited line does not say them", "info")
-                if st["lines_read"] < len(lines):
-                    rest = indicator_rows(lines[st["lines_read"]:])
-                    for r in rest:
-                        r["raw"]["line"] += st["lines_read"]
-                    out += rest
-                    log(f"lines after {st['lines_read']:,} were not sent to the model; "
-                        f"{len(rest):,} of them carry indicators and are kept", "warning")
-            except Exception as e:                         # noqa: BLE001 -- a model failure keeps the file
-                log(f"the model could not read it ({e}) — kept as indicator lines", "warning")
-                out, summary["via"] = indicator_rows(lines), "indicators"
-        else:
-            out, summary["via"] = indicator_rows(lines), "indicators"
-            log(f"{why} — kept {len(out):,} line(s) that carry an IP, account, hash or domain", "info")
+        out, summary["via"], st = _free_text(text.splitlines(), model, log, why)
+        if st:
+            summary["llm"] = st
     tss = sorted(r["n"]["ts"] for r in out if r["n"].get("ts"))
     summary.update(rows=len(out), first_ts=tss[0] if tss else None, last_ts=tss[-1] if tss else None,
-                   alerts=sum(1 for r in out if r["n"].get("severity") in ("medium", "high", "critical")))
+                   alerts=sum(1 for r in out if r["n"].get("severity") in ("medium", "high", "critical")),
+                   row_errors=stats.get("row_errors", 0))
     os.makedirs(downloads_dir(run_id), exist_ok=True)
     tmp = os.path.join(downloads_dir(run_id), "raw_results.json.tmp")
     with open(tmp, "w") as f:

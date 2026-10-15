@@ -107,5 +107,101 @@ class Robust(unittest.TestCase):
             X.indicator_rows(text.splitlines())
 
 
+
+class ProductChangesUnderUs(unittest.TestCase):
+    """A vendor update adds columns, renames a field or changes a value's type --
+    often in the middle of one export. Whatever can be read is read; nothing that
+    broke takes the rest of the file with it."""
+
+    def _ingest(self, text):
+        import tempfile
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        src = os.path.join(d, "in.log")
+        with open(src, "w") as f:
+            f.write(text)
+        logs = []
+        with mock.patch.object(X, "downloads_dir", lambda rid: os.path.join(d, rid)), \
+                mock.patch.object(X, "_model", lambda *a: None):
+            s = X.ingest("c", "r1", src, "edr", lambda m, l="info": logs.append(m))
+        import json as _j
+        with open(os.path.join(d, "r1", "raw_results.json")) as f:
+            return s, _j.load(f)["External.edr"], logs
+
+    def test_a_field_renamed_halfway_still_fills(self):
+        import json as _j
+        old = [{"timestamp": f"2026-10-01T10:{i % 60:02d}:00Z", "hostname": "WS01", "src_ip": "185.220.101.4"}
+               for i in range(400)]
+        new = [{"timestamp": f"2026-10-02T10:{i % 60:02d}:00Z", "hostname": "WS01",
+                "source": {"ip": "185.220.101.9"}, "new_field_v2": {"x": [1, 2]}} for i in range(400)]
+        s, rows, _ = self._ingest("\n".join(_j.dumps(o) for o in old + new))
+        self.assertEqual(800, s["rows"])
+        self.assertEqual("185.220.101.4", rows[0]["n"]["src_ip"])
+        self.assertEqual("185.220.101.9", rows[-1]["n"]["src_ip"], "the renamed field fills src_ip too")
+
+    def test_a_csv_that_changes_its_columns(self):
+        text = ("Timestamp,DeviceName,RemoteIP\n"
+                "2026-10-01T10:00:00Z,WS01,185.220.101.4\n"
+                "2026-10-01T10:01:00Z,WS01,185.220.101.4,UNEXPECTED_EXTRA\n"     # a column too many
+                "2026-10-01T10:02:00Z,WS02\n"                                    # one too few
+                "Timestamp,DeviceName,AccountName,RemoteIP\n"                    # second export pasted in
+                "2026-10-01T10:03:00Z,WS03,CORP\\jdoe,185.220.101.5\n")
+        s, rows, _ = self._ingest(text)
+        self.assertEqual(4, s["rows"])
+        by = {r["n"].get("host"): r["n"] for r in rows}
+        self.assertEqual("185.220.101.4", by["WS01"]["dst_ip"])
+        self.assertIn("WS02", by)
+        self.assertEqual(("CORP\\jdoe", "185.220.101.5"), (by["WS03"]["user"], by["WS03"]["dst_ip"]),
+                         "after the new header the columns are the new ones")
+
+    def test_values_of_an_unexpected_type(self):
+        import json as _j
+        odd = [{"timestamp": "2026-10-01T10:00:00Z", "hostname": "WS01", "severity": "high", "src_ip": "185.220.101.4"},
+               {"timestamp": 1790849100, "hostname": ["WS01", "WS02"], "severity": {"level": 9}, "src_ip": None},
+               {"timestamp": None, "hostname": 12345, "severity": True, "src_ip": ["185.220.101.4"]},
+               {"timestamp": "2026-10-01T10:05:00Z", "hostname": "WS01", "severity": "high", "src_ip": "185.220.101.4"}]
+        s, rows, _ = self._ingest("\n".join(_j.dumps(o) for o in odd))
+        self.assertEqual(4, s["rows"])
+        self.assertEqual("high", rows[3]["n"]["severity"])
+
+    def test_one_row_that_breaks_the_reader_is_kept_as_text(self):
+        from unittest import mock
+        import json as _j
+        real = X._ts
+
+        def flaky(v):
+            if "10:03" in str(v):
+                raise ValueError("unreadable")
+            return real(v)
+        text = "\n".join(_j.dumps({"timestamp": f"2026-10-01T10:0{i}:00Z", "hostname": "WS01",
+                                   "src_ip": "185.220.101.4"}) for i in range(6))
+        with mock.patch.object(X, "_ts", flaky):
+            s, rows, logs = self._ingest(text)
+        self.assertEqual((6, 1), (s["rows"], s["row_errors"]))
+        self.assertEqual(["185.220.101.4"], rows[3]["n"]["ips"], "the broken row keeps its indicators")
+        self.assertTrue(any("could not take" in m for m in logs), logs)
+
+    def test_lines_of_another_shape_are_not_dropped(self):
+        cef = ("Oct  1 10:05:00 pa01 CEF:0|Palo Alto Networks|PAN-OS|10.1|threat|C2|8|"
+               "rt=2026-10-01T10:05:00Z src=10.0.0.5 dst=185.220.101.4\n") * 7
+        plain = "Oct  1 10:06:00 pa01 kernel: link down on eth1, peer 185.220.101.77\n"
+        broken = "Oct  1 10:07:00 pa01 CEF:0|half a line\n"
+        s, rows, logs = self._ingest(cef + plain + broken)
+        self.assertEqual("parser", s["via"])
+        self.assertEqual(2, s["leftover_lines"])
+        self.assertIn("185.220.101.77", [ip for r in rows for ip in r["n"].get("ips", [])],
+                      "the plain syslog line is kept with its indicator")
+        self.assertTrue(any("did not fit the CEF structure" in m for m in logs), logs)
+
+    def test_broken_json_lines_among_good_ones(self):
+        import json as _j
+        good = [_j.dumps({"timestamp": f"2026-10-01T10:0{i}:00Z", "hostname": "WS01", "src_ip": "185.220.101.4"})
+                for i in range(8)]
+        s, rows, _ = self._ingest("\n".join(good[:4] + ['{"timestamp": "2026-10-01T10:09:00Z", "src_ip": "185.220.101.66"',
+                                                        "not json at all"] + good[4:]))
+        self.assertEqual(8, sum(1 for r in rows if r["n"].get("host") == "WS01"))
+        self.assertIn("185.220.101.66", [ip for r in rows for ip in r["n"].get("ips", [])])
+
+
 if __name__ == "__main__":
     unittest.main()

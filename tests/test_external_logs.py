@@ -202,7 +202,7 @@ class IngestAndSearch(unittest.TestCase):
             raise RuntimeError("provider down")
         s, rows = self._ingest(FREE, model=(boom, None, None))
         self.assertEqual(("indicators", 2), (s["via"], s["rows"]))
-        self.assertTrue(any("could not read it" in m for m in self.logs), self.logs)
+        self.assertTrue(any("could not read them" in m for m in self.logs), self.logs)
 
     def test_the_model_reads_what_no_parser_understood(self):
         call = lambda system, user: json.dumps([{"line": 3, "user": "CORP\\jdoe", "src_ip": "185.220.101.4",
