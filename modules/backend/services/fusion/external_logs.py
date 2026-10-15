@@ -1567,7 +1567,20 @@ def sigma_event(raw):
             text = raw["_line"]
         else:                           # named fields AND a message: rules may read either
             return {**raw, "_text": raw["_line"], "text": raw["_line"]}
-    return {"_text": text, "text": text} if text is not None else raw
+    if text is not None:
+        return {"_text": text, "text": text}
+    # A field holding a JSON object as text (Duo's description, a nested audit detail):
+    # its keys are fields too (description.require_lock), as Splunk's spath reads them.
+    more = {}
+    for k, v in raw.items():
+        if isinstance(v, str) and v[:1] == "{" and v[-1:] == "}" and len(v) <= 20000:
+            try:
+                o = json.loads(v)
+            except ValueError:
+                continue
+            if isinstance(o, dict):
+                more.update({kk: vv for kk, vv in _flat(o, k).items() if kk not in raw})
+    return {**raw, **more} if more else raw
 
 
 def sigma_pass(out, log=None) -> dict:

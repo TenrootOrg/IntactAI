@@ -265,6 +265,22 @@ class SecurityRegistryAudit(unittest.TestCase):
         self.assertTrue(S.evaluate(self.EV, [r], {}))
 
 
+class JsonInsideAField(unittest.TestCase):
+    """Duo's administrator log keeps the policy change as JSON text in "description";
+    a rule names its keys (require_lock), as Splunk's spath reads them."""
+    ROW = {"ctime": "Wed Jul  9 11:01:58 2025", "action": "policy_update", "actionlabel": "Modified policy",
+           "isotimestamp": "2025-07-09T11:01:58+00:00", "object": "test1", "username": "Test Test",
+           "description": '{"require_lock": false, "admin_email": "test@test.com"}'}
+
+    def test_a_key_inside_json_text_is_a_field(self):
+        r = S.compile_rule({"title": "t", "id": "x", "level": "high",
+                            "logsource": {"product": "cisco", "service": "duo"},
+                            "detection": {"sel": {"action": "policy_update", "require_lock": "false"},
+                                          "condition": "sel"}})
+        self.assertTrue(S.evaluate(X.sigma_event(self.ROW), [r], {}))
+        self.assertFalse(S.evaluate(X.sigma_event(dict(self.ROW, description='{"require_lock": true}')), [r], {}))
+
+
 class EsxiSyslog(unittest.TestCase):
     """ESXi lines read as structure (key=value, or columns split on spaces) lost the
     message the ESXi rules match: all 23 Splunk ESXi detections were silent."""
