@@ -294,6 +294,14 @@ def _cef_row(line):
     return row
 
 
+# auditd writes the syscall NUMBER (per architecture); the Sigma auditd rules
+# name it (SYSCALL: socket), as ausearch -i would. The ones the rules use:
+_SYSCALLS = {"c000003e": {41: "socket", 59: "execve", 322: "execveat", 319: "memfd_create", 133: "mknod",
+                          259: "mknodat", 135: "personality", 99: "sysinfo", 103: "syslog"},      # x86_64
+             "c00000b7": {198: "socket", 221: "execve", 281: "execveat", 279: "memfd_create", 33: "mknodat",
+                          92: "personality", 179: "sysinfo", 116: "syslog"}}                      # aarch64
+
+
 def _auditd(row):
     """An auditd record names the command it saw as PROCTITLE (hex, NUL between
     the arguments) or EXECVE a0..aN (hex when an argument has spaces). Decoded
@@ -306,6 +314,13 @@ def _auditd(row):
             except ValueError:
                 return v
         return v
+    sc, arch = str(row.get("syscall") or ""), str(row.get("arch") or "").lower()
+    if sc.isdigit() and "SYSCALL" not in row:
+        name = _SYSCALLS.get(arch, {}).get(int(sc))
+        if name:
+            row["SYSCALL"] = name
+    elif sc and not sc.isdigit():
+        row.setdefault("SYSCALL", sc)                   # already a name (ausearch -i)
     if row.get("proctitle"):
         row["proctitle"] = unhex(row["proctitle"])
         row.setdefault("CommandLine", row["proctitle"])
