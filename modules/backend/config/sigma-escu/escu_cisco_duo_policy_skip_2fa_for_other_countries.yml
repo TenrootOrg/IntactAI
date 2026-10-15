@@ -1,0 +1,46 @@
+title: Cisco Duo Policy Skip 2FA for Other Countries
+id: ab59d5ee-8694-4832-a332-cefcf66a9057
+status: experimental
+description: 'The following analytic detects when a Duo policy is created or updated to allow access without two-factor authentication
+  (2FA)
+
+  for users in countries other than the default. It identifies this behavior by searching Duo administrator activity logs
+  for policy
+
+  creation or update actions where the policy description indicates that access is permitted without 2FA for certain user
+  locations.
+
+  This is achieved by parsing the relevant fields in the logs and filtering for the specific condition of ''Allow access without
+  2FA.''
+
+  This behavior is significant for a Security Operations Center (SOC) because bypassing 2FA for any user group or location
+  weakens
+
+  the organization''s security posture and increases the risk of unauthorized access. Attackers or malicious insiders may
+  exploit
+
+  such policy changes to circumvent strong authentication controls, potentially leading to account compromise, data breaches,
+  or
+
+  lateral movement within the environment. Early detection of these policy modifications enables t'
+references:
+- https://research.splunk.com/ab59d5ee-8694-4832-a332-cefcf66a9057/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1556
+logsource:
+  product: cisco
+  service: duo
+detection:
+  sel1:
+    action: policy_update
+  sel2:
+    action: policy_create
+  sel3:
+    user_locations_default_action: Allow access without 2FA
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1556/cisco_duo_policy_bypass_2FA_other_countries/cisco_duo_administrator.json

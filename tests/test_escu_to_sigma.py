@@ -66,6 +66,15 @@ class Translate(unittest.TestCase):
         r = tr('`wineventlog_security` EventCode=4625 NOT src IN ("-", "unknown")')
         self.assertEqual({"EventID": "4625"}, r["detection"]["sel1"])
 
+    def test_a_search_on_spath_keys_is_a_condition(self):
+        r = tr('`cisco_duo_administrator` action=policy_update | spath input=description '
+               '| search require_lock=false | rename object as user | stats count by user')
+        self.assertEqual("(sel1 and sel2)", r["detection"]["condition"])
+        self.assertEqual({"require_lock": "false"}, r["detection"]["sel2"])
+        with self.assertRaises(T.Skip):        # output named after a list element: no such field
+            tr('`amazon_security_lake` api.operation=ModifySnapshotAttribute | spath input=api.request.data '
+               'path=createVolumePermission.add.items{}.group output=group | search group=all')
+
     def test_a_list_of_objects_is_skipped(self):
         with self.assertRaises(T.Skip):
             tr('`o365_management_activity` ModifiedProperties{}.Name=X')

@@ -277,6 +277,7 @@ RAW_SOURCES = {
     "ms_defender": {"product": "windows", "service": "windefend"},
     "kube_audit": {"product": "kubernetes", "service": "audit"},
     "cisco_secure_firewall": {"product": "cisco", "service": "secure_firewall"},
+    "cisco_duo_administrator": {"product": "cisco", "service": "duo"},
     "esxi_syslog": {"product": "esxi"},                 # free-text syslog: Message is the line
 }
 RAW_FIELDS = {   # Splunk add-on names -> the raw / Sigma names our reader keeps
@@ -312,12 +313,27 @@ def split_pipes(s):
 _REGEX_PIPE = re.compile(r'regex\s+([\w.]+)\s*(!?=)\s*"((?:[^"\\]|\\.)*)"\s*$', re.S)
 
 
-def check_pipes(pipes):
+def check_pipes(pipes, searches=None):
     """The pipes after the filter: raise Skip if one can drop rows we cannot express;
-    return the `| regex field="..."` filters, which Sigma can (field|re)."""
-    regexes = []
+    return the `| regex field="..."` filters, which Sigma can (field|re). With a
+    `searches` list, a `| search <condition>` right after `spath` (the JSON keys keep
+    their names: nothing renamed or computed in between) is collected there."""
+    regexes, spath, renamed = [], False, False
     for p in pipes:
         cmd = (p.split() or [""])[0].lower()          # "stats\n count": any whitespace ends the name
+        if cmd == "spath":
+            spath = True
+            # "path=a.b{}.group output=group" names a value inside a list: no field of
+            # that name exists here. Only "path=x.ruleAction output=ruleAction" keeps names.
+            pm, om = re.search(r"\bpath=(\S+)", p), re.search(r"\boutput=(\S+)", p)
+            if om and (not pm or "{}" in pm.group(1) or pm.group(1).split(".")[-1] != om.group(1)):
+                renamed = True
+            continue
+        if cmd in ("rename", "eval", "rex", "lookup", "stats", "eventstats", "streamstats", "mvexpand"):
+            renamed = True
+        if cmd == "search" and searches is not None and spath and not renamed:
+            searches.append(p.strip()[len("search"):].strip())
+            continue
         if cmd.startswith("`"):
             if not re.match(r"`(security_content_ctime|\w+_filter|drop_dm_object_name)", cmd):
                 raise Skip(f"macro after the filter: {cmd}")
@@ -366,9 +382,12 @@ def translate_raw(doc, macros):
     if not m or m.group(1) not in RAW_SOURCES:
         raise Skip("raw search on a source with no Sigma log source")
     first, *pipes = split_pipes(m.group(2))
-    regexes = check_pipes(pipes)
+    searches = []
+    regexes = check_pipes(pipes, searches)
     product = RAW_SOURCES[m.group(1)].get("product")
     cond = expand(first.strip(), macros)
+    for extra in searches:                              # the spath'd JSON keys: one more condition
+        cond = f"({cond}) AND ({extra})"
     if not cond.strip():
         raise Skip("no filter")
     saved = dict(FIELDS)
