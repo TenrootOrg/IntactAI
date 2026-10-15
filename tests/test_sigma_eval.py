@@ -248,6 +248,23 @@ class CiscoSecureFirewall(unittest.TestCase):
         self.assertFalse(S.evaluate(dict(ev, SignatureID=1), [r], {}))
 
 
+class SecurityRegistryAudit(unittest.TestCase):
+    """Security 4657 (registry object auditing) names the key as \\REGISTRY\\MACHINE\\...
+    plus a value name: the registry rules were written for Sysmon and never ran on it."""
+    EV = {"Provider": "Microsoft-Windows-Security-Auditing", "EventID": "4657", "Channel": "Security",
+          "ObjectName": "\\REGISTRY\\MACHINE\\SYSTEM\\ControlSet001\\Control\\Lsa",
+          "ObjectValueName": "Security Packages", "NewValue": "mimilib",
+          "ProcessName": "C:\\Windows\\System32\\reg.exe"}
+
+    def test_a_registry_rule_reads_4657(self):
+        r = S.compile_rule({"title": "t", "id": "x", "level": "high",
+                            "logsource": {"category": "registry_event", "product": "windows"},
+                            "detection": {"sel": {"TargetObject|endswith": "\\Control\\Lsa\\Security Packages",
+                                                  "Details": "mimilib"},
+                                          "img": {"Image": None}, "condition": "sel and not img"}})
+        self.assertTrue(S.evaluate(self.EV, [r], {}))
+
+
 class EsxiSyslog(unittest.TestCase):
     """ESXi lines read as structure (key=value, or columns split on spaces) lost the
     message the ESXi rules match: all 23 Splunk ESXi detections were silent."""

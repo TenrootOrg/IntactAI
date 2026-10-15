@@ -435,7 +435,7 @@ ALIASES = {
     "awsregion": ["cloud.region"],
     # process telemetry: Security 4688, Defender XDR, CrowdStrike FDR, Elastic, generic
     "image": ["newprocessname", "folderpath", "imagefilename", "process.executable", "processpath",
-              "actor_process_image_path", "exe", "columns.path"],
+              "actor_process_image_path", "exe", "columns.path", "processname"],
     "parentimage": ["parentprocessname", "initiatingprocessfolderpath", "process.parent.executable",
                     "parentimagefilename", "causality_actor_process_image_path"],
     "commandline": ["processcommandline", "process.command_line", "actor_process_command_line", "cmdline"],
@@ -500,6 +500,14 @@ class Event:
                 return self._low[name]
             if name in self._last:
                 return self._last[name]
+        if f == "targetobject" and "ObjectValueName" in self.row:
+            # Security 4657: \REGISTRY\MACHINE\...\Lsa + "Security Packages", as Sysmon writes it
+            # (HKLM\...\Lsa\Security Packages) for the registry rules.
+            key = re.sub(r"^\\REGISTRY\\MACHINE", "HKLM", str(self.row.get("ObjectName") or ""), flags=re.I)
+            key = re.sub(r"^\\REGISTRY\\USER", "HKU", key, flags=re.I)
+            return f"{key}\\{self.row['ObjectValueName']}"
+        if f == "details" and "NewValue" in self.row:
+            return self.row["NewValue"]
         if f == "c-uri":
             # IIS / W3C and nginx keep path and query apart ("/shell.jsp", "cmd=id");
             # a rule on the whole URL ("*.jsp?cmd=*") reads them joined, as a proxy writes it.
@@ -596,6 +604,9 @@ def profiles(row) -> set:
                     out.add((None, "dns", None))
         if eid == 4688:
             out.add(("windows", "process_creation", "security"))
+        if eid == 4657 and chan == "security":                 # registry value modified (object auditing)
+            out.add(("windows", "registry_set", "security"))
+            out.add(("windows", "registry_event", "security"))
         if eid in (4104, 4103) and "powershell" in chan:
             out.add(("windows", "ps_script" if eid == 4104 else "ps_module", "powershell"))
         if eid in (400, 403, 600, 800) and chan == "windows powershell":
