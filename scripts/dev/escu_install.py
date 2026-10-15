@@ -31,8 +31,11 @@ def main(rules_dir, benign_path, prove_paths):
         for line in open(p):
             r = json.loads(line)
             result[r["file"]] = r["result"]
-    text = open(benign_path).read()
-    benign = json.loads(text[text.index("{\n"):])["hits"] if benign_path != "-" else {}
+    benign = {}
+    for bp in benign_path.split(","):                 # several benign runs: TTP rules, low rules
+        text = open(bp).read()
+        for f, n in json.loads(text[text.index("{\n"):])["hits"].items():
+            benign[f] = benign.get(f, 0) + n
     shutil.rmtree(OUT, ignore_errors=True)
     os.makedirs(OUT)
     kept = demoted = 0
@@ -42,11 +45,15 @@ def main(rules_dir, benign_path, prove_paths):
         with open(os.path.join(rules_dir, f)) as fh:
             doc = yaml.safe_load(fh)
         n = int(benign.get(f) or 0)
-        if n and doc.get("level") != "low":
-            doc["level"] = "low"
+        if n:
+            # Normal systems raise it: never a detection on its own, and not counted
+            # toward a burst of suspicious activity either.
+            doc["x-intact-burst"] = False
+            if doc.get("level") != "low":
+                doc["level"] = "low"
+                demoted += 1
             doc["x-intact"] = (f"Fired {n} time(s) on benign Windows activity (Nextron benign workstation + DC, "
-                               f"1.24 M events): context only, not a detection on its own.")
-            demoted += 1
+                               f"1.24 M events): context only, not counted toward a burst.")
         with open(os.path.join(OUT, f), "w") as fh:
             yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True, width=120)
         kept += 1

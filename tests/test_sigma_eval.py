@@ -163,6 +163,15 @@ class NoisyRulesAreContext(unittest.TestCase):
         S._CACHE["key"] = None
         self.assertEqual(("low", False), (r["level"], r["burst"]))
 
+    def test_a_context_hit_is_not_counted_toward_a_burst(self):
+        from unittest import mock
+        r = rule({"sel": {"c-uri": "*x*"}, "condition": "sel"}, level="low")
+        r["burst"] = False
+        out = [{"n": {}, "raw": {"c-uri": "/x", "cs-method": "GET"}}]
+        with mock.patch.object(S, "load", return_value={"rules": [r]}):
+            X.sigma_pass(out)
+        self.assertEqual(["sigma (context): t"], out[0]["n"]["detected_by"])
+
 
 @unittest.skipUnless(os.path.isdir("/opt/sigma-rules/regression_data"), "SigmaHQ rules not installed here")
 class SigmaHQRegression(unittest.TestCase):

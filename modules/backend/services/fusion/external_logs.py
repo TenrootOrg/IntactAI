@@ -1532,7 +1532,11 @@ def sigma_pass(out, log=None) -> dict:
             n["severity"] = top["level"]
         if not product_alert or not n.get("rule"):
             n["rule"] = top["title"]
-        n["detected_by"] = sorted(set(n.get("detected_by") or []) | {f"sigma: {h['title']}" for h in hits[:5]})
+        # A rule that fires on normal systems is labelled context: the burst rule counts
+        # only "sigma:" hits, so ordinary noise never adds up to a suspicious burst.
+        n["detected_by"] = sorted(set(n.get("detected_by") or [])
+                                  | {f"sigma{'' if h.get('burst', True) else ' (context)'}: {h['title']}"
+                                     for h in hits[:5]})
         if any(h["mitre"] for h in hits):
             n["mitre"] = sorted({m for h in hits for m in h["mitre"]} | set(n.get("mitre") or []))
         for h in hits:
