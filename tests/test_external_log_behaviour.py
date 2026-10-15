@@ -251,6 +251,35 @@ class WindowsEventsByID(unittest.TestCase):
         self.assertEqual([], found(jl(evs)))
 
 
+class ActiveDirectoryPermissions(unittest.TestCase):
+    """5136 logs the old and new descriptor of a change; the rule reads what was ADDED.
+    No benign corpus holds 5136 (DS auditing off), so a legitimate delegation to a
+    non-admin group fires too -- a permission grant is worth a look in an incident."""
+
+    def change(self, dn, old, new, cls="user", who="attacker"):
+        base = {"SystemTime": iso(BASE), "EventID": "5136", "Channel": "Security", "Computer": "DC01",
+                "OpCorrelationID": "{X}", "SubjectUserName": who, "ObjectDN": dn, "ObjectClass": cls,
+                "AttributeLDAPDisplayName": "nTSecurityDescriptor"}
+        return [{**base, "OperationType": "%%14675", "AttributeValue": old},
+                {**base, "OperationType": "%%14674", "AttributeValue": new}]
+
+    def test_full_control_to_a_user_or_a_hidden_ou_or_adminsdholder(self):
+        sd = "O:DAG:DAD:AI(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;DA)"
+        got = found(jl(self.change("CN=victim,CN=Users,DC=corp,DC=local", sd,
+                                   sd + "(A;CI;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;S-1-5-21-1-2-3-4219)")))
+        self.assertEqual([("AD object permissions granted to an account", "medium")], got)
+        got = found(jl(self.change("OU=Stage,DC=corp,DC=local", sd, sd + "(D;;LCDTSD;;;WD)", "organizationalUnit")))
+        self.assertEqual([("AD object hidden", "medium")], got)
+        got = found(jl(self.change("CN=AdminSDHolder,CN=System,DC=corp,DC=local", sd,
+                                   sd + "(A;;RPWP;;;S-1-5-21-1-2-3-1961)", "container")))
+        self.assertEqual([("AdminSDHolder permissions changed", "high")], got)
+
+    def test_admins_inherited_and_read_rights_stay_quiet(self):
+        sd = "O:DAG:DAD:AI(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;DA)"
+        for added in ("(A;;GA;;;S-1-5-21-1-2-3-512)", "(A;CIID;GA;;;S-1-5-21-1-2-3-4219)", "(A;;RPLCRC;;;AU)"):
+            self.assertEqual([], found(jl(self.change("CN=x,DC=corp,DC=local", sd, sd + added))), added)
+
+
 class SuspiciousBurst(unittest.TestCase):
     """Low signals add up per host, like Splunk's risk-based alerting."""
 

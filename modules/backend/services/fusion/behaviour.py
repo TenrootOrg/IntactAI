@@ -44,6 +44,7 @@ DEFAULTS = {
     # file) are noise alone; several DIFFERENT ones on one host within the hour are an
     # operator working the box.
     "suspicious-burst": {"distinct": 3, "window_s": 3600, "severity": "medium"},
+    "ad-acl-change": {"severity": "medium"},
     "dns-tunnel": {"subdomains": 100, "window_s": 3600, "long_label": 40, "long_queries": 20,
                    "severity": "medium"},
 }
@@ -609,6 +610,68 @@ def dns_ptr_sweep(rows, p):
     return out
 
 
+# -- Active Directory permission changes (Security 5136 on nTSecurityDescriptor) --------
+# A change logs the old descriptor (%%14675, value deleted) and the new (%%14674,
+# value added) under one OpCorrelationID; what the attacker ADDED is the diff.
+_ACE = re.compile(r"\(([^()]*)\)")
+_CONTROL = re.compile(r"GA|WD|WO")                       # full control / write DACL / write owner
+_ADMIN_SIDS = {"DA", "EA", "BA", "SY", "AO", "SO", "PO", "CA", "ED", "DD", "RS", "ER", "CO", "PS", "RU",
+               "NO", "BO", "SA"}
+
+
+def _trustee_is_admin(sid):
+    s = str(sid).upper()
+    if s in _ADMIN_SIDS or s.startswith("S-1-5-32-") or s in ("S-1-5-18", "S-1-5-9"):
+        return True
+    m = re.search(r"-(\d+)$", s)
+    return bool(s.startswith("S-1-5-21-") and m and int(m.group(1)) < 1000)   # 500 admin, 512 DA, 519 EA...
+
+
+def ad_acl_change(rows, p):
+    pairs: dict = {}
+    for i, r in enumerate(rows):
+        raw = r.get("raw") or {}
+        if str(raw.get("EventID")) != "5136" or str(raw.get("AttributeLDAPDisplayName") or "").lower() \
+                != "ntsecuritydescriptor":
+            continue
+        k = raw.get("OpCorrelationID") or f"row{i}"
+        pairs.setdefault(k, {})[str(raw.get("OperationType"))] = (i, raw)
+    out = []
+    for k, ops in pairs.items():
+        if "%%14674" not in ops:
+            continue
+        i, new = ops["%%14674"]
+        old = ops.get("%%14675", (None, {}))[1]
+        added = set(_ACE.findall(str(new.get("AttributeValue") or ""))) - set(
+            _ACE.findall(str(old.get("AttributeValue") or "")))
+        if "%%14675" not in ops:                             # nothing to diff against: too noisy to read
+            continue
+        dn = str(new.get("ObjectDN") or "")
+        hits = []
+        for ace in added:
+            part = ace.split(";")
+            if len(part) < 6 or "ID" in part[1]:             # inherited: comes from the parent, not this change
+                continue
+            kind, rights, who = part[0], part[2], part[5]
+            if kind in ("A", "OA") and _CONTROL.search(rights) and not _trustee_is_admin(who):
+                hits.append(f"control ({rights}) granted to {who}")
+            elif kind == "D" and who in ("WD", "AU") and "LC" in rights:
+                hits.append("hidden from everyone (deny list contents)")
+        adminsd = "cn=adminsdholder" in dn.lower()
+        if not hits and not (adminsd and added):
+            continue
+        n = rows[i].get("n") or {}
+        sev = "high" if adminsd else p["severity"]
+        title = ("AdminSDHolder permissions changed" if adminsd else
+                 "AD object hidden" if all(h.startswith("hidden") for h in hits) else
+                 "AD object permissions granted to an account")
+        out.append(_row("ad-acl-change", title, sev, [(n.get("ts"), i)],
+                        {"user": new.get("SubjectUserName"), "host": new.get("Computer")},
+                        f"{new.get('SubjectUserName')} changed the permissions of {dn}: "
+                        + ("; ".join(hits) if hits else "AdminSDHolder is copied onto every admin account")))
+    return out
+
+
 def suspicious_burst(rows, p):
     """Several different low-level Sigma signals on one host within a window."""
     groups: dict = {}
@@ -665,6 +728,7 @@ def run(rows, params=None, log=None) -> list:
                            ("web-scan", web_scan, rows), ("web-login-brute-force", web_login_brute_force, rows),
                            ("dns-ptr-sweep", dns_ptr_sweep, rows),
                            ("suspicious-burst", suspicious_burst, rows),
+                           ("ad-acl-change", ad_acl_change, rows),
                            ("dns-tunnel", dns_tunnel, rows)):
         if name in off:
             continue
