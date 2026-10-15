@@ -88,12 +88,12 @@ Each file was attached as a case would attach it. The type was detected automati
 
 | Type | Dataset | Kind | Files | Rows | Detections | Seconds | Read as | Main detections |
 |---|---|---|---|---|---|---|---|---|
-| aws_gcp | elastic_gcp_audit_fixture | benign | 1 | 24 | 0 | 0.1 | jsonl |  |
+| aws_gcp | elastic_gcp_audit_fixture | benign | 1 | 24 | 0 | 0.0 | jsonl |  |
 | aws_gcp | splunk_cloudtrail_login_fail_per_user | attack | 1 | 28 | 1 | 0.0 | jsonl | AWS ConsoleLogin Failed Authentication ×1 |
 | aws_gcp | splunk_cloudtrail_mfa_disabled | attack | 1 | 2 | 2 | 0.0 | jsonl | DeleteVirtualMFADevice ×1; DeactivateMFADevice ×1 |
 | aws_gcp | splunk_gcp_gcploit | attack | 1 | 1 | 0 | 0.0 | json |  |
-| dns | secrepo_maccdc2012_dns | attack | 1 | 427,935 | 197 | 56.1 | zeek-dns-tsv | Suspicious DNS Z Flag Bit Set ×181; Host sweep ×8; Reverse DNS sweep ×7 |
-| dns | splunk_sysmon_long_dns_query | attack | 1 | 10 | 4 | 0.4 | xml | HackTool - NetExec Execution ×2; Suspicious DNS Query Indicating Kerberos Coercion via DNS Object SPN Spoofing ×2 |
+| dns | secrepo_maccdc2012_dns | attack | 1 | 427,935 | 197 | 48.3 | zeek-dns-tsv | Suspicious DNS Z Flag Bit Set ×181; Host sweep ×8; Reverse DNS sweep ×7 |
+| dns | splunk_sysmon_long_dns_query | attack | 1 | 10 | 4 | 0.3 | xml | HackTool - NetExec Execution ×2; Suspicious DNS Query Indicating Kerberos Coercion via DNS Object SPN Spoofing ×2 |
 | dns | splunk_telegram_api_dns | attack | 1 | 13 | 13 | 0.0 | xml | Telegram Bot API Request ×13 |
 | edr_alerts | elastic_crowdstrike_alert_fixture | attack-shaped | 1 | 11 | 6 | 0.1 | jsonl | PrewittPupAdwareSensorDetect-Lowest ×3; Identity verification denied ×1; Identityverificationdenied ×1 |
 | edr_alerts | elastic_m365_defender_alert_fixture | attack-shaped | 2 | 11 | 9 | 0.0 | jsonl | Suspicious PowerShell command line ×4; Malware ×3; Suspicious process injection observed ×2 |
@@ -101,14 +101,14 @@ Each file was attached as a case would attach it. The type was detected automati
 | edr_alerts | splunk_cisco_secure_endpoint_tamper | attack | 1 | 3 | 3 | 0.0 | xml | Security product service stopped ×3 |
 | edr_alerts | splunk_crowdstrike_falcon_lsass | attack | 1 | 43 | 34 | 0.3 | jsonl | LSASS Dump Keyword In CommandLine ×18; System File Execution Location Anomaly ×9; Process Memory Dump Via Comsvcs.DLL ×4 |
 | edr_alerts | splunk_defender_asr | attack | 2 | 18 | 2 | 0.0 | xml | PSExec and WMI Process Creations Block ×2 |
-| entra | elastic_azure_signinlogs_fixture | benign | 2 | 48 | 0 | 5.4 | jsonl |  |
+| entra | elastic_azure_signinlogs_fixture | benign | 2 | 48 | 0 | 4.3 | jsonl |  |
 | entra | splunk_azuread_bruteforce_single_user | attack | 1 | 30 | 1 | 0.0 | jsonl | Brute force ×1 |
 | entra | splunk_azuread_distributed_spray | attack | 1 | 31 | 1 | 0.0 | jsonl | Distributed password spray ×1 |
 | entra | splunk_azuread_mfa_denied_fatigue | attack | 1 | 11 | 13 | 0.0 | jsonl | Multifactor Authentication Interrupted ×11; Brute force ×1; MFA fatigue ×1 |
 | entra | splunk_azuread_password_spray | attack | 1 | 31 | 1 | 0.0 | jsonl | Password spray ×1 |
 | firewall | elastic_cisco_asa_fixture | mixed | 1 | 201 | 5 | 0.4 | text | Firewall threat detection / IPS event ×5 |
-| firewall | elastic_fortigate_fixture | mixed | 2 | 141 | 13 | 0.1 | kv | crlevel: high ×4; PHP.CGI.Argument.Injection ×3; infected ×1 |
-| firewall | elastic_panos_fixture | mixed | 2 | 427 | 120 | 0.2 | panos-csv | generic:www.virussign.com(327891564) ×84; generic:sabaint.me(418218978) ×21; Virus/Linux.example(419149938) ×5 |
+| firewall | elastic_fortigate_fixture | mixed | 2 | 141 | 13 | 0.0 | kv | crlevel: high ×3; PHP.CGI.Argument.Injection ×3; infected ×1 |
+| firewall | elastic_panos_fixture | mixed | 2 | 427 | 116 | 0.3 | panos-csv | generic:www.virussign.com(327891564) ×84; generic:sabaint.me(418218978) ×21; Virus/Linux.example(419149938) ×5 |
 | firewall | elastic_pfsense_iptables_fixture | mixed | 2 | 47 | 0 | 0.0 | csv, kv |  |
 | firewall | splunk_fortigate_cve_2022_40684 | attack | 1 | 1 | 1 | 0.0 | panos-csv | FortiOS admin API auth bypass (CVE-2022-40684) ×1 |
 | firewall | splunk_pan_screenconnect_traffic | attack | 2 | 16 | 1 | 0.0 | panos-csv | screenconnect ×1 |
@@ -120,9 +120,9 @@ Each file was attached as a case would attach it. The type was detected automati
 | gworkspace_or_duo | splunk_duo_policy_bypass_2fa | attack | 1 | 6 | 2 | 0.0 | jsonl | Allow access without 2FA ×2 |
 | gworkspace_or_duo | splunk_gws_failed_mfa | attack | 1 | 10 | 1 | 0.0 | jsonl | Brute force ×1 |
 | gworkspace_or_duo | splunk_gws_login_failures | attack | 1 | 30 | 1 | 0.0 | jsonl | Password spray ×1 |
-| linux | secrepo_auth_log | attack | 1 | 86,839 | 232 | 101.1 | text | Password spray ×195; Suspicious OpenSSH Daemon Error ×35; Brute force ×2 |
+| linux | secrepo_auth_log | attack | 1 | 86,839 | 232 | 96.3 | text | Password spray ×195; Suspicious OpenSSH Daemon Error ×35; Brute force ×2 |
 | linux | splunk_auditd_add_user | attack | 2 | 179 | 178 | 0.1 | kv | Local account created by command ×178 |
-| linux | splunk_auditd_copy_fail_privesc | attack | 3 | 959 | 42 | 0.8 | kv, text | Linux AF_ALG Socket Creation - Kernel Crypto API Exploit Indicator ×40; Suspicious Log Entries ×1; Modifying Crontab ×1 |
+| linux | splunk_auditd_copy_fail_privesc | attack | 3 | 959 | 42 | 0.9 | kv, text | Linux AF_ALG Socket Creation - Kernel Crypto API Exploit Indicator ×40; Suspicious Log Entries ×1; Modifying Crontab ×1 |
 | okta | elastic_okta_system_fixture | benign | 1 | 26 | 0 | 0.0 | jsonl |  |
 | okta | splunk_okta_account_lockout | attack | 1 | 7 | 7 | 0.0 | jsonl | user.account.lock ×7 |
 | okta | splunk_okta_mfa_push_fatigue | attack | 1 | 20 | 1 | 0.0 | jsonl | MFA fatigue then approved ×1 |
@@ -130,22 +130,22 @@ Each file was attached as a case would attach it. The type was detected automati
 | suricata | elastic_suricata_eve_fixture | mixed | 3 | 60 | 7 | 0.0 | jsonl | ET POLICY curl User-Agent Outbound ×6; ET POLICY Observed IP Lookup Domain (l2 .io in TLS SNI) ×1 |
 | suricata | splunk_suricata_c2_useragents | attack | 2 | 104 | 12 | 0.1 | jsonl | Malware User Agent ×8; Exploit Framework User Agent ×4 |
 | suricata | splunk_suricata_ivanti_exploit | attack | 2 | 12 | 12 | 0.0 | jsonl | Exploit payload in a request ×12 |
-| suricata | splunk_suricata_webshell | attack | 2 | 141 | 0 | 0.4 | jsonl, space |  |
-| suricata | stratosphere_iot23_mirai_34_1_eve | attack | 2 | 11,404 | 11 | 8.2 | jsonl, space | ET POLICY Executable and linking format (ELF) file download Over HTTP ×2; ET HUNTING Possible ELF executable sent when remote host claims to send a Text File ×2; Connection flood ×2 |
+| suricata | splunk_suricata_webshell | attack | 2 | 141 | 0 | 0.3 | jsonl, space |  |
+| suricata | stratosphere_iot23_mirai_34_1_eve | attack | 2 | 11,404 | 11 | 6.6 | jsonl, space | ET POLICY Executable and linking format (ELF) file download Over HTTP ×2; ET HUNTING Possible ELF executable sent when remote host claims to send a Text File ×2; Connection flood ×2 |
 | web_proxy | elastic_squid_fixture | benign | 1 | 101 | 0 | 0.0 | space |  |
-| web_proxy | secrepo_apache_selflogs | mostly benign real-world | 3 | 7,233 | 0 | 5.2 | access-log |  |
-| web_proxy | secrepo_squid_access | benign real-world | 1 | 499,999 | 0 | 46.7 | space |  |
+| web_proxy | secrepo_apache_selflogs | mostly benign real-world | 3 | 7,233 | 0 | 4.3 | access-log |  |
+| web_proxy | secrepo_squid_access | benign real-world | 1 | 499,999 | 0 | 45.1 | space |  |
 | web_proxy | splunk_nginx_k8s_lfi | attack | 1 | 1 | 1 | 0.3 | access-log | Exploit payload in a request ×1 |
 | web_proxy | splunk_nginx_log4shell | attack | 1 | 87 | 3 | 0.1 | kv | Exploit payload in a request ×3 |
 | web_proxy | splunk_nginx_tomcat_exploit | attack | 1 | 45 | 2 | 0.0 | kv | Server-side code uploaded with HTTP PUT ×2 |
-| windows_json | existing_references | attack | 1 | 196,081 | 1,887 | 149.1 | jsonl | Alternate PowerShell Hosts - PowerShell Module ×954; Python Initiated Connection ×348; Potential Binary Or Script Dropper Via PowerShell ×290 |
-| zeek | brimdata_wrccdc2018_zeek_json | mixed real-world | 14 | 377,519 | 22,710 | 154.0 | jsonl, text | Malware User Agent ×11943; Suspicious User-Agents Related To Recon Tools ×9232; Exploit payload in a request ×857 |
-| zeek | secrepo_maccdc2012 | attack | 4 | 257,826 | 110,393 | 225.0 | tsv, zeek-http-tsv, zeek-notice-tsv, zeek-ssh-tsv | Malware User Agent ×80958; Exploit payload in a request ×19444; Suspicious User-Agents Related To Recon Tools ×7420 |
+| windows_json | existing_references | attack | 1 | 196,081 | 1,887 | 140.7 | jsonl | Alternate PowerShell Hosts - PowerShell Module ×954; Python Initiated Connection ×348; Potential Binary Or Script Dropper Via PowerShell ×290 |
+| zeek | brimdata_wrccdc2018_zeek_json | mixed real-world | 14 | 377,519 | 22,710 | 144.1 | jsonl, text | Malware User Agent ×11943; Suspicious User-Agents Related To Recon Tools ×9232; Exploit payload in a request ×857 |
+| zeek | secrepo_maccdc2012 | attack | 4 | 257,826 | 110,393 | 186.6 | tsv, zeek-http-tsv, zeek-notice-tsv, zeek-ssh-tsv | Malware User Agent ×80958; Exploit payload in a request ×19444; Suspicious User-Agents Related To Recon Tools ×7420 |
 | zeek | splunk_zeek_http_encoded_post | attack | 1 | 2 | 2 | 0.0 | jsonl | Encoded blob POSTed to a web page ×2 |
 | zeek | splunk_zeek_http_unusual_method | attack | 1 | 2 | 2 | 0.0 | jsonl | Non-standard HTTP method ×2 |
 | zeek | splunk_zeek_rdp_conn | attack | 1 | 1 | 1 | 0.0 | json | Remote admin service reached from the internet ×1 |
 | zeek | stratosphere_iot23_honeypot_benign_4_1 | benign | 1 | 452 | 0 | 0.1 | zeek |  |
-| zeek | stratosphere_iot23_mirai_34_1 | attack | 1 | 23,145 | 2 | 1.6 | zeek | Connection flood ×1; Repeated failed connections to an outside host ×1 |
+| zeek | stratosphere_iot23_mirai_34_1 | attack | 1 | 23,145 | 2 | 1.7 | zeek | Connection flood ×1; Repeated failed connections to an outside host ×1 |
 
 **Benign sets stay quiet.** This covers 500k real Squid lines, the secrepo Apache self-logs, the IoT-23 Hue bridge,
 and the Okta, Entra, GCP and pfSense fixtures. Every "detection" on a fixture is a verdict the vendor itself wrote into
@@ -157,3 +157,96 @@ the row.
 - **GCPloit:** a single API call that looks benign.
 - **Binary .evtx attachments:** not read. Export them to XML or JSON first.
 
+## Vendor fixtures with Elastic's parsed output (2026-10-15)
+
+These cover the 42 products that previously had synthetic samples only. The data comes from the pipeline-test
+fixtures of 57 data streams of [elastic/integrations](https://github.com/elastic/integrations) (Elastic
+License 2.0). Each fixture is stored under `~/datasets/external-logs/<type>/elastic_<package>_<stream>/`, unwrapped
+to the raw vendor lines, with Elastic's own parsed output kept beside it in `elastic_expected/`. The data is outside
+the repo.
+
+Every row was compared with Elastic's reading: time, source and destination IP, user and host, and whether
+Elastic calls the row an alert (`event.kind: alert`). Read the columns this way:
+- **Detected** counts Elastic alerts that we raise to medium or higher.
+- **Vendor graded low** counts rows the product itself rated low or informational. They stay searchable context by
+  design.
+- **Extra** counts detections Elastic files as plain events. Most are real: Proofpoint clicks on phish, Auth0
+  brute-force IP blocks, Entra risk events, Defender behaviours and SonicWall floods.
+
+Fields that differ from Elastic are mostly interpretation, not misreads:
+- Elastic applies a configured time zone where the log states none (SonicWall).
+- Elastic names the firewall itself as `host.name` (Sophos XG, Zscaler). We never put traffic on the firewall.
+- Elastic labels whole streams as alerts, including Mimecast TTP rows with `scanResult: clean`.
+
+Not covered:
+- Elastic Defend, OneLogin and Wazuh have no Elastic fixtures.
+- Netskope's fixtures are not pipeline tests.
+
+| Type | Elastic package / stream | Files read (of all) | Rows | Fields matching Elastic | Elastic alerts | Detected | Vendor graded low | Extra detections |
+|---|---|---|---|---|---|---|---|---|
+| edr_alerts | eset_protect_detection | 1/1 | 7 | ts 7/7, src_ip 4/4, dst_ip 6/6, user 7/7 | 7 | 3 | 2 | 0 |
+| edr_alerts | eset_protect_event | 1/1 | 28 |  | 0 | 0 | 0 | 0 |
+| edr_alerts | panw_cortex_xdr_alerts | 4/4 | 13 | ts 4/11, src_ip 7/7, dst_ip 6/6, user 8/8, host 9/9 | 12 | 5 | 7 | 0 |
+| edr_alerts | panw_cortex_xdr_event | 2/2 | 5 | ts 5/5, src_ip 2/2, dst_ip 2/2, user 2/3, host 2/2 | 0 | 0 | 0 | 0 |
+| edr_alerts | sophos_central_alert | 2/2 | 4 | ts 0/4, src_ip 4/4, dst_ip 4/4, user 1/4 | 4 | 4 | 0 | 0 |
+| edr_alerts | sophos_central_event | 2/2 | 4 | ts 4/4, src_ip 4/4, dst_ip 4/4, user 0/4 | 0 | 0 | 0 | 0 |
+| edr_alerts | symantec_endpoint_log | 13/17 | 33 | ts 5/8, src_ip 7/16, dst_ip 5/11, user 19/25, host 5/26 | 0 | 0 | 0 | 2 |
+| edr_alerts | symantec_endpoint_security_event | 8/12 | 58 | ts 52/53, src_ip 9/51, dst_ip 7/47, user 3/50, host 47/47 | 0 | 0 | 0 | 12 |
+| edr_alerts | symantec_endpoint_security_incident | 1/1 | 2 | ts 2/2 | 2 | 2 | 0 | 0 |
+| edr_alerts | trellix_epo_cloud_event | 1/1 | 3 | ts 2/2, src_ip 0/2, dst_ip 0/2 | 2 | 2 | 0 | 0 |
+| edr_alerts | trellix_edr_cloud_event | 1/1 | 1 | ts 1/1, src_ip 1/1, dst_ip 1/1, user 1/1 | 0 | 0 | 0 | 0 |
+| edr_alerts | trend_micro_vision_one_alert | 1/1 | 5 | ts 0/5 | 5 | 5 | 0 | 0 |
+| edr_alerts | trend_micro_vision_one_detection | 1/1 | 7 | ts 6/6, src_ip 4/4, dst_ip 4/4, host 1/4 | 0 | 0 | 0 | 1 |
+| edr_alerts | carbon_black_cloud_alert_v7 | 4/4 | 7 | ts 7/7, user 5/5, host 3/5 | 7 | 6 | 1 | 0 |
+| edr_alerts | carbon_black_cloud_watchlist_hit | 1/1 | 6 | ts 6/6, host 6/6 | 0 | 0 | 0 | 1 |
+| edr_alerts | carbon_black_cloud_endpoint_event | 1/1 | 22 | ts 0/22, src_ip 0/5, dst_ip 3/5, host 22/22 | 0 | 0 | 0 | 0 |
+| edr_alerts | m365_defender_alert | 1/1 | 5 | ts 0/4, src_ip 0/2, user 0/4 | 4 | 4 | 0 | 0 |
+| edr_alerts | m365_defender_event | 7/7 | 83 | ts 82/82, src_ip 20/26, dst_ip 20/24, user 39/41, host 63/63 | 4 | 3 | 0 | 3 |
+| edr_alerts | m365_defender_incident | 2/2 | 14 | ts 6/13, src_ip 0/1, user 0/8, host 0/6 | 13 | 7 | 6 | 0 |
+| edr_alerts | microsoft_defender_endpoint_log | 1/1 | 6 | user 2/2, host 5/5 | 5 | 5 | 0 | 0 |
+| firewall | checkpoint_firewall | 7/8 | 109 | ts 88/90, src_ip 71/73, dst_ip 30/32, user 11/38, host 2/2 | 2 | 0 | 1 | 2 |
+| firewall | cisco_ftd_log | 7/20 | 610 | ts 123/590, src_ip 104/552, dst_ip 104/538, user 49/71, host 0/33 | 7 | 2 | 3 | 4 |
+| firewall | juniper_srx_log | 6/7 | 105 | ts 66/105, src_ip 72/81, dst_ip 68/76, host 0/29 | 37 | 26 | 3 | 2 |
+| firewall | sonicwall_firewall_log | 4/4 | 220 | ts 0/220, src_ip 216/218, dst_ip 212/215, user 0/144 | 8 | 8 | 0 | 7 |
+| firewall | sophos_xg | 18/18 | 272 | ts 270/271, src_ip 238/241, dst_ip 213/223, user 8/8, host 0/272 | 73 | 32 | 18 | 0 |
+| firewall | cef_log | 8/8 | 36 | src_ip 20/21, dst_ip 9/10 | 0 | 0 | 0 | 13 |
+| firewall | aws_vpcflow | 5/7 | 32 | ts 1/26, src_ip 19/23, dst_ip 19/23 | 0 | 0 | 0 | 0 |
+| firewall | aws_firewall_logs | 1/1 | 3 | ts 3/3, src_ip 3/3, dst_ip 3/3 | 2 | 2 | 0 | 0 |
+| firewall | aws_waf | 1/1 | 5 | ts 5/5, src_ip 5/5 | 0 | 0 | 0 | 0 |
+| firewall | azure_network_watcher_nsg_log | 1/1 | 1 | ts 1/1, src_ip 0/1, dst_ip 0/1 | 0 | 0 | 0 | 0 |
+| firewall | zscaler_zia_firewall | 2/3 | 12 | ts 11/12, src_ip 4/12, dst_ip 6/12, user 2/10, host 0/10 | 0 | 0 | 0 | 10 |
+| aws_gcp | aws_guardduty | 1/1 | 6 | ts 1/5, src_ip 2/2, user 3/3 | 5 | 5 | 0 | 0 |
+| aws_gcp | aws_route53_resolver_logs | 1/1 | 34 | ts 34/34, src_ip 34/34 | 0 | 0 | 0 | 0 |
+| idp | auth0_logs | 10/10 | 111 | ts 111/111, src_ip 109/109, user 55/55 | 0 | 0 | 0 | 2 |
+| idp | ping_one_audit | 1/1 | 99 | ts 99/99, src_ip 1/1, user 92/92 | 0 | 0 | 0 | 0 |
+| idp | ping_federate_audit | 1/1 | 4 | ts 3/3, src_ip 3/3, user 3/3 | 0 | 0 | 0 | 0 |
+| idp | jumpcloud_events | 1/1 | 4 | ts 4/4, user 1/1 | 0 | 0 | 0 | 0 |
+| idp | azure_identity_protection | 2/3 | 15 | ts 9/15, src_ip 2/2, user 4/4 | 0 | 0 | 0 | 4 |
+| idp | azure_auditlogs | 5/6 | 22 | ts 16/22, src_ip 4/5, user 2/2 | 0 | 0 | 0 | 0 |
+| web_proxy | zscaler_zia_web | 2/2 | 10 | ts 10/10, src_ip 10/10, dst_ip 10/10, user 10/10, host 0/10 | 0 | 0 | 0 | 5 |
+| web_proxy | zscaler_zia_alerts | 0/1 | 3 | ts 0/3, dst_ip 0/3 | 0 | 0 | 0 | 0 |
+| web_proxy | cloudflare_logpush_http_request | 1/1 | 9 | ts 9/9, src_ip 9/9, dst_ip 0/8 | 0 | 0 | 0 | 1 |
+| web_proxy | cloudflare_logpush_firewall_event | 1/1 | 6 | ts 5/5, src_ip 6/6 | 0 | 0 | 0 | 0 |
+| web_proxy | cloudflare_logpush_gateway_http | 1/1 | 5 | ts 5/5, src_ip 4/4, dst_ip 5/5, host 5/5 | 0 | 0 | 0 | 0 |
+| dns | zscaler_zia_dns | 2/2 | 14 | ts 14/14, src_ip 14/14, dst_ip 14/14, user 14/14, host 0/14 | 0 | 0 | 0 | 0 |
+| dns | cisco_umbrella_log | 7/7 | 40 | ts 24/27, src_ip 17/17, dst_ip 9/22, user 0/2 | 2 | 2 | 0 | 0 |
+| dns | cloudflare_logpush_gateway_dns | 1/1 | 6 | ts 6/6, src_ip 4/4, dst_ip 6/6, host 6/6 | 0 | 0 | 0 | 0 |
+| dns | microsoft_dnsserver_analytical | 1/1 | 11 | ts 11/11, src_ip 1/6, dst_ip 0/5, host 8/8 | 0 | 0 | 0 | 0 |
+| dns | microsoft_dnsserver_audit | 1/1 | 3 | ts 3/3, host 1/1 | 0 | 0 | 0 | 0 |
+| email | proofpoint_tap_clicks_blocked | 1/1 | 6 | ts 5/5, src_ip 5/5, dst_ip 5/5 | 0 | 0 | 0 | 3 |
+| email | proofpoint_tap_clicks_permitted | 1/1 | 5 | ts 2/4, src_ip 4/4, dst_ip 4/4 | 0 | 0 | 0 | 3 |
+| email | proofpoint_tap_message_blocked | 1/1 | 7 | ts 1/6, src_ip 6/6 | 0 | 0 | 0 | 6 |
+| email | proofpoint_tap_message_delivered | 1/1 | 9 | ts 1/8, src_ip 8/8 | 0 | 0 | 0 | 8 |
+| email | mimecast_ttp_url_logs | 1/1 | 9 | ts 8/8, src_ip 0/6 | 5 | 5 | 0 | 0 |
+| email | mimecast_siem_logs | 3/3 | 84 | ts 84/84, src_ip 36/36, dst_ip 10/10 | 22 | 3 | 0 | 1 |
+| email | mimecast_ttp_ap_logs | 1/1 | 12 | ts 11/11 | 5 | 5 | 0 | 0 |
+| email | microsoft_exchange_online_message_trace_log | 1/1 | 8 | ts 6/7, src_ip 5/6, dst_ip 1/1, user 5/5 | 0 | 0 | 0 | 0 |
+
+**Left out by design:** spam verdicts, web-filter and blocklist blocks, and denied firewall traffic. These are policy
+actions, not attacks; they stay searchable.
+
+**Known limits:**
+- Custom-format AWS VPC Flow logs without a header stay unnamed. Their column order is only known from the
+  AWS-side format string.
+- A severity scale is inferred from the values in the file. Carbon Black's 1-10 scale is read as 1-5 when a file
+  holds only small values.
