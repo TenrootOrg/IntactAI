@@ -180,6 +180,28 @@ def _windows(items, window_s):
     return out
 
 
+def _densest(items, window_s, key, need):
+    """(distinct, window) -- the time window (<= window_s) holding the most
+    DISTINCT key(item) values, if it reaches `need`; else None. Incremental
+    counts as the window slides: linear. (Rebuilding a set at every step was
+    quadratic -- a scanner's 50k requests took minutes.)"""
+    items = sorted(items, key=lambda x: x[0])
+    counts: dict = {}
+    start, best = 0, None
+    for end, it in enumerate(items):
+        k = key(it)
+        counts[k] = counts.get(k, 0) + 1
+        while it[0] - items[start][0] > window_s:
+            old = key(items[start])
+            counts[old] -= 1
+            if not counts[old]:
+                del counts[old]
+            start += 1
+        if len(counts) >= need and (best is None or len(counts) > best[0]):
+            best = (len(counts), items[start:end + 1])
+    return best
+
+
 # -- the rules ------------------------------------------------------------------------
 def brute_force(auth, p, spray_srcs=()):
     """Many failures for one account from one source; worse when a success follows.
@@ -220,14 +242,7 @@ def password_spray(auth, p):
         if a[2] and a[3] == "fail" and _t(a[0]) is not None:
             groups.setdefault(a[2], []).append((_t(a[0]), a))
     for src, items in groups.items():
-        items.sort(key=lambda x: x[0])
-        start, best = 0, None
-        for end in range(len(items)):
-            while items[end][0] - items[start][0] > p["window_s"]:
-                start += 1
-            users = {i[1][1] for i in items[start:end + 1]}
-            if len(users) >= p["users"] and (best is None or len(users) > best[0]):
-                best = (len(users), items[start:end + 1])
+        best = _densest(items, p["window_s"], lambda i: i[1][1], p["users"])
         if best:
             members = [i[1] for i in best[1]]
             out.append(_row("password-spray", "Password spray", p["severity"], members,
@@ -362,14 +377,7 @@ def port_scan(flows, p):
         if f[2] and f[3]:
             groups.setdefault((f[1], f[2]), []).append(f)
     for (src, dst), items in groups.items():
-        items.sort(key=lambda x: x[0])
-        start, best = 0, None
-        for end in range(len(items)):
-            while items[end][0] - items[start][0] > p["window_s"]:
-                start += 1
-            ports = {i[3] for i in items[start:end + 1]}
-            if len(ports) >= p["ports"] and (best is None or len(ports) > best[0]):
-                best = (len(ports), items[start:end + 1])
+        best = _densest(items, p["window_s"], lambda i: i[3], p["ports"])
         if best:
             members = [(i[5], i[6]) for i in best[1]]
             out.append(_row("port-scan", "Port scan", p["severity"], members,
@@ -386,14 +394,7 @@ def host_sweep(flows, p):
         if f[2] and f[3] and keys.classify_indicator(f[2]) != "ip" and _IPV4.fullmatch(str(f[2])):
             groups.setdefault((f[1], f[3]), []).append(f)
     for (src, port), items in groups.items():
-        items.sort(key=lambda x: x[0])
-        start, best = 0, None
-        for end in range(len(items)):
-            while items[end][0] - items[start][0] > p["window_s"]:
-                start += 1
-            hosts = {i[2] for i in items[start:end + 1]}
-            if len(hosts) >= p["hosts"] and (best is None or len(hosts) > best[0]):
-                best = (len(hosts), items[start:end + 1])
+        best = _densest(items, p["window_s"], lambda i: i[2], p["hosts"])
         if best:
             members = [(i[5], i[6]) for i in best[1]]
             out.append(_row("host-sweep", "Host sweep", p["severity"], members,
@@ -454,14 +455,7 @@ def web_scan(rows, p):
         if w[4].startswith("4"):
             groups.setdefault(w[1], []).append(w)
     for src, items in groups.items():
-        items.sort(key=lambda x: x[0])
-        start, best = 0, None
-        for end in range(len(items)):
-            while items[end][0] - items[start][0] > p["window_s"]:
-                start += 1
-            paths = {i[2] for i in items[start:end + 1]}
-            if len(paths) >= p["paths"] and (best is None or len(paths) > best[0]):
-                best = (len(paths), items[start:end + 1])
+        best = _densest(items, p["window_s"], lambda i: i[2], p["paths"])
         if best:
             out.append(_row("web-scan", "Web scanning", p["severity"], [(i[5], i[6]) for i in best[1]],
                             {"src_ip": src}, f"{src} asked for {best[0]} different paths that returned 4xx"))
@@ -506,14 +500,7 @@ def dns_tunnel(rows, p):
             base = ".".join(labels[-2:])
             groups.setdefault(base, []).append((t, labels[0], n.get("ts"), i, n.get("src_ip")))
     for base, items in groups.items():
-        items.sort(key=lambda x: x[0])
-        start, best = 0, None
-        for end in range(len(items)):
-            while items[end][0] - items[start][0] > p["window_s"]:
-                start += 1
-            subs = {i[1] for i in items[start:end + 1]}
-            if len(subs) >= p["subdomains"] and (best is None or len(subs) > best[0]):
-                best = (len(subs), items[start:end + 1])
+        best = _densest(items, p["window_s"], lambda i: i[1], p["subdomains"])
         long_q = [i for i in items if len(i[1]) >= p["long_label"] and _entropy(i[1]) >= 3.5]
         if best or len(long_q) >= p["long_queries"]:
             members = [(i[2], i[3]) for i in (best[1] if best else long_q)]
@@ -537,14 +524,7 @@ def dns_ptr_sweep(rows, p):
                 groups.setdefault(n.get("src_ip") or "?", []).append((t, str(d).lower(), n.get("ts"), i))
     out = []
     for src, items in groups.items():
-        items.sort(key=lambda x: x[0])
-        start, best = 0, None
-        for end in range(len(items)):
-            while items[end][0] - items[start][0] > p["window_s"]:
-                start += 1
-            names = {i[1] for i in items[start:end + 1]}
-            if len(names) >= p["lookups"] and (best is None or len(names) > best[0]):
-                best = (len(names), items[start:end + 1])
+        best = _densest(items, p["window_s"], lambda i: i[1], p["lookups"])
         if best:
             out.append(_row("dns-ptr-sweep", "Reverse DNS sweep", p["severity"], [(i[2], i[3]) for i in best[1]],
                             {"src_ip": None if src == "?" else src},
