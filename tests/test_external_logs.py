@@ -201,6 +201,13 @@ class Shapes(unittest.TestCase):
         n = X.normalize(rows, X.detect_columns(rows))
         self.assertEqual("AR-WIN-DC$", n[0]["n"].get("user"))
 
+    def test_splunk_search_export_is_unwrapped(self):
+        line = ('{"preview":false,"result":{"eventType":"AwsApiCall","eventName":"UpdateSAMLProvider",'
+                '"sourceIPAddress":"66.176.252.11","userIdentity.principalId":"AROA:rsoto@splunk.local"}}')
+        fm, rows, _ = X.read("\n".join([line] * 3))
+        self.assertEqual(("jsonl", "UpdateSAMLProvider"), (fm, rows[0].get("eventName")))
+        self.assertNotIn("preview", rows[0])
+
     def test_squid_native_access_log(self):
         # Padded columns and "TCP_MISS/200": read as unnamed columns, no web rule saw it.
         text = "\n".join(["1157689312.049   5006 10.105.21.199 TCP_MISS/200 19763 CONNECT login.yahoo.com:443 "

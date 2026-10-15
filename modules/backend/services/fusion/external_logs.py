@@ -222,6 +222,15 @@ def _flat(o, pre="", out=None, depth=0):
     return out
 
 
+def _splunk_export(o):
+    """A Splunk search export (REST / CLI, output_mode=json) wraps each event as
+    {"preview": false, "result": {...}}: the event is the result."""
+    if isinstance(o, dict) and isinstance(o.get("result"), dict) \
+            and set(o) <= {"preview", "offset", "result", "lastrow", "lastRow"}:
+        return o["result"]
+    return o
+
+
 def _json_records(o, depth=0):
     """The records inside a JSON export, wherever the API put them: a list; the
     Elastic hits.hits[]._source; else the LARGEST list of objects found within a
@@ -673,7 +682,7 @@ def read(text) -> tuple[str, list, list]:
     if s[:1] in "[{":
         try:
             recs = _json_records(json.loads(s))
-            rows = [r for r in (_guard(_flat, r) for r in recs if isinstance(r, dict)) if r]
+            rows = [r for r in (_guard(_flat, _splunk_export(r)) for r in recs if isinstance(r, dict)) if r]
             if rows:
                 return "json", rows[:MAX_ROWS], []
         except (ValueError, RecursionError):
@@ -705,7 +714,7 @@ def read(text) -> tuple[str, list, list]:
         except ValueError:
             # Cisco eStreamer writes an empty number as a bare dash ("Impact":-).
             o = json.loads(re.sub(r'(":\s*)-(\s*[,}])', r"\1null\2", ln))
-        return _flat(o) if isinstance(o, dict) else None
+        return _flat(_splunk_export(o)) if isinstance(o, dict) else None
 
     def by_line(fn):
         rows, left = [], []
