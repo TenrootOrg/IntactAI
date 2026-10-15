@@ -135,15 +135,18 @@ class Evidence(unittest.TestCase):
             self.assertIn("**Popup**", ev)
             self.assertNotIn("FortiGate export", ev)
             self.assertNotIn("Call with the customer", ev)
-            ds = out[out.index("## Data sources"):out.index("## Evidence attached")]
+            ds = out[out.index("## External data"):out.index("## Evidence attached")]
             self.assertIn("**FortiGate export** — Firewall · 1,200 row(s), 3 detection(s)", ds)
             self.assertIn("**Call with the customer** — Incident notes · 2 fact(s) from 9 line(s)", ds)
             self.assertIn("### Reported by the customer (not verified)", ds)
             self.assertLess(ds.index("**Impact**"), ds.index("**What the customer did**"))
             self.assertIn("- IT reimaged WS-FIN-07 — Oct 3 · WS-FIN-07 _(chat.txt)_", ds)
             self.assertEqual(out, case_files.with_data_sources(out, self.d, facts), "rebuilt, never repeated")
+            old = out.replace("## External data\n", "## Data sources\n")
+            self.assertEqual(out, case_files.with_data_sources(old, self.d, facts),
+                             "a report with the section's first name is rebuilt, not doubled")
             self.d["include_evidence"] = False
-            self.assertIn("## Data sources", case_files.with_data_sources(md, self.d, facts),
+            self.assertIn("## External data", case_files.with_data_sources(md, self.d, facts),
                           "data is in whatever the evidence switch says")
 
     def test_pictures_resolve_per_output(self):

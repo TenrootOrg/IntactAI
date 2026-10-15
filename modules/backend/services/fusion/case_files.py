@@ -345,25 +345,27 @@ def with_evidence(md, d) -> str:
     return md.rstrip() + "\n\n" + block
 
 
-_DATA_SECTION = "## Data sources"
+_DATA_SECTION = "## External data"
+_DATA_SECTION_OLD = ("## Data sources",)          # the heading's first name (2026-10-15)
 _KIND_LABEL = {"impact": "Impact", "customer_action": "What the customer did", "observation": "What they saw",
                "timeline": "When", "suspicion": "What they suspect"}
 
 
 def with_data_sources(md, d, facts=None) -> str:
-    """The report's "Data sources" section: every log import and incident-notes
+    """The report's "External data" section: every log import and incident-notes
     file the analysis read (switched in), and what the customer reported, marked
     as not verified. Built here, not by the model; idempotent like with_evidence."""
     from .external_logs import DATA_TYPES, NOTES
     md = str(md or "")
-    i = md.find("\n" + _DATA_SECTION)
-    if i < 0 and md.startswith(_DATA_SECTION):
-        i = 0
-    if i >= 0:
-        j = md.find("\n## ", i + len(_DATA_SECTION) + 1)
-        f = _FOOTER.search(md, i)
-        end = min(x for x in (j, f.start() if f else -1, len(md)) if x >= 0)
-        md = md[:i] + md[end:]
+    for head in (_DATA_SECTION,) + _DATA_SECTION_OLD:
+        i = md.find("\n" + head + "\n")
+        if i < 0 and md.startswith(head + "\n"):
+            i = 0
+        if i >= 0:
+            j = md.find("\n## ", i + len(head) + 1)
+            f = _FOOTER.search(md, i)
+            end = min(x for x in (j, f.start() if f else -1, len(md)) if x >= 0)
+            md = md[:i] + md[end:]
     items = [x for x in with_log_status(listing(d)) if x["data_type"] and x["ai"]]
     if not items or not md.strip():
         return md
