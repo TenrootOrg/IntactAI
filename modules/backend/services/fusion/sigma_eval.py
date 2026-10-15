@@ -513,6 +513,8 @@ def profiles(row) -> set:
                     out.add(("windows", "registry_event", "sysmon"))
                 if eid == 12:                          # Sysmon 12 = a key or value added OR deleted
                     out.add(("windows", "registry_delete", "sysmon"))
+                if cat == "dns_query":                 # a DNS query: the generic DNS rules apply too
+                    out.add((None, "dns", None))
         if eid == 4688:
             out.add(("windows", "process_creation", "security"))
         if eid in (4104, 4103) and "powershell" in chan:
