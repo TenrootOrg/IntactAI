@@ -3088,7 +3088,14 @@ def _with_evidence(case_id, report, d) -> str:
     deterministically — see case_files.with_evidence)."""
     try:
         from . import case_files
-        return case_files.with_evidence(report, get_case(case_id) or d)
+        cur = get_case(case_id) or d
+        report = case_files.with_evidence(report, cur)
+        try:
+            from .external_logs import reported_facts
+            facts = reported_facts(case_id, limit=500)
+        except Exception:                                    # noqa: BLE001
+            facts = []
+        return case_files.with_data_sources(report, cur, facts)
     except Exception as e:                                   # noqa: BLE001 — never lose a report over it
         print(f"[FUSION] evidence section not added for {case_id}: {e}", flush=True)
         return report

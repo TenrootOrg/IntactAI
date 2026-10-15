@@ -113,6 +113,39 @@ class Evidence(unittest.TestCase):
         self.assertEqual(case_files.with_evidence(md, {"name": "none"}), md)    # no evidence: unchanged
         self.assertNotIn("Evidence attached", case_files.with_evidence(once, {"name": "none"}))   # all deleted: section goes
 
+    def test_data_is_its_own_section_never_evidence(self):
+        """Log imports and incident notes are data the analysis read, not proof the
+        analyst attached: their own section, always in, with what was reported."""
+        from services.fusion import external_logs
+        runs = {"r_fw": {"status": "completed", "details": {"data_type": "firewall", "rows": 1200, "alerts": 3}},
+                "r_nt": {"status": "completed", "details": {"data_type": "notes", "facts": 2, "lines": 9}}}
+        with mock.patch.object(external_logs, "start", side_effect=["r_fw", "r_nt"]), \
+                mock.patch("services.workflow_service.get_automation_run",
+                           lambda rid, with_logs=False: runs.get(rid)):
+            self.add("popup.png", b"img", name="Popup", description="the prompt")
+            self.add("fw.csv", b"a", name="FortiGate export", description="Oct 1-3", data_type="firewall")
+            self.add("chat.txt", b"b", name="Call with the customer", description="Teams chat", data_type="notes")
+            self.d["include_evidence"] = True
+            md = "# Report\n\n## Findings\n- x\n\n---\n_Deterministic report — no model_\n"
+            facts = [{"kind": "customer_action", "what": "IT reimaged WS-FIN-07", "when": "Oct 3", "host": "WS-FIN-07",
+                      "source": "chat.txt"},
+                     {"kind": "impact", "what": "payroll down", "source": "chat.txt"}]
+            out = case_files.with_data_sources(case_files.with_evidence(md, self.d), self.d, facts)
+            ev = out[out.index("## Evidence attached"):]
+            self.assertIn("**Popup**", ev)
+            self.assertNotIn("FortiGate export", ev)
+            self.assertNotIn("Call with the customer", ev)
+            ds = out[out.index("## Data sources"):out.index("## Evidence attached")]
+            self.assertIn("**FortiGate export** — Firewall · 1,200 row(s), 3 detection(s)", ds)
+            self.assertIn("**Call with the customer** — Incident notes · 2 fact(s) from 9 line(s)", ds)
+            self.assertIn("### Reported by the customer (not verified)", ds)
+            self.assertLess(ds.index("**Impact**"), ds.index("**What the customer did**"))
+            self.assertIn("- IT reimaged WS-FIN-07 — Oct 3 · WS-FIN-07 _(chat.txt)_", ds)
+            self.assertEqual(out, case_files.with_data_sources(out, self.d, facts), "rebuilt, never repeated")
+            self.d["include_evidence"] = False
+            self.assertIn("## Data sources", case_files.with_data_sources(md, self.d, facts),
+                          "data is in whatever the evidence switch says")
+
     def test_pictures_resolve_per_output(self):
         pic = self.add("popup.png", b"\x89PNGdata", finding_id="f_row", name="", description="")
         md = f"x\n\n![Popup](evidence:{pic['id']})\n\n![Gone](evidence:0000000000aa)\n"
