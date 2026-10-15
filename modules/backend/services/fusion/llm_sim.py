@@ -419,7 +419,8 @@ CHAT_TOOLS_PROMPT = (
     "  pivot({\"value\":\"<account|host|process|ip>\"}) -> raw events mentioning that value.\n"
     "  clusters({}) -> the case's phases (host-cluster, time-window hotspots).\n"
     "  logs({\"query\":\"<ip|account|host|hash|words>\"}) -> rows of the log data attached "
-    "to the case (SIEM / firewall / EDR / IdP exports), including rows not in the summary.\n"
+    "to the case (SIEM / firewall / EDR / IdP exports), including rows not in the summary, and "
+    "the lines of incident notes (what the customer said -- reported, not evidence).\n"
     "Fetch only what the question needs — at most {n} fetches. When you answer, write it "
     "for the analyst in markdown (not JSON), and never mention the tools or ids."
 )
@@ -1727,7 +1728,7 @@ def _ctx_size(payload) -> str:
 
 
 def analyst_context(dispositions=None, validations=None, manual_events=None, graph=None,
-                    checklist=None) -> dict:
+                    checklist=None, reported=None) -> dict:
     """What the analyst has told the case, for every model call that writes about it:
     triage verdicts (False Positive / Known), Timeline validations, and the events they
     added by hand ("IT pushed a GPO at 14:05"). The segmented report used to drop all
@@ -1790,6 +1791,11 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
         out["analyst_timeline_events"] = [
             {k: e.get(k) for k in ("ts", "host", "title", "severity", "status", "notes") if e.get(k)}
             for e in manual_events]
+    if reported:
+        # What the customer SAID (a chat with the victim, interview notes), condensed
+        # into checked facts at upload. Context, never evidence: it explains a gap
+        # ("IT reimaged WS01") and states the impact the logs cannot show.
+        out["reported_by_customer_not_verified"] = list(reported)
     return out
 
 
@@ -2161,7 +2167,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
                     detail="auto", max_identities=None, grouping="time", log=None,
-                    should_continue=None, manual_events=None, checklist=None) -> str:
+                    should_continue=None, manual_events=None, checklist=None, reported=None) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
@@ -2199,7 +2205,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                        include_timeframes=True,
                                        altitude_mode=altitude_mode)
             # give the model the analyst's triage so the narrative reflects it
-            _analyst = analyst_context(dispositions, validations, manual_events, graph, checklist)
+            _analyst = analyst_context(dispositions, validations, manual_events, graph, checklist, reported)
             if estimates:
                 # The decision model's estimates (decision_model.report_estimates): a second model's opinion,
                 # carried with its own note saying so, into every call of this
@@ -2912,7 +2918,7 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
          run_id=None, dispositions=None, validations=None, full_context=None,
          max_output_tokens=None, require_llm=False, mask=None, max_identities=None,
          excluded_hosts=None, master_prompt=None, manual_events=None, checklist=None,
-         tool_case=None) -> str:
+         tool_case=None, reported=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT).
     `mask` (optional DataAnonymizer) anonymizes the LLM payload the same way
@@ -3004,7 +3010,7 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                                                pin_ids=pin_ids, focus_labels=focus,
                                                also_finding_ids=[v.get("finding_id") for v in (validations or [])])
             # the analyst's triage, validations and manual events -- same as the report
-            _ac = analyst_context(dispositions, validations, manual_events, graph, checklist)
+            _ac = analyst_context(dispositions, validations, manual_events, graph, checklist, reported)
             payload.update(_ac)
             if excluded_hosts:
                 # Taken out of the analysis in Configuration: say so rather than

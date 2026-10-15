@@ -1357,6 +1357,15 @@ def _payload_too_big(fp, log=None):
     return True
 
 
+def _reported(case_id):
+    """Facts from the case's incident notes (the customer's own account)."""
+    try:
+        from .external_logs import reported_facts
+        return reported_facts(case_id) or None
+    except Exception:                                      # noqa: BLE001 -- context, never a blocker
+        return None
+
+
 def _agentic_collected_data(rid, det, log=None):
     """The real agentic pipeline persists rows to /data/downloads/<rid>/raw_results.json
     (not into details, to avoid bloating the SQLite blob). Prefer details.collected_data
@@ -2580,6 +2589,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                 dispositions=d.get("dispositions") or None,
                 validations=d.get("timeline_validations") or None,
                 manual_events=d.get("manual_timeline_events") or None,
+                reported=_reported(case_id),
                 checklist=d.get("disposition_checklist") or None,
                 # First scan narrates with the model whenever one is configured. It
                 # used to be hardcoded False -- "fast, free, deterministic; LLM on
@@ -4646,6 +4656,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
             manual_events=d.get("manual_timeline_events") or None,
+            reported=_reported(case_id),
             checklist=d.get("disposition_checklist") or None,
             prefer_llm=bool(use_llm and not offline), max_entities=llm_ent, budget_chars=llm_chars,
             max_output_tokens=llm_out, detail="explicit", max_identities=llm_ident,
@@ -6171,6 +6182,7 @@ def chat_case(case_id, question) -> str:
                            excluded_hosts=d.get("excluded_hosts") or None,
                            master_prompt=d.get("master_prompt") or None,
                            manual_events=d.get("manual_timeline_events") or None,
+                           reported=_reported(case_id),
                            checklist=d.get("disposition_checklist") or None,
                            tool_case=case_id)      # the model may fetch explicit data itself
         log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
