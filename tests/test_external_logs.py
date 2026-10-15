@@ -92,6 +92,16 @@ class Shapes(unittest.TestCase):
         _, m, _ = _read(text)
         self.assertEqual({"ts": "when", "user": "who", "src_ip": "peer"}, {k: m[k] for k in ("ts", "user", "src_ip")})
 
+    def test_a_records_own_column_beats_a_nested_childs(self):
+        """An M365 incident carries its own severity and each alert's; the
+        incident's is the row's. OCSF severity_id is a severity too."""
+        rows = [{"createdTime": "2026-10-01T10:05:00Z", "incidentName": "Multi-stage incident", "severity": "medium",
+                 "alerts.severity": "low", "alerts.title": "x"}] * 3
+        n = X.normalize(rows, X.detect_columns(rows))
+        self.assertEqual("medium", n[0]["n"]["severity"])
+        rows = [{"time": 1790849100000, "type": "INCIDENT_CREATION", "severity_id": 4, "type_id": 8075}] * 3
+        self.assertEqual("high", X.normalize(rows, X.detect_columns(rows))[0]["n"]["severity"])
+
     def test_gzip_and_utf16_are_read(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "a.gz")

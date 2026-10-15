@@ -87,7 +87,7 @@ _NAMES = {
             "eventname cefname name model tactic category eventtype",
     "severity": "severityname severity eventseverity alertseverity threatseverity crlevel "
                 "risklevelduringsignin risklevel severitylevel confidencelevel rulelevel cefseverity "
-                "riskscore riskbasedpriority magnitude priority level sev",
+                "riskscore riskbasedpriority magnitude severityid priority level sev",
     "message": "message msg fulllog raw description details eventmessage summary notes line",
     "http_method": "csmethod httpmethod requestmethod httprequestmethod clientrequestmethod method",
     "http_status": "scstatus httpstatus statuscode httpresponsestatuscode responsecode edgeresponsestatus",
@@ -798,7 +798,9 @@ def detect_columns(rows, sample=300) -> dict:
     by_field: dict = {}
     for k in cols:
         for f, rank in _cands(k):
-            by_field.setdefault(f, []).append((rank, k))
+            # Same rank: the record's own column before one of a nested child
+            # (an M365 incident's "severity" before "alerts.severity").
+            by_field.setdefault(f, []).append((rank, str(k).count("."), k))
     out, used = {}, set()
     # A "date" AND a "time" column (FortiGate, W3C/IIS): neither is a moment on its
     # own; the moment is date + time, joined in normalize().
@@ -810,7 +812,7 @@ def detect_columns(rows, sample=300) -> dict:
     for f in _ORDER:
         if f in out:
             continue
-        for _, k in sorted(by_field.get(f, [])):
+        for *_, k in sorted(by_field.get(f, [])):
             if k not in used and _fits(f, vals[k], k):
                 out[f] = k
                 used.add(k)
@@ -820,7 +822,7 @@ def detect_columns(rows, sample=300) -> dict:
     # to another field -- the old "src_ip" must not become the destination.
     alt = {}
     for f, col in list(out.items()):
-        more = [k for _, k in sorted(by_field.get(f, [])) if k not in used
+        more = [k for *_, k in sorted(by_field.get(f, [])) if k not in used
                 and (len(vals[k]) < 3 or _fits(f, vals[k], k))]
         if more:
             alt[f] = more
