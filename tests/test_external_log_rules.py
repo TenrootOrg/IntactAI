@@ -42,9 +42,9 @@ class EveryRuleProvesItself(unittest.TestCase):
                 ex = spec.get("examples") or {}
                 self.assertTrue(ex.get("fires") and ex.get("quiet"), "a rule needs fires AND quiet examples")
                 for row in ex["fires"]:
-                    self.assertIn(spec["id"], [r["id"] for r, _ in X.native_hits(row)], row)
+                    self.assertIn(spec["id"], [h[0]["id"] for h in X.native_hits(row)], row)
                 for row in ex["quiet"]:
-                    self.assertNotIn(spec["id"], [r["id"] for r, _ in X.native_hits(row)], row)
+                    self.assertNotIn(spec["id"], [h[0]["id"] for h in X.native_hits(row)], row)
 
 
 # What a product's export IS decides whether it may detect: alert / threat exports
@@ -168,6 +168,10 @@ class EachProductsOwnVerdict(unittest.TestCase):
         for name, rule, hit, quiet in KV_PAIRS:
             with self.subTest(name):
                 self._pair(name, rule, "\n".join([hit] * 3), "\n".join([quiet] * 3))
+
+    def test_a_number_or_flag_is_titled_with_its_field(self):
+        d = detections(_jl(*[{"EdgeStartTimestamp": 1790849100000000000, "ClientIP": ATK, "WAFAttackScore": 4}] * 3))
+        self.assertEqual("WAFAttackScore = 4", d[0]["rule"])
 
     def test_a_stated_numeric_severity(self):
         name, hit, quiet = GUARDDUTY

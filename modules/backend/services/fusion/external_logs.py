@@ -832,7 +832,7 @@ def rules() -> dict:
 
 
 def native_hits(raw, _cache=None) -> list:
-    """[(rule, value)] -- the product's own verdicts in one raw row: a field the rules
+    """[(rule, value, field)] -- the product's own verdicts in one raw row: a field the rules
     name with a value they match, at top level or as a key inside nested JSON."""
     nat = rules()["native"]
     if not nat or not isinstance(raw, dict):
@@ -848,7 +848,7 @@ def native_hits(raw, _cache=None) -> list:
                 nk = _norm_name(kk)
                 for r in nat:
                     if nk in r["fields"] and r["rx"].fullmatch(vv.strip()):
-                        hits.append((r, vv.strip()))
+                        hits.append((r, vv.strip(), kk))
             continue
         rel = cache.get(k)
         if rel is None:
@@ -856,7 +856,7 @@ def native_hits(raw, _cache=None) -> list:
             rel = cache[k] = [r for r in nat if not r["nested_only"] and (nk in r["fields"] or last in r["fields"])]
         for r in rel:
             if r["rx"].fullmatch(sv):
-                hits.append((r, sv))
+                hits.append((r, sv, k))
     return hits
 
 
@@ -905,8 +905,11 @@ def _verdict(n, hits):
     if _SEV_RANK[top[0]["severity"]] > _SEV_RANK.get(n.get("severity") or "informational", 0):
         n["severity"] = top[0]["severity"]
     if not n.get("rule"):
-        r, v = top
-        n["rule"] = v if not re.fullmatch(r"true|1|yes", v, re.I) else r["reason"]
+        r, v, k = top
+        # The product's own words when it wrote some (a threat name, an event type);
+        # a number or a flag says nothing alone: "WAFAttackScore = 4".
+        n["rule"] = v if re.search(r"[A-Za-z]{3}", v) and not re.fullmatch(r"true|yes", v, re.I) \
+            else f"{str(k).rsplit('.', 1)[-1]} = {v}"
     n["detected_by"] = sorted({h[0]["id"] for h in hits})
 
 
