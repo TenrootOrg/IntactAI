@@ -874,6 +874,16 @@ def detect_columns(rows, sample=300) -> dict:
             out[f] = ips.pop(0)
     if "message" not in out and "_line" in cols:
         out["message"] = "_line"
+    # Windows events (Winlogbeat's winlog.*, an EventID beside a Channel/Provider)
+    # carry the event Level as a number: 4 is Information. It grades the service's
+    # health, not an attack -- Sigma reads these rows; a 1..5 number is no severity.
+    leaves = {_norm_name(str(k).rsplit(".", 1)[-1]) for k in cols}
+    if "severity" in out and (any(str(k).startswith("winlog.") for k in cols)
+                              or ("eventid" in leaves and leaves & {"channel", "providername", "provider"})):
+        nums = [v for v in vals.get(out["severity"], []) if re.fullmatch(r"\s*[0-5]\s*", str(v))]
+        if nums and len(nums) == len(vals.get(out["severity"], [])):
+            del out["severity"]
+            alt.pop("severity", None)
     if alt:
         out["_alt"] = alt
     return out

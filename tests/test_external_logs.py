@@ -114,6 +114,14 @@ class Shapes(unittest.TestCase):
         self.assertEqual("2017-01-31T14:16:19", ts({"timestamp": "2017-01-31T14:16:19Z", "timezone": "IST",
                                                     "src_ip": "10.0.0.5"}))
 
+    def test_a_windows_event_level_is_no_severity(self):
+        """Winlogbeat's event.severity is the Windows Level: 4 = Information."""
+        rows = [{"@timestamp": "2024-04-22T09:31:15Z", "event.severity": 4, "event.code": "257",
+                 "winlog.channel": "Microsoft-Windows-DNSServer/Analytical", "winlog.computer_name": "DC01"}] * 3
+        self.assertNotIn("severity", X.detect_columns(rows))
+        rows = [{"timestamp": "2026-10-01T10:05:00Z", "severity": 4, "DeviceName": "WS01", "Title": "x"}] * 3
+        self.assertEqual("severity", X.detect_columns(rows)["severity"], "an EDR's 1..5 still counts")
+
     def test_gzip_and_utf16_are_read(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "a.gz")
