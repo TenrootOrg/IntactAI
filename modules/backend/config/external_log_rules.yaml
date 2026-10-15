@@ -156,6 +156,15 @@ native:
       quiet: [{url: "/blog/2024/10/union-selection-results"}, {useragent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
               {url: "/docs/../index.html"}, {url: "/static/js/app.js?v=2"}]
 
+  - id: local-account-created
+    reason: "a command created a local account on a Linux host (persistence; SigmaHQ only sees it in SYSCALL / ADD_USER records)"
+    fields: [CommandLine, proctitle, cmdline, process.command_line]
+    match: '(sudo\s+)?(\S*/)?(useradd|adduser)\s+(?!(-h|--help)\b).+'
+    severity: medium
+    examples:
+      fires: [{proctitle: "sudo useradd malware_user"}, {CommandLine: "/sbin/useradd -d /home/svc -s /bin/bash svc"}]
+      quiet: [{proctitle: "grep -EiH useradd /var/log/auth.log"}, {CommandLine: "useradd --help"}, {CommandLine: "man adduser"}]
+
   - id: ids-alert-line-priority-1
     reason: "a Snort / Suricata alert line (fast.log, syslog) the sensor itself rated priority 1"
     fields: [text]

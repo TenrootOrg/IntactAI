@@ -143,6 +143,9 @@ def _ts(v) -> str | None:
     m = re.search(r"audit\((\d{9,11}(?:\.\d+)?):", s)          # auditd msg=audit(epoch:serial)
     if m:
         s = m.group(1)
+    m = re.search(r"audit\((\d\d/\d\d/\d{4} \d\d:\d\d:\d\d)", s)  # ausearch -i: audit(MM/DD/YYYY hh:mm:ss.ms:serial)
+    if m:
+        s = m.group(1)
     if re.fullmatch(r"\d{9,20}(\.\d+)?", s):
         n = float(s)
         # seconds, ms, us or ns: the unit that lands between 1979 and 2103
@@ -291,11 +294,44 @@ def _cef_row(line):
     return row
 
 
+def _auditd(row):
+    """An auditd record names the command it saw as PROCTITLE (hex, NUL between
+    the arguments) or EXECVE a0..aN (hex when an argument has spaces). Decoded
+    into CommandLine / Image, the process-creation rules can read it."""
+    def unhex(v):
+        v = str(v or "")
+        if len(v) >= 4 and len(v) % 2 == 0 and re.fullmatch(r"[0-9A-Fa-f]+", v):
+            try:
+                return bytes.fromhex(v).replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+            except ValueError:
+                return v
+        return v
+    if row.get("proctitle"):
+        row["proctitle"] = unhex(row["proctitle"])
+        row.setdefault("CommandLine", row["proctitle"])
+    args = [unhex(row[f"a{i}"]) for i in range(64) if f"a{i}" in row]
+    if args and str(row.get("type", "")).upper() == "EXECVE":
+        row.setdefault("CommandLine", " ".join(args))
+    if row.get("CommandLine") and not row.get("Image"):
+        row["Image"] = str(row.get("exe") or row["CommandLine"].split(" ", 1)[0]).strip('"')
+    return row
+
+
 def _kv_row(line):
     pairs = _KV.findall(line)
     if len(pairs) < 3:
         return None
     row = {k: v.strip("\"'") for k, v in pairs}
+    if "type" in row and str(row.get("msg", "")).startswith("audit("):
+        # ausearch -i writes "msg=audit(02/20/2025 10:02:51.145:899) :": the date
+        # holds a space, so the pair stopped at it -- take the whole stamp back.
+        m = re.search(r"msg=audit\(([^)]*)\)", line)
+        if m:
+            row["msg"] = f"audit({m.group(1)})"
+        m = re.search(r"\bproctitle=(?![\"'])(.*)$", line)
+        if m and not re.fullmatch(r"[0-9A-Fa-f]+", m.group(1).strip()):
+            row["proctitle"] = m.group(1).strip()          # interpreted (ausearch -i): unquoted, spaces in it
+        row = _auditd(row)
     pre = line[:line.find(pairs[0][0] + "=")].strip()
     if pre:
         row["syslog_header"] = pre
