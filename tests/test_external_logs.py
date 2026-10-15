@@ -194,6 +194,13 @@ class Shapes(unittest.TestCase):
         self.assertEqual("MALWARE-OTHER Win.Malware.Lumma variant download attempt", n[0]["n"]["rule"])
         self.assertNotIn("user", n[0]["n"])
 
+    def test_a_dash_is_no_user(self):
+        # 4688 by a service: TargetUserName "-", the account is the subject.
+        rows = [{"TimeCreated": "2026-10-01T10:00:00Z", "Computer": "WS01", "SubjectUserName": "AR-WIN-DC$",
+                 "TargetUserName": "-", "NewProcessName": "C:\\Windows\\System32\\cmd.exe"}] * 3
+        n = X.normalize(rows, X.detect_columns(rows))
+        self.assertEqual("AR-WIN-DC$", n[0]["n"].get("user"))
+
     def test_squid_native_access_log(self):
         # Padded columns and "TCP_MISS/200": read as unnamed columns, no web rule saw it.
         text = "\n".join(["1157689312.049   5006 10.105.21.199 TCP_MISS/200 19763 CONNECT login.yahoo.com:443 "

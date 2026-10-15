@@ -1254,14 +1254,23 @@ def _row_tz(r):
     return _TZ_ABBR.get(z.lower())
 
 
+# "-", "N/A", "(null)": a log's way of saying no account / no host. As a value it
+# would become an identity ("-") that every such event shares.
+_NO_NAME = re.compile(r"\s*(-|n/?a|null|\(null\)|none|\?)\s*", re.I)
+
+
+def _blank(f, v):
+    return v in (None, "") or (f in ("user", "host") and bool(_NO_NAME.fullmatch(str(v))))
+
+
 def _norm_row(r, mapping, alt, scale, tcol, mapped):
     """One row's normalized fields (normalize() guards it)."""
     n = {}
     for f, col in mapping.items():
         v = r.get(col)
-        if v in (None, ""):
-            v = next((r.get(c) for c in alt.get(f, ()) if r.get(c) not in (None, "")), None)
-        if v in (None, ""):
+        if _blank(f, v):
+            v = next((r.get(c) for c in alt.get(f, ()) if not _blank(f, r.get(c))), None)
+        if _blank(f, v):
             continue
         if f == "ts":
             v = f"{v} {r.get(tcol)}" if tcol and r.get(tcol) else str(v)
