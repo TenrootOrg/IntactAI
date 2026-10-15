@@ -217,6 +217,27 @@ class Web(unittest.TestCase):
         self.assertEqual([], found("\n".join(lines)))
 
 
+class SuspiciousBurst(unittest.TestCase):
+    """Low signals add up per host, like Splunk's risk-based alerting."""
+
+    def low(self, t, rule, host="web01"):
+        return {"n": {"ts": iso(BASE + t), "host": host, "severity": "low", "rule": rule,
+                      "detected_by": [f"sigma: {rule}"]}}
+
+    def test_three_different_signals_on_one_host_are_a_detection(self):
+        rows = [self.low(0, "Whoami User Discovery"), self.low(300, "Edit Cron Table Parameter"),
+                self.low(900, "Hidden Files And Directories Creation"), self.low(60, "Whoami User Discovery", "db01")]
+        got = B.run(rows)
+        self.assertEqual([("Burst of suspicious activity", "medium")], [(f["n"]["rule"], f["n"]["severity"]) for f in got])
+        self.assertEqual("web01", got[0]["n"]["host"])
+
+    def test_the_same_signal_again_or_two_signals_stay_context(self):
+        self.assertEqual([], B.run([self.low(i * 60, "Whoami User Discovery") for i in range(10)]))
+        self.assertEqual([], B.run([self.low(0, "Whoami User Discovery"), self.low(60, "Sudo Or Su Execution")]))
+        self.assertEqual([], B.run([self.low(0, "A"), self.low(60, "B"), self.low(7300, "C")]),
+                         "spread over more than the hour")
+
+
 class TheBoxDecides(unittest.TestCase):
     def test_a_threshold_or_switch_from_the_rules_file(self):
         evs = [flow(BASE + i, ATK, "10.0.0.5", 1000 + i, "deny") for i in range(40)]

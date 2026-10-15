@@ -358,6 +358,7 @@ behaviour:
   outbound-flood:   {connections: 1000, window_s: 60, severity: high}
   inbound-remote-admin: {ports: [3389, 5900, 5985, 5986, 445, 135, 139, 23], severity: medium}
   c2-retry:         {attempts: 200, window_s: 3600, failed_share: 0.5, severity: medium}
+  suspicious-burst: {distinct: 3, window_s: 3600, severity: medium}
   web-scan:         {paths: 50, window_s: 600, severity: medium}
   web-login-brute-force: {posts: 20, window_s: 600, severity: medium}
   dns-ptr-sweep:    {lookups: 100, window_s: 600, severity: medium}

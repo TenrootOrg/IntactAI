@@ -373,6 +373,9 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
         return _CACHE
     rules, skipped = [], {}
     for d in present:
+        # The bundled set also ships LOW rules (Splunk "Anomaly" signals): context on
+        # their own, and what the suspicious-activity burst rule counts per host.
+        floor = min(LEVELS[min_level], LEVELS["low"]) if d == BUNDLED else LEVELS[min_level]
         for root, _dirs, files in os.walk(d):
             for fn in files:
                 if not fn.endswith((".yml", ".yaml")):
@@ -388,7 +391,7 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
                 if str(doc.get("status") or "").lower() in ("deprecated", "unsupported"):
                     skipped["deprecated"] = skipped.get("deprecated", 0) + 1
                     continue
-                if LEVELS.get(str(doc.get("level") or "").lower(), 0) < LEVELS[min_level]:
+                if LEVELS.get(str(doc.get("level") or "").lower(), 0) < floor:
                     skipped["below level"] = skipped.get("below level", 0) + 1
                     continue
                 try:

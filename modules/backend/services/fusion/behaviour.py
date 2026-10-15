@@ -39,6 +39,10 @@ DEFAULTS = {
     "web-scan": {"paths": 50, "window_s": 600, "severity": "medium"},
     "web-login-brute-force": {"posts": 20, "window_s": 600, "severity": "medium"},
     "dns-ptr-sweep": {"lookups": 100, "window_s": 600, "severity": "medium"},
+    # Splunk-style risk adding: low "anomaly" signals (whoami, a cron edit, a hidden
+    # file) are noise alone; several DIFFERENT ones on one host within the hour are an
+    # operator working the box.
+    "suspicious-burst": {"distinct": 3, "window_s": 3600, "severity": "medium"},
     "dns-tunnel": {"subdomains": 100, "window_s": 3600, "long_label": 40, "long_queries": 20,
                    "severity": "medium"},
 }
@@ -566,6 +570,31 @@ def dns_ptr_sweep(rows, p):
     return out
 
 
+def suspicious_burst(rows, p):
+    """Several different low-level Sigma signals on one host within a window."""
+    groups: dict = {}
+    for i, r in enumerate(rows):
+        n = r.get("n") or {}
+        if n.get("severity") != "low" or not any(str(d).startswith("sigma:") for d in n.get("detected_by") or []):
+            continue
+        t = _t(n.get("ts"))
+        if t is None:
+            continue
+        host = str(n.get("host") or "").strip().lower()
+        groups.setdefault(host, []).append((t, n.get("rule"), n.get("ts"), i))
+    out = []
+    for host, items in groups.items():
+        best = _densest(items, p["window_s"], lambda x: x[1], p["distinct"])
+        if best:
+            members = [(x[2], x[3]) for x in best[1]]
+            titles = sorted({x[1] for x in best[1]})
+            out.append(_row("suspicious-burst", "Burst of suspicious activity", p["severity"], members,
+                            {"host": host or None},
+                            f"{len(titles)} different suspicious signals within {p['window_s'] // 60} min"
+                            + (f" on {host}" if host else "") + ": " + "; ".join(titles[:8])))
+    return out
+
+
 def run(rows, params=None, log=None) -> list:
     """Every behaviour rule over the normalized rows -> detection rows to append."""
     log = log or (lambda m, l="info": None)
@@ -596,6 +625,7 @@ def run(rows, params=None, log=None) -> list:
                                                                      "outbound-flood"}), flows),
                            ("web-scan", web_scan, rows), ("web-login-brute-force", web_login_brute_force, rows),
                            ("dns-ptr-sweep", dns_ptr_sweep, rows),
+                           ("suspicious-burst", suspicious_burst, rows),
                            ("dns-tunnel", dns_tunnel, rows)):
         if name in off:
             continue
