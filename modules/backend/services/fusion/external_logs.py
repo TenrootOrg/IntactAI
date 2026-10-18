@@ -58,13 +58,13 @@ _NAMES = {
     "host": "hostname host computername computerdnsname devicename dvchostname agentcomputername "
             "agentname agenthostname devicehostname computerhostname threattargethostname impactedhost "
             "machinename endpointname workstation computer endpoint dvchost sourcehost "
-            "srchostname clienthostname compromisedentity location source",
+            "srchostname clienthostname hostidentifier compromisedentity location source",
     "user": "userprincipalname upn username user_name accountname targetusername subjectusername "
             "user account suser duser deviceusername processuser actoralternateid actoremail "
             "actorusername actorsusername useremailaddress principalemail threattargetusername "
             "originlogin csusername srcusername srcuser initiatedbyusername accountupn "
             "initiatingprocessaccountname targetuseruserid userid login loginname principal "
-            "principalname email recipientaddress recipient source",
+            "principalname email recipientaddress recipient actor source",
     "src_ip": "sourceip srcip src sourceaddress clientip cip callerip callersourceip ipaddress "
               "srcendpointip srcaddr sourceipaddress clientipaddress requestip principalip idorigh "
               "actionlocalip localaddressip4 devicelocalip deviceinternalip senderip fromip "
