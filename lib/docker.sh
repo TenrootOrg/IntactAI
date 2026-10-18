@@ -253,6 +253,21 @@ _curl_with_throughput() {
     return $rc
 }
 
+# A Velociraptor release binary, plain or gzipped. From 0.77.3 Velocidex
+# publishes them as <name>.gz (velociraptor-v0.77.3-linux-amd64.gz); 0.77.2, the
+# MSIs and the legacy 0.7.1 are plain. Try the plain name, then the .gz unpacked
+# to the same path, so every file keeps the plain name the rest of the platform
+# (Dockerfile COPY, tools inventory, dashboard downloads) expects.
+_velo_fetch() {
+    local label="$1" url="$2" dest="$3"
+    _curl_with_throughput "$label" "$url" "$dest" --retry 5 --retry-delay 5 --retry-max-time 120 && return 0
+    rm -f "$dest" "${dest}.gz"
+    _curl_with_throughput "${label}.gz" "${url}.gz" "${dest}.gz" --retry 5 --retry-delay 5 --retry-max-time 120 \
+        && gunzip -f "${dest}.gz" && return 0
+    rm -f "${dest}.gz"
+    return 1
+}
+
 pull_plaso_image() {
     local plaso_version=$(read_config "['versions']['plaso']")
     # Defensive: older configs shipped `plaso: 'plaso-20260119'` (with a
@@ -403,7 +418,9 @@ download_offline_collector_binaries() {
     local full_tag="v${velo_version}"
     local minor_tag="v$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')"
     local velo_tag="$minor_tag"
-    local _probe="velociraptor-v${velo_version}-windows-amd64.exe"
+    # The MSI: the one asset still published plain in every release (0.77.3
+    # gzips the .exe, so probing it sent the download to the rolling tag).
+    local _probe="velociraptor-v${velo_version}-windows-amd64.msi"
     # Skip the probe entirely when air-gapped: there is no route to github.com,
     # so this only burns a connect timeout and then reports the WRONG tag (the
     # minor-tag fallback) as if it had been resolved. Nothing downstream can
@@ -480,7 +497,7 @@ download_offline_collector_binaries() {
             ((skipped++))
         else
             log_info "  Downloading: $binary  (from ${base_url}/${binary})"
-            if _curl_with_throughput "$binary" "${base_url}/${binary}" "$dest_path"; then
+            if _velo_fetch "$binary" "${base_url}/${binary}" "$dest_path"; then
                 chmod 755 "$dest_path" 2>/dev/null || true
                 log_success "  Downloaded: $binary"
                 ((downloaded++))
@@ -567,7 +584,7 @@ stage_velociraptor_client_binaries() {
     if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
         log_info "  Air-gapped — using only the binaries staged from the release package"
     elif [[ "$(curl -s -o /dev/null -w '%{http_code}' -IL \
-            "https://github.com/Velocidex/velociraptor/releases/download/${full_tag}/velociraptor-v${velo_version}-windows-amd64.exe" 2>/dev/null)" == "200" ]]; then
+            "https://github.com/Velocidex/velociraptor/releases/download/${full_tag}/velociraptor-v${velo_version}-windows-amd64.msi" 2>/dev/null)" == "200" ]]; then
         release_tag="$full_tag"
         log_info "  Resolved Velociraptor release tag: ${release_tag} (for v${velo_version})"
     else
@@ -661,8 +678,7 @@ stage_velociraptor_client_binaries() {
         # which is exactly where a re-stage is most likely to fail.
         local tmp_dest="${dest}.staging"
         rm -f "$tmp_dest"
-        if curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 \
-                "${base_url}/${fname}" -o "$tmp_dest" 2>> "$LOG_FILE"; then
+        if _velo_fetch "$fname" "${base_url}/${fname}" "$tmp_dest"; then
             sz=$(stat -c%s "$tmp_dest" 2>/dev/null || echo 0)
         else
             sz=0

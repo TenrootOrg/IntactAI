@@ -1669,7 +1669,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # for why we can't just compute v{major}.{minor} here —
                 # Velocidex's tagging changed at v0.76.6 (each patch has
                 # its own release now).
-                from .velociraptor_release import resolve_velociraptor_release_tag
+                from .velociraptor_release import resolve_velociraptor_release_tag, download_cmd
                 release_tag = resolve_velociraptor_release_tag(clean_version, logger=log)
                 base_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
                 velo_tag = f"{parts[0]}.{parts[1]}"
@@ -1754,9 +1754,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         url = f"{base_url}/{fname}"
                         log(f"  Downloading: {fname}", "info")
                         dl = run_command(
-                            f"curl -L -f --retry 5 --retry-delay 5 "
-                            f"--retry-max-time 600 --connect-timeout 30 "
-                            f"-o {pkg_path} {url}",
+                            download_cmd(url, pkg_path),
                             timeout=1800, logger=None, run_id=run_id,
                         )
                         if dl.get("cancelled"):
@@ -1825,9 +1823,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     musl_url = f"{base_url}/{musl_fname}"
                     log(f"  Downloading: {musl_fname}", "info")
                     dl = run_command(
-                        f"curl -L -f --retry 5 --retry-delay 5 "
-                        f"--retry-max-time 600 --connect-timeout 30 "
-                        f"-o {musl_pkg_path} {musl_url}",
+                        download_cmd(musl_url, musl_pkg_path),
                         timeout=1800, logger=None, run_id=run_id,
                     )
                     if dl.get("cancelled"):

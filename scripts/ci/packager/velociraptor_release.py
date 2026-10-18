@@ -30,19 +30,37 @@ def resolve_velociraptor_release_tag(clean_version: str,
 
     binary = f"velociraptor-v{clean_version}-linux-amd64"
     for candidate in (full_tag, minor_tag):
-        url = (f"https://github.com/Velocidex/velociraptor/releases/download/"
-               f"{candidate}/{binary}")
-        try:
-            r = requests.head(url, allow_redirects=False, timeout=10)
-            if r.status_code in (200, 302):
-                log(f"  Release tag resolved: {candidate} (probed {r.status_code})",
-                    "info")
-                return candidate
-        except requests.RequestException:
-            continue
+        # Plain or gzipped: 0.77.3 publishes only `<binary>.gz`, and probing the
+        # plain name alone sent it to the rolling tag, where nothing exists.
+        for name in (binary, binary + ".gz"):
+            url = (f"https://github.com/Velocidex/velociraptor/releases/download/"
+                   f"{candidate}/{name}")
+            try:
+                r = requests.head(url, allow_redirects=False, timeout=10)
+                if r.status_code in (200, 302):
+                    log(f"  Release tag resolved: {candidate} (probed {r.status_code})",
+                        "info")
+                    return candidate
+            except requests.RequestException:
+                continue
     log(f"  Release tag probe failed for both {full_tag} and {minor_tag}; "
         f"defaulting to {minor_tag} -- the download will fail loudly.", "warning")
     return minor_tag
+
+
+def download_cmd(url: str, dest: str) -> str:
+    """Shell command fetching a Velociraptor release binary to `dest`.
+
+    From 0.77.3 Velocidex publishes the binaries gzipped
+    (`velociraptor-v0.77.3-linux-amd64.gz`); 0.77.2, the MSIs and the legacy
+    0.7.1 are plain. Try the plain name, then `<name>.gz` unpacked to the same
+    path, so every caller keeps the plain filename it always had.
+    """
+    import shlex
+    c = "curl -L -f --retry 5 --retry-delay 5 --retry-max-time 600 --connect-timeout 30"
+    d, u = shlex.quote(dest), shlex.quote(url)
+    dz, uz = shlex.quote(dest + ".gz"), shlex.quote(url + ".gz")
+    return f"{c} -o {d} {u} || {{ rm -f {d}; {c} -o {dz} {uz} && gunzip -f {dz}; }}"
 
 
 def refresh_velociraptor_build_files(src_velo_dir: str,
