@@ -126,6 +126,9 @@ print(d.get('versions',{}).get('timesketch','(absent)'))"; }
 CFGSH="CONFIG_FILE='${TMP}/work.yaml'; log_info(){ :; }; log_warn(){ :; }; source '${ROOT}/lib/config.sh' 2>/dev/null || true"
 
 if [[ "$(getpin)" != "(absent)" ]]; then
+    # Re-pin whatever the tracked config.yaml says, not a fixed version: a
+    # Timesketch bump in config.yaml made the hard-coded 20260630 fail here.
+    orig_pin="$(getpin)"
     bash -c "$CFGSH; _unpin_module_version timesketch" >/dev/null 2>&1
     [[ "$(getpin)" == "(absent)" ]] && ok "removes the key" || fail "removes the key"
 
@@ -137,7 +140,7 @@ if [[ "$(getpin)" != "(absent)" ]]; then
              "an undo must tolerate a write that never landed"
     fi
 
-    bash -c "$CFGSH; _pin_module_version timesketch 20260630" >/dev/null 2>&1
+    bash -c "$CFGSH; _pin_module_version timesketch ${orig_pin}" >/dev/null 2>&1
     if diff -q "${TMP}/live.yaml" "${TMP}/work.yaml" >/dev/null; then
         ok "unpin -> repin round-trips byte-for-byte (quoting and position kept)"
     else
