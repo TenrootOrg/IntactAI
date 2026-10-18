@@ -190,6 +190,34 @@ entity_rules:
          attrs: {title: "Powershell Timestomp", details: 'ScriptBlock: $f=Get-Item .\kx.lock; $f.CreationTime=(Get-Item C:\Windows\System32\cmd.exe).CreationTime'},
          expect: medium}
 
+  # Origin 2026-10-18: one workstation of a 69-host hunt kept 737,520 medium rows; 90% were
+  # this one launch, tripping four rules at once (stdin redirection, "getsystem" named pipe,
+  # cmd stream redirection, Electron child process).
+  - id: browser-native-messaging-host
+    reason: "a Chromium browser starting an extension's native-messaging helper -- cmd.exe wired to the browser's own nativeMessaging pipes, how every such helper is launched"
+    when: {type: [event], flags_any: [sigma],
+           attr_regex: {details: 'cmdline:\s*\S*cmd\.exe\s+/d\s+/s\s+/c\s+""[^"¦]+\.exe"\s+chrome-extension://[a-p]{32}/(\s+--parent-window=\d+)?"\s*<\s*\\\\\.\\pipe\\chrome\.nativemessaging\.in\.[0-9a-f]+\s*>\s*\\\\\.\\pipe\\chrome\.nativemessaging\.out\.[0-9a-f]+\s*(¦|$)'}}
+    then: {anomaly: 1, only_lower: true}
+    examples:
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Susp CmdLine (Possible Meterpreter getsystem)",
+                 details: 'Cmdline: C:\WINDOWS\system32\cmd.exe /d /s /c ""C:\Program Files (x86)\ExampleVendor\host.exe" chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba/ --parent-window=0" < \\.\pipe\chrome.nativeMessaging.in.0123456789abcdef > \\.\pipe\chrome.nativeMessaging.out.0123456789abcdef ¦ Proc: C:\Windows\System32\cmd.exe ¦ PID: 13'},
+         expect: low}
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Suspicious Electron Application Child Processes",
+                 details: 'Cmdline: C:\WINDOWS\system32\cmd.exe /d /s /c ""C:\Users\a\AppData\Local\Helper\helper.exe" chrome-extension://abcdefghijklmnopabcdefghijklmnop/" < \\.\pipe\chrome.nativeMessaging.in.fedcba9876543210 > \\.\pipe\chrome.nativeMessaging.out.fedcba9876543210'},
+         expect: low}
+      # the real getsystem pattern keeps its severity:
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Susp CmdLine (Possible Meterpreter getsystem)",
+                 details: 'Cmdline: cmd.exe /c echo vzkqmb > \\.\pipe\vzkqmb ¦ Proc: C:\Windows\System32\cmd.exe'},
+         expect: medium}
+      # so does a command with the browser pipes tacked on:
+      - {type: event, flags: [sigma], anomaly: 15,
+         attrs: {title: "Cmd Stream Redirection",
+                 details: 'Cmdline: C:\WINDOWS\system32\cmd.exe /d /s /c ""C:\x\host.exe" chrome-extension://abcdefghijklmnopabcdefghijklmnop/" < \\.\pipe\chrome.nativeMessaging.in.1a > \\.\pipe\chrome.nativeMessaging.out.1a & powershell -enc AAAA ¦ Proc: C:\Windows\System32\cmd.exe'},
+         expect: medium}
+
   # ---- detections that recorded nothing, or describe the OS doing its own work ----
   # Origin 2026-10-14: with its bursts gone, a clean domain controller showed 18 medium
   # rows of exactly these shapes (and a clean Windows 10 client the same ones).
