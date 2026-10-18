@@ -260,12 +260,10 @@ for img in sorted(set(owner) | set(size)):
 " "$work" 2>/dev/null)
 
     # Classify every bundled tar up front: a docker-save image, or a plain
-    # data tar (e.g. the aws_sigma SIGMA rule pack) that must NOT be handed to
-    # `docker load` -- see _tar_is_docker_image(). Data tars are staged aside
-    # rather than applied here: download_sigma_rules() runs later in main()
-    # and rm -rf's /opt/sigma-rules before cloning, so anything written here
-    # would be silently destroyed. install_bundled_rule_packs() applies them
-    # after that clone step.
+    # data tar that must NOT be handed to `docker load` -- see
+    # _tar_is_docker_image(). The only data tar ever shipped was the aws_sigma
+    # rule pack, which an older release's package may still carry; its rules
+    # are in the backend image now, so a staged one is simply left unused.
     local image_tars=() data_tars=() t
     while IFS= read -r t; do
         if _tar_is_docker_image "$t"; then

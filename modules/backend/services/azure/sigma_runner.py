@@ -14,6 +14,8 @@ from pathlib import Path
 from werkzeug.utils import secure_filename
 
 # SIGMA rules directory (cloned from SigmaHQ)
+# The image's own SigmaHQ copy (Dockerfile sets it); /opt/sigma-rules is the
+# installer clone an image from before that change still reads.
 SIGMA_RULES_DIR = os.getenv('SIGMA_RULES_DIR', '/opt/sigma-rules')
 AZURE_RULES_PATH = os.path.join(SIGMA_RULES_DIR, 'rules', 'cloud', 'azure')
 M365_RULES_PATH = os.path.join(SIGMA_RULES_DIR, 'rules', 'cloud', 'm365')

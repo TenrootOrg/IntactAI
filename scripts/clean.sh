@@ -162,7 +162,7 @@ remove_host_state() {
             log_success "  Removed /etc/intact-initialized (next install runs clean)"
     fi
 
-    # Cloned by download_sigma_rules() into a fixed path; nothing else owns it.
+    # An older installer's SigmaHQ clone (rules now ship in the backend image).
     if [[ -d /opt/sigma-rules ]]; then
         rm -rf /opt/sigma-rules && log_success "  Removed /opt/sigma-rules"
     fi

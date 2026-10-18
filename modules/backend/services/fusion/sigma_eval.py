@@ -24,12 +24,16 @@ import ipaddress
 import os
 import re
 
+_APP = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Splunk Security Content detections translated to Sigma and proved on their own
 # attack_data recordings (scripts/dev/escu_to_sigma.py, escu_prove.py). Bundled in
 # the image, so they run where /opt/sigma-rules is not installed too.
-BUNDLED = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                       "config", "sigma-escu")
-RULE_DIRS = ("/opt/sigma-rules/rules", "/opt/sigma-rules/rules-emerging-threats", BUNDLED)
+BUNDLED = os.path.join(_APP, "config", "sigma-escu")
+# SigmaHQ: the copy baked into the image (SIGMA_RULES_DIR, pinned with the release,
+# there offline too), else an older box's /opt/sigma-rules clone.
+SIGMAHQ = next((d for d in (os.getenv("SIGMA_RULES_DIR"), "/opt/sigma-rules")
+                if d and os.path.isdir(os.path.join(d, "rules"))), "/opt/sigma-rules")
+RULE_DIRS = (os.path.join(SIGMAHQ, "rules"), os.path.join(SIGMAHQ, "rules-emerging-threats"), BUNDLED)
 DEMOTE = os.path.join(os.path.dirname(BUNDLED), "sigma_demote.yaml")   # SigmaHQ rules noisy on benign data
 LEVELS = {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 MIN_LEVEL = "medium"                 # below it a rule is context, never a detection

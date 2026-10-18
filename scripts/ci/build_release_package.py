@@ -9,7 +9,6 @@ by the release that actually contains every module, then downloaded + applied.
 
 Meant to run INSIDE a container built from the release's backend image, with:
   - the docker socket mounted (it docker build/pull/save's the images),
-  - /opt/sigma-rules populated (CI clones SigmaHQ) for the aws_sigma rule pack,
   - INTACT_PATH / INTACT_HOST_PATH set to the release checkout,
   - an output dir mounted for the finished tarball.
 
@@ -97,7 +96,6 @@ RELEASE_MODULES = {
     "presidio",       # BUILT from modules/presidio, not pulled
     "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
     "volweb",
-    "aws_sigma",
 }
 
 # TRIMMING THIS SET IS A TESTING SHORTCUT, AND IT DOES NOT LOOK LIKE ONE.
@@ -124,7 +122,7 @@ RELEASE_MODULES = {
 # genuinely added to or removed from the product.
 _FULL_RELEASE_MODULES = {
     "intact", "elk", "iris", "timesketch", "plaso", "presidio",
-    "velociraptor", "volweb", "aws_sigma", "portainer",
+    "velociraptor", "volweb", "portainer",
 }
 
 # Deliberately NOT shipped.
@@ -145,6 +143,12 @@ EXCLUDED_FROM_RELEASE = {
     # knowable from its metadata. Revisit the moment it gets a real pin.
     "o365rc":     "pins the literal 'latest', so an asset cannot record which "
                   "image it shipped",
+    # The AWS rule pack is part of the backend image now: the Dockerfile bakes
+    # the pinned SigmaHQ release (versions.sigma_rules) into /app/sigma-rules,
+    # which every SigmaHQ reader uses. An upgrade from an older release finds no
+    # aws_sigma asset and skips the module ("not in this package").
+    "aws_sigma":  "its rules ship inside the intact-backend image (SigmaHQ, "
+                  "versions.sigma_rules)",
 }
 
 

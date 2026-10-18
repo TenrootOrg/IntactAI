@@ -285,22 +285,15 @@ main() {
     # -------------------------------------------------------------------------
     # Azure Security Tools (SIGMA Rules + DFIR-O365RC)
     # -------------------------------------------------------------------------
-    download_sigma_rules
-    # STRICTLY AFTER download_sigma_rules: that function rm -rf's
-    # /opt/sigma-rules before cloning, so the bundled pack has to be laid down
-    # afterwards or it is silently wiped. See install_bundled_rule_packs().
-    install_bundled_rule_packs
+    # SigmaHQ rules come with the backend image (see lib/docker.sh above
+    # pull_dfir_o365rc_image); nothing to download or unpack here.
     pull_dfir_o365rc_image
     generate_azure_certificate
 
     # -------------------------------------------------------------------------
     # AWS DFIR (CloudTrail + SIGMA) — native, no image to pull. boto3 is
-    # installed into the backend by install_deps.py. The SIGMA AWS rule pack
-    # comes from one of two places: the release package (applied by
-    # install_bundled_rule_packs above — the only route that works offline), or
-    # the SigmaHQ clone download_sigma_rules() makes when the aws_sigma or
-    # o365rc module is enabled. When both happen the bundled pack is applied
-    # last, so the release-pinned rules win over whatever the clone carried.
+    # installed into the backend by install_deps.py; its SIGMA rules are the
+    # SigmaHQ release baked into the backend image (SIGMA_RULES_DIR).
 
     # -------------------------------------------------------------------------
     # Backend base image — always built, so always pre-pull. Keeps the

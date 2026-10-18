@@ -70,6 +70,26 @@ COPY modules/backend/install_deps.py /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt && \
     python3 /app/install_deps.py /app/config.yaml /app
 
+# SigmaHQ's detection rules, baked in at the release config.yaml pins
+# (versions.sigma_rules). They used to arrive two other ways: the installer's
+# git clone into /opt/sigma-rules (no internet, or both cloud modules off, meant
+# no rules at all) and the aws_sigma release asset (the AWS subset only).
+# Inside the image they come with every fresh install, offline package and
+# upgrade, and every box runs the rules its release was tested with.
+# Only the rule folders (~33 MB, 3,100+ rules), not the repo's tests and tooling.
+# ponytail: pinned by tag, not by checksum (GitHub archives are not byte-stable).
+RUN ref=$(python3 -c "import yaml; print((yaml.safe_load(open('/app/config.yaml')).get('versions') or {}).get('sigma_rules') or '')") && \
+    test -n "$ref" && mkdir -p /app/sigma-rules && \
+    curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 \
+        "https://github.com/SigmaHQ/sigma/archive/refs/tags/${ref}.tar.gz" \
+        | tar -xz -C /app/sigma-rules --strip-components=1 --wildcards '*/rules/*' '*/rules-emerging-threats/*' && \
+    echo "$ref" > /app/sigma-rules/VERSION && \
+    test "$(find /app/sigma-rules/rules -name '*.yml' | wc -l)" -gt 1000
+# Every SigmaHQ reader takes this: the AWS / Azure cloud modules
+# (services/azure/sigma_runner.py) and log data (services/fusion/sigma_eval.py).
+# This replaced the aws_sigma release asset and the installer's clone.
+ENV SIGMA_RULES_DIR=/app/sigma-rules
+
 # Copy application files
 COPY modules/backend/config.py /app/
 COPY modules/backend/app.py /app/

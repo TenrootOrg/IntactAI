@@ -86,13 +86,9 @@ options:
 
 modules:
   # CloudTrail — native AWS DFIR detection (CloudTrail events + SIGMA rules,
-  # feeding the fusion engine). No container image; the versioned artifact is the
-  # AWS SIGMA rule pack (see versions.aws_sigma).
-  #
-  # Now ON by default. It has no long-running container and no service to fail:
-  # enabling it makes the rule pack part of every install and upgrade, and the
-  # upgrade engine treats it as policy 'none' (nothing to health-probe) for that
-  # reason. Set false to leave the AWS detection content off this host.
+  # feeding the fusion engine). No container image and no release asset of its
+  # own: its rules are the SigmaHQ release the backend image carries
+  # (versions.sigma_rules). ON by default; set false to turn AWS detection off.
   aws_sigma:
     enabled: true
   o365rc:
@@ -164,15 +160,14 @@ versions:
   portainer: '2.39.6'
   timesketch: '20260630'
   velociraptor: '0.77.2'
-  # AWS DFIR detection = the SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ).
-  # No container image; this pins the rule-pack version that install / upgrade /
-  # prepare-package bundle + update. Bump to refresh the AWS detection rules.
+  # Kept for older releases' packages and upgrade bookkeeping only: a release no
+  # longer ships an aws_sigma asset (its rules are in the backend image, see
+  # sigma_rules below), so an upgrade skips it as "not in this package".
   aws_sigma: '2026.04'
-  # Git ref for the FULL SigmaHQ clone at /opt/sigma-rules (powers BOTH AWS and
-  # Azure detection). Previously install cloned HEAD (unreproducible — two
-  # installs got different rules). SigmaHQ publishes monthly release tags
-  # (rYYYY-MM-01); pin to one so detection content is reproducible + updatable.
-  # Bump this to refresh the rules (aws_sigma above is the AWS-pack bundle label).
+  # The SigmaHQ release tag (rYYYY-MM-01) baked into the backend image at build
+  # time (modules/backend/Dockerfile -> /app/sigma-rules). Powers AWS, Azure and
+  # attached log data alike, online and offline. Bump it and rebuild the image to
+  # refresh the rules; nothing is cloned at install time any more.
   sigma_rules: 'r2026-07-01'
   # Commit SHA for the google/dfiq clone bundled into the timesketch release
   # asset (dfiq/dfiq-data.tar) and moved into modules/timesketch/config/dfiq

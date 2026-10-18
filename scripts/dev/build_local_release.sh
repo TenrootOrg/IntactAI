@@ -8,8 +8,8 @@
 # between backend-only edits.
 #
 # What it does:
-#   1. The other 8 modules (elk/iris/timesketch/plaso/velociraptor/volweb/
-#      aws_sigma/portainer) are downloaded ONCE per tag into a local cache
+#   1. The other 7 modules (elk/iris/timesketch/plaso/velociraptor/volweb/
+#      portainer) are downloaded ONCE per tag into a local cache
 #      and reused on every later run for that tag — they don't change when
 #      you're iterating on backend code, so there's no reason to re-fetch
 #      them over a slow link every time.
@@ -35,7 +35,7 @@ OUT_DIR="${2:-.}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CACHE_DIR="${INTACT_LOCAL_RELEASE_CACHE:-$HOME/.cache/intact-local-release}/$TAG"
 BACKEND_CONTAINER="${INTACT_BACKEND_CONTAINER:-intact_backend}"
-CACHED_MODULES="elk,iris,timesketch,plaso,velociraptor,volweb,aws_sigma,portainer"
+CACHED_MODULES="elk,iris,timesketch,plaso,velociraptor,volweb,portainer"
 
 log() { printf '[local-release] %s\n' "$1"; }
 err() { printf '[local-release][ERROR] %s\n' "$1" >&2; }

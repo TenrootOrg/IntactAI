@@ -300,16 +300,6 @@ jobs:
           fi
           docker tag intact-backend:ci-packager "intact-backend:${{ needs.resolve.outputs.tag }}"
 
-      # Only aws_sigma consumes the rule pack; cloning it for every module
-      # would be ~9x the work for nothing.
-      - name: Seed SigmaHQ rules
-        if: matrix.module == 'aws_sigma'
-        run: |
-          sudo mkdir -p /opt/sigma-rules
-          sudo chown "$(id -un)" /opt/sigma-rules
-          git clone --depth 1 https://github.com/SigmaHQ/sigma /opt/sigma-rules
-          echo "AWS rules: $(find /opt/sigma-rules/rules/cloud/aws -name '*.yml' | wc -l)"
-
       # Velociraptor's image is BUILT, not pulled, and it bakes artifacts from
       # the checkout. refresh_velociraptor_build_files() returns False and only
       # WARNS when it cannot find them, so a bundle-less image would ship while
@@ -347,7 +337,6 @@ jobs:
             -e GITHUB_TOKEN="$GITHUB_TOKEN" \
             -e TAG="$TAG" -e MODULE="$MODULE" -e COMMIT="$COMMIT" \
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-            -v /opt/sigma-rules:/opt/sigma-rules:ro \
             -v "$GITHUB_WORKSPACE/out:/output" \
             intact-backend:ci-packager \
             sh -c '
