@@ -1471,10 +1471,25 @@ def _velo_hunt_contribution(rid, det, log=None):
         if log:
             log(f"run {rid} has no hunt_id or flow/client_id — cannot fuse", "warning")
         return [], []
-    # ALWAYS pull live so an in-flight hunt shows its current partial data and each
-    # rescan picks up whatever has arrived since — no need to wait for the hunt to
-    # finish. A snapshot is persisted only as a fallback for when Velociraptor is
-    # unreachable.
+
+    def _map(rows):
+        ents, rels = map_agentic(_filter_supported(rows), run_id=rid, hostnames=det.get("hostnames") or {})
+        _relabel_source(ents, rels, "agentic", "velociraptor")
+        return ents, rels
+    # Pull live so an in-flight hunt shows its current partial data and each rescan
+    # picks up whatever has arrived since -- no need to wait for the hunt to finish.
+    # Except a hunt that can gain nothing (stopped or expired, every client done)
+    # and was saved in full last time: the snapshot, through the mapping cache,
+    # instead of every client's rows again on every rebuild. Its host names are
+    # kept with the marker, since the pull is what supplied them.
+    final_now = _hunt_final(hunt_id) if hunt_id else _flows_final(client_id, [flow_id])
+    fp = _raw_results_path(rid, det)
+    saved = _read_final(fp) if fp else None
+    if fp and final_now is not None and isinstance(saved, dict) and saved.get("settled") == final_now:
+        det["hostnames"] = saved.get("hostnames") or det.get("hostnames") or {}
+        if log:
+            log(f"hunt {hunt_id or flow_id}: settled in Velociraptor and already saved in full — not re-read", "info")
+        return _cached_map(fp, det, lambda: _agentic_collected_data(rid, det, log=log), _map)
     cd = {}
     try:
         from services.agentic.collectors import get_existing_collection_results, persist_pipeline_artifacts
@@ -1491,6 +1506,9 @@ def _velo_hunt_contribution(rid, det, log=None):
                          for c, i in (client_info or {}).items() if c and (i or {}).get("hostname")}
             if hostnames:
                 det["hostnames"] = hostnames
+            if final_now is not None:              # settled before the pull: this copy is whole
+                _write_final(_raw_results_path(rid, det),
+                             {"settled": final_now, "hostnames": det.get("hostnames") or {}})
     except Exception as e:
         if log:
             log(f"hunt {hunt_id}: live pull failed ({e}); using last snapshot", "warning")
@@ -1498,9 +1516,7 @@ def _velo_hunt_contribution(rid, det, log=None):
         cd = _agentic_collected_data(rid, det)
     if not cd:
         return [], []
-    ents, rels = map_agentic(_filter_supported(cd), run_id=rid, hostnames=det.get("hostnames") or {})
-    _relabel_source(ents, rels, "agentic", "velociraptor")
-    return ents, rels
+    return _map(cd)
 
 
 def _distill_ts_events(events, *, per_tag=5):
@@ -1578,6 +1594,74 @@ def _resnapshot_without_losing_rows(rid, det, fetched):
         print(f"[FUSION] {rid}: re-snapshot failed: {type(e).__name__}: {e}", flush=True)
 
 
+FINAL_NAME = "velociraptor_final.json"
+_ENDED = ("FINISHED", "ERROR")
+
+
+def _flows_final(client_id, flows):
+    """{flow_id: rows collected} when EVERY flow has ended in Velociraptor (one
+    small flows() projection each -- no rows travel), else None: running, gone,
+    or Velociraptor unreachable. None always means "download as before"."""
+    if not client_id or not flows:
+        return None
+    try:
+        from services.velociraptor_clients import _query
+        from services.vql_safety import escape_vql_string
+        out = {}
+        for fid in flows:
+            rows = _query(f"SELECT state, total_collected_rows FROM flows(client_id='{escape_vql_string(client_id)}', "
+                          f"flow_id='{escape_vql_string(str(fid))}')", timeout=20)
+            st = (rows or [{}])[0]
+            if st.get("state") not in _ENDED:
+                return None
+            out[str(fid)] = int(st.get("total_collected_rows") or 0)
+        return out
+    except Exception:                                    # noqa: BLE001 -- unknown = download
+        return None
+
+
+def _hunt_final(hunt_id):
+    """{hunt_id: rows collected} when the hunt can gain nothing: stopped or
+    expired, AND every scheduled client finished. Else None (running, a client
+    still pending, or Velociraptor unreachable)."""
+    try:
+        import time as _t
+        from services.velociraptor_clients import _query
+        from services.vql_safety import escape_vql_string
+        rows = _query(f"SELECT state, stats, expires FROM hunts(hunt_id='{escape_vql_string(str(hunt_id))}')",
+                      timeout=20)
+        h = (rows or [{}])[0]
+        st = h.get("stats") or {}
+        over = (h.get("state") in ("STOPPED", "ARCHIVED") or st.get("stopped") is True
+                or (int(h.get("expires") or 0) and int(h["expires"]) < _t.time() * 1e6))
+        sched = int(st.get("total_clients_scheduled") or 0)
+        if not over or sched != int(st.get("total_finished_clients") or 0):
+            return None
+        return {str(hunt_id): int(st.get("total_collected_rows") or 0)}
+    except Exception:                                    # noqa: BLE001 -- unknown = pull
+        return None
+
+
+def _read_final(fp):
+    try:
+        with open(os.path.join(os.path.dirname(fp), FINAL_NAME)) as f:
+            return json.load(f)
+    except Exception:                                    # noqa: BLE001
+        return None
+
+
+def _write_final(fp, final):
+    if not fp:
+        return
+    try:
+        tmp = os.path.join(os.path.dirname(fp), f".{FINAL_NAME}.{os.getpid()}.tmp")
+        with open(tmp, "w") as f:
+            json.dump(final, f)
+        os.replace(tmp, os.path.join(os.path.dirname(fp), FINAL_NAME))
+    except Exception as e:                               # noqa: BLE001 -- just a re-download next time
+        print(f"[FUSION] final marker not written beside {fp}: {e}", flush=True)
+
+
 def _refetch_agentic_rows(rid, det, log=None):
     """Ask Velociraptor for this collection's CURRENT results, and re-snapshot.
 
@@ -1605,6 +1689,16 @@ def _refetch_agentic_rows(rid, det, log=None):
     from services.vql_safety import is_valid_client_id
     if cid and not is_valid_client_id(cid):
         return None               # not a real client (e.g. "server"): keep the snapshot
+    # Finished in Velociraptor and already saved in full the last time: nothing
+    # new can come, so keep the snapshot -- and with it the mapping cache, which a
+    # re-snapshot invalidates. Measured 2026-10-15: 18.7 s to download one
+    # 145k-row collection, plus its re-map, on every manual Refusion.
+    fp = _raw_results_path(rid, det)
+    final_now = _flows_final(cid, flows)
+    if fp and final_now is not None and _read_final(fp) == final_now:
+        if log:
+            log(f"run {rid}: finished in Velociraptor and already saved in full — not re-read", "info")
+        return None
     try:
         from services.agentic.collectors import get_existing_collection_results
         merged = {}
@@ -1618,6 +1712,8 @@ def _refetch_agentic_rows(rid, det, log=None):
         if not merged:
             return None
         _resnapshot_without_losing_rows(rid, det, merged)
+        if final_now is not None:                 # every flow had ended: this copy is whole
+            _write_final(_raw_results_path(rid, det), final_now)
         if log:
             log(f"run {rid}: re-read {sum(len(v) for v in merged.values()):,} row(s) "
                 f"from Velociraptor", "info")
