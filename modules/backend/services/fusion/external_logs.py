@@ -1639,7 +1639,7 @@ def sigma_event(raw):
     return {**raw, **more} if more else raw
 
 
-def rule_fields(raw) -> dict:
+def rule_fields(raw, depth=0) -> dict:
     """Fields the rules name that live inside a value: the keys of a JSON object kept as
     text (Duo's description -> description.require_lock, as Splunk's spath reads it) and
     the entries of a name/value or change list (Google parameters ->
@@ -1654,8 +1654,13 @@ def rule_fields(raw) -> dict:
             o = json.loads(v)
         except ValueError:
             continue
+        if isinstance(o, list) and len(o) == 1 and isinstance(o[0], dict) and _name_value_pairs(o) is None:
+            o = o[0]                       # Entra targetResources: a list of one object is that object
         if isinstance(o, dict):
-            more.update({kk: vv for kk, vv in _flat(o, k).items() if kk not in raw})
+            flat = {kk: vv for kk, vv in _flat(o, k).items() if kk not in raw}
+            more.update(flat)
+            if depth < 3:                  # its own change lists (targetResources.modifiedProperties)
+                more.update({kk: vv for kk, vv in rule_fields(flat, depth + 1).items() if kk not in more})
         elif isinstance(o, list) and o:
             for kk, vv in (_name_value_pairs(o) or {}).items():
                 more.setdefault(f"{k}.{kk}", vv)

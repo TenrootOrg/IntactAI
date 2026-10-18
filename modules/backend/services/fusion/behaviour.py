@@ -689,36 +689,48 @@ _M365_PRIV = {"dc890d15-9560-4a4c-9b7f-a736ec74ec40": "full_access_as_app (Excha
               "9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8": "RoleManagement.ReadWrite.Directory (Graph)"}
 
 
+_M365_OPS = {"Update application", "Add application", "Update company settings", "Update authorization policy",
+             "Update user", "Consent to application"}
+
+
 def m365_persistence(rows, p):
     """What an attacker changes in a Microsoft 365 tenant to stay, read from the audit
     record's old and new value (ModifiedProperties), so only what this change ADDED:
     - a privileged API permission added to an application (high);
     - protection against consent to risky apps turned off (high);
     - an MFA method added to an account (medium: also a user enrolling a new phone);
-    - a consent to an application Microsoft rated risky, blocked (medium)."""
+    - a consent to an application Microsoft rated risky, blocked (medium);
+    - an ImmutableId (SourceAnchor) set on an account: a federated identity can sign in as it (high).
+    O365 audit (ModifiedProperties) and Entra audit (targetResources.modifiedProperties) alike."""
     from .external_logs import rule_fields
     out = []
     for i, r in enumerate(rows):
         raw = r.get("raw") or {}
-        op = str(raw.get("Operation") or "")
-        if not op or not raw.get("ModifiedProperties"):
+        # O365 Management Activity ("Update user.") or Entra audit ("Update user").
+        op = str(raw.get("Operation") or raw.get("operationName") or raw.get("properties.operationName")
+                 or "").rstrip(".")
+        if op not in _M365_OPS:
             continue
-        mp = {k[len("ModifiedProperties."):]: str(v) for k, v in rule_fields(raw).items()
-              if k.startswith("ModifiedProperties.")}
+        mp = {k.rsplit("odifiedProperties.", 1)[1]: str(v) for k, v in rule_fields(raw).items()
+              if "odifiedProperties." in k}
         hits = []
-        if op in ("Update application.", "Add application."):
+        if op in ("Update application", "Add application"):
             new, old = mp.get("RequiredResourceAccess.NewValue", ""), mp.get("RequiredResourceAccess.OldValue", "")
             added = [name for pid, name in _M365_PRIV.items() if pid in new and pid not in old]
             if added:
                 hits.append(("Privileged API permission added to an application", "high",
                              "added " + ", ".join(added)))
-        if op in ("Update company settings", "Update company settings.", "Update authorization policy."):
+        if op in ("Update company settings", "Update authorization policy"):
             settings = mp.get("ObjectSettings.NewValue", "")
             if re.search(r'"BlockUserConsentForRiskyApps",\s*"Value":\s*"false"', settings, re.I) or \
                     re.search(r"true", mp.get("AllowUserConsentForRiskyApps.NewValue", ""), re.I):
                 hits.append(("Protection against consent to risky apps turned off", "high",
                              "users may now consent to applications Microsoft rates risky"))
-        if op == "Update user.":
+        if op == "Update user":
+            anchor = mp.get("SourceAnchor.NewValue", "").strip('[]" ')
+            if anchor:
+                hits.append(("ImmutableId set on an account", "high",
+                             f"SourceAnchor set to '{anchor}': a federated sign-in can now become this account"))
             for prop, mark in (("StrongAuthenticationMethod", "MethodType"),
                                ("StrongAuthenticationPhoneAppDetail", "DeviceName")):
                 n_new = mp.get(f"{prop}.NewValue", "").count(mark)
@@ -727,7 +739,7 @@ def m365_persistence(rows, p):
                     hits.append(("MFA method added to an account", "medium",
                                  f"{prop}: {n_old} -> {n_new} method(s)"))
                     break
-        if op == "Consent to application." and "risky application" in mp.get("ConsentAction.Reason.NewValue", "").lower():
+        if op == "Consent to application" and "risky application" in mp.get("ConsentAction.Reason.NewValue", "").lower():
             hits.append(("Consent to a risky application blocked", "medium",
                          "Microsoft blocked a user's consent to an application it rates risky"))
         n = r.get("n") or {}

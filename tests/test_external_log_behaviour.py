@@ -306,6 +306,19 @@ class M365Persistence(unittest.TestCase):
                                  ("Protection against consent to risky apps turned off", "high"),
                                  ("Consent to a risky application blocked", "medium")]), sorted(got))
 
+    def test_entra_audit_and_immutable_id(self):
+        def entra(op, props):
+            return {"time": iso(BASE), "operationName": op, "category": "AuditLogs",
+                    "properties": {"initiatedBy": {"user": {"userPrincipalName": "attacker@contoso.com",
+                                                            "ipAddress": "185.220.101.4"}},
+                                   "targetResources": [{"type": "User", "modifiedProperties": props}]}}
+        got = found(jl([
+            entra("Update authorization policy", [{"displayName": "AllowUserConsentForRiskyApps",
+                                                   "oldValue": "[false]", "newValue": "[true]"}]),
+            entra("Update user", [{"displayName": "SourceAnchor", "oldValue": "[]", "newValue": '["anystring"]'}])]))
+        self.assertEqual(sorted([("Protection against consent to risky apps turned off", "high"),
+                                 ("ImmutableId set on an account", "high")]), sorted(got))
+
     def test_unchanged_or_removed_stays_quiet(self):
         perm = '[{"RequiredAppPermissions": [{"EntitlementId": "dc890d15-9560-4a4c-9b7f-a736ec74ec40"}]}]'
         self.assertEqual([], found(jl([

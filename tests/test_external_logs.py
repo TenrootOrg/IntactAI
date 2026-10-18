@@ -216,7 +216,8 @@ class Shapes(unittest.TestCase):
         self.assertEqual("google_password", r["event.parameters.login_type"])
         self.assertEqual("password, google_authenticator", r["event.parameters.login_challenge_method"])
         self.assertIn("event.parameters", r)                # the JSON text stays
-        self.assertNotIn("x.a", X.sigma_event(X._flat({"x": [{"a": 1, "b": 2, "c": 3, "d": 4}]})))   # not pairs
+        self.assertNotIn("x.a", X.sigma_event(X._flat({"x": [{"a": 1, "b": 2, "c": 3, "d": 4}, {"a": 5}]})))  # not pairs
+        self.assertEqual(1, X.sigma_event(X._flat({"x": [{"a": 1, "b": 2, "c": 3, "d": 4}]}))["x.a"])  # one object
         # For the rules only: an O365 "Parameters" pair named Priority once became the
         # severity column, so every transport-rule change read as an alert.
         rows = [{"CreationTime": "2026-10-01T10:00:00", "Operation": "New-TransportRule", "UserId": "a@b.com",
