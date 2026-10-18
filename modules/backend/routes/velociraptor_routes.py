@@ -229,6 +229,32 @@ def _hunt_labels_clause(include_labels):
     return f"    include_labels={json.dumps(include_labels)},\n"
 
 
+def _drop_unknown_artifacts(stub, artifacts, log_fn):
+    """The artifacts this Velociraptor server has loaded, in their order.
+
+    hunt() refuses the whole hunt over one unknown name, so a blueprint that names
+    a newer bundled artifact (an upgrade whose Velociraptor step rolled back, or a
+    server older than the backend) collected nothing at all. The rest now run and
+    the Log names what was left out. A failed lookup keeps the list unchanged."""
+    try:
+        req = api_pb2.VQLCollectorArgs(max_wait=10, max_row=10000, Query=[
+            api_pb2.VQLRequest(VQL="SELECT name FROM artifact_definitions()")])
+        known = set()
+        for response in stub.Query(req, timeout=60):
+            if response.Response:
+                known.update(r.get("name") for r in json.loads(response.Response))
+    except Exception as e:  # noqa: BLE001
+        log_fn(f"Could not list Velociraptor's artifacts ({e}); sending the blueprint as is", "warning")
+        return artifacts
+    if not known:
+        return artifacts
+    missing = [a for a in artifacts if a not in known]
+    if missing:
+        log_fn(f"Skipped {len(missing)} artifact(s) this Velociraptor server does not have: "
+               f"{', '.join(missing)}", "warning")
+    return [a for a in artifacts if a in known]
+
+
 def _create_single_velo_hunt(stub, artifacts, hunt_desc, expire_seconds, timeout_seconds,
                              cpu_limit, flow_max_rows, flow_max_bytes, log_fn,
                              include_labels=None, artifact_params=None):
@@ -483,6 +509,13 @@ def run_bestpractice_hunts():
             return jsonify({"error": "Failed to connect to Velociraptor", "run_id": run_id}), 500
 
         stub = api_pb2_grpc.APIStub(channel)
+
+        artifacts = _drop_unknown_artifacts(stub, artifacts, lambda m, lvl="info": add_log_to_run(run_id, m, lvl))
+        if not artifacts:
+            add_log_to_run(run_id, "ERROR: Velociraptor knows none of this blueprint's artifacts", "error")
+            update_run_status(run_id, "failed", progress=0)
+            channel.close()
+            return jsonify({"error": "Velociraptor knows none of the requested artifacts", "run_id": run_id}), 400
 
         # Convert expire_minutes to seconds for VQL
         expire_seconds = expire_minutes * 60
