@@ -86,5 +86,40 @@ class TagProbe(unittest.TestCase):
             self.assertEqual("v0.77.3", V.resolve_velociraptor_release_tag("0.77.3", logger=lambda *a: None))
 
 
+class LinuxIsTheStaticBuild(unittest.TestCase):
+    """0.77.3's plain linux-amd64 needs GLIBC_2.38: the server image (Ubuntu
+    22.04) crash-looped on it and older Linux endpoints cannot run it. Every
+    Linux binary we stage or hand out is the static musl build."""
+
+    def test_installer_and_packager_stage_the_musl_build(self):
+        with open(os.path.join(ROOT, "lib", "docker.sh")) as f:
+            self.assertIn('"${linux_dir}/velociraptor|velociraptor-v${velo_version}-linux-amd64-musl"', f.read())
+        with open(os.path.join(ROOT, "scripts", "ci", "packager", "package.py")) as f:
+            self.assertRegex(f.read(), r'upstream_binaries = \[\s*f"velociraptor-v\{clean_version\}-linux-amd64-musl"')
+
+    def test_upgrade_stages_musl_before_plain(self):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "pkg", "binaries")); os.makedirs(os.path.join(d, "velo"))
+        for n, body in (("velociraptor-v0.77.3-linux-amd64", "plain"), ("velociraptor-v0.77.3-linux-amd64-musl", "musl")):
+            with open(os.path.join(d, "pkg", "binaries", n), "w") as f:
+                f.write(body)
+        r = subprocess.run(["bash", "-c", f"source {ROOT}/lib/upgrade/velociraptor/image.sh; log_info() {{ :; }}; "
+                            f"_VELO_DIR() {{ echo {d}/velo; }}; UPKG_DIR={d}/pkg; _velo_stage_binaries 0.77.3 >/dev/null 2>&1; "
+                            f"cat {d}/velo/clients/linux/velociraptor"], capture_output=True, text=True)
+        self.assertEqual("musl", r.stdout.strip(), r.stderr)
+
+    def test_default_linux_collector_takes_musl_but_never_the_legacy_one(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "oc_constants", os.path.join(ROOT, "modules/backend/services/offline_collector/constants.py"))
+        C = importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+        d = tempfile.mkdtemp(); C._DOWNLOADS_DIR = d
+        touch = lambda n: open(os.path.join(d, n), "w").close()
+        touch("velociraptor-v0.7.1-linux-amd64-musl"); touch("velociraptor-v0.77.3-linux-amd64")
+        self.assertTrue(C.get_velo_client_path("linux").endswith("v0.77.3-linux-amd64"))
+        touch("velociraptor-v0.77.3-linux-amd64-musl")
+        self.assertTrue(C.get_velo_client_path("linux").endswith("v0.77.3-linux-amd64-musl"))
+
+
 if __name__ == "__main__":
     unittest.main()

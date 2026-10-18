@@ -24,7 +24,11 @@ _velo_stage_binaries() {
     local linux_dst="${dir}/clients/linux/velociraptor"
     if [[ -d "$pkgbin" ]]; then
         local f
-        f="$(find "$pkgbin" -maxdepth 2 -name "*linux-amd64*" -type f 2>/dev/null | head -1)"
+        # The static musl build first: from 0.77.3 the plain one needs
+        # GLIBC_2.38 and crash-loops the server image. `*linux-amd64*` alone
+        # matched both and took whichever find listed first.
+        f="$(find "$pkgbin" -maxdepth 2 -name "*linux-amd64-musl" -type f 2>/dev/null | head -1)"
+        [[ -n "$f" ]] || f="$(find "$pkgbin" -maxdepth 2 -name "*linux-amd64" -type f 2>/dev/null | head -1)"
         [[ -n "$f" ]] && { cp -f "$f" "$linux_dst"; log_info "  staged the linux binary from the package"; }
         f="$(find "$pkgbin" -maxdepth 2 -name "*darwin*" -o -name "*mac*" -type f 2>/dev/null | head -1)"
         [[ -n "$f" ]] && cp -f "$f" "${dir}/clients/mac/velociraptor_client"

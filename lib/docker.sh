@@ -599,8 +599,14 @@ stage_velociraptor_client_binaries() {
 
     # Pairs of "dest_path|upstream_filename" — must mirror
     # services/upgrade/velociraptor.py:_velociraptor_binary_set.
+    #
+    # Linux is the STATIC musl build. This one file is the server binary, the
+    # Linux client download and the client-upgrade package. From 0.77.3 the
+    # plain linux-amd64 build needs GLIBC_2.38: the server image (Ubuntu 22.04,
+    # glibc 2.35) crash-looped on it, and it will not start on RHEL 8/9,
+    # Ubuntu 22.04 or Debian 12 endpoints either. The musl build needs no libc.
     local items=(
-        "${linux_dir}/velociraptor|velociraptor-v${velo_version}-linux-amd64"
+        "${linux_dir}/velociraptor|velociraptor-v${velo_version}-linux-amd64-musl"
         "${mac_dir}/velociraptor_client|velociraptor-v${velo_version}-darwin-amd64"
         "${win_dir}/velociraptor_client.exe|velociraptor-v${velo_version}-windows-amd64.exe"
         "${win_dir}/velociraptor_client.msi|velociraptor-v${velo_version}-windows-amd64.msi"

@@ -85,6 +85,15 @@ def get_velo_client_path(os_type: str) -> str:
     }.get(os_type)
     if not platform_glob:
         return ""
+    if os_type == "linux":
+        # The static build first: from 0.77.3 the plain linux-amd64 needs
+        # GLIBC_2.38, so a default collector would not start on RHEL 8/9,
+        # Ubuntu 22.04 or Debian 12. Plain only if no musl build is on disk.
+        # Not merely "any musl": the legacy 0.7.1 musl build lives in the same
+        # directory, and it must not stand in for a missing modern one.
+        musl, plain = _discover_latest_binary("linux-amd64-musl"), _discover_latest_binary(platform_glob)
+        ver = lambda p: _semver_key(re.search(r"velociraptor-v([\d.]+)-", os.path.basename(p)).group(1)) if p else ()
+        return musl if musl and ver(musl) >= ver(plain) else plain
     return _discover_latest_binary(platform_glob)
 
 

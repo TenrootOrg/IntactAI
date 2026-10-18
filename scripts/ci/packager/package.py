@@ -1677,8 +1677,12 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # The four upstream filenames the Dockerfile needs.
                 # Keep them aligned with `_velociraptor_binary_set` in
                 # services/upgrade/velociraptor.py.
+                # Linux is the static musl build: the server binary, the Linux
+                # client and the client-upgrade package all come from it, and
+                # from 0.77.3 the plain linux-amd64 needs GLIBC_2.38 (see
+                # lib/docker.sh:stage_velociraptor_client_binaries).
                 upstream_binaries = [
-                    f"velociraptor-v{clean_version}-linux-amd64",
+                    f"velociraptor-v{clean_version}-linux-amd64-musl",
                     f"velociraptor-v{clean_version}-darwin-amd64",
                     f"velociraptor-v{clean_version}-windows-amd64.exe",
                     f"velociraptor-v{clean_version}-windows-amd64.msi",
@@ -1723,7 +1727,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # v0.75.6 has no darwin-amd64), we stage zero-byte
                 # placeholders so the Dockerfile COPY still succeeds
                 # and the runtime repack silently no-ops on them.
-                required_binary = upstream_binaries[0]  # the linux-amd64 one
+                required_binary = upstream_binaries[0]  # the linux (musl) one
                 required_ok = False
                 missing_optional: list = []
 
