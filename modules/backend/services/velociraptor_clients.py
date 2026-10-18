@@ -131,6 +131,7 @@ OS_UPGRADE = {
 }
 SOURCE_MSI_TOOL = "VelociraptorWindowsMSI"
 LINUX_SOURCE = "/opt/velociraptor/linux/velociraptor"     # staged by the image: the server's version
+WINDOWS_SOURCE = "/opt/velociraptor/windows/velociraptor_client.msi"   # likewise, the plain upstream MSI
 SERVER_BIN = "/velociraptor/velociraptor"
 CLIENT_CONFIG = "/velociraptor/client.config.yaml"
 LINUX_ARTIFACT_FILE = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
@@ -201,12 +202,21 @@ def _register_tool(tool, path, name, version, sha):
 
 def _build_windows(server, cc, log):
     import time
-    src = (_query(f"SELECT inventory_get(tool='{SOURCE_MSI_TOOL}').Definition AS d FROM scope()") or [{}])[0].get("d") or {}
-    fname = src.get("filename") or ""
-    if f"v{server}-" not in fname:
-        raise RuntimeError(f"the {SOURCE_MSI_TOOL} tool is {fname or 'not set'}, not the {server} MSI -- "
-                           "refresh the Velociraptor tools (upgrade --velo-refresh) first")
-    log(f"Windows: repacking {fname} with this server's client config (Server.Utils.CreateMSI)")
+    # Server.Utils.CreateMSI repacks whatever file the VelociraptorWindowsMSI tool
+    # serves, and that tool can keep serving an older MSI under a newer name: after
+    # a 0.77.2 -> 0.77.3 server upgrade its filename said 0.77.3 while its stored
+    # hash, and so its file, were still 0.77.2. The "0.77.3" package pushed to
+    # clients was 0.77.2, which Windows took as a repair of the installed product
+    # (msiexec 1603, "Configuration failed"). So point the tool at the MSI the
+    # image itself carries -- staged for exactly this server version, as the Linux
+    # build already does with LINUX_SOURCE -- instead of trusting the inventory.
+    fname = f"velociraptor-v{server}-windows-amd64.msi"
+    sha = (_velo_exec("sha256sum", WINDOWS_SOURCE).stdout.split() or [""])[0]
+    if not sha:
+        raise RuntimeError(f"the image has no Windows MSI at {WINDOWS_SOURCE} -- rebuild the Velociraptor image")
+    _register_tool(SOURCE_MSI_TOOL, WINDOWS_SOURCE, fname, server, sha)
+    log(f"Windows: repacking {fname} (the image's own, sha256 {sha[:12]}...) with this server's client config "
+        "(Server.Utils.CreateMSI)")
     flow_id = ((_query("SELECT collect_client(client_id='server', artifacts='Server.Utils.CreateMSI') AS f "
                        "FROM scope()") or [{}])[0].get("f") or {}).get("flow_id")
     if not flow_id:

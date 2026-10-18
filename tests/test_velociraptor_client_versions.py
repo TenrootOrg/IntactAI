@@ -350,6 +350,30 @@ class PackagesBuiltByTheRun(unittest.TestCase):
         self.assertTrue(any("NOT safe to push" in m for m in logs))
 
 
+class WindowsPackageComesFromTheImage(unittest.TestCase):
+    """The VelociraptorWindowsMSI tool kept serving the 0.77.2 MSI under a 0.77.3
+    name, and that was repacked and pushed as 0.77.3 (msiexec 1603: Windows saw a
+    repair of the installed 0.77.2). The source is now the image's own MSI."""
+
+    def test_the_source_tool_is_registered_from_the_image_before_the_repack(self):
+        from unittest import mock
+        from services import velociraptor_clients as vc
+        calls = []
+        def query(vql, timeout=120):
+            calls.append(vql)
+            if "CreateMSI" in vql:
+                raise RuntimeError("stop here: only the order is under test")
+            return []
+        with mock.patch.object(vc, "_query", side_effect=query), \
+             mock.patch.object(vc, "_velo_exec", return_value=mock.Mock(stdout="ab12  x\n")), \
+             mock.patch.object(vc, "_register_tool") as reg:
+            with self.assertRaisesRegex(RuntimeError, "stop here"):
+                vc._build_windows("0.77.3", {}, lambda *a, **k: None)
+        reg.assert_called_once_with(vc.SOURCE_MSI_TOOL, vc.WINDOWS_SOURCE,
+                                    "velociraptor-v0.77.3-windows-amd64.msi", "0.77.3", "ab12")
+        self.assertTrue(any("CreateMSI" in c for c in calls))
+
+
 class UpgradeAllWithoutAPilot(unittest.TestCase):
     """The pilot is optional: Upgrade all runs without one when the operator
     confirmed (without_pilot), and is still refused when nobody said so."""
