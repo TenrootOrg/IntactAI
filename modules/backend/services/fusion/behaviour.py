@@ -696,13 +696,15 @@ def m365_persistence(rows, p):
     - protection against consent to risky apps turned off (high);
     - an MFA method added to an account (medium: also a user enrolling a new phone);
     - a consent to an application Microsoft rated risky, blocked (medium)."""
+    from .external_logs import rule_fields
     out = []
     for i, r in enumerate(rows):
         raw = r.get("raw") or {}
         op = str(raw.get("Operation") or "")
-        if not op:
+        if not op or not raw.get("ModifiedProperties"):
             continue
-        mp = {k[len("ModifiedProperties."):]: str(v) for k, v in raw.items() if str(k).startswith("ModifiedProperties.")}
+        mp = {k[len("ModifiedProperties."):]: str(v) for k, v in rule_fields(raw).items()
+              if k.startswith("ModifiedProperties.")}
         hits = []
         if op in ("Update application.", "Add application."):
             new, old = mp.get("RequiredResourceAccess.NewValue", ""), mp.get("RequiredResourceAccess.OldValue", "")

@@ -210,21 +210,28 @@ class Shapes(unittest.TestCase):
 
     def test_name_value_pairs_are_fields(self):
         # Google Reports keeps an event's details as [{"name": ..., "value"/"multiValue": ...}]
-        r = X._flat({"event": {"name": "login_failure", "parameters": [
+        r = X.sigma_event(X._flat({"event": {"name": "login_failure", "parameters": [
             {"name": "login_type", "value": "google_password"},
-            {"name": "login_challenge_method", "multiValue": ["password", "google_authenticator"]}]}})
+            {"name": "login_challenge_method", "multiValue": ["password", "google_authenticator"]}]}}))
         self.assertEqual("google_password", r["event.parameters.login_type"])
         self.assertEqual("password, google_authenticator", r["event.parameters.login_challenge_method"])
         self.assertIn("event.parameters", r)                # the JSON text stays
-        self.assertNotIn("x.a", X._flat({"x": [{"a": 1, "b": 2, "c": 3, "d": 4}]}))   # not pairs
+        self.assertNotIn("x.a", X.sigma_event(X._flat({"x": [{"a": 1, "b": 2, "c": 3, "d": 4}]})))   # not pairs
+        # For the rules only: an O365 "Parameters" pair named Priority once became the
+        # severity column, so every transport-rule change read as an alert.
+        rows = [{"CreationTime": "2026-10-01T10:00:00", "Operation": "New-TransportRule", "UserId": "a@b.com",
+                 "Parameters": [{"Name": "Priority", "Value": "2"}, {"Name": "Name", "Value": "fwd"}]}] * 3
+        fm, got, _ = X.read("\n".join(__import__("json").dumps(r) for r in rows))
+        n = X.normalize(got, X.detect_columns(got))
+        self.assertIsNone(n[0]["n"].get("severity"))
 
     def test_a_change_list_has_old_and_new_fields(self):
-        r = X._flat({"Operation": "Update user.", "ModifiedProperties": [
-            {"Name": "StrongAuthenticationMethod", "NewValue": "[{MethodType: 6}]", "OldValue": "[]"}]})
+        r = X.sigma_event(X._flat({"Operation": "Update user.", "ModifiedProperties": [
+            {"Name": "StrongAuthenticationMethod", "NewValue": "[{MethodType: 6}]", "OldValue": "[]"}]}))
         self.assertEqual("[{MethodType: 6}]", r["ModifiedProperties.StrongAuthenticationMethod.NewValue"])
         self.assertEqual("[]", r["ModifiedProperties.StrongAuthenticationMethod.OldValue"])
-        r = X._flat({"targetResources": {"modifiedProperties": [
-            {"displayName": "AccountEnabled", "oldValue": "[false]", "newValue": "[true]"}]}})
+        r = X.sigma_event(X._flat({"targetResources": {"modifiedProperties": [
+            {"displayName": "AccountEnabled", "oldValue": "[false]", "newValue": "[true]"}]}}))
         self.assertEqual("[true]", r["targetResources.modifiedProperties.AccountEnabled.NewValue"])
 
     def test_squid_native_access_log(self):

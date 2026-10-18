@@ -253,11 +253,6 @@ def _flat(o, pre="", out=None, depth=0):
     elif isinstance(o, list):
         out[pre] = (", ".join(str(x) for x in o) if all(not isinstance(x, (dict, list)) for x in o)
                     else json.dumps(o, default=str)[:8000])
-        # A list of name/value pairs (Google Reports "parameters", AWS tags) is a set of
-        # fields: event.parameters.login_challenge_method, as the products' own add-ons read it.
-        pairs = _name_value_pairs(o) if o and depth < 8 else None
-        for k, v in (pairs or {}).items():
-            out.setdefault(f"{pre}.{k}" if pre else k, v)
     else:
         out[pre] = o
     return out
@@ -1640,18 +1635,31 @@ def sigma_event(raw):
             return {**raw, "_text": raw["_line"], "text": raw["_line"]}
     if text is not None:
         return {"_text": text, "text": text, **_asa_fields(text)}
-    # A field holding a JSON object as text (Duo's description, a nested audit detail):
-    # its keys are fields too (description.require_lock), as Splunk's spath reads them.
+    more = rule_fields(raw)
+    return {**raw, **more} if more else raw
+
+
+def rule_fields(raw) -> dict:
+    """Fields the rules name that live inside a value: the keys of a JSON object kept as
+    text (Duo's description -> description.require_lock, as Splunk's spath reads it) and
+    the entries of a name/value or change list (Google parameters ->
+    event.parameters.login_challenge_method; O365 ModifiedProperties ->
+    ModifiedProperties.<name>.NewValue). For the rules only, never normalize(): a
+    "Parameters.Priority" pair once became the severity column of every O365 rule change."""
     more = {}
     for k, v in raw.items():
-        if isinstance(v, str) and v[:1] == "{" and v[-1:] == "}" and len(v) <= 20000:
-            try:
-                o = json.loads(v)
-            except ValueError:
-                continue
-            if isinstance(o, dict):
-                more.update({kk: vv for kk, vv in _flat(o, k).items() if kk not in raw})
-    return {**raw, **more} if more else raw
+        if not isinstance(v, str) or len(v) > 20000 or v[:1] not in "{[" or v[-1:] not in "}]":
+            continue
+        try:
+            o = json.loads(v)
+        except ValueError:
+            continue
+        if isinstance(o, dict):
+            more.update({kk: vv for kk, vv in _flat(o, k).items() if kk not in raw})
+        elif isinstance(o, list) and o:
+            for kk, vv in (_name_value_pairs(o) or {}).items():
+                more.setdefault(f"{k}.{kk}", vv)
+    return more
 
 
 def sigma_pass(out, log=None) -> dict:
