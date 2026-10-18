@@ -156,9 +156,9 @@ project_name: intact
 versions:
   elk: '9.5.5'
   iris: v2.4.29
-  plaso: '20260512'
+  plaso: '20260720'
   portainer: '2.45.2'
-  timesketch: '20260630'
+  timesketch: '20261014'
   velociraptor: '0.77.3'
   # Kept for older releases' packages and upgrade bookkeeping only: a release no
   # longer ships an aws_sigma asset (its rules are in the backend image, see
