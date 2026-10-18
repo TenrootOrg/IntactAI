@@ -57,7 +57,9 @@ def _wild(pat: str, cased=False, pre=False, post=False):
 
 
 def _has_wild(s: str) -> bool:
-    return bool(re.search(r"(?<!\\)[*?]", s))
+    # Read escapes in pairs, as _wild() does: USBSTOR\\* is a backslash and THEN a
+    # wildcard (a look-behind took the star for escaped and matched it literally).
+    return bool(re.search(r"[*?]", re.sub(r"\\[*?\\]", "", s)))
 
 
 def _unescape(s: str) -> str:

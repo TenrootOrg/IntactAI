@@ -39,6 +39,25 @@ class Translate(unittest.TestCase):
         r = tr('`wineventlog_security` EventCode=4728 | stats\n count by user')
         self.assertEqual({"EventID": "4728"}, r["detection"]["sel1"])
 
+    def test_the_os_comes_from_the_test_data_when_the_name_has_none(self):
+        doc = {"name": "Socat Network Listener", "id": "x", "type": "TTP",
+               "search": '| tstats count FROM datamodel=Endpoint.Processes WHERE Processes.process_name=socat* '
+                         'BY Processes.dest | `drop_dm_object_name(Processes)`',
+               "tests": [{"attack_data": [{"data": "x.log", "sourcetype": "sysmon:linux"}]}]}
+        r = T.translate(doc, {})
+        self.assertEqual("linux", r["logsource"]["product"])
+        self.assertEqual({"Image": "*/socat*"}, r["detection"]["sel1"])
+
+    def test_a_detection_for_every_os_has_no_product(self):
+        doc = {"name": "Web Server Spawning a Shell", "id": "x", "type": "TTP",
+               "search": '| tstats count FROM datamodel=Endpoint.Processes WHERE Processes.parent_process_name IN '
+                         '("httpd", "w3wp.exe") BY Processes.dest | `drop_dm_object_name(Processes)`',
+               "tests": [{"attack_data": [{"data": "x.log", "sourcetype": "sysmon:linux"}]}]}
+        r = T.translate(doc, {})
+        self.assertNotIn("product", r["logsource"])
+        # Sigma reads "\\\\" as one backslash (as in every Windows path rule)
+        self.assertEqual(["*/httpd", "*\\\\httpd", "*/w3wp.exe", "*\\\\w3wp.exe"], r["detection"]["sel1"]["ParentImage"])
+
     def test_web_data_model_is_any_http_log(self):
         r = tr('| tstats count FROM datamodel=Web WHERE Web.url="*/x.vm*" Web.status IN (200, unknown) '
                'BY Web.src | `drop_dm_object_name("Web")`')

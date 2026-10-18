@@ -130,7 +130,10 @@ def leaf(field, op, values, product):
         out.append(None)          # the add-ons fill status=unknown; the raw log just has none
         values.remove("unknown")
     for v in values:
-        if shape == "name" and not v.startswith("*"):
+        if shape == "name" and not v.startswith("*") and product == "any":
+            out.append(("*/" + v).replace("\\", "\\\\"))       # a path on any OS: both separators
+            v = "*\\" + v
+        elif shape == "name" and not v.startswith("*"):
             v = "*" + sep + v
         elif shape == "element" and not (v.startswith("*") and v.endswith("*")):
             v = f"*{v}*"
@@ -287,14 +290,18 @@ RAW_SOURCES = {
     "esxi_syslog": {"product": "esxi"},                 # free-text syslog: Message is the line
 }
 RAW_FIELDS = {   # Splunk add-on names -> the raw / Sigma names our reader keeps
-    "EventCode": ("EventID", "raw"), "process_name": ("Image", "name"), "parent_process_name": ("ParentImage", "name"),
+    "EventCode": ("EventID", "raw"), "loaded_file_path": ("ImageLoaded", "raw"), "loaded_file": ("ImageLoaded", "name"), "process_name": ("Image", "name"), "parent_process_name": ("ParentImage", "name"),
     "process": ("CommandLine", "raw"), "parent_process": ("ParentCommandLine", "raw"),
     "process_path": ("Image", "raw"), "parent_process_path": ("ParentImage", "raw"),
     "file_path": ("TargetFilename", "raw"), "file_name": ("TargetFilename", "name"),
     "execve_command": ("CommandLine", "raw"),          # auditd: the EXECVE arguments, joined
 }
 RAW_FIELDS_BY_SOURCE = {      # names Splunk's add-on gives a field that has another raw name in this log
-    "wineventlog_security": {"TargetFilename": ("ObjectName", "raw"), "file_path": ("ObjectName", "raw")},
+    "wineventlog_security": {"TargetFilename": ("ObjectName", "raw"), "file_path": ("ObjectName", "raw"),
+                             # the Windows add-on's spellings of the event's own fields
+                             "Logon_Type": ("LogonType", "raw"), "object_file_path": ("ObjectName", "raw"),
+                             "Object_Name": ("ObjectName", "raw"), "Process_Name": ("ProcessName", "raw"),
+                             "process_path": ("ProcessName", "raw")},
     "esxi_syslog": {"Message": ("text", "raw")},
     "github_organizations": {"vendor_action": ("action", "raw")},     # the add-on renames GitHub's action
     # Google Reports: the parameters are name/value pairs (the reader makes them fields);
@@ -497,9 +504,18 @@ def translate(doc, macros):
                 return FIELDS[k][0]
         raise Skip(f"no Sigma field for regex on {f}")
     name = str(doc.get("name") or "")
-    product = ("linux" if re.match(r"linux\b", name, re.I) else "macos" if re.match(r"macos\b", name, re.I)
-               else "windows")
+    # The OS: the name says it ("Linux ...", "MacOS ..."), else the data the detection was
+    # tested on does ("Socat ..." runs on Linux Sysmon); else Windows.
+    tested = " ".join(str(a.get("sourcetype") or a.get("source") or "") for t in doc.get("tests") or []
+                      for a in t.get("attack_data") or []).lower()
     cond = expand(m.group(2), macros)
+    win_tested = bool(re.search(r"wineventlog|xmlwineventlog|windows", tested))
+    nix_tested = bool(re.search(r"linux|auditd|osquery|macos", tested))
+    both_named = ".exe" in cond.lower() and bool(re.search(r'`linux_\w+`|"(bash|sh|zsh|java|httpd|nginx|node)"', cond))
+    product = ("linux" if re.match(r"linux\b", name, re.I) else "macos" if re.match(r"macos\b", name, re.I)
+               else "windows" if re.match(r"windows\b", name, re.I)
+               else "any" if (win_tested and nix_tested) or both_named        # one rule for every OS
+               else "macos" if "macos" in tested else "linux" if nix_tested else "windows")
     category = CATEGORY[next(k for k in CATEGORY if k.lower() == m.group(1).lower())]
     if category in ("web", "dns"):                    # network data: no operating system
         tree = Parser(tokens(cond), "network").expr()
@@ -514,7 +530,7 @@ def translate(doc, macros):
     tree = Parser(tokens(cond), product).expr()
     tree = with_regexes(tree, regexes, field_of)
     sels, condition = to_sigma(tree)
-    return _rule(doc, sels, condition, {"category": category, "product": product})
+    return _rule(doc, sels, condition, {"category": category, **({} if product == "any" else {"product": product})})
 
 
 def _rule(doc, sels, condition, logsource):
