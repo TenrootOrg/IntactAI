@@ -152,5 +152,6 @@ test_missing_config_file_is_refused() {
     _teardown
 }
 
-run_all_tests
+run_all_tests; _rc=$?
 rm -f "$LOG_FILE"
+exit $_rc

@@ -240,5 +240,6 @@ test_an_unchanged_module_code_file_is_left_alone() {
     assert_not_contains "$(cat "$LOG_FILE")" "refreshed modules/velociraptor/entrypoint.sh"
 }
 
-run_all_tests
+run_all_tests; _rc=$?
 rm -f "$LOG_FILE"
+exit $_rc

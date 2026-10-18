@@ -508,5 +508,6 @@ test_a_full_fetch_still_refuses_a_module_missing_from_disk() {
     _teardown
 }
 
-run_all_tests
+run_all_tests; _rc=$?
 rm -f "$LOG_FILE"; rm -rf "$SCRIPT_DIR"
+exit $_rc

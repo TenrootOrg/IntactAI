@@ -300,5 +300,6 @@ test_a_probe_function_exists_for_every_module_in_the_container_map() {
     done
 }
 
-run_all_tests
+run_all_tests; _rc=$?
 rm -f "$LOG_FILE"
+exit $_rc

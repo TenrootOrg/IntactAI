@@ -434,5 +434,6 @@ test_memory_preflight_names_a_stack_worth_stopping() {
     assert_contains "$log" "docker compose" "and give a runnable command"
 }
 
-run_all_tests
+run_all_tests; _rc=$?
 rm -f "$LOG_FILE"; rm -rf "$SCRIPT_DIR"
+exit $_rc

@@ -318,5 +318,6 @@ test_read_env_var_does_not_match_a_commented_out_key() {
     rm -rf "$d"
 }
 
-run_all_tests
+run_all_tests; _rc=$?
 rm -f "$LOG_FILE"
+exit $_rc
