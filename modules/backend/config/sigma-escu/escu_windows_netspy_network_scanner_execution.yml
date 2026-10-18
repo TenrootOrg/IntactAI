@@ -1,0 +1,39 @@
+title: Windows Netspy Network Scanner Execution
+id: f3ee1ff4-38ab-451e-8dfc-659dea57045f
+status: experimental
+description: 'Detects usage of the Netspy scanner on an endpoint.
+
+  Netspy is a lightweight, fast, and cross-platform tool designed for internal network segment discovery.
+
+  The tool supports various protocols, including ICMP, ARP, TCP, and UDP, allowing users to scan for active hosts and services
+  within predefined IP ranges.'
+references:
+- https://research.splunk.com/f3ee1ff4-38ab-451e-8dfc-659dea57045f/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1595
+- attack.t1018
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\netspy.exe'
+  sel2:
+    CommandLine:
+    - '*arpspy*'
+    - '*as*'
+    - '*icmpspy*'
+    - '*is*'
+    - '*pingspy*'
+    - '*ps*'
+    - '*tcpspy*'
+    - '*ts*'
+    - '*udpspy*'
+    - '*us*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1595/snapattack/snapattack.log

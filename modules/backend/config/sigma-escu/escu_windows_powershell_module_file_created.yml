@@ -1,0 +1,30 @@
+title: Windows PowerShell Module File Created
+id: ef018634-8999-4854-9344-bde9593468e7
+status: experimental
+description: 'Detects the creation of a DLL within the various PowerShell module directories.
+
+  This can indicate a new module being installed, attempts at ScriptBlock smuggling, or other malicious PowerShell activity
+  utilizing modules.
+
+  False positives could include installation of legitimate modules.'
+references:
+- https://research.splunk.com/ef018634-8999-4854-9344-bde9593468e7/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1129
+- attack.t1059.001
+- attack.t1574
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename: '*\\WindowsPowerShell\\Modules\\*.dll'
+  sel2:
+    TargetFilename: '*.dll'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1129/snapattack/snapattack.log

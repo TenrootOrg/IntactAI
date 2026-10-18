@@ -1,0 +1,56 @@
+title: Windows WMI Reconnaissance Class Query
+id: 5e38bd3e-5da7-483d-aa61-27f7e8c27ad1
+status: experimental
+description: 'The following analytic detects the use of WMIC (Windows Management Instrumentation Command-line) for reconnaissance
+  and system information discovery on Windows endpoints.
+
+  It identifies command-line queries targeting common Win32 WMI classes such as Win32_OperatingSystem, Win32_Processor, csproduct,
+  Win32_DiskDrive, and Win32_PhysicalMemory, which are frequently leveraged to enumerate hardware, operating system details,
+  and system configuration. Adversaries often use these queries during post-exploitation to fingerprint hosts, assess virtualization,
+  and tailor follow-on activity. While WMIC usage can be legitimate for administrative and inventory tasks, suspicious or
+  unexpected execution—particularly by non-administrative users or uncommon parent processes—may indicate malicious reconnaissance
+  aligned with system discovery techniques.'
+references:
+- https://research.splunk.com/5e38bd3e-5da7-483d-aa61-27f7e8c27ad1/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1047
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage:
+    - '*:\\Program Files (x86)\\*'
+    - '*:\\Program Files\\*'
+    - '*:\\Windows\\System32\\*'
+    - '*:\\Windows\\SysWOW64\\*'
+  sel2:
+    ParentImage:
+    - '*\\cmd.exe'
+    - '*\\powershell*'
+    - '*\\pwsh.exe'
+  sel3:
+    Image: '*\\wmic.exe'
+  sel4:
+    OriginalFileName: wmic.exe
+  sel5:
+    CommandLine:
+    - '*csproduct*'
+    - '*Win32_BaseBoard*'
+    - '*Win32_Bios*'
+    - '*Win32_DiskDrive*'
+    - '*Win32_DisplayConfiguration*'
+    - '*Win32_OperatingSystem*'
+    - '*Win32_PhysicalMemory*'
+    - '*Win32_PnPEntity*'
+    - '*Win32_Processor*'
+    - '*Win32_ShadowCopy*'
+    - '*win32_ShortcutFile*'
+    - '*win32_VideoController*'
+  condition: ((not (sel1) or sel2) and (sel3 or sel4) and sel5)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1047/wmic_classes/wmic_cmd.log

@@ -1,0 +1,35 @@
+title: Windows System Network Connections Discovery Netsh
+id: abfb7cc5-c275-4a97-9029-62cd8d4ffeca
+status: experimental
+description: The following analytic detects the execution of the Windows built-in tool netsh.exe to display the state, configuration,
+  and profile of the host firewall. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing
+  on command-line executions and process metadata. Monitoring this activity is crucial as netsh.exe can be used by adversaries
+  to bypass firewall rules or discover firewall settings. If confirmed malicious, this activity could allow attackers to manipulate
+  firewall configurations, potentially leading to unauthorized network access or data exfiltration.
+references:
+- https://research.splunk.com/abfb7cc5-c275-4a97-9029-62cd8d4ffeca/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1049
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\netsh.exe'
+  sel2:
+    OriginalFileName: netsh.exe
+  sel3:
+    CommandLine: '* show *'
+  sel4:
+    CommandLine:
+    - '*state*'
+    - '*config*'
+    - '*wlan*'
+    - '*profile*'
+  condition: ((sel1 or sel2) and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/winpeas/sysmon.log

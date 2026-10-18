@@ -1,0 +1,31 @@
+title: Windows Crowdstrike RTR Script Execution
+id: be2bbfff-77c9-4d65-9b7c-97726051534a
+status: experimental
+description: 'Detects usage of Crowdstrike Real Time Response (RTR) to execute a "runscript" command.
+
+  This can be used by malicious actors with access to the Crowdstrike Dashboard to execute commands on remote managed hosts.'
+references:
+- https://research.splunk.com/be2bbfff-77c9-4d65-9b7c-97726051534a/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1059.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\dllhost.exe'
+  sel2:
+    ParentCommandLine:
+    - '*/Processid:{BD07DDB9-1C61-4DCE-9202-A2BA1757CDB2}*'
+    - unknown
+  sel3:
+    Image: '*\\powershell.exe'
+  sel4:
+    CommandLine: '* -Version 5.1 -s -NoLogo -NoProfile -EncodedCommand*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/snapattack/snapattack.log

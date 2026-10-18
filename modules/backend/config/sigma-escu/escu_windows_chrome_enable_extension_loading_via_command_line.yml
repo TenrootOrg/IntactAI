@@ -1,0 +1,32 @@
+title: Windows Chrome Enable Extension Loading via Command-Line
+id: da355155-1d23-48f9-bf95-e534ae273ab0
+status: experimental
+description: 'The following analytic detects instances where Google Chrome is started with the --disable-features=DisableLoadExtensionCommandLineSwitch
+  flag, effectively enabling the loading of extensions via the command line.
+
+  This may indicate attempts to bypass enterprise extension policies, load unauthorized or malicious extensions, or manipulate
+  browser behavior.
+
+  Monitoring this activity helps identify potential security policy violations, malware persistence techniques, or other suspicious
+  Chrome modifications.'
+references:
+- https://research.splunk.com/da355155-1d23-48f9-bf95-e534ae273ab0/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1185
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\Chrome.exe'
+  sel2:
+    CommandLine: '*--disable-features*'
+  sel3:
+    CommandLine: '*DisableLoadExtensionCommandLineSwitch*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1185/chrome_load_extensions/chrome_load_extension.log

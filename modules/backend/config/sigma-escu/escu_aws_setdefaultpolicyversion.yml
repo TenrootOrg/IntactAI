@@ -1,0 +1,27 @@
+title: AWS SetDefaultPolicyVersion
+id: 2a9b80d3-6340-4345-11ad-212bf3d0dac4
+status: experimental
+description: The following analytic detects when a user sets a default policy version in AWS. It leverages AWS CloudTrail
+  logs to identify the `SetDefaultPolicyVersion` event from the IAM service. This activity is significant because attackers
+  may exploit this technique for privilege escalation, especially if previous policy versions grant more extensive permissions
+  than the current one. If confirmed malicious, this could allow an attacker to gain elevated access to AWS resources, potentially
+  leading to unauthorized actions and data breaches.
+references:
+- https://research.splunk.com/2a9b80d3-6340-4345-11ad-212bf3d0dac4/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Splunk
+tags:
+- attack.t1078.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  sel1:
+    eventName: SetDefaultPolicyVersion
+  sel2:
+    eventSource: iam.amazonaws.com
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1078/aws_setdefaultpolicyversion/aws_cloudtrail_events.json

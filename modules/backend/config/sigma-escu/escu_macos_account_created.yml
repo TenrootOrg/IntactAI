@@ -1,0 +1,44 @@
+title: MacOS Account Created
+id: 491004ae-694f-453e-b1e0-fc1e65daeea1
+status: experimental
+description: 'The following analytic detects the creation of a new local user account on a MacOS system. It leverages osquery
+  logs to identify this activity.
+
+  Monitoring the creation of local accounts is crucial for a SOC as it can indicate unauthorized access or lateral movement
+  within the network.
+
+  If confirmed malicious, this activity could allow an attacker to establish persistence, escalate privileges, or gain unauthorized
+  access to sensitive systems and data.'
+references:
+- https://research.splunk.com/491004ae-694f-453e-b1e0-fc1e65daeea1/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1136
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    CommandLine: '*sysadminctl*'
+  sel2:
+    CommandLine: '*-addUser*'
+  sel3:
+    CommandLine: '*createhomedir*'
+  sel4:
+    CommandLine: '*-u*'
+  sel5:
+    CommandLine: '*dseditgroup*'
+  sel6:
+    CommandLine:
+    - '*edit*'
+    - '*-a*'
+  sel7:
+    CommandLine: '*dscl*'
+  sel8:
+    CommandLine: '*-create*'
+  condition: ((((sel1 and sel2) or (sel3 and sel4)) or (sel5 and sel6)) or (sel7 and sel8))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1136/osquery_account_creation/osquery.log

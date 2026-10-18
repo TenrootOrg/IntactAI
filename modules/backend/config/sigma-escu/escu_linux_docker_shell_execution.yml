@@ -1,0 +1,45 @@
+title: Linux Docker Shell Execution
+id: 03b2b286-fa86-4ec9-b1a1-ec19d314bdf7
+status: experimental
+description: 'This detection identifies shell execution activity associated with Docker containers on Linux systems.
+
+  Specifically, it monitors for interactive or non-interactive shell processes (e.g., `/bin/bash`, `/bin/sh`, `/bin/zsh`)
+  launched via Docker commands such as `docker exec`,  or through container entrypoint overrides.
+
+  Shell execution inside a container may indicate administrative troubleshooting activity.
+
+  However, it can also represent post-exploitation behavior, where an attacker gains access to a container and spawns a shell
+  to execute arbitrary commands, establish persistence, or pivot to the host.'
+references:
+- https://research.splunk.com/03b2b286-fa86-4ec9-b1a1-ec19d314bdf7/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Splunk, Emil Elsetrønning
+tags:
+- attack.t1059.013
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image: '*/docker*'
+  sel2:
+    CommandLine: '* exec *'
+  sel3:
+    CommandLine:
+    - '* /bin/bash *'
+    - '* /bin/dash *'
+    - '* /bin/sh *'
+    - '* /bin/zsh *'
+    - '* bash *'
+    - '* bash'
+    - '* dash *'
+    - '* dash'
+    - '* sh *'
+    - '* sh'
+    - '* zsh *'
+    - '* zsh'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548/docker/sysmon_linux.log

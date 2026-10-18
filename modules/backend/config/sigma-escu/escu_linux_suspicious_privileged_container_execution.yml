@@ -1,0 +1,32 @@
+title: Linux Suspicious Privileged Container Execution
+id: 29b888db-d6e7-4286-bbf5-39d9f260444c
+status: experimental
+description: 'The following analytic detects the execution of a Docker container with the privileged flag set, or with the
+  pid namespace set to the host.
+
+  This can indicate a container running with elevated permissions and access to the underlying system. Actors can hide containers
+  such as this to enable persistent access.'
+references:
+- https://research.splunk.com/29b888db-d6e7-4286-bbf5-39d9f260444c/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1610
+- attack.t1059.004
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    CommandLine: '*docker *'
+  sel2:
+    CommandLine: '* run*'
+  sel3:
+    CommandLine:
+    - '*--privileged*'
+    - '*--pid=host*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1610/linux_suspicious_privileged_container/snapattack_linux.log

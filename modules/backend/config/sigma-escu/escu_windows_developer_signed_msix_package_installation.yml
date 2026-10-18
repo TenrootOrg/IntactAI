@@ -1,0 +1,33 @@
+title: Windows Developer-Signed MSIX Package Installation
+id: 2c0427aa-982c-4e97-bc33-bddeda4fd095
+status: experimental
+description: This detection identifies the installation of developer-signed MSIX packages that lack Microsoft Store signatures.
+  All malicious MSIX packages observed in recent threat campaigns (including those from FIN7, Zloader/Storm-0569, and FakeBat/Storm-1113)
+  were developer-signed rather than Microsoft Store signed. Microsoft Store apps have specific publisher IDs containing '8wekyb3d8bbwe'
+  or 'cw5n1h2txyewy', while developer-signed packages lack these identifiers. This detection focuses on EventID 855 from the
+  Microsoft-Windows-AppXDeployment-Server/Operational logs, which indicates a completed package installation.
+references:
+- https://research.splunk.com/2c0427aa-982c-4e97-bc33-bddeda4fd095/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1553.005
+- attack.t1204.002
+logsource:
+  product: windows
+  service: appxdeployment-server
+detection:
+  sel1:
+    EventID: '855'
+  sel2:
+    PackageMoniker:
+    - '*8wekyb3d8bbwe*'
+    - '*cw5n1h2txyewy*'
+  condition: (sel1 and not (sel2))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1204.002/appx/windows_appxdeploymentserver.log
+x-intact-burst: false
+x-intact: 'Fired 88 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

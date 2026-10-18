@@ -1,0 +1,31 @@
+title: Windows Powershell History File Deletion
+id: f1369394-48e1-4327-bf6d-14377f4b8687
+status: experimental
+description: The following analytic detects the usage of PowerShell to delete its command history file, which may indicate
+  an attempt to evade detection by removing evidence of executed commands. PowerShell stores command history in ConsoleHost_history.txt
+  under the user’s profile directory. Adversaries or malicious scripts may delete this file using Remove-Item, del, or similar
+  commands. This detection focuses on file deletion events targeting the history file, correlating them with recent PowerShell
+  activity. While legitimate users may occasionally clear history, frequent or automated deletions should be investigated
+  for potential defense evasion or post-exploitation cleanup activities.
+references:
+- https://research.splunk.com/f1369394-48e1-4327-bf6d-14377f4b8687/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1059.003
+- attack.t1070.003
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Remove-Item*'
+  sel3:
+    ScriptBlockText: '*.HistorySavePath'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1070.003/ConsoleHost_History_deletion/HistorySavePath_powershell.log

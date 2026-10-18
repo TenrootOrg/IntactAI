@@ -1,0 +1,24 @@
+title: Azure AD External Guest User Invited
+id: c1fb4edb-cab1-4359-9b40-925ffd797fb5
+status: experimental
+description: The following analytic detects the invitation of an external guest user within Azure AD. It leverages Azure AD
+  AuditLogs to identify events where an external user is invited, using fields such as operationName and initiatedBy. Monitoring
+  these invitations is crucial as they can lead to unauthorized access if abused. If confirmed malicious, this activity could
+  allow attackers to gain access to internal resources, potentially leading to data breaches or further exploitation of the
+  environment.
+references:
+- https://research.splunk.com/c1fb4edb-cab1-4359-9b40-925ffd797fb5/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Mauricio Velazco, Splunk
+tags:
+- attack.t1136.003
+logsource:
+  product: azure
+detection:
+  sel1:
+    operationName: Invite external user
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1136.003/azure_ad_external_guest_user_invited/azure-audit.log

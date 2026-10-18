@@ -1,0 +1,30 @@
+title: Linux Kernel Module Enumeration
+id: 6df99886-0e04-4c11-8b88-325747419278
+status: experimental
+description: The following analytic identifies the use of the 'kmod' process to list kernel modules on a Linux system. This
+  detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process names and command-line executions.
+  While listing kernel modules is not inherently malicious, it can be a precursor to loading unauthorized modules using 'insmod'.
+  If confirmed malicious, this activity could allow an attacker to load kernel modules, potentially leading to privilege escalation,
+  persistence, or other malicious actions within the system.
+references:
+- https://research.splunk.com/6df99886-0e04-4c11-8b88-325747419278/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1082
+- attack.t1014
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image: '*/kmod'
+  sel2:
+    CommandLine:
+    - '*lsmod*'
+    - '*list*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1082/atomic_red_team/linux-sysmon.log

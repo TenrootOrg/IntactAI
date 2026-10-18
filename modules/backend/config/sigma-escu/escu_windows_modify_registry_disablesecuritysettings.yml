@@ -1,0 +1,29 @@
+title: Windows Modify Registry DisableSecuritySettings
+id: 989019b4-b7aa-418a-9a17-2293e91288b6
+status: experimental
+description: The following analytic detects modifications to the Windows registry that disable security settings for Terminal
+  Services. It leverages the Endpoint data model, specifically monitoring changes to the registry path associated with Terminal
+  Services security settings. This activity is significant because altering these settings can weaken the security posture
+  of Remote Desktop Services, potentially allowing unauthorized remote access. If confirmed malicious, such modifications
+  could enable attackers to gain persistent remote access to the system, facilitating further exploitation and data exfiltration.
+references:
+- https://research.splunk.com/989019b4-b7aa-418a-9a17-2293e91288b6/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Terminal Services\\DisableSecuritySettings'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/disablesecuritysetting.log

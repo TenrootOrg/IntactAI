@@ -1,0 +1,50 @@
+title: Executables Or Script Creation In Temp Path
+id: e0422b71-2c05-4f32-8754-01fb415f49c9
+status: experimental
+description: 'The following analytic identifies the creation of executables or scripts in temporary file paths on Windows
+  systems. It leverages the Endpoint.Filesystem data set to detect files with specific extensions (e.g., .exe, .dll, .ps1)
+  created in temporary directories (e.g., \windows\Temp\, \AppData\Local\Temp\).
+
+  This activity can be significant as adversaries often use these paths to evade detection and maintain persistence.
+
+  If confirmed malicious, this behavior could allow attackers to execute unauthorized code, escalate privileges, or persist
+  within the environment, posing a significant security threat.'
+references:
+- https://research.splunk.com/e0422b71-2c05-4f32-8754-01fb415f49c9/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1036
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*.bat'
+    - '*.cmd'
+    - '*.com'
+    - '*.dll'
+    - '*.exe'
+    - '*.js'
+    - '*.msc'
+    - '*.pif'
+    - '*.ps1'
+    - '*.sys'
+    - '*.vbe'
+    - '*.vbs'
+  sel2:
+    TargetFilename:
+    - '*:\\Temp\\*'
+    - '*:\\Windows\\Temp\\*'
+    - '*\\AppData\\Local\\Temp\\*'
+  sel3:
+    TargetFilename: '*\\__PSScriptPolicyTest_*'
+  condition: (sel1 and sel2 and not (sel3))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/xmrig_miner/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 969 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

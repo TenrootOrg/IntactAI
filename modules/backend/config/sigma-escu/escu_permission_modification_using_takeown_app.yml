@@ -1,0 +1,28 @@
+title: Permission Modification using Takeown App
+id: fa7ca5c6-c9d8-11eb-bce9-acde48001122
+status: experimental
+description: The following analytic detects the modification of file or directory permissions using the takeown.exe Windows
+  application. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process execution logs that
+  include process GUID, process name, and command-line details. This activity is significant because it is a common technique
+  used by ransomware to take ownership of files or folders for encryption or deletion. If confirmed malicious, this could
+  lead to unauthorized access, data encryption, or data destruction, severely impacting the integrity and availability of
+  critical data.
+references:
+- https://research.splunk.com/fa7ca5c6-c9d8-11eb-bce9-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1222
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\takeown.exe'
+  sel2:
+    CommandLine: '*/f*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/ransomware_ttp/data1/windows-sysmon.log

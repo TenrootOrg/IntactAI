@@ -1,0 +1,34 @@
+title: Linux Suspicious XDG Autostart
+id: dc057fd6-34db-4c41-b8dd-00463c47bf83
+status: experimental
+description: 'The following analytic detects the creation of a .desktop file within XDG autostart directories, including the
+  system-wide /etc/xdg/autostart and user-local ~/.config/autostart paths.
+
+  Adversaries abuse XDG autostart entries to achieve persistence on Linux desktop environments — any .desktop file placed
+  in these directories is automatically executed when a user logs into a graphical session.
+
+  This technique is used by post-exploitation frameworks such as PANIX to survive reboots without requiring root on user-local
+  paths, or to achieve system-wide persistence when writing to /etc/xdg/autostart.'
+references:
+- https://research.splunk.com/dc057fd6-34db-4c41-b8dd-00463c47bf83/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1547
+- attack.t1037
+- attack.t1059.004
+logsource:
+  category: file_event
+  product: linux
+detection:
+  sel1:
+    TargetFilename:
+    - /etc/xdg/autostart/*
+    - '*/.config/autostart/*'
+  sel2:
+    TargetFilename: '*.desktop'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1547/linux_suspicious_xdg_autostart/snapattack_linux.log

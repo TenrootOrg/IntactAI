@@ -1,0 +1,55 @@
+title: Windows Private Keys Discovery
+id: 5c1c2877-06c0-40ee-a1a2-db71f1372b5b
+status: experimental
+description: 'The following analytic identifies processes that retrieve information related to private key files, often used
+  by post-exploitation tools like winpeas.
+
+  This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line executions that
+  search for private key certificates.
+
+  This activity is significant as it indicates potential attempts to locate insecurely stored credentials, which adversaries
+  can exploit for privilege escalation, persistence, or remote service authentication.
+
+  If confirmed malicious, this behavior could allow attackers to access sensitive information, escalate privileges, or maintain
+  persistence within the compromised environment.'
+references:
+- https://research.splunk.com/5c1c2877-06c0-40ee-a1a2-db71f1372b5b/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1552.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\cmd.exe'
+    - '*\\findstr.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+  sel2:
+    CommandLine:
+    - '*.asc*'
+    - '*.cer*'
+    - '*.csr*'
+    - '*.der*'
+    - '*.gpg*'
+    - '*.key*'
+    - '*.ovpn*'
+    - '*.p12*'
+    - '*.p7b*'
+    - '*.pem*'
+    - '*.pfx*'
+    - '*.pgp*'
+    - '*.ppk*'
+    - '*.rdg*'
+  sel3:
+    CommandLine|re: (?i)[^\.\-\_\$a-zA-Z](dir\s|findstr)
+  sel4:
+    CommandLine|re: (?i)\.(?:rdg|gpg|pgp|p12|der|csr|cer|ovpn|key|ppk|p12|pem|pfx|p7b|asc)\b
+  condition: ((sel1 and sel2) and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/winpeas/winpeas_search_private_key/dir-private-sysmon.log

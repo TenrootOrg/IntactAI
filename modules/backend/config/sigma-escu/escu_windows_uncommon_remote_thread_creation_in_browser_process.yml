@@ -1,0 +1,128 @@
+title: Windows Uncommon Remote Thread Creation In Browser Process
+id: 634cce27-a3a6-4079-b0d6-3ced361a0aa9
+status: experimental
+description: 'The following analytic identifies the creation of a remote thread by a process such as wermgr.exe or rundll32.exe
+  into a browser process such as firefox.exe, chrome.exe, and others.
+
+  These processes do not typically create remote threads, in browser processes.
+
+  It leverages Sysmon EventID 8 to detect this behavior by monitoring SourceImage and TargetImage fields.
+
+  This activity is significant because it is commonly associated with malware like Qakbot and IcedID, which injects malicious
+  code into legitimate processes to steal information.
+
+  If confirmed malicious, this activity could allow attackers to execute arbitrary code, escalate privileges, and exfiltrate
+  sensitive data from the compromised host.'
+references:
+- https://research.splunk.com/634cce27-a3a6-4079-b0d6-3ced361a0aa9/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1055.001
+logsource:
+  product: windows
+  service: sysmon
+  category: create_remote_thread
+detection:
+  sel1:
+    EventID: '8'
+  sel2:
+    SourceImage:
+    - '*\\rundll32.exe'
+    - '*\\wermgr.exe'
+  sel3:
+    TargetImage:
+    - '*\\Sputnik.exe'
+    - '*\\ChromePlus.exe'
+    - '*\\QIP Surf.exe'
+    - '*\\BlackHawk.exe'
+    - '*\\7Star.exe'
+    - '*\\Sleipnir5.exe'
+    - '*\\Citrio.exe'
+    - '*\\Chrome SxS.exe'
+    - '*\\Chrome.exe'
+    - '*\\Coowon.exe'
+    - '*\\CocCocBrowser.exe'
+    - '*\\Uran.exe'
+    - '*\\QQBrowser.exe'
+    - '*\\Orbitum.exe'
+    - '*\\Slimjet.exe'
+    - '*\\Iridium.exe'
+    - '*\\Vivaldi.exe'
+    - '*\\Chromium.exe'
+    - '*\\GhostBrowser.exe'
+    - '*\\CentBrowser.exe'
+    - '*\\Xvast.exe'
+    - '*\\Chedot.exe'
+    - '*\\SuperBird.exe'
+    - '*\\360Browser.exe'
+    - '*\\360Chrome.exe'
+    - '*\\dragon.exe'
+    - '*\\brave.exe'
+    - '*\\torch.exe'
+    - '*\\UCBrowser.exe'
+    - '*\\BliskBrowser.exe'
+    - '*\\Epic Privacy Browser.exe'
+    - '*\\nichrome.exe'
+    - '*\\AmigoBrowser.exe'
+    - '*\\KometaBrowser.exe'
+    - '*\\XpomBrowser.exe'
+    - '*\\msedge.exe'
+    - '*\\LiebaoBrowser.exe'
+    - '*\\AvastBrowser.exe'
+    - '*\\Kinza.exe'
+    - '*\\seamonkey.exe'
+    - '*\\icedragon.exe'
+    - '*\\cyberfox.exe'
+    - '*\\SlimBrowser.exe'
+    - '*\\palemoon.exe'
+    - '*\\opera.exe'
+    - '*\\yandex.exe'
+    - '*\\atom.exe'
+    - '*\\Chromodo.exe'
+    - '*\\360chrome.exe'
+    - '*\\360se.exe'
+    - '*\\Maxthon.exe'
+    - '*\\k-meleon.exe'
+    - '*\\SLBrowser.exe'
+    - '*\\Go!.exe'
+    - '*\\Secure Browser.exe'
+    - '*\\Elements Browser.exe'
+    - '*\\Mustang.exe'
+    - '*\\Suhba.exe'
+    - '*\\TorBro.exe'
+    - '*\\RockMelt.exe'
+    - '*\\Bromium.exe'
+    - '*\\Twinkstar.exe'
+    - '*\\iTop Private Browser.exe'
+    - '*\\CCleaner Browser.exe'
+    - '*\\AcWebBrowser.exe'
+    - '*\\CoolNovo.exe'
+    - '*\\spark.exe'
+    - '*\\iron.exe'
+    - '*\\Titan Browser.exe'
+    - '*\\AVG Browser.exe'
+    - '*\\UR Browser.exe'
+    - '*\\Flock.exe'
+    - '*\\CryptoTab Browser.exe'
+    - '*\\Sidekick.exe'
+    - '*\\SwingBrowser.exe'
+    - '*\\SalamWeb.exe'
+    - '*\\NetboxBrowser.exe'
+    - '*\\GarenaPlus.exe'
+    - '*\\InsomniacBrowser.exe'
+    - '*\\Viasat Browser.exe'
+    - '*\\whale.exe'
+    - '*\\falkon.exe'
+    - '*\\SogouExplorer.exe'
+    - '*\\firefox.exe'
+    - '*\\waterfox.exe'
+    - '*\\thunderbird.exe'
+    - '*\\basilisk.exe'
+    - '*\\BitTubeBrowser.exe'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/qakbot/remote_thread/sysmon_wermgr_remote.log
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/icedid/inf_icedid/windows-sysmon.log

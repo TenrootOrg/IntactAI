@@ -1,0 +1,34 @@
+title: Linux Puppet Privilege Escalation
+id: 1d19037f-466e-4d56-8d87-36fafd9aa3ce
+status: experimental
+description: The following analytic detects the execution of Puppet commands with elevated privileges, specifically when Puppet
+  is used to apply configurations with sudo rights. This detection leverages data from Endpoint Detection and Response (EDR)
+  agents, focusing on process execution logs that include command-line details. This activity is significant because it indicates
+  a potential privilege escalation attempt, where a user could gain root access and execute system commands as the root user.
+  If confirmed malicious, this could allow an attacker to fully compromise the system, execute arbitrary commands, and maintain
+  persistent control.
+references:
+- https://research.splunk.com/1d19037f-466e-4d56-8d87-36fafd9aa3ce/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Splunk
+tags:
+- attack.t1548.003
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    CommandLine: '*puppet*'
+  sel2:
+    CommandLine: '*apply*'
+  sel3:
+    CommandLine: '*-e*'
+  sel4:
+    CommandLine: '*exec*'
+  sel5:
+    CommandLine: '*sudo*'
+  condition: (sel1 and sel2 and sel3 and sel4 and sel5)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548/puppet/sysmon_linux.log

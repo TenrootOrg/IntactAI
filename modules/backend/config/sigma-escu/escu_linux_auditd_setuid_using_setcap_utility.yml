@@ -1,0 +1,32 @@
+title: Linux Auditd Setuid Using Setcap Utility
+id: 1474459a-302b-4255-8add-d82f96d14cd9
+status: experimental
+description: The following analytic detects the execution of the 'setcap' utility to enable the SUID bit on Linux systems.
+  It leverages Linux Auditd data, focusing on process names and command-line arguments that indicate the use of 'setcap' with
+  specific capabilities. This activity is significant because setting the SUID bit allows a user to temporarily gain root
+  access, posing a substantial security risk. If confirmed malicious, an attacker could escalate privileges, execute arbitrary
+  commands with elevated permissions, and potentially compromise the entire system.
+references:
+- https://research.splunk.com/1474459a-302b-4255-8add-d82f96d14cd9/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1548.001
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    CommandLine: '*setcap *'
+  sel2:
+    CommandLine:
+    - '*cap_setuid+ep*'
+    - '*cap_setuid=ep*'
+    - '*cap_net_bind_service+p*'
+    - '*cap_net_raw+ep*'
+    - '*cap_dac_read_search+ep*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548.001/linux_auditd_setuid/auditd_execve_setcap.log

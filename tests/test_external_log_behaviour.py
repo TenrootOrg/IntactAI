@@ -217,6 +217,194 @@ class Web(unittest.TestCase):
         self.assertEqual([], found("\n".join(lines)))
 
 
+class WindowsEventsByID(unittest.TestCase):
+    """Benign DC + workstation (Nextron, 1.24 M events): an Event 69 "failed", a
+    Sysmon registry write by mmc.exe, LLMNR from 224.0.0.252 and the DNS server
+    talking to itself were brute forces and port scans."""
+
+    def ev(self, t, eid, **kw):
+        return {"SystemTime": iso(BASE + t), "EventID": str(eid), "Channel": "Security",
+                "Computer": "DC01", **kw}
+
+    def test_failed_logons_by_id_are_a_brute_force(self):
+        evs = [self.ev(i * 10, 4625, TargetUserName="administrator", IpAddress=ATK, LogonType="3")
+               for i in range(15)]
+        evs.append(self.ev(200, 4624, TargetUserName="administrator", IpAddress=ATK, LogonType="3"))
+        self.assertIn(("Brute force then success", "high"), found(jl(evs)))
+
+    def test_other_windows_events_are_not_sign_ins(self):
+        evs = [{"SystemTime": iso(BASE + i * 10), "EventID": "69", "Channel": "Microsoft-Windows-AAD/Operational",
+                "UserSid": "S-1-5-21-1-2-3-1001", "Message": "Logon failed: error 0xCAA2000C", "User": "jdoe"}
+               for i in range(20)]
+        evs += [{"SystemTime": iso(BASE + i * 10), "EventID": "13", "Channel": "Microsoft-Windows-Sysmon/Operational",
+                 "Image": "C:\\Windows\\system32\\mmc.exe", "TargetObject": "HKLM\\...\\Logon\\FailedCount",
+                 "User": "CORP\\administrator"} for i in range(20)]
+        self.assertEqual([], found(jl(evs)))
+
+    def test_multicast_and_self_are_no_port_scan(self):
+        evs = [{"SystemTime": iso(BASE + i), "EventID": "3", "Channel": "Microsoft-Windows-Sysmon/Operational",
+                "Image": "C:\\Windows\\System32\\svchost.exe", "SourceIp": "224.0.0.252",
+                "DestinationIp": "10.0.2.1", "DestinationPort": str(50000 + i)} for i in range(60)]
+        evs += [{"SystemTime": iso(BASE + i), "EventID": "3", "Channel": "Microsoft-Windows-Sysmon/Operational",
+                 "Image": "C:\\Windows\\System32\\dns.exe", "SourceIp": "10.0.2.133",
+                 "DestinationIp": "10.0.2.133", "DestinationPort": str(56000 + i)} for i in range(60)]
+        self.assertEqual([], found(jl(evs)))
+
+
+class ActiveDirectoryAccountAbuse(unittest.TestCase):
+    """Three single events that a normal domain never writes (Splunk's recordings
+    account_manipulation, resetnightmare, bluehammer); 48 benign 4728/4732/4738 stay quiet."""
+    SID = "S-1-5-21-1-2-3-"
+
+    def ev(self, eid, **kw):
+        return {"SystemTime": iso(BASE), "EventID": eid, "Channel": "Security", "Computer": "DC01", **kw}
+
+    def test_each_one_fires(self):
+        self.assertEqual([("Account added itself to a group", "high")], found(jl([self.ev(
+            "4728", SubjectUserName="unpriv2", SubjectUserSid=self.SID + "1105", MemberSid=self.SID + "1105",
+            MemberName="CN=unpriv2,CN=Users,DC=corp,DC=local", TargetUserName="Domain Admins")])))
+        self.assertEqual([("Account set its own UPN to another name", "high")], found(jl([self.ev(
+            "4738", SubjectUserName="snap", SubjectUserSid=self.SID + "1602", TargetSid=self.SID + "1602",
+            UserPrincipalName="Administrator")])))
+        self.assertEqual([("Built-in Administrator password changed by another account", "high")], found(jl([self.ev(
+            "4723", SubjectUserName="bob", SubjectUserSid=self.SID + "1003", TargetSid=self.SID + "500",
+            TargetUserName="Administrator")])))
+
+    def test_normal_changes_stay_quiet(self):
+        quiet = [self.ev("4728", SubjectUserName="Administrator", SubjectUserSid=self.SID + "500",
+                         MemberSid=self.SID + "1105", MemberName="CN=jdoe,CN=Users,DC=corp,DC=local"),
+                 self.ev("4738", SubjectUserName="jdoe", SubjectUserSid=self.SID + "1105", TargetSid=self.SID + "1105",
+                         UserPrincipalName="jdoe@corp.local"),
+                 self.ev("4738", SubjectUserName="admin", SubjectUserSid=self.SID + "500", TargetSid=self.SID + "1105",
+                         UserPrincipalName="jdoe"),
+                 self.ev("4723", SubjectUserName="Administrator", SubjectUserSid=self.SID + "500",
+                         TargetSid=self.SID + "500"),
+                 self.ev("4723", SubjectUserName="bob", SubjectUserSid=self.SID + "1003", TargetSid=self.SID + "1000")]
+        self.assertEqual([], found(jl(quiet)))
+
+
+class M365Persistence(unittest.TestCase):
+    """Read from the change's old and new value: only what THIS change added fires."""
+    def ev(self, op, props, **kw):
+        return {"CreationTime": iso(BASE), "Operation": op, "Workload": "AzureActiveDirectory",
+                "UserId": "attacker@contoso.com", "ModifiedProperties": props, **kw}
+
+    def test_each_one_fires(self):
+        graph = '[{"ResourceAppId": "00000003-0000-0000-c000-000000000000", "RequiredAppPermissions": ' \
+                '[{"EntitlementId": "%s"}]}]'
+        got = found(jl([
+            self.ev("Update application.", [{"Name": "RequiredResourceAccess", "OldValue": graph % "x",
+                                             "NewValue": graph % "9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8"}]),
+            self.ev("Update user.", [{"Name": "StrongAuthenticationMethod", "OldValue": '[{"MethodType": 6}]',
+                                      "NewValue": '[{"MethodType": 6}, {"MethodType": 7}]'}]),
+            self.ev("Update company settings", [{"Name": "ObjectSettings", "OldValue": "",
+                     "NewValue": '[{"Key": "BlockUserConsentForRiskyApps", "Value": "False"}]'}]),
+            self.ev("Consent to application.", [{"Name": "ConsentAction.Reason", "OldValue": "",
+                                                 "NewValue": "Risky application detected"}], ResultStatus="Failure")]))
+        self.assertEqual(sorted([("Privileged API permission added to an application", "high"),
+                                 ("MFA method added to an account", "medium"),
+                                 ("Protection against consent to risky apps turned off", "high"),
+                                 ("Consent to a risky application blocked", "medium")]), sorted(got))
+
+    def test_entra_audit_and_immutable_id(self):
+        def entra(op, props):
+            return {"time": iso(BASE), "operationName": op, "category": "AuditLogs",
+                    "properties": {"initiatedBy": {"user": {"userPrincipalName": "attacker@contoso.com",
+                                                            "ipAddress": "185.220.101.4"}},
+                                   "targetResources": [{"type": "User", "modifiedProperties": props}]}}
+        got = found(jl([
+            entra("Update authorization policy", [{"displayName": "AllowUserConsentForRiskyApps",
+                                                   "oldValue": "[false]", "newValue": "[true]"}]),
+            entra("Update user", [{"displayName": "SourceAnchor", "oldValue": "[]", "newValue": '["anystring"]'}])]))
+        self.assertEqual(sorted([("Protection against consent to risky apps turned off", "high"),
+                                 ("ImmutableId set on an account", "high")]), sorted(got))
+
+    def test_unchanged_or_removed_stays_quiet(self):
+        perm = '[{"RequiredAppPermissions": [{"EntitlementId": "dc890d15-9560-4a4c-9b7f-a736ec74ec40"}]}]'
+        self.assertEqual([], found(jl([
+            self.ev("Update application.", [{"Name": "RequiredResourceAccess", "OldValue": perm, "NewValue": perm}]),
+            self.ev("Update user.", [{"Name": "StrongAuthenticationMethod",
+                                      "OldValue": '[{"MethodType": 6}, {"MethodType": 7}]',
+                                      "NewValue": '[{"MethodType": 6}]'}])])))
+
+
+class ActiveDirectoryPermissions(unittest.TestCase):
+    """5136 logs the old and new descriptor of a change; the rule reads what was ADDED.
+    No benign corpus holds 5136 (DS auditing off), so a legitimate delegation to a
+    non-admin group fires too -- a permission grant is worth a look in an incident."""
+
+    def change(self, dn, old, new, cls="user", who="attacker"):
+        base = {"SystemTime": iso(BASE), "EventID": "5136", "Channel": "Security", "Computer": "DC01",
+                "OpCorrelationID": "{X}", "SubjectUserName": who, "ObjectDN": dn, "ObjectClass": cls,
+                "AttributeLDAPDisplayName": "nTSecurityDescriptor"}
+        return [{**base, "OperationType": "%%14675", "AttributeValue": old},
+                {**base, "OperationType": "%%14674", "AttributeValue": new}]
+
+    def test_full_control_to_a_user_or_a_hidden_ou_or_adminsdholder(self):
+        sd = "O:DAG:DAD:AI(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;DA)"
+        got = found(jl(self.change("CN=victim,CN=Users,DC=corp,DC=local", sd,
+                                   sd + "(A;CI;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;S-1-5-21-1-2-3-4219)")))
+        self.assertEqual([("AD object permissions granted to an account", "medium")], got)
+        got = found(jl(self.change("OU=Stage,DC=corp,DC=local", sd, sd + "(D;;LCDTSD;;;WD)", "organizationalUnit")))
+        self.assertEqual([("AD object hidden", "medium")], got)
+        got = found(jl(self.change("CN=AdminSDHolder,CN=System,DC=corp,DC=local", sd,
+                                   sd + "(A;;RPWP;;;S-1-5-21-1-2-3-1961)", "container")))
+        self.assertEqual([("AdminSDHolder permissions changed", "high")], got)
+
+    def test_admins_inherited_and_read_rights_stay_quiet(self):
+        sd = "O:DAG:DAD:AI(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;DA)"
+        for added in ("(A;;GA;;;S-1-5-21-1-2-3-512)", "(A;CIID;GA;;;S-1-5-21-1-2-3-4219)", "(A;;RPLCRC;;;AU)"):
+            self.assertEqual([], found(jl(self.change("CN=x,DC=corp,DC=local", sd, sd + added))), added)
+
+
+class Kerberos(unittest.TestCase):
+    """No benign corpus here holds 4768/4769 (Kerberos auditing off on both hosts)."""
+
+    def tgs(self, t, user, svc, enc="0x12"):
+        return {"SystemTime": iso(BASE + t), "EventID": "4769", "Channel": "Security", "Computer": "DC01",
+                "TargetUserName": f"{user}@CORP.LOCAL", "ServiceName": svc, "TicketEncryptionType": enc,
+                "IpAddress": "::ffff:10.0.0.5", "Status": "0x0"}
+
+    def test_kerberoasting_and_a_computer_sweep(self):
+        evs = [self.tgs(i * 5, "jdoe", f"svc_sql{i}", "0x17") for i in range(12)]
+        self.assertIn(("Possible Kerberoasting (RC4 service tickets)", "high"), found(jl(evs)))
+        evs = [self.tgs(i * 5, "jdoe", f"WS{i:03d}$") for i in range(30)]
+        self.assertIn(("Kerberos tickets for many computers", "medium"), found(jl(evs)))
+
+    def test_ordinary_ticket_use_stays_quiet(self):
+        evs = [self.tgs(i * 30, f"user{i % 20}", ["cifs/fs01", "http/intranet", "ldap/dc01"][i % 3])
+               for i in range(200)]
+        evs += [self.tgs(i * 30, "jdoe", "krbtgt") for i in range(50)]
+        self.assertEqual([], found(jl(evs)))
+
+    def test_user_enumeration(self):
+        evs = [{"SystemTime": iso(BASE + i * 3), "EventID": "4768", "Channel": "Security", "Computer": "DC01",
+                "TargetUserName": f"guess{i}", "Status": "0x6", "IpAddress": f"::ffff:{ATK}"} for i in range(15)]
+        self.assertEqual([("Kerberos user enumeration", "medium")], found(jl(evs)))
+        self.assertEqual([], found(jl(evs[:5])), "a few typos are not enumeration")
+
+
+class SuspiciousBurst(unittest.TestCase):
+    """Low signals add up per host, like Splunk's risk-based alerting."""
+
+    def low(self, t, rule, host="web01"):
+        return {"n": {"ts": iso(BASE + t), "host": host, "severity": "low", "rule": rule,
+                      "detected_by": [f"sigma: {rule}"]}}
+
+    def test_three_different_signals_on_one_host_are_a_detection(self):
+        rows = [self.low(0, "Whoami User Discovery"), self.low(300, "Edit Cron Table Parameter"),
+                self.low(900, "Hidden Files And Directories Creation"), self.low(60, "Whoami User Discovery", "db01")]
+        got = B.run(rows)
+        self.assertEqual([("Burst of suspicious activity", "medium")], [(f["n"]["rule"], f["n"]["severity"]) for f in got])
+        self.assertEqual("web01", got[0]["n"]["host"])
+
+    def test_the_same_signal_again_or_two_signals_stay_context(self):
+        self.assertEqual([], B.run([self.low(i * 60, "Whoami User Discovery") for i in range(10)]))
+        self.assertEqual([], B.run([self.low(0, "Whoami User Discovery"), self.low(60, "Sudo Or Su Execution")]))
+        self.assertEqual([], B.run([self.low(0, "A"), self.low(60, "B"), self.low(7300, "C")]),
+                         "spread over more than the hour")
+
+
 class TheBoxDecides(unittest.TestCase):
     def test_a_threshold_or_switch_from_the_rules_file(self):
         evs = [flow(BASE + i, ATK, "10.0.0.5", 1000 + i, "deny") for i in range(40)]

@@ -14,6 +14,7 @@ Deterministic: a fixed threshold over a sliding time window, nothing inferred.
 from __future__ import annotations
 
 import math
+import ipaddress
 import re
 import statistics
 
@@ -39,6 +40,15 @@ DEFAULTS = {
     "web-scan": {"paths": 50, "window_s": 600, "severity": "medium"},
     "web-login-brute-force": {"posts": 20, "window_s": 600, "severity": "medium"},
     "dns-ptr-sweep": {"lookups": 100, "window_s": 600, "severity": "medium"},
+    # Splunk-style risk adding: low "anomaly" signals (whoami, a cron edit, a hidden
+    # file) are noise alone; several DIFFERENT ones on one host within the hour are an
+    # operator working the box.
+    "suspicious-burst": {"distinct": 3, "window_s": 3600, "severity": "medium"},
+    "ad-acl-change": {"severity": "medium"},
+    "kerberos-ticket-burst": {"services": 10, "window_s": 600, "severity": "medium"},
+    "kerberos-user-enum": {"names": 10, "window_s": 600, "severity": "medium"},
+    "ad-account-abuse": {"severity": "high"},
+    "m365-persistence": {},
     "dns-tunnel": {"subdomains": 100, "window_s": 3600, "long_label": 40, "long_queries": 20,
                    "severity": "medium"},
 }
@@ -105,12 +115,45 @@ def _entra_outcome(raw):
     return None
 
 
+# Windows events say what they are by ID. Read by words, a Sysmon registry write
+# from mmc.exe and an Event 69 "failed" were brute forces on a benign DC.
+_WIN_LOGON = {"4624": "ok", "4625": "fail", "4648": "ok", "4768": None, "4771": "fail", "4776": None,
+              "528": "ok", "529": "fail", "530": "fail", "531": "fail", "532": "fail", "533": "fail",
+              "534": "fail", "535": "fail", "536": "fail", "537": "fail", "539": "fail", "540": "ok"}
+
+
+def _windows_event(raw):
+    return isinstance(raw, dict) and raw.get("EventID") not in (None, "") and \
+        any(raw.get(k) for k in ("Channel", "Provider", "SourceName", "ProviderName"))
+
+
 def auth_event(r):
     """(ts, user, src_ip, outcome, mfa) when the row is an authentication, else None."""
     n, raw = r.get("n") or {}, r.get("raw") or {}
     ts = n.get("ts")
     if not ts:
         return None
+    if _windows_event(raw):
+        eid = str(raw.get("EventID")).strip()
+        if eid not in _WIN_LOGON:
+            return None
+        user = raw.get("TargetUserName") or n.get("user")
+        if not user or str(user).endswith("$"):          # a machine account's logon
+            return None
+        outcome = _WIN_LOGON[eid]
+        if eid in ("4768", "4771", "4776"):              # the status says -- and only a WRONG
+            st = str(raw.get("Status") or raw.get("ResultCode") or "0x0").lower()   # PASSWORD is a failure
+            if st in ("0x0", "0", ""):
+                outcome = "ok" if eid != "4771" else None
+            elif st in ("0x18", "0xc000006a"):
+                outcome = "fail"
+            else:                                        # 0x6 / 0xc0000064: no such account --
+                return None                              # enumeration (kerberos-user-enum), not a guess
+            if outcome is None:
+                return None
+        src = n.get("src_ip") or raw.get("IpAddress")
+        src = None if str(src) in ("-", "::1", "127.0.0.1", "") else src
+        return ts, str(user).lower(), src, outcome, False
     user, src = n.get("user") or (n.get("users") or [None])[0], n.get("src_ip")
     text = _outcome_text(n, raw)
     phrase = False                     # user + source read from a sign-in phrase in free text
@@ -322,11 +365,23 @@ def _failed(n, raw):
     return bool(_FAILED_ACTION.search(str(act)))
 
 
+def _no_peer(ip):
+    """Multicast / broadcast / unspecified: no host on the other end (LLMNR from
+    224.0.0.252 to svchost read as a port scan on a benign DC)."""
+    try:
+        a = ipaddress.ip_address(str(ip).strip())
+        return a.is_multicast or a.is_unspecified or str(a) == "255.255.255.255"
+    except ValueError:
+        return False
+
+
 def _flows(rows):
     for i, r in enumerate(rows):
         n = r.get("n") or {}
         t = _t(n.get("ts"))
-        if t is not None and n.get("src_ip") and (n.get("dst_ip") or n.get("domain")):
+        if t is not None and n.get("src_ip") and (n.get("dst_ip") or n.get("domain")) \
+                and n.get("src_ip") != n.get("dst_ip") and not _no_peer(n.get("src_ip")) \
+                and not _no_peer(n.get("dst_ip")):
             yield t, n.get("src_ip"), n.get("dst_ip"), n.get("dst_port"), n.get("domain"), n.get("ts"), i, \
                 _failed(n, r.get("raw"))
 
@@ -566,6 +621,267 @@ def dns_ptr_sweep(rows, p):
     return out
 
 
+# -- Active Directory permission changes (Security 5136 on nTSecurityDescriptor) --------
+# A change logs the old descriptor (%%14675, value deleted) and the new (%%14674,
+# value added) under one OpCorrelationID; what the attacker ADDED is the diff.
+_ACE = re.compile(r"\(([^()]*)\)")
+_CONTROL = re.compile(r"GA|WD|WO")                       # full control / write DACL / write owner
+_ADMIN_SIDS = {"DA", "EA", "BA", "SY", "AO", "SO", "PO", "CA", "ED", "DD", "RS", "ER", "CO", "PS", "RU",
+               "NO", "BO", "SA"}
+
+
+def _trustee_is_admin(sid):
+    s = str(sid).upper()
+    if s in _ADMIN_SIDS or s.startswith("S-1-5-32-") or s in ("S-1-5-18", "S-1-5-9"):
+        return True
+    m = re.search(r"-(\d+)$", s)
+    return bool(s.startswith("S-1-5-21-") and m and int(m.group(1)) < 1000)   # 500 admin, 512 DA, 519 EA...
+
+
+def _rid(sid):
+    m = re.search(r"^S-1-5-21-[\d-]+-(\d+)$", str(sid or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _same(a, b):
+    a, b = str(a or "").strip().lower(), str(b or "").strip().lower()
+    return bool(a) and a not in ("-", "s-1-0-0") and a == b
+
+
+def ad_account_abuse(rows, p):
+    """One event each, never normal:
+    - an account adds ITSELF to a group (4728 / 4732 / 4756: member = subject);
+    - an account sets its OWN UPN to a bare name (4738, no "@"): ResetNightmare /
+      certificate-mapping spoofing, the UPN then names another account;
+    - another account changes the built-in Administrator's password (4723, RID 500)."""
+    out = []
+    for i, r in enumerate(rows):
+        raw = r.get("raw") or {}
+        eid = str(raw.get("EventID") or raw.get("EventCode") or "")
+        if eid not in ("4728", "4732", "4756", "4738", "4723"):
+            continue
+        subj, n = raw.get("SubjectUserName"), r.get("n") or {}
+        title = None
+        if eid in ("4728", "4732", "4756"):
+            cn = re.match(r"\s*CN=([^,]+)", str(raw.get("MemberName") or ""), re.I)
+            if _same(raw.get("MemberSid"), raw.get("SubjectUserSid")) or (cn and _same(cn.group(1), subj)):
+                title = "Account added itself to a group"
+                why = f"{subj} added itself to {raw.get('TargetUserName')}"
+        elif eid == "4738":
+            upn = str(raw.get("UserPrincipalName") or "").strip()
+            if _same(raw.get("SubjectUserSid"), raw.get("TargetSid")) and upn and "@" not in upn \
+                    and upn not in ("-", "%%1793"):
+                title = "Account set its own UPN to another name"
+                why = f"{subj} set its own userPrincipalName to '{upn}'"
+        elif _rid(raw.get("TargetSid")) == 500 and _rid(raw.get("SubjectUserSid")) not in (None, 500):
+            title = "Built-in Administrator password changed by another account"
+            why = f"{subj} changed the password of {raw.get('TargetUserName')} (RID 500)"
+        if title:
+            out.append(_row("ad-account-abuse", title, p["severity"], [(n.get("ts"), i)],
+                            {"user": subj, "host": raw.get("Computer") or n.get("host")}, why))
+    return out
+
+
+# Application permissions that hand over the tenant or every mailbox (Microsoft's ids).
+_M365_PRIV = {"dc890d15-9560-4a4c-9b7f-a736ec74ec40": "full_access_as_app (Exchange, every mailbox)",
+              "1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9": "Application.ReadWrite.All (Graph)",
+              "06b708a9-e830-4db3-a914-8e69da51d44f": "AppRoleAssignment.ReadWrite.All (Graph)",
+              "9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8": "RoleManagement.ReadWrite.Directory (Graph)"}
+
+
+_M365_OPS = {"Update application", "Add application", "Update company settings", "Update authorization policy",
+             "Update user", "Consent to application"}
+
+
+def m365_persistence(rows, p):
+    """What an attacker changes in a Microsoft 365 tenant to stay, read from the audit
+    record's old and new value (ModifiedProperties), so only what this change ADDED:
+    - a privileged API permission added to an application (high);
+    - protection against consent to risky apps turned off (high);
+    - an MFA method added to an account (medium: also a user enrolling a new phone);
+    - a consent to an application Microsoft rated risky, blocked (medium);
+    - an ImmutableId (SourceAnchor) set on an account: a federated identity can sign in as it (high).
+    O365 audit (ModifiedProperties) and Entra audit (targetResources.modifiedProperties) alike."""
+    from .external_logs import rule_fields
+    out = []
+    for i, r in enumerate(rows):
+        raw = r.get("raw") or {}
+        # O365 Management Activity ("Update user.") or Entra audit ("Update user").
+        op = str(raw.get("Operation") or raw.get("operationName") or raw.get("properties.operationName")
+                 or "").rstrip(".")
+        if op not in _M365_OPS:
+            continue
+        mp = {k.rsplit("odifiedProperties.", 1)[1]: str(v) for k, v in rule_fields(raw).items()
+              if "odifiedProperties." in k}
+        hits = []
+        if op in ("Update application", "Add application"):
+            new, old = mp.get("RequiredResourceAccess.NewValue", ""), mp.get("RequiredResourceAccess.OldValue", "")
+            added = [name for pid, name in _M365_PRIV.items() if pid in new and pid not in old]
+            if added:
+                hits.append(("Privileged API permission added to an application", "high",
+                             "added " + ", ".join(added)))
+        if op in ("Update company settings", "Update authorization policy"):
+            settings = mp.get("ObjectSettings.NewValue", "")
+            if re.search(r'"BlockUserConsentForRiskyApps",\s*"Value":\s*"false"', settings, re.I) or \
+                    re.search(r"true", mp.get("AllowUserConsentForRiskyApps.NewValue", ""), re.I):
+                hits.append(("Protection against consent to risky apps turned off", "high",
+                             "users may now consent to applications Microsoft rates risky"))
+        if op == "Update user":
+            anchor = mp.get("SourceAnchor.NewValue", "").strip('[]" ')
+            if anchor:
+                hits.append(("ImmutableId set on an account", "high",
+                             f"SourceAnchor set to '{anchor}': a federated sign-in can now become this account"))
+            for prop, mark in (("StrongAuthenticationMethod", "MethodType"),
+                               ("StrongAuthenticationPhoneAppDetail", "DeviceName")):
+                n_new = mp.get(f"{prop}.NewValue", "").count(mark)
+                n_old = mp.get(f"{prop}.OldValue", "").count(mark)
+                if n_new > n_old:
+                    hits.append(("MFA method added to an account", "medium",
+                                 f"{prop}: {n_old} -> {n_new} method(s)"))
+                    break
+        if op == "Consent to application" and "risky application" in mp.get("ConsentAction.Reason.NewValue", "").lower():
+            hits.append(("Consent to a risky application blocked", "medium",
+                         "Microsoft blocked a user's consent to an application it rates risky"))
+        n = r.get("n") or {}
+        target = raw.get("ObjectId") or raw.get("Target")
+        for title, sev, what in hits:
+            out.append(_row("m365-persistence", title, sev, [(n.get("ts"), i)], {"user": raw.get("UserId") or n.get("user"), "src_ip": n.get("src_ip")},
+                            f"{raw.get('UserId')}: {op} {target or ''} -- {what}".replace("  ", " ")))
+    return out
+
+
+def ad_acl_change(rows, p):
+    pairs: dict = {}
+    for i, r in enumerate(rows):
+        raw = r.get("raw") or {}
+        if str(raw.get("EventID")) != "5136" or str(raw.get("AttributeLDAPDisplayName") or "").lower() \
+                != "ntsecuritydescriptor":
+            continue
+        k = raw.get("OpCorrelationID") or f"row{i}"
+        pairs.setdefault(k, {})[str(raw.get("OperationType"))] = (i, raw)
+    out = []
+    for k, ops in pairs.items():
+        if "%%14674" not in ops:
+            continue
+        i, new = ops["%%14674"]
+        old = ops.get("%%14675", (None, {}))[1]
+        added = set(_ACE.findall(str(new.get("AttributeValue") or ""))) - set(
+            _ACE.findall(str(old.get("AttributeValue") or "")))
+        if "%%14675" not in ops:                             # nothing to diff against: too noisy to read
+            continue
+        dn = str(new.get("ObjectDN") or "")
+        hits = []
+        for ace in added:
+            part = ace.split(";")
+            if len(part) < 6 or "ID" in part[1]:             # inherited: comes from the parent, not this change
+                continue
+            kind, rights, who = part[0], part[2], part[5]
+            if kind in ("A", "OA") and _CONTROL.search(rights) and not _trustee_is_admin(who):
+                hits.append(f"control ({rights}) granted to {who}")
+            elif kind == "D" and who in ("WD", "AU") and "LC" in rights:
+                hits.append("hidden from everyone (deny list contents)")
+        adminsd = "cn=adminsdholder" in dn.lower()
+        if not hits and not (adminsd and added):
+            continue
+        n = rows[i].get("n") or {}
+        sev = "high" if adminsd else p["severity"]
+        title = ("AdminSDHolder permissions changed" if adminsd else
+                 "AD object hidden" if all(h.startswith("hidden") for h in hits) else
+                 "AD object permissions granted to an account")
+        out.append(_row("ad-acl-change", title, sev, [(n.get("ts"), i)],
+                        {"user": new.get("SubjectUserName"), "host": new.get("Computer")},
+                        f"{new.get('SubjectUserName')} changed the permissions of {dn}: "
+                        + ("; ".join(hits) if hits else "AdminSDHolder is copied onto every admin account")))
+    return out
+
+
+# -- Kerberos (Security 4768 / 4769) -----------------------------------------------------
+def _krb_user(v):
+    return str(v or "").split("@", 1)[0].strip().lower()
+
+
+def kerberos_ticket_burst(rows, p):
+    """One account asking for service tickets to many DIFFERENT services in a short
+    window: Kerberoasting (RC4 tickets) or a sweep of computer accounts (discovery)."""
+    groups: dict = {}
+    for i, r in enumerate(rows):
+        raw = r.get("raw") or {}
+        if str(raw.get("EventID")) != "4769" or str(raw.get("Status") or "0x0").lower() not in ("0x0", "0"):
+            continue
+        svc = str(raw.get("ServiceName") or "").strip()
+        t = _t((r.get("n") or {}).get("ts"))
+        if not svc or svc.lower().startswith("krbtgt") or t is None:
+            continue
+        groups.setdefault(_krb_user(raw.get("TargetUserName")), []).append(
+            (t, svc.lower(), str(raw.get("TicketEncryptionType") or "").lower(), (r.get("n") or {}).get("ts"), i))
+    out = []
+    for user, items in groups.items():
+        best = _densest(items, p["window_s"], lambda x: x[1], p["services"])
+        if not best:
+            continue
+        svcs = {x[1] for x in best[1]}
+        rc4 = sum(1 for x in best[1] if x[2] in ("0x17", "0x18"))
+        computers = sum(1 for s_ in svcs if s_.endswith("$"))
+        if rc4:
+            title, sev = "Possible Kerberoasting (RC4 service tickets)", "high"
+        elif computers >= 0.8 * len(svcs):
+            title, sev = "Kerberos tickets for many computers", p["severity"]
+        else:
+            title, sev = "Unusual number of Kerberos service tickets", p["severity"]
+        out.append(_row("kerberos-ticket-burst", title, sev, [(x[3], x[4]) for x in best[1]], {"user": user},
+                        f"{user} requested tickets for {len(svcs)} different services within "
+                        f"{p['window_s'] // 60} min" + (f", {rc4} of them RC4" if rc4 else "")))
+    return out
+
+
+def kerberos_user_enum(rows, p):
+    """Pre-authentication for many names that do not exist (4768, 0x6) from one address."""
+    groups: dict = {}
+    for i, r in enumerate(rows):
+        raw = r.get("raw") or {}
+        if str(raw.get("EventID")) != "4768" or str(raw.get("Status") or "").lower() != "0x6":
+            continue
+        t = _t((r.get("n") or {}).get("ts"))
+        if t is None:
+            continue
+        src = str(raw.get("IpAddress") or "").replace("::ffff:", "")
+        groups.setdefault(src, []).append((t, _krb_user(raw.get("TargetUserName")), (r.get("n") or {}).get("ts"), i))
+    out = []
+    for src, items in groups.items():
+        best = _densest(items, p["window_s"], lambda x: x[1], p["names"])
+        if best:
+            out.append(_row("kerberos-user-enum", "Kerberos user enumeration", p["severity"],
+                            [(x[2], x[3]) for x in best[1]], {"src_ip": src or None},
+                            f"{src or 'one address'} tried {best[0]} account names that do not exist "
+                            f"within {p['window_s'] // 60} min"))
+    return out
+
+
+def suspicious_burst(rows, p):
+    """Several different low-level Sigma signals on one host within a window."""
+    groups: dict = {}
+    for i, r in enumerate(rows):
+        n = r.get("n") or {}
+        if n.get("severity") != "low" or not any(str(d).startswith("sigma:") for d in n.get("detected_by") or []):
+            continue
+        t = _t(n.get("ts"))
+        if t is None:
+            continue
+        host = str(n.get("host") or "").strip().lower()
+        groups.setdefault(host, []).append((t, n.get("rule"), n.get("ts"), i))
+    out = []
+    for host, items in groups.items():
+        best = _densest(items, p["window_s"], lambda x: x[1], p["distinct"])
+        if best:
+            members = [(x[2], x[3]) for x in best[1]]
+            titles = sorted({x[1] for x in best[1]})
+            out.append(_row("suspicious-burst", "Burst of suspicious activity", p["severity"], members,
+                            {"host": host or None},
+                            f"{len(titles)} different suspicious signals within {p['window_s'] // 60} min"
+                            + (f" on {host}" if host else "") + ": " + "; ".join(titles[:8])))
+    return out
+
+
 def run(rows, params=None, log=None) -> list:
     """Every behaviour rule over the normalized rows -> detection rows to append."""
     log = log or (lambda m, l="info": None)
@@ -596,6 +912,12 @@ def run(rows, params=None, log=None) -> list:
                                                                      "outbound-flood"}), flows),
                            ("web-scan", web_scan, rows), ("web-login-brute-force", web_login_brute_force, rows),
                            ("dns-ptr-sweep", dns_ptr_sweep, rows),
+                           ("suspicious-burst", suspicious_burst, rows),
+                           ("ad-acl-change", ad_acl_change, rows),
+                           ("ad-account-abuse", ad_account_abuse, rows),
+                           ("m365-persistence", m365_persistence, rows),
+                           ("kerberos-ticket-burst", kerberos_ticket_burst, rows),
+                           ("kerberos-user-enum", kerberos_user_enum, rows),
                            ("dns-tunnel", dns_tunnel, rows)):
         if name in off:
             continue

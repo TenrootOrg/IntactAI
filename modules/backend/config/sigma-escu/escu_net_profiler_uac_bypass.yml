@@ -1,0 +1,30 @@
+title: NET Profiler UAC bypass
+id: 0252ca80-e30d-11eb-8aa3-acde48001122
+status: experimental
+description: The following analytic detects modifications to the registry aimed at bypassing the User Account Control (UAC)
+  feature in Windows. It identifies changes to the .NET COR_PROFILER_PATH registry key, which can be exploited to load a malicious
+  DLL via mmc.exe. This detection leverages data from the Endpoint.Registry datamodel, focusing on specific registry paths
+  and values. Monitoring this activity is crucial as it can indicate an attempt to escalate privileges or persist within the
+  environment. If confirmed malicious, this could allow an attacker to execute arbitrary code with elevated privileges, compromising
+  system integrity.
+references:
+- https://research.splunk.com/0252ca80-e30d-11eb-8aa3-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1548.002
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Environment\\COR_PROFILER_PATH'
+  sel2:
+    Details:
+    - '* (*.dll)'
+    - '*.dll'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548/uac_bypass/windows-sysmon2.log

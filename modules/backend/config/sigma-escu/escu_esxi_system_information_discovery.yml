@@ -1,0 +1,32 @@
+title: ESXi System Information Discovery
+id: b4d4217a-6673-4fb6-837d-07a522bdf9f7
+status: experimental
+description: This detection identifies the use of ESXCLI system-level commands that retrieve configuration details. While
+  used for legitimate administration, this behavior may also indicate adversary reconnaissance aimed at profiling the ESXi
+  host's capabilities, build information, or system role in preparation for further compromise.
+references:
+- https://research.splunk.com/b4d4217a-6673-4fb6-837d-07a522bdf9f7/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1082
+logsource:
+  product: esxi
+detection:
+  sel1:
+    text: '*system*'
+  sel2:
+    text: '*esxcli*'
+  sel3:
+    text:
+    - '*get*'
+    - '*list*'
+  sel4:
+    text: '*user=*'
+  sel5:
+    text: '*filesystem*'
+  condition: (sel1 and sel2 and sel3 and sel4 and not (sel5))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1082/esxi_system_information/esxi_system_information.log

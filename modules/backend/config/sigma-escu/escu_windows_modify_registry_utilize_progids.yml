@@ -1,0 +1,26 @@
+title: Windows Modify Registry Utilize ProgIDs
+id: 64fa82dd-fd11-472a-9e94-c221fffa591d
+status: experimental
+description: The following analytic detects modifications to the Windows Registry specifically targeting Programmatic Identifier
+  associations to bypass User Account Control (UAC) Windows OS feature. ValleyRAT may create or alter registry entries to
+  targetted progIDs like `.pwn` files with malicious processes, allowing it to execute harmful scripts or commands when these
+  files are opened. By monitoring for unusual changes in registry keys linked to ProgIDs, this detection enables security
+  analysts to identify potential threats like ValleyRAT execution attempts. Early detection of these modifications helps mitigate
+  unauthorized execution and prevents further exploitation of the system.
+references:
+- https://research.splunk.com/64fa82dd-fd11-472a-9e94-c221fffa591d/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\ms-settings\\CurVer\\(Default)'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/pwn_reg/pwn_reg.log

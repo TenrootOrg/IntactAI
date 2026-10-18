@@ -1,0 +1,31 @@
+title: Windows Compatibility Telemetry Suspicious Child Process
+id: 56fe46ca-ffef-46fe-8f0e-5cd4b7b4cc0c
+status: experimental
+description: The following analytic detects the execution of CompatTelRunner.exe with parameters indicative of a process not
+  part of the normal "Microsoft Compatibility Appraiser" telemetry collection. It leverages data from Endpoint Detection and
+  Response (EDR) agents, focusing on process names, parent processes, and command-line arguments. This activity is significant
+  because CompatTelRunner.exe and the "Microsoft Compatibility Appraiser" task always run as System and can be used to elevate
+  privileges or establish a highly privileged persistence mechanism. If confirmed malicious, this could enable unauthorized
+  code execution, privilege escalation, or persistent access to the compromised system.
+references:
+- https://research.splunk.com/56fe46ca-ffef-46fe-8f0e-5cd4b7b4cc0c/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1546
+- attack.t1053.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\CompatTelRunner.exe'
+  sel2:
+    CommandLine: '* -cv:*'
+  sel3:
+    CommandLine: '* -m:*'
+  condition: (sel1 and sel2 and not (sel3))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1546/compattelrunner_abuse/compattelrunner_abuse.log

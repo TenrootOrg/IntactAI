@@ -1,0 +1,82 @@
+title: Windows Suspicious Child Process Spawned From WebServer
+id: 2d4470ef-7158-4b47-b68b-1f7f16382156
+status: experimental
+description: The following analytic identifies the execution of suspicious processes typically associated with WebShell activity
+  on web servers. It detects when processes like `cmd.exe`, `powershell.exe`, or `bash.exe` are spawned by web server processes
+  such as `w3wp.exe` or `nginx.exe`. This behavior is significant as it may indicate an adversary exploiting a web application
+  vulnerability to install a WebShell, providing persistent access and command execution capabilities. If confirmed malicious,
+  this activity could allow attackers to maintain control over the compromised server, execute arbitrary commands, and potentially
+  escalate privileges or exfiltrate sensitive data.
+references:
+- https://research.splunk.com/2d4470ef-7158-4b47-b68b-1f7f16382156/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1505.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\arp.exe'
+    - '*\\at.exe'
+    - '*\\bash.exe'
+    - '*\\bitsadmin.exe'
+    - '*\\certutil.exe'
+    - '*\\cmd.exe'
+    - '*\\cscript.exe'
+    - '*\\dsget.exe'
+    - '*\\dsquery.exe'
+    - '*\\find.exe'
+    - '*\\findstr.exe'
+    - '*\\fsutil.exe'
+    - '*\\hostname.exe'
+    - '*\\ipconfig.exe'
+    - '*\\ksh.exe'
+    - '*\\nbstat.exe'
+    - '*\\net.exe'
+    - '*\\net1.exe'
+    - '*\\netdom.exe'
+    - '*\\netsh.exe'
+    - '*\\netstat.exe'
+    - '*\\nltest.exe'
+    - '*\\nslookup.exe'
+    - '*\\ntdsutil.exe'
+    - '*\\pathping.exe'
+    - '*\\ping.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+    - '*\\qprocess.exe'
+    - '*\\query.exe'
+    - '*\\qwinsta.exe'
+    - '*\\reg.exe'
+    - '*\\rundll32.exe'
+    - '*\\sc.exe'
+    - '*\\scrcons.exe'
+    - '*\\schtasks.exe'
+    - '*\\sh.exe'
+    - '*\\systeminfo.exe'
+    - '*\\tasklist.exe'
+    - '*\\tracert.exe'
+    - '*\\ver.exe'
+    - '*\\vssadmin.exe'
+    - '*\\wevtutil.exe'
+    - '*\\whoami.exe'
+    - '*\\wmic.exe'
+    - '*\\wscript.exe'
+    - '*\\wusa.exe'
+    - '*\\zsh.exe'
+  sel2:
+    ParentImage:
+    - '*\\w3wp.exe'
+    - '*\\http*.exe'
+    - '*\\nginx*.exe'
+    - '*\\php*.exe'
+    - '*\\php-cgi*.exe'
+    - '*\\tomcat*.exe'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1505.003/generic_webshell_exploit/generic_webshell_exploit.log

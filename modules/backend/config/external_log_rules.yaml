@@ -298,6 +298,41 @@ native:
       quiet: [{Action: "None", Definition: "Default Impersonation Definition"},
               {Action: "Hold", Definition: "Default Spam Definition"}]
 
+  - id: kerberos-local-relay
+    title: "Kerberos logon by SYSTEM from the machine itself (relay)"
+    reason: "a network logon (type 3) of SYSTEM authenticated by Kerberos from 127.0.0.1: Kerberos relayed to the local host (KrbRelayUp) to become SYSTEM"
+    fields: [IpAddress]
+    match: '127\.0\.0\.1|::1'
+    and:
+      - fields: [AuthenticationPackageName]
+        match: 'Kerberos'
+      - fields: [LogonType]
+        match: '3'
+      - fields: [TargetUserSid]
+        match: 'S-1-5-18|NT AUTHORITY\\SYSTEM'
+    severity: high
+    examples:
+      fires: [{EventID: "4624", LogonType: "3", AuthenticationPackageName: "Kerberos", IpAddress: "127.0.0.1",
+               TargetUserSid: "S-1-5-18", TargetUserName: "WS01$"}]
+      quiet: [{EventID: "4624", LogonType: "3", AuthenticationPackageName: "Kerberos", IpAddress: "10.0.0.5",
+               TargetUserSid: "S-1-5-18"},
+              {EventID: "4624", LogonType: "3", AuthenticationPackageName: "NTLM", IpAddress: "127.0.0.1",
+               TargetUserSid: "S-1-5-18"},
+              {EventID: "4624", LogonType: "3", AuthenticationPackageName: "Kerberos", IpAddress: "127.0.0.1",
+               TargetUserSid: "S-1-5-21-1-2-3-1104"}]
+
+  - id: impacket-remote-exec
+    title: "Impacket remote execution (smbexec / wmiexec / dcomexec)"
+    reason: "cmd.exe /Q /c writing its output to \\\\host\\ADMIN$\\__<time> or \\\\host\\C$\\__output: the file Impacket's exec tools read back over SMB. SigmaHQ's rule looks only for \\\\127.0.0.1\\, and smbexec names the host"
+    fields: [CommandLine, ProcessCommandLine, cmdline, text]
+    match: '.*\bcmd(\.exe)?"?\s+/Q\s+/c\s.*\\\\[^\\\s]+\\(ADMIN|C)\$\\__.*'
+    severity: high
+    examples:
+      fires: [{CommandLine: 'C:\Windows\system32\cmd.exe /Q /c echo cd  ^> \\AR-WIN-DC\C$\__output 2^>^&1 > C:\Windows\TnMtjHgN.bat & C:\Windows\system32\cmd.exe /Q /c C:\Windows\TnMtjHgN.bat'},
+              {CommandLine: 'cmd.exe /Q /c whoami 1> \\127.0.0.1\ADMIN$\__1567439113.54 2>&1'}]
+      quiet: [{CommandLine: 'cmd.exe /Q /c copy \\fileserver\C$\deploy\setup.msi C:\Temp\'},
+              {CommandLine: 'cmd.exe /c dir \\dc01\ADMIN$\'}]
+
   - id: firewall-threat-detection
     title: "Firewall threat detection / IPS event"
     reason: "the firewall's own threat detection (rate exceeded: scanning or DoS) or built-in IPS signature fired (Cisco ASA 733100 / 4000xx)"
@@ -358,6 +393,12 @@ behaviour:
   outbound-flood:   {connections: 1000, window_s: 60, severity: high}
   inbound-remote-admin: {ports: [3389, 5900, 5985, 5986, 445, 135, 139, 23], severity: medium}
   c2-retry:         {attempts: 200, window_s: 3600, failed_share: 0.5, severity: medium}
+  suspicious-burst: {distinct: 3, window_s: 3600, severity: medium}
+  ad-acl-change:    {severity: medium}       # AdminSDHolder: high
+  kerberos-ticket-burst: {services: 10, window_s: 600, severity: medium}   # RC4: high
+  kerberos-user-enum: {names: 10, window_s: 600, severity: medium}
+  m365-persistence: {}                     # privileged app permission, risky-consent block off, MFA added
+  ad-account-abuse: {severity: high}       # self-add to group, own UPN to a bare name, RID 500 password by another
   web-scan:         {paths: 50, window_s: 600, severity: medium}
   web-login-brute-force: {posts: 20, window_s: 600, severity: medium}
   dns-ptr-sweep:    {lookups: 100, window_s: 600, severity: medium}
@@ -389,6 +430,15 @@ layouts:
                file_digest, cloud, url_index, user_agent, file_type, x_forwarded_for, referer, sender, subject,
                recipient, report_id, dg_1, dg_2, dg_3, dg_4, vsys_name, device_name, future_use_6, src_vm_uuid,
                dst_vm_uuid, http_method]
+  - id: squid-native
+    reason: "Squid access.log, native format (no header). Unnamed, no web rule could read its URL or method"
+    line: '^\d{9,10}(\.\d{3})?\s+\d+ \S+ [A-Z_]+/\d{3} -?\d+ [A-Z_]+ \S+ \S+ [A-Z_]+/\S+ \S+\s*$'
+    delimiter: whitespace
+    quote: none
+    empty: ["-"]
+    columns:
+      default: [timestamp, elapsed_ms, src_ip, action/status, bytes, method, url, user, hierarchy/dst_ip,
+                content_type]
   - id: aws-vpcflow-v2
     reason: "AWS VPC Flow Logs, default (version 2) format, no header. Unnamed, a REJECTed RDP attempt from the internet read as an answered one"
     line: '^2 (\d{12}|unknown) eni-[0-9a-f]+ \S+ \S+ \S+ \S+ \S+ \S+ \S+ \d+ \d+ (ACCEPT|REJECT|-) (OK|NODATA|SKIPDATA)\s*$'

@@ -1,0 +1,42 @@
+title: Elevated Group Discovery With Wmic
+id: 3f6bbf22-093e-4cb4-9641-83f47b8444b6
+status: experimental
+description: The following analytic detects the execution of `wmic.exe` with command-line arguments querying specific elevated
+  domain groups. It leverages Endpoint Detection and Response (EDR) telemetry to identify processes that access the LDAP namespace
+  and search for groups like "Domain Admins" or "Enterprise Admins." This activity is significant as it indicates potential
+  reconnaissance efforts by adversaries to identify high-privilege accounts within Active Directory. If confirmed malicious,
+  this behavior could lead to privilege escalation, allowing attackers to gain elevated access and control over critical network
+  resources.
+references:
+- https://research.splunk.com/3f6bbf22-093e-4cb4-9641-83f47b8444b6/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1069.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    CommandLine: '*/NAMESPACE:\\\\root\\directory\\ldap*'
+  sel3:
+    CommandLine: '*Domain Admins*'
+  sel4:
+    CommandLine: '*Enterprise Admins*'
+  sel5:
+    CommandLine: '*Schema Admins*'
+  sel6:
+    CommandLine: '*Account Operators*'
+  sel7:
+    CommandLine: '*Server Operators*'
+  sel8:
+    CommandLine: '*Protected Users*'
+  sel9:
+    CommandLine: '*Dns Admins*'
+  condition: (sel1 and sel2 and ((((((sel3 or sel4) or sel5) or sel6) or sel7) or sel8) or sel9))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1069.002/AD_discovery/windows-sysmon.log

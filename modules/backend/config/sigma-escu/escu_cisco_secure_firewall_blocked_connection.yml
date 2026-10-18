@@ -1,0 +1,34 @@
+title: Cisco Secure Firewall - Blocked Connection
+id: 17e9b764-3a2b-4d36-9751-32d13ce4718b
+status: experimental
+description: The following analytic detects a blocked connection event by identifying a "Block" value in the action field.
+  It leverages logs from Cisco Secure Firewall Threat Defense devices. This activity is significant as it can identify attempts
+  from users or applications initiating network connection to explicitly or implicitly blocked range or zones. If confirmed
+  malicious, attackers could be attempting to perform a forbidden action on the network such as data exfiltration, lateral
+  movement, or network disruption.
+references:
+- https://research.splunk.com/17e9b764-3a2b-4d36-9751-32d13ce4718b/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1018
+- attack.t1046
+- attack.t1110
+- attack.t1203
+- attack.t1595.002
+logsource:
+  product: cisco
+  service: secure_firewall
+detection:
+  sel1:
+    EventType: ConnectionEvent
+  sel2:
+    AC_RuleAction:
+    - Block with reset
+    - Block
+    - blocked
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_secure_firewall_threat_defense/connection_event/connection_events.log

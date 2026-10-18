@@ -1,0 +1,33 @@
+title: Windows Chromium process Launched with Disable Popup Blocking
+id: 95f8acd6-978e-42d6-99c1-85baacdd2b46
+status: experimental
+description: The following analytic detects instances where a Windows Chromium-based browser process is launched with the
+  `--disable-popup-blocking` flag. This flag is typically used to bypass the browser’s built-in pop-up protections, allowing
+  automatic execution of pop-ups or redirects without user interaction. While legitimate in some testing or automation scenarios,
+  its presence on endpoints, particularly when combined with other automation or concealment flags, may indicate attempts
+  by malicious actors to execute web-based content stealthily or evade user interaction controls, representing a potential
+  security risk that warrants investigation.
+references:
+- https://research.splunk.com/95f8acd6-978e-42d6-99c1-85baacdd2b46/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1497
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\Chrome.exe'
+    - '*\\Brave.exe'
+    - '*\\Opera.exe'
+    - '*\\Vivaldi.exe'
+    - '*\\msedge.exe'
+  sel2:
+    CommandLine: '*--disable-popup-blocking*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1497/chrome_disable_popup/chrome_disable_popup.log

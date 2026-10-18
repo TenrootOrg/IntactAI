@@ -1,0 +1,49 @@
+title: Windows Alternate DataStream - Process Execution
+id: 30c32c5c-41fe-45db-84fe-275e4320da3f
+status: experimental
+description: The following analytic detects when a process attempts to execute a file from within an NTFS file system alternate
+  data stream. This detection leverages process execution data from sources like Windows process monitoring or Sysmon Event
+  ID 1, focusing on specific processes known for such behavior. This activity is significant because alternate data streams
+  can be used by threat actors to hide malicious code, making it difficult to detect. If confirmed malicious, this could allow
+  an attacker to execute hidden code, potentially leading to unauthorized actions and further compromise of the system.
+references:
+- https://research.splunk.com/30c32c5c-41fe-45db-84fe-275e4320da3f/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1564.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\unknown'
+  sel2:
+    Image:
+    - '*\\appvlp.exe'
+    - '*\\bitsadmin.exe'
+    - '*\\control.exe'
+    - '*\\cscript.exe'
+    - '*\\forfiles.exe'
+    - '*\\ftp.exe'
+    - '*\\mavinject.exe'
+    - '*\\mshta.exe'
+    - '*\\powershell_ise.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+    - '*\\regini.exe'
+    - '*\\regsvr32.exe'
+    - '*\\rundll32.exe'
+    - '*\\sc.exe'
+    - '*\\wmic.exe'
+    - '*\\wscript.exe'
+  sel3:
+    CommandLine|re: (\b)\w+(\.\w+)?:\w+(\.\w{2,4})(?!\.)(\b|\s|&)
+  condition: ((not sel1 and sel2) and sel3)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1564.004/ads_abuse/ads_abuse_sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 156 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

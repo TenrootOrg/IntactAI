@@ -1,0 +1,29 @@
+title: Schtasks used for forcing a reboot
+id: 1297fb80-f42a-4b4a-9c8a-88c066437cf6
+status: experimental
+description: The following analytic detects the use of 'schtasks.exe' to schedule forced system reboots using the 'shutdown'
+  and '/create' flags. It leverages endpoint process data to identify instances where these specific command-line arguments
+  are used. This activity is significant because it may indicate an adversary attempting to disrupt operations or force a
+  reboot to execute further malicious actions. If confirmed malicious, this could lead to system downtime, potential data
+  loss, and provide an attacker with an opportunity to execute additional payloads or evade detection.
+references:
+- https://research.splunk.com/1297fb80-f42a-4b4a-9c8a-88c066437cf6/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Splunk
+tags:
+- attack.t1053.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\schtasks.exe'
+  sel2:
+    CommandLine: '*shutdown*'
+  sel3:
+    CommandLine: '*/create *'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1053.005/schtask_shutdown/windows-sysmon.log

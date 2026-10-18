@@ -1,0 +1,38 @@
+title: Windows Suspicious Defender Update Activity in INetCache
+id: 3e25f906-6319-44ad-ab9a-22d162eb3925
+status: experimental
+description: 'Detects a non-Defender process writing mpam-fe*.exe to the Windows Internet Cache (INetCache).
+
+  BlueHammer downloads the WD signature update package directly using WinINet as a low-privileged user.
+
+  The [1].exe naming suffix is produced by Windows HTTP caching and is a reliable artifact of this download method.'
+references:
+- https://research.splunk.com/3e25f906-6319-44ad-ab9a-22d162eb3925/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+- attack.t1105
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  sel1:
+    EventID:
+    - '11'
+    - '23'
+    - '26'
+  sel2:
+    TargetFilename: '*\\INetCache*'
+  sel3:
+    TargetFilename: '*\\mpam-fe[1].exe*'
+  sel4:
+    Image:
+    - '*:\\Program Files\\Windows Defender*'
+    - '*:\\ProgramData\\Microsoft\\Windows Defender*'
+    - '*:\\Windows\\System32\\MpSigStub.exe*'
+  condition: (sel1 and sel2 and sel3 and not (sel4))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/bluehammer/windows-sysmon.log

@@ -1,0 +1,42 @@
+title: Detect RClone Command-Line Usage
+id: 32e0baea-b3f1-11eb-a2ce-acde48001122
+status: experimental
+description: The following analytic detects the usage of `rclone.exe` with specific command-line arguments indicative of file
+  transfer activities. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line executions
+  and process details. This activity is significant as `rclone.exe` is often used by adversaries for data exfiltration, especially
+  during ransomware attacks. If confirmed malicious, this behavior could lead to unauthorized data transfer, resulting in
+  data breaches and potential loss of sensitive information. Immediate isolation of the affected endpoint and further investigation
+  are recommended.
+references:
+- https://research.splunk.com/32e0baea-b3f1-11eb-a2ce-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1020
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    OriginalFileName: rclone.exe
+  sel2:
+    Image: '*\\rclone.exe'
+  sel3:
+    CommandLine:
+    - '*copy*'
+    - '*mega*'
+    - '*pcloud*'
+    - '*ftp*'
+    - '*--config*'
+    - '*--progress*'
+    - '*--no-check-certificate*'
+    - '*--ignore-existing*'
+    - '*--auto-confirm*'
+    - '*--transfers*'
+    - '*--multi-thread-streams*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1020/windows-sysmon.log
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_network_visibility_module/cisco_nvm_flowdata/nvm_flowdata.log

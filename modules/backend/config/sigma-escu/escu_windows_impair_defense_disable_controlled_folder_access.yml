@@ -1,0 +1,29 @@
+title: Windows Impair Defense Disable Controlled Folder Access
+id: 3032741c-d6fc-4c69-8988-be8043d6478c
+status: experimental
+description: The following analytic detects a modification in the Windows registry that disables the Windows Defender Controlled
+  Folder Access feature. It leverages data from the Endpoint.Registry data model, specifically monitoring changes to the EnableControlledFolderAccess
+  registry setting. This activity is significant because Controlled Folder Access is designed to protect critical folders
+  from unauthorized access, including ransomware attacks. If this activity is confirmed malicious, it could allow attackers
+  to bypass a key security feature, potentially leading to unauthorized access or modification of sensitive files.
+references:
+- https://research.splunk.com/3032741c-d6fc-4c69-8988-be8043d6478c/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Windows Defender\\Windows Defender Exploit Guard\\Controlled Folder Access\\EnableControlledFolderAccess'
+  sel2:
+    Details:
+    - '* (0x00000000)'
+    - '0x00000000'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable-windows-security-defender-features/windefender-bypas-2-sysmon.log

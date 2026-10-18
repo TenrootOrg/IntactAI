@@ -1,0 +1,30 @@
+title: CertUtil With Decode Argument
+id: bfe94226-8c10-11eb-a4b3-acde48001122
+status: experimental
+description: The following analytic detects the use of CertUtil.exe with the 'decode' argument, which may indicate an attempt
+  to decode a previously encoded file, potentially containing malicious payloads. This detection leverages data from Endpoint
+  Detection and Response (EDR) agents, focusing on command-line executions involving CertUtil.exe. This activity is significant
+  because attackers often use CertUtil to decode malicious files downloaded from the internet, which are then executed to
+  compromise the system. If confirmed malicious, this activity could lead to unauthorized code execution, further system compromise,
+  and potential data exfiltration.
+references:
+- https://research.splunk.com/bfe94226-8c10-11eb-a4b3-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1140
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\certutil.exe'
+  sel2:
+    OriginalFileName: CertUtil.exe
+  sel3:
+    CommandLine: '*decode*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1140/atomic_red_team/windows-sysmon.log

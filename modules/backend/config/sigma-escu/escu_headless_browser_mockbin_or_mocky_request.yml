@@ -1,0 +1,31 @@
+title: Headless Browser Mockbin or Mocky Request
+id: 94fc85a1-e55b-4265-95e1-4b66730e05c0
+status: experimental
+description: The following analytic detects headless browser activity accessing mockbin.org or mocky.io. It identifies processes
+  with the "--headless" and "--disable-gpu" command line arguments, along with references to mockbin.org or mocky.io. This
+  behavior is significant as headless browsers are often used for automated tasks, including malicious activities like web
+  scraping or automated attacks. If confirmed malicious, this activity could indicate an attempt to bypass traditional browser
+  security measures, potentially leading to data exfiltration or further exploitation of web applications.
+references:
+- https://research.splunk.com/94fc85a1-e55b-4265-95e1-4b66730e05c0/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1564.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*--headless*'
+  sel2:
+    CommandLine: '*--disable-gpu*'
+  sel3:
+    CommandLine: '*mockbin.org/*'
+  sel4:
+    CommandLine: '*mocky.io/*'
+  condition: (sel1 and sel2 and (sel3 or sel4))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1185/headlessbrowser/headless_mockbin.log

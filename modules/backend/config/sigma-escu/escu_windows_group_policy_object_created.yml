@@ -1,0 +1,36 @@
+title: Windows Group Policy Object Created
+id: 23add2a8-ea22-4fd4-8bc0-8c0b822373a1
+status: experimental
+description: The following analytic detects the creation of a new Group Policy Object (GPO) by leveraging Event IDs 5136 and
+  5137. This detection uses directory service change events to identify when a new GPO is created. Monitoring GPO creation
+  is crucial as adversaries can exploit GPOs to escalate privileges or deploy malware across an Active Directory network.
+  If confirmed malicious, this activity could allow attackers to control system configurations, deploy ransomware, or propagate
+  malware, leading to widespread compromise and significant operational disruption.
+references:
+- https://research.splunk.com/23add2a8-ea22-4fd4-8bc0-8c0b822373a1/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco
+tags:
+- attack.t1078.002
+- attack.t1484.001
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '5137'
+  sel2:
+    EventID: '5136'
+  sel3:
+    AttributeValue: New Group Policy Object
+  sel4:
+    AttributeLDAPDisplayName: displayName
+  sel5:
+    AttributeLDAPDisplayName: gPCFileSysPath
+  sel6:
+    ObjectClass: groupPolicyContainer
+  condition: ((sel1 or (sel2 and not sel3 and (sel4 or sel5))) and sel6)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1484.001/group_policy_created/windows-security.log

@@ -1,0 +1,33 @@
+title: Windows WMI Process And Service List
+id: ef3c5ef2-3f6d-4087-aa75-49bf746dc907
+status: experimental
+description: The following analytic identifies suspicious WMI command lines querying for running processes or services. It
+  leverages data from Endpoint Detection and Response (EDR) agents, focusing on specific process and command-line events.
+  This activity is significant as adversaries often use WMI to gather system information and identify services on compromised
+  machines. If confirmed malicious, this behavior could allow attackers to map out the system, identify critical services,
+  and plan further attacks, potentially leading to privilege escalation or persistence within the environment.
+references:
+- https://research.splunk.com/ef3c5ef2-3f6d-4087-aa75-49bf746dc907/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1047
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    OriginalFileName: wmic.exe
+  sel3:
+    CommandLine:
+    - '*process*'
+    - '*service*'
+  sel4:
+    CommandLine: '*list*'
+  condition: ((sel1 or sel2) and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/winpeas/sysmon.log

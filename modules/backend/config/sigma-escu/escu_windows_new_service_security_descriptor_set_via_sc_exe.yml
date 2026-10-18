@@ -1,0 +1,34 @@
+title: Windows New Service Security Descriptor Set Via Sc.EXE
+id: cde00c31-042a-4307-bf70-25e471da56e9
+status: experimental
+description: 'The following analytic detects changes in a service security descriptor.
+
+  It leverages data from Endpoint Detection and Response (EDR) agents, specifically searching for any process execution involving
+  the "sc.exe" binary with the "sdset" flag targeting any service.
+
+  This behavior can be legitimate, such as when a user or administrator is configuring a service''s security settings.
+
+  Investigate appropariate services to determine if the behavior is malicious.
+
+  If confirmed malicious, this could allow an attacker to escalate their privileges, blind defenses and more.'
+references:
+- https://research.splunk.com/cde00c31-042a-4307-bf70-25e471da56e9/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Michael Haag, Splunk
+tags:
+- attack.t1564
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\sc.exe'
+  sel2:
+    OriginalFileName: sc.exe
+  sel3:
+    CommandLine: '*sdset *'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1564/sc_sdset_tampering/sc_sdset_tampering_sysmon.log

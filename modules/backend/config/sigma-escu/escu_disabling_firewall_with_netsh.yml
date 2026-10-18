@@ -1,0 +1,33 @@
+title: Disabling Firewall with Netsh
+id: 6860a62c-9203-11eb-9e05-acde48001122
+status: experimental
+description: The following analytic identifies the disabling of the firewall using the netsh application. It leverages data
+  from Endpoint Detection and Response (EDR) agents, focusing on command-line executions that include keywords like "firewall,"
+  "off," or "disable." This activity is significant because disabling the firewall can expose the system to external threats,
+  allowing malware to communicate with its command and control (C2) server. If confirmed malicious, this action could lead
+  to unauthorized data exfiltration, further malware downloads, and broader network compromise.
+references:
+- https://research.splunk.com/6860a62c-9203-11eb-9e05-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\netsh.exe'
+  sel2:
+    OriginalFileName: netsh.exe
+  sel3:
+    CommandLine: '*firewall*'
+  sel4:
+    CommandLine: '*off*'
+  sel5:
+    CommandLine: '*disable*'
+  condition: ((sel1 or sel2) and sel3 and (sel4 or sel5))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/win_app_defender_disabling/windows-sysmon.log

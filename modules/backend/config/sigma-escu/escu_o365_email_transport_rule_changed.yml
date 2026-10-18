@@ -1,0 +1,32 @@
+title: O365 Email Transport Rule Changed
+id: 11ebb7c2-46bd-41c9-81e1-d0b4b34583a2
+status: experimental
+description: The following analytic identifies when a user with sufficient access to Exchange Online alters the mail flow/transport
+  rule configuration of the organization. Transport rules are a set of rules that can be used by attackers to modify or delete
+  emails based on specific conditions, this activity could indicate an attacker hiding or exfiltrated data.
+references:
+- https://research.splunk.com/11ebb7c2-46bd-41c9-81e1-d0b4b34583a2/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1114.003
+- attack.t1564.008
+logsource:
+  product: m365
+  service: audit
+detection:
+  sel1:
+    Workload: Exchange
+  sel2:
+    Operation:
+    - Set-*
+    - Disable-*
+    - New-*
+    - Remove-*
+  sel3:
+    Operation: '*TransportRule'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1114.003/transport_rule_change/transport_rule_change.log

@@ -1,0 +1,35 @@
+title: Firewall Allowed Program Enable
+id: 9a8f63a8-43ac-11ec-904c-acde48001122
+status: experimental
+description: The following analytic detects the modification of a firewall rule to allow the execution of a specific application.
+  This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process creation events with
+  command-line arguments related to firewall rule changes. This activity is significant as it may indicate an attempt to bypass
+  firewall restrictions, potentially allowing unauthorized applications to communicate over the network. If confirmed malicious,
+  this could enable an attacker to execute arbitrary code, escalate privileges, or maintain persistence within the target
+  environment.
+references:
+- https://research.splunk.com/9a8f63a8-43ac-11ec-904c-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1686
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*firewall*'
+  sel2:
+    CommandLine: '*allow*'
+  sel3:
+    CommandLine: '*add*'
+  sel4:
+    CommandLine: '*ENABLE*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/vilsel/sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 1 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

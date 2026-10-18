@@ -1,0 +1,27 @@
+title: WMI Permanent Event Subscription - Sysmon
+id: ad05aae6-3b2a-4f73-af97-57bd26cee3b9
+status: experimental
+description: Detects the creation, modification or deletion of a WMI permanent event subscription using Sysmon EventID 21.
+references:
+- https://research.splunk.com/ad05aae6-3b2a-4f73-af97-57bd26cee3b9/
+author: Splunk Security Content (Apache-2.0), Rico Valdez, Michael Haag, Splunk
+tags:
+- attack.t1546.003
+logsource:
+  product: windows
+  service: sysmon
+  category: wmi_event
+detection:
+  sel1:
+    EventID: '21'
+  sel2:
+    Operation:
+    - Created
+    - Deleted
+    - Modified
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1546.003/atomic_red_team/windows-sysmon.log

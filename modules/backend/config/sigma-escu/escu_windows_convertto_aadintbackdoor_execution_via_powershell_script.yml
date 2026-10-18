@@ -1,0 +1,39 @@
+title: Windows ConvertTo-AADIntBackdoor Execution Via PowerShell Script
+id: 59a8662f-f616-4494-8fa1-29ae77fc2018
+status: experimental
+description: 'This analytic detects the execution of the ConvertTo-AADIntBackdoor command via PowerShell Script Block Logging.
+
+  The ConvertTo-AADIntBackdoor command is part of the AADInternals toolkit, which is used primarily for security testing and
+  administrative tasks in Azure Active Directory (Azure AD) environments.
+
+  This particular command is designed to create a "backdoor" in a federated Azure AD domain.
+
+  When executed, ConvertTo-AADIntBackdoor modifies the federation settings of a domain by adding or changing the federation
+  configuration to allow an attacker to control the authentication process.
+
+  This manipulation enables the creation of security tokens that can impersonate any user within the Azure AD tenant.
+
+  Consequently, this allows an attacker to bypass Multi-Factor Authentication (MFA), escalate privileges, and maintain persistent
+  access to the Azure AD environment.'
+references:
+- https://research.splunk.com/59a8662f-f616-4494-8fa1-29ae77fc2018/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1482
+- attack.t1078
+- attack.t1212
+- attack.t1071.001
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*ConvertTo-AADIntBackdoor*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1482/snapattack/snapattack.log

@@ -1,0 +1,31 @@
+title: Windows Impair Defense Define Win Defender Threat Action
+id: 7215831c-8252-4ae3-8d43-db588e82f952
+status: experimental
+description: The following analytic detects modifications to the Windows Defender ThreatSeverityDefaultAction registry setting.
+  It leverages data from the Endpoint.Registry datamodel to identify changes in registry values that define how Windows Defender
+  responds to threats. This activity is significant because altering these settings can impair the system's defense mechanisms,
+  potentially allowing threats to go unaddressed. If confirmed malicious, this could enable attackers to bypass antivirus
+  protections, leading to persistent threats and increased risk of data compromise or further system exploitation.
+references:
+- https://research.splunk.com/7215831c-8252-4ae3-8d43-db588e82f952/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Windows Defender\\Threats\\ThreatSeverityDefaultAction*'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+    - '* (9)'
+    - '9'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable-windows-security-defender-features/windefender-bypas-2-sysmon.log

@@ -1,0 +1,29 @@
+title: Linux Sqlite3 Privilege Escalation
+id: ab75dbb7-c3ba-4689-9c1b-8d2717bdcba1
+status: experimental
+description: The following analytic detects the execution of the sqlite3 command with elevated privileges, which can be exploited
+  for privilege escalation. It leverages Endpoint Detection and Response (EDR) telemetry to identify instances where sqlite3
+  is used in conjunction with shell commands and sudo. This activity is significant because it indicates a potential attempt
+  to gain root access, which could lead to full system compromise. If confirmed malicious, an attacker could execute arbitrary
+  commands as root, leading to unauthorized access, data exfiltration, or further lateral movement within the network.
+references:
+- https://research.splunk.com/ab75dbb7-c3ba-4689-9c1b-8d2717bdcba1/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Splunk
+tags:
+- attack.t1548.003
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    CommandLine: '*sqlite3*'
+  sel2:
+    CommandLine: '*.shell*'
+  sel3:
+    CommandLine: '*sudo*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548/sqlite3/sysmon_linux.log

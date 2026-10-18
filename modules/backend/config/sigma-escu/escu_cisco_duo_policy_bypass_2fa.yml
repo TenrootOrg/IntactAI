@@ -1,0 +1,31 @@
+title: Cisco Duo Policy Bypass 2FA
+id: 65862e8a-799a-4509-ae1c-4602aa139580
+status: experimental
+description: The following analytic detects instances where a Duo policy is created or updated to allow access without two-factor
+  authentication (2FA). It identifies this behavior by searching Duo administrator activity logs for policy changes that set
+  the authentication status to "Allow access without 2FA." By monitoring for these specific actions, the analytic highlights
+  potential attempts to weaken authentication controls, which could be indicative of malicious activity or insider threats.
+  This behavior is critical for a SOC to identify, as bypassing 2FA significantly reduces the security posture of an organization,
+  making it easier for attackers to gain unauthorized access to sensitive systems and data. Detecting and responding to such
+  policy changes promptly helps prevent potential account compromise and mitigates the risk of broader security breaches.
+references:
+- https://research.splunk.com/65862e8a-799a-4509-ae1c-4602aa139580/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1556
+logsource:
+  product: cisco
+  service: duo
+detection:
+  sel1:
+    action: policy_update
+  sel2:
+    action: policy_create
+  sel3:
+    auth_status: Allow access without 2FA
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1556/cisco_duo_policy_bypass_2FA/cisco_duo_administrator.json

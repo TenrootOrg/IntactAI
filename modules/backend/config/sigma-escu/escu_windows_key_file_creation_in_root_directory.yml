@@ -1,0 +1,25 @@
+title: Windows .Key File Creation in Root Directory
+id: 90e71722-8c0f-43b4-937a-6222325976c2
+status: experimental
+description: 'Detects the creation of a .key file in the root directory of the system drive.
+
+  This activity was seen with various ransomware before performing encryption of files.'
+references:
+- https://research.splunk.com/90e71722-8c0f-43b4-937a-6222325976c2/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1486
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename: '*.key'
+  sel2:
+    TargetFilename|re: ^[A-Za-z]:\\[^\\]+\.key$
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1022/snapattack/snapattack.log

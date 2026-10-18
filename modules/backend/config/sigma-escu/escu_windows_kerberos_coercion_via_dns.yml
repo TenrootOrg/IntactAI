@@ -1,0 +1,43 @@
+title: Windows Kerberos Coercion via DNS
+id: 9029b575-6f6b-4ab1-b660-67b24b7e9c3d
+status: experimental
+description: Detects DNS-based Kerberos coercion attacks where adversaries inject marshaled credential structures into DNS
+  records to spoof SPNs and redirect authentication such as in CVE-2025-33073. This detection leverages Windows Security Event
+  Codes 5136, 5137, 4662, looking for DNS events with specific CREDENTIAL_TARGET_INFORMATION entries.
+references:
+- https://research.splunk.com/9029b575-6f6b-4ab1-b660-67b24b7e9c3d/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1071.004
+- attack.t1557.001
+- attack.t1187
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '5136'
+  sel2:
+    EventID: '5137'
+  sel3:
+    ObjectClass: dnsNode
+  sel4:
+    ObjectDN: '*1UWhRCA*'
+  sel5:
+    ObjectDN: '*AAAAA*'
+  sel6:
+    ObjectDN: '*YBAAAA*'
+  sel7:
+    EventID: '4662'
+  sel8:
+    AdditionalInfo: '*1UWhRCA*'
+  sel9:
+    AdditionalInfo: '*AAAAA*'
+  sel10:
+    AdditionalInfo: '*YBAAAA*'
+  condition: (((sel1 or sel2) and sel3 and sel4 and sel5 and sel6) or (sel7 and sel8 and sel9 and sel10))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1071.004/kerberos_coercion/windows-xml.log

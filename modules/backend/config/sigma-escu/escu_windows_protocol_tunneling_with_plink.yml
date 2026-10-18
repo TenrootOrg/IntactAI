@@ -1,0 +1,41 @@
+title: Windows Protocol Tunneling with Plink
+id: 8aac5e1e-0fab-4437-af0b-c6e60af23eed
+status: experimental
+description: This analytic detects the use of Plink (including renamed versions like pvhost.exe) for protocol tunneling, which
+  may be used for egress or lateral movement within an organization. It identifies specific command-line options (-R, -L,
+  -D, -l, -N, -P, -pw) commonly used for port forwarding and tunneling by analyzing process execution logs from Endpoint Detection
+  and Response (EDR) agents. This activity is significant as it may indicate an attempt to bypass network security controls
+  or establish unauthorized connections. If confirmed malicious, this could allow an attacker to exfiltrate data, move laterally
+  across the network, or maintain persistent access, posing a severe threat to the organization's security. The detection
+  covers both the original Plink executable and potential renamed versions, enhancing its ability to catch evasion attempts.
+references:
+- https://research.splunk.com/8aac5e1e-0fab-4437-af0b-c6e60af23eed/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1572
+- attack.t1021.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\plink.exe'
+  sel2:
+    Image: '*\\pvhost.exe'
+  sel3:
+    OriginalFileName: Plink
+  sel4:
+    CommandLine:
+    - '*-R *'
+    - '*-L *'
+    - '*-D *'
+    - '*-l *'
+    - '*-N *'
+    - '*-P *'
+    - '*-pw *'
+  condition: (((sel1 or sel2) or sel3) and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1572/plink/plink-windows-sysmon.log

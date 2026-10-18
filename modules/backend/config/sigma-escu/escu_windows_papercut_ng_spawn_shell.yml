@@ -1,0 +1,45 @@
+title: Windows PaperCut NG Spawn Shell
+id: a602d9a2-aaea-45f8-bf0f-d851168d61ca
+status: experimental
+description: The following analytic detects instances where the PaperCut NG application (pc-app.exe) spawns a Windows shell,
+  such as cmd.exe or PowerShell. This behavior is identified using Endpoint Detection and Response (EDR) telemetry, focusing
+  on process creation events where the parent process is pc-app.exe. This activity is significant as it may indicate an attacker
+  attempting to gain unauthorized access or execute malicious commands on the system. If confirmed malicious, this could lead
+  to unauthorized code execution, privilege escalation, or further compromise of the affected environment.
+references:
+- https://research.splunk.com/a602d9a2-aaea-45f8-bf0f-d851168d61ca/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1059
+- attack.t1190
+- attack.t1133
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\pc-app.exe'
+  sel2:
+    Image: '*\\cmd.exe'
+  sel3:
+    OriginalFileName: Cmd.Exe
+  sel4:
+    Image: '*\\pwsh.exe'
+  sel5:
+    Image: '*\\powershell.exe'
+  sel6:
+    OriginalFileName: pwsh.dll
+  sel7:
+    OriginalFileName: PowerShell.EXE
+  sel8:
+    OriginalFileName: powershell_ise.EXE
+  sel9:
+    Image: '*\\powershell_ise.exe'
+  sel10:
+    Image: '*\\java.exe'
+  condition: (sel1 and (((sel2 or sel3) or (((((sel4 or sel5) or sel6) or sel7) or sel8) or sel9)) or sel10))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/papercut/papercutng-app-spawn_windows-sysmon.log

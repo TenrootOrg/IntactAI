@@ -1,0 +1,27 @@
+title: Linux EFI Bootloader File Deletion
+id: 818a63f8-f2e1-4d1b-ac95-3a4f2ec7f113
+status: experimental
+description: The following analytic detects file deletions in the EFI boot directory. These files are responsible for initializing
+  the Boot Manager during system startup. Modification or replacement of these files is highly unusual in normal operations
+  and may indicate an attempt to install a bootkit, persist malicious code at the firmware level, or otherwise tamper with
+  the system boot process.
+references:
+- https://research.splunk.com/818a63f8-f2e1-4d1b-ac95-3a4f2ec7f113/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1542.001
+- attack.t1542.003
+logsource:
+  category: file_delete
+  product: linux
+detection:
+  sel1:
+    TargetFilename: /boot/efi/EFI/BOOT/*
+  sel2:
+    TargetFilename: '*.efi*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1542/linux_efi_bootloader_file_deletion/snapattack_linux.log

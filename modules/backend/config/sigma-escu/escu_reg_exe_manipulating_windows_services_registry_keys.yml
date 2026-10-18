@@ -1,0 +1,31 @@
+title: Reg exe Manipulating Windows Services Registry Keys
+id: 8470d755-0c13-45b3-bd63-387a373c10cf
+status: experimental
+description: The following analytic detects the use of reg.exe to modify registry keys associated with Windows services and
+  their configurations. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process names, parent
+  processes, and command-line executions. This activity is significant because unauthorized changes to service registry keys
+  can indicate an attempt to establish persistence or escalate privileges. If confirmed malicious, this could allow an attacker
+  to control service behavior, potentially leading to unauthorized code execution or system compromise.
+references:
+- https://research.splunk.com/8470d755-0c13-45b3-bd63-387a373c10cf/
+author: Splunk Security Content (Apache-2.0), Rico Valdez, Splunk
+tags:
+- attack.t1574.011
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\reg.exe'
+  sel2:
+    CommandLine: '*reg*'
+  sel3:
+    CommandLine: '*add*'
+  sel4:
+    CommandLine: '*Services*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1574.011/change_registry_path_service/windows-sysmon.log

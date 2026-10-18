@@ -1,0 +1,28 @@
+title: Zscaler Behavior Analysis Threat Blocked
+id: 289ad59f-8939-4331-b805-f2bd51d36fb8
+status: experimental
+description: The following analytic identifies threats blocked by the Zscaler proxy based on behavior analysis. It leverages
+  web proxy logs to detect entries where actions are blocked and threat names and classes are specified. This detection is
+  significant as it highlights potential malicious activities that were intercepted by Zscaler's behavior analysis, providing
+  early indicators of threats. If confirmed malicious, these blocked threats could indicate attempted breaches or malware
+  infections, helping security teams to understand and mitigate potential risks in their environment.
+references:
+- https://research.splunk.com/289ad59f-8939-4331-b805-f2bd51d36fb8/
+author: Splunk Security Content (Apache-2.0), Rod Soto, Gowthamaraj Rajendran, Splunk
+tags:
+- attack.t1566
+logsource:
+  category: proxy
+detection:
+  sel1:
+    action: blocked
+  sel2:
+    threatname: None
+  sel3:
+    threatclass: Behavior Analysis
+  condition: (sel1 and not sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566/zscalar_web_proxy/zscalar_web_proxy.json

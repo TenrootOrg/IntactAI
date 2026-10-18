@@ -1,0 +1,36 @@
+title: Windows Domain Account Discovery Via Get-NetComputer
+id: a7fbbc4e-4571-424a-b627-6968e1c939e4
+status: experimental
+description: The following analytic detects the execution of the PowerView PowerShell cmdlet Get-NetComputer, which is used
+  to query Active Directory for user account details such as "samaccountname," "accountexpires," "lastlogon," and more. It
+  leverages Event ID 4104 from PowerShell Script Block Logging to identify this activity. This behavior is significant as
+  it may indicate an attempt to gather user account information, which is often a precursor to further malicious actions.
+  If confirmed malicious, this activity could lead to unauthorized access, privilege escalation, or lateral movement within
+  the network.
+references:
+- https://research.splunk.com/a7fbbc4e-4571-424a-b627-6968e1c939e4/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1087.002
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Get-NetComputer*'
+  sel3:
+    ScriptBlockText:
+    - '*samaccountname*'
+    - '*accountexpires*'
+    - '*lastlogon*'
+    - '*lastlogoff*'
+    - '*pwdlastset*'
+    - '*logoncount*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1087/powerview_get_netuser_preauthnotrequire/get-netuser-not-require-pwh.log

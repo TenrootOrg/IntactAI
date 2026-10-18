@@ -1,0 +1,77 @@
+title: Windows PowerShell FakeCAPTCHA Clipboard Execution
+id: d81d4d3d-76b5-4f21-ab51-b17d5164c106
+status: experimental
+description: This detection identifies potential FakeCAPTCHA/ClickFix clipboard hijacking campaigns by looking for PowerShell
+  execution with hidden window parameters and distinctive strings related to fake CAPTCHA verification. These campaigns use
+  social engineering to trick users into pasting malicious PowerShell commands from their clipboard, typically delivering
+  information stealers or remote access trojans.
+references:
+- https://research.splunk.com/d81d4d3d-76b5-4f21-ab51-b17d5164c106/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1059.001
+- attack.t1204.001
+- attack.t1059.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\pwsh.exe'
+  sel2:
+    Image: '*\\powershell.exe'
+  sel3:
+    OriginalFileName: pwsh.dll
+  sel4:
+    OriginalFileName: PowerShell.EXE
+  sel5:
+    OriginalFileName: powershell_ise.EXE
+  sel6:
+    Image: '*\\powershell_ise.exe'
+  sel7:
+    CommandLine: '*-w*h*'
+  sel8:
+    CommandLine:
+    - '*robot*'
+    - '*captcha*'
+    - '*verify*'
+    - '*security check*'
+    - '*complete verification*'
+  sel9:
+    CommandLine:
+    - '*iwr *'
+    - '*Invoke-WebRequest*'
+    - '*wget *'
+    - '*curl *'
+    - '*Net.WebClient*'
+    - '*DownloadString*'
+    - '*[Convert]::FromBase64String*'
+  sel10:
+    CommandLine:
+    - '*iex*'
+    - '*Invoke-Expression*'
+  sel11:
+    CommandLine:
+    - '*click*'
+    - '*verify*'
+    - '*check*'
+    - '*human*'
+    - '*bot*'
+    - '*token*'
+    - '*challenge*'
+  sel12:
+    CommandLine: '*clipboard*'
+  sel13:
+    CommandLine: '*iex*'
+  sel14:
+    CommandLine: '*FromBase64String*'
+  sel15:
+    CommandLine: '*decode*'
+  condition: ((((((sel1 or sel2) or sel3) or sel4) or sel5) or sel6) and sel7 and ((sel8 or (sel9 and sel10 and sel11)) or
+    (sel12 and sel13 and (sel14 or sel15))))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/atomic_red_team/captcha_windows-sysmon.log
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_network_visibility_module/cisco_nvm_flowdata/nvm_flowdata.log

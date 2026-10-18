@@ -1,0 +1,29 @@
+title: Windows InProcServer32 New Outlook Form
+id: fedb49c4-4bd7-4d42-8fd9-f8c8538c73c4
+status: experimental
+description: The following analytic detects the creation or modification of registry keys associated with new Outlook form
+  installations, potentially indicating exploitation of CVE-2024-21378. It leverages data from the Endpoint.Registry datamodel,
+  focusing on registry paths involving InProcServer32 keys linked to Outlook forms. This activity is significant as it may
+  signify an attempt to achieve authenticated remote code execution via malicious form objects. If confirmed malicious, this
+  could allow an attacker to create arbitrary files and registry keys, leading to remote code execution and potential full
+  system compromise.
+references:
+- https://research.splunk.com/fedb49c4-4bd7-4d42-8fd9-f8c8538c73c4/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1566
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\InProcServer32\\*'
+  sel2:
+    Details: '*\\FORMS\\*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566/cve-2024-21378/inprocserver32_windows-sysmon.log

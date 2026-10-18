@@ -1,0 +1,63 @@
+title: Windows Application Whitelisting Bypass Attempt via Rundll32
+id: 1ef5dab0-e1f1-495d-a272-d134583c10b1
+status: experimental
+description: 'The following analytic detects the execution of rundll32.exe calling one of the following DLLs:
+
+
+  - Advpack.dll
+
+  - Ieadvpack.dll
+
+  - Syssetup.dll
+
+  - Setupapi.dll
+
+
+  with one of the following functions: "LaunchINFSection", "InstallHinfSection", "SetupInfObjectInstallAction".
+
+  This method is identified through Endpoint Detection and Response (EDR) telemetry,
+
+  focusing on command-line executions and process details.
+
+  This activity is significant as it indicates a potential application
+
+  control or whitelisting bypass, allowing script code execution from a file.
+
+  If confirmed malicious, an attacker could execute arbitrary code, potentially leading to privilege escalation,
+
+  persistence, or further network compromise.
+
+  Investigate the script content, network connections, and any spawned child processes for further context.'
+references:
+- https://research.splunk.com/1ef5dab0-e1f1-495d-a272-d134583c10b1/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.011
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\rundll32.exe'
+  sel2:
+    OriginalFileName: RUNDLL32.EXE
+  sel3:
+    CommandLine:
+    - '*syssetup*'
+    - '*advpack*'
+    - '*setupapi*'
+  sel4:
+    CommandLine:
+    - '*LaunchINFSection*'
+    - '*InstallHinfSection*'
+    - '*SetupInfObjectInstallAction*'
+  sel5:
+    ParentImage: '*\\msiexec.exe'
+  sel6:
+    CommandLine: '* C:\\Program Files (x86)\\Netskope\\EPDLP Deployment\\*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and not ((sel5 and sel6)))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.011/atomic_red_team/windows-sysmon.log

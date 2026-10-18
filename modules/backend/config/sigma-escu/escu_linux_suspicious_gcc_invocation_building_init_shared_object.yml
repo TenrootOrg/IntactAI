@@ -1,0 +1,36 @@
+title: Linux Suspicious GCC Invocation Building Init Shared Object
+id: 9dbf4a61-0493-43bd-932c-532ba7671a7a
+status: experimental
+description: The following analytic detects compiler usage with flags commonly used to create shared libraries that auto-run
+  initialization functions, which are often associated with local privilege escalation exploits.
+references:
+- https://research.splunk.com/9dbf4a61-0493-43bd-932c-532ba7671a7a/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1129
+- attack.t1068
+- attack.t1608
+- attack.t1027.004
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image:
+    - '*x86_64-linux-gnu-gcc*'
+    - '*/cc'
+    - '*/g++'
+    - '*/gcc-*'
+    - '*/gcc'
+  sel2:
+    CommandLine: '*-shared*'
+  sel3:
+    CommandLine: '*-Wl,-init,*'
+  sel4:
+    CommandLine: '*.so*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1129/linux_suspicious_gcc_invocation_building_init_shared_object/snapattack_linux.log

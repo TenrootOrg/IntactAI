@@ -1,0 +1,28 @@
+title: Cisco Secure Firewall - SSH Connection to Non-Standard Port
+id: 9b0c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e
+status: experimental
+description: 'This analytic detects inbound SSH connections to non-standard ports on network devices using Cisco Secure Firewall
+  Intrusion Events. APT actors have been observed enabling SSH servers on high, non-default TCP ports to maintain encrypted
+  remote access to compromised network infrastructure.
+
+  This detection leverages Snort signature 65369 to identify SSH protocol traffic on unusual ports, which may indicate persistence
+  mechanisms or backdoor access established by threat actors.'
+references:
+- https://research.splunk.com/9b0c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Michael Haag, Splunk
+tags:
+- attack.t1021.004
+logsource:
+  product: cisco
+  service: secure_firewall
+detection:
+  sel1:
+    EventType: IntrusionEvent
+  sel2:
+    SignatureID: '65369'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_secure_firewall_threat_defense/intrusion_event/intrusion_events.log

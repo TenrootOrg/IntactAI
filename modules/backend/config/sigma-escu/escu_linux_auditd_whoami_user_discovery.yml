@@ -1,0 +1,29 @@
+title: Linux Auditd Whoami User Discovery
+id: d1ff2e22-310d-446a-80b3-faedaa7b3b52
+status: experimental
+description: The following analytic detects the suspicious use of the whoami command, which may indicate an attacker trying
+  to gather information about the current user account on a compromised system. The whoami command is commonly used to verify
+  user privileges and identity, especially during initial stages of an attack to assess the level of access. By monitoring
+  for unusual or unauthorized executions of whoami, this analytic helps in identifying potential reconnaissance activities,
+  enabling security teams to take action before the attacker escalates privileges or conducts further malicious operations.
+references:
+- https://research.splunk.com/d1ff2e22-310d-446a-80b3-faedaa7b3b52/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1033
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    type: SYSCALL
+  sel2:
+    comm: whoami
+  sel3:
+    exe: '*/whoami'
+  condition: (sel1 and (sel2 or sel3))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1033/linux_auditd_whoami_new/linux_auditd_new_whoami.log

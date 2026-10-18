@@ -1,0 +1,32 @@
+title: Windows PowerView Constrained Delegation Discovery
+id: 86dc8176-6e6c-42d6-9684-5444c6557ab3
+status: experimental
+description: The following analytic detects the use of PowerView commandlets to discover Windows endpoints with Kerberos Constrained
+  Delegation. It leverages PowerShell Script Block Logging (EventCode=4104) to identify specific commandlets like `Get-DomainComputer`
+  or `Get-NetComputer` with the `-TrustedToAuth` parameter. This activity is significant as it indicates potential reconnaissance
+  efforts by adversaries or Red Teams to map out privileged delegation settings in Active Directory. If confirmed malicious,
+  this could allow attackers to identify high-value targets for further exploitation, potentially leading to privilege escalation
+  or lateral movement within the network.
+references:
+- https://research.splunk.com/86dc8176-6e6c-42d6-9684-5444c6557ab3/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1018
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Get-DomainComputer*'
+  sel3:
+    ScriptBlockText: '*Get-NetComputer*'
+  sel4:
+    ScriptBlockText: '*-TrustedToAuth*'
+  condition: (sel1 and (sel2 or sel3) and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1018/windows_powerview_constrained_delegation_discovery/windows-xml.log

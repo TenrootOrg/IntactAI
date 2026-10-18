@@ -1,0 +1,33 @@
+title: Conti Common Exec parameter
+id: 624919bc-c382-11eb-adcc-acde48001122
+status: experimental
+description: The following analytic detects the execution of suspicious command-line arguments commonly associated with Conti
+  ransomware, specifically targeting local drives and network shares for encryption. It leverages data from Endpoint Detection
+  and Response (EDR) agents, focusing on process execution logs that include command-line details. This activity is significant
+  because it indicates a potential ransomware attack, which can lead to widespread data encryption and operational disruption.
+  If confirmed malicious, the impact could be severe, resulting in data loss, system downtime, and potential ransom demands.
+references:
+- https://research.splunk.com/624919bc-c382-11eb-adcc-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1204
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine:
+    - '*-m local'
+    - '*-m local *'
+    - '*-m net'
+    - '*-m net *'
+    - '*-m all'
+    - '*-m all *'
+    - '*-nomutex'
+    - '*-nomutex *'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/conti/inf1/windows-sysmon.log

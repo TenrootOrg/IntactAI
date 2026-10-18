@@ -1,0 +1,54 @@
+title: Linux Possible Append Command To Profile Config File
+id: 9c94732a-61af-11ec-91e3-acde48001122
+status: experimental
+description: 'The following analytic detects suspicious command-lines that modify user profile files to automatically execute
+  scripts or executables upon system reboot.
+
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line executions involving profile
+  files like ~/.bashrc and /etc/profile.
+
+  This activity is significant as it indicates potential persistence mechanisms used by adversaries to maintain access to
+  compromised hosts.
+
+  If confirmed malicious, this could allow attackers to execute arbitrary code upon reboot, leading to persistent control
+  over the system and potential further exploitation.'
+references:
+- https://research.splunk.com/9c94732a-61af-11ec-91e3-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1546.004
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    CommandLine: '*echo*'
+  sel2:
+    CommandLine:
+    - '*/home/*'
+    - '*~/*'
+    - '*/etc/*'
+  sel3:
+    CommandLine:
+    - '*/.bash_login*'
+    - '*/.bash_logout*'
+    - '*/.bash_profile*'
+    - '*/.bashrc*'
+    - '*/.profile*'
+    - '*/profile*'
+  sel4:
+    CurrentDirectory: /home/*
+  sel5:
+    CommandLine:
+    - '*.bash_login*'
+    - '*.bash_logout*'
+    - '*.bash_profile*'
+    - '*.bashrc*'
+    - '*.profile*'
+    - '* profile*'
+  condition: (sel1 and (sel2 and (sel3 or (sel4 and sel5))))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1546.004/linux_init_profile/sysmon_linux.log

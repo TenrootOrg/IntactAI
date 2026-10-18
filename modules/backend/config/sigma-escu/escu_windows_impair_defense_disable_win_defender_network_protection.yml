@@ -1,0 +1,30 @@
+title: Windows Impair Defense Disable Win Defender Network Protection
+id: 8b6c15c7-5556-463d-83c7-986326c21f12
+status: experimental
+description: The following analytic detects modifications to the Windows registry that disable Windows Defender Network Protection.
+  It leverages data from the Endpoint.Registry data model, specifically monitoring changes to the EnableNetworkProtection
+  registry entry. This activity is significant because disabling Network Protection can leave the system vulnerable to network-based
+  threats by preventing Windows Defender from analyzing and blocking malicious network activity. If confirmed malicious, this
+  action could allow attackers to bypass security measures, potentially leading to unauthorized access, data exfiltration,
+  or further compromise of the network.
+references:
+- https://research.splunk.com/8b6c15c7-5556-463d-83c7-986326c21f12/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Windows Defender\\Windows Defender Exploit Guard\\Network Protection\\EnableNetworkProtection'
+  sel2:
+    Details:
+    - '* (0x00000000)'
+    - '0x00000000'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable-windows-security-defender-features/windefender-bypas-2-sysmon.log

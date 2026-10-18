@@ -1,0 +1,26 @@
+title: ASL AWS ECR Container Upload Unknown User
+id: 886a8f46-d7e2-4439-b9ba-aec238e31732
+status: experimental
+description: 'The following analytic detects unauthorized container uploads to AWS Elastic Container Service (ECR) by monitoring
+  AWS CloudTrail events.
+
+  It identifies instances where a new container is uploaded by a user not previously recognized as authorized.'
+references:
+- https://research.splunk.com/886a8f46-d7e2-4439-b9ba-aec238e31732/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1204.003
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  sel1:
+    api.operation: PutImage
+  sel2:
+    actor.user.name: admin
+  condition: (sel1 and not (sel2))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1204.003/aws_ecr_container_upload/asl_ocsf_cloudtrail.json

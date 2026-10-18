@@ -1,0 +1,33 @@
+title: Suspicious GPUpdate no Command Line Arguments
+id: f308490a-473a-40ef-ae64-dd7a6eba284a
+status: experimental
+description: The following analytic detects the execution of gpupdate.exe without any command line arguments. This behavior
+  is identified using data from Endpoint Detection and Response (EDR) agents, focusing on process execution logs. It is significant
+  because gpupdate.exe typically runs with specific arguments, and its execution without them is often associated with malicious
+  activities, such as those performed by Cobalt Strike. If confirmed malicious, this activity could indicate an attempt to
+  execute unauthorized commands or scripts, potentially leading to further system compromise or lateral movement within the
+  network.
+references:
+- https://research.splunk.com/f308490a-473a-40ef-ae64-dd7a6eba284a/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1055
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\gpupdate.exe'
+  sel2:
+    OriginalFileName: GPUpdate.exe
+  sel3:
+    CommandLine:
+    - '*gpupdate'
+    - '*gpupdate.exe'
+    - '*gpupdate.exe"'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1055/cobalt_strike/windows-sysmon.log

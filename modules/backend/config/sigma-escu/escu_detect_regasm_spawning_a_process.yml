@@ -1,0 +1,28 @@
+title: Detect Regasm Spawning a Process
+id: 72170ec5-f7d2-42f5-aefb-2b8be6aad15f
+status: experimental
+description: The following analytic detects regasm.exe spawning a child process. This behavior is identified using data from
+  Endpoint Detection and Response (EDR) agents, focusing on process creation events where regasm.exe is the parent process.
+  This activity is significant because regasm.exe spawning a process is rare and can indicate an attempt to bypass application
+  control mechanisms. If confirmed malicious, this could allow an attacker to execute arbitrary code, potentially leading
+  to privilege escalation or persistent access within the environment. Immediate investigation is recommended to determine
+  the legitimacy of the spawned process and any associated activities.
+references:
+- https://research.splunk.com/72170ec5-f7d2-42f5-aefb-2b8be6aad15f/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.009
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\regasm.exe'
+  sel2:
+    Image: '*\\conhost.exe'
+  condition: (sel1 and not (sel2))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.009/atomic_red_team/windows-sysmon.log

@@ -1,0 +1,38 @@
+title: Linux Possible Bootloader Modification
+id: 97fd4330-bd47-4742-abaf-c877d404822a
+status: experimental
+description: 'The following analytic detects processes modifying data in the EFI volume on Linux.
+
+  These files are responsible for initializing the Boot Manager during system startup.
+
+  Modification or replacement of these files is highly unusual in normal operations and may indicate an attempt to install
+  a bootkit, persist malicious code at the firmware level, or otherwise tamper with the system boot process.'
+references:
+- https://research.splunk.com/97fd4330-bd47-4742-abaf-c877d404822a/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1542.001
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image:
+    - '*/cp'
+    - '*/mv'
+    - '*/ln'
+  sel2:
+    CurrentDirectory: '*/EFI/BOOT*'
+  sel3:
+    CommandLine: '*/EFI/BOOT*'
+  sel4:
+    Image:
+    - '*/ls'
+    - '*/grep'
+    - '*/egrep'
+  condition: ((sel1 and sel2) or (sel3 and not (sel4)))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1542/linux_possible_bootloader_modifications/snapattack_linux.log

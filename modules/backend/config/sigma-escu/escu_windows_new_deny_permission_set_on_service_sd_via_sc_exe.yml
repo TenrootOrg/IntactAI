@@ -1,0 +1,58 @@
+title: Windows New Deny Permission Set On Service SD Via Sc.EXE
+id: d0f6a5e5-dbfd-46e1-8bd5-2e2905947c33
+status: experimental
+description: 'The following analytic detects changes in a service security descriptor where a new deny ace has been added.
+
+  It leverages data from Endpoint Detection and Response (EDR) agents, specifically searching for any process execution involving
+  the "sc.exe" binary with the "sdset" flag targeting any service and adding a dedicated deny ace to specific groups.
+
+  If confirmed malicious, this could allow an attacker to escalate their privileges, blind defenses and more.
+
+  Investigate appropariate services and groups to determine if the behavior is malicious.'
+references:
+- https://research.splunk.com/d0f6a5e5-dbfd-46e1-8bd5-2e2905947c33/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Michael Haag, Splunk
+tags:
+- attack.t1564
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\sc.exe'
+  sel2:
+    OriginalFileName: sc.exe
+  sel3:
+    CommandLine: '*sdset *'
+  sel4:
+    CommandLine: '*(D;*'
+  sel5:
+    CommandLine:
+    - '*;IU*'
+    - '*;S-1-5-4*'
+    - '*;SU*'
+    - '*;S-1-5-6*'
+    - '*;BA*'
+    - '*;S-1-5-32-544*'
+    - '*;SY*'
+    - '*;S-1-5-18*'
+    - '*;WD*'
+    - '*;S-1-1-0*'
+    - '*;AU*'
+    - '*;S-1-5-11*'
+    - '*;LS*'
+    - '*;S-1-5-19*'
+  sel6:
+    CommandLine:
+    - '*macmnsvc*'
+    - '*masvc*'
+    - '*McAfeeFramework*'
+    - '*mfefire*'
+    - '*mfemms*'
+    - '*mfevtp*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5 and not (sel6))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1564/sc_sdset_tampering/sc_sdset_tampering_sysmon.log

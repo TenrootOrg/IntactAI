@@ -1,0 +1,34 @@
+title: Linux Auditd Find Ssh Private Keys
+id: e2d2bd10-dcd1-4b2f-8a76-0198eab32ba5
+status: experimental
+description: The following analytic detects suspicious attempts to find SSH private keys, which may indicate an attacker's
+  effort to compromise secure access to systems. SSH private keys are essential for secure authentication, and unauthorized
+  access to these keys can enable attackers to gain unauthorized access to servers and other critical infrastructure. By monitoring
+  for unusual or unauthorized searches for SSH private keys, this analytic helps identify potential threats to network security,
+  allowing security teams to quickly respond and safeguard against unauthorized access and potential breaches.
+references:
+- https://research.splunk.com/e2d2bd10-dcd1-4b2f-8a76-0198eab32ba5/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1552.004
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    CommandLine:
+    - '*find*'
+    - '*grep*'
+  sel2:
+    CommandLine:
+    - '*id_rsa*'
+    - '*id_dsa*'
+    - '*.key*'
+    - '*ssh_key*'
+    - '*authorized_keys*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1552.004/linux_auditd_find_ssh_files/auditd_execve_find_ssh.log

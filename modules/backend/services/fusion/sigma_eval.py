@@ -24,7 +24,13 @@ import ipaddress
 import os
 import re
 
-RULE_DIRS = ("/opt/sigma-rules/rules", "/opt/sigma-rules/rules-emerging-threats")
+# Splunk Security Content detections translated to Sigma and proved on their own
+# attack_data recordings (scripts/dev/escu_to_sigma.py, escu_prove.py). Bundled in
+# the image, so they run where /opt/sigma-rules is not installed too.
+BUNDLED = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                       "config", "sigma-escu")
+RULE_DIRS = ("/opt/sigma-rules/rules", "/opt/sigma-rules/rules-emerging-threats", BUNDLED)
+DEMOTE = os.path.join(os.path.dirname(BUNDLED), "sigma_demote.yaml")   # SigmaHQ rules noisy on benign data
 LEVELS = {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 MIN_LEVEL = "medium"                 # below it a rule is context, never a detection
 _CACHE = {"key": None, "rules": [], "skipped": {}}
@@ -355,7 +361,10 @@ def compile_rule(doc):
             "category": (ls.get("category") or "").lower() or None,
             "service": (ls.get("service") or "").lower() or None,
             "mitre": sorted({t.split(".", 1)[1].upper() for t in tags if re.match(r"attack\.t\d{4}", t)}),
-            "searches": searches, "trees": trees}
+            "searches": searches, "trees": trees,
+            # False: a low signal normal systems also raise -- context only, never
+            # counted toward a "burst of suspicious activity" (behaviour.py).
+            "burst": doc.get("x-intact-burst") is not False}
 
 
 def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
@@ -367,7 +376,15 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
     if key == _CACHE["key"]:
         return _CACHE
     rules, skipped = [], {}
+    try:
+        with open(DEMOTE) as fh:
+            demote = set((yaml.safe_load(fh) or {}).keys())
+    except Exception:                                      # noqa: BLE001 -- no list = nothing demoted
+        demote = set()
     for d in present:
+        # The bundled set also ships LOW rules (Splunk "Anomaly" signals): context on
+        # their own, and what the suspicious-activity burst rule counts per host.
+        floor = min(LEVELS[min_level], LEVELS["low"]) if d == BUNDLED else LEVELS[min_level]
         for root, _dirs, files in os.walk(d):
             for fn in files:
                 if not fn.endswith((".yml", ".yaml")):
@@ -383,11 +400,14 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
                 if str(doc.get("status") or "").lower() in ("deprecated", "unsupported"):
                     skipped["deprecated"] = skipped.get("deprecated", 0) + 1
                     continue
-                if LEVELS.get(str(doc.get("level") or "").lower(), 0) < LEVELS[min_level]:
+                if LEVELS.get(str(doc.get("level") or "").lower(), 0) < floor:
                     skipped["below level"] = skipped.get("below level", 0) + 1
                     continue
                 try:
-                    rules.append(compile_rule(doc))
+                    rule = compile_rule(doc)
+                    if rule["id"] in demote:              # noisy on normal systems: context only
+                        rule.update(level="low", burst=False)
+                    rules.append(rule)
                 except Unsupported as e:
                     k = str(e).split(" ")[0]
                     skipped[k] = skipped.get(k, 0) + 1
@@ -402,9 +422,20 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
 # style names; a Security 4688 event, a proxy export or a DNS log spells them
 # otherwise (the role pySigma's processing pipelines play).
 ALIASES = {
+    # 86 SigmaHQ rules name the event provider Provider_Name (the EVTX-to-JSON name);
+    # Windows event XML, NXLog and Winlogbeat call it Provider / SourceName / provider_name.
+    "provider_name": ["provider", "sourcename", "providername", "winlog.provider_name"],
+    # CloudTrail in OCSF (AWS Security Lake): the CloudTrail names Sigma rules use
+    "eventname": ["api.operation"], "eventsource": ["api.service.name"],
+    "errorcode": ["api.response.error"], "errormessage": ["api.response.message"],
+    "useragent": ["http_request.user_agent"], "sourceipaddress": ["src_endpoint.ip"],
+    "useridentity.type": ["actor.user.type"], "useridentity.arn": ["actor.user.uid"],
+    "useridentity.accountid": ["actor.user.account.uid"], "recipientaccountid": ["cloud.account.uid"],
+    "requestparameters": ["api.request.data"], "responseelements": ["api.response.data"],
+    "awsregion": ["cloud.region"],
     # process telemetry: Security 4688, Defender XDR, CrowdStrike FDR, Elastic, generic
     "image": ["newprocessname", "folderpath", "imagefilename", "process.executable", "processpath",
-              "actor_process_image_path", "exe"],
+              "actor_process_image_path", "exe", "columns.path", "processname"],
     "parentimage": ["parentprocessname", "initiatingprocessfolderpath", "process.parent.executable",
                     "parentimagefilename", "causality_actor_process_image_path"],
     "commandline": ["processcommandline", "process.command_line", "actor_process_command_line", "cmdline"],
@@ -412,13 +443,13 @@ ALIASES = {
                           "parentcommandline"],
     "user": ["subjectusername", "targetusername", "accountname", "user.name", "username"],
     "originalfilename": ["processversioninfooriginalfilename", "process.pe.original_file_name"],
-    "c-uri": ["url", "uri", "requesturl", "url.full", "url.original", "clientrequesturi", "cs-uri-stem"],
-    "c-uri-query": ["cs-uri-query", "url.query", "query_string"],
+    "c-uri": ["url", "uri", "requesturl", "url.full", "url.original", "clientrequesturi"],
+    "c-uri-query": ["cs-uri-query", "url.query", "query_string", "uri_query"],
     "c-uri-stem": ["cs-uri-stem", "url.path", "uri_path"],
     # Network HTTP (Suricata http.url, Zeek uri) keeps path and query in ONE field;
     # the web server rules that look at either are contains-style, so it serves both.
-    "cs-uri-query": ["c-uri-query", "url.query", "query_string", "url", "uri"],
-    "cs-uri-stem": ["c-uri-stem", "url.path", "uri", "clientrequesturi", "url"],
+    "cs-uri-query": ["c-uri-query", "url.query", "query_string", "uri_query", "url", "uri"],
+    "cs-uri-stem": ["c-uri-stem", "url.path", "uri_path", "uri", "clientrequesturi", "url"],
     "c-useragent": ["useragent", "user_agent", "http_user_agent", "cs(user-agent)", "user_agent.original",
                     "http.user_agent",
                     "clientrequestuseragent", "cs-user-agent", "c-user-agent"],
@@ -469,6 +500,20 @@ class Event:
                 return self._low[name]
             if name in self._last:
                 return self._last[name]
+        if f == "targetobject" and "ObjectValueName" in self.row:
+            # Security 4657: \REGISTRY\MACHINE\...\Lsa + "Security Packages", as Sysmon writes it
+            # (HKLM\...\Lsa\Security Packages) for the registry rules.
+            key = re.sub(r"^\\REGISTRY\\MACHINE", "HKLM", str(self.row.get("ObjectName") or ""), flags=re.I)
+            key = re.sub(r"^\\REGISTRY\\USER", "HKU", key, flags=re.I)
+            return f"{key}\\{self.row['ObjectValueName']}"
+        if f == "details" and "NewValue" in self.row:
+            return self.row["NewValue"]
+        if f == "c-uri":
+            # IIS / W3C and nginx keep path and query apart ("/shell.jsp", "cmd=id");
+            # a rule on the whole URL ("*.jsp?cmd=*") reads them joined, as a proxy writes it.
+            path, query = self.get("c-uri-stem"), self.get("c-uri-query")
+            if path not in (None, "", "-"):
+                return f"{path}?{query}" if query not in (None, "", "-") else path
         return None
 
     def texts_lower(self):
@@ -506,7 +551,26 @@ _CHANNELS = {"security": "security", "system": "system", "application": "applica
              "microsoft-windows-applocker/exe and dll": "applocker",
              "microsoft-windows-smbclient/security": "smbclient-security",
              "microsoft-windows-ntlm/operational": "ntlm", "directory service": "directory-service",
-             "dns server": "dns-server", "microsoft-windows-firewall-with-advanced-security/firewall": "firewall-as"}
+             "dns server": "dns-server", "microsoft-windows-firewall-with-advanced-security/firewall": "firewall-as",
+             # the rest of SigmaHQ's Windows services (sigma's windows pipeline names these channels)
+             "microsoft-windows-appxdeploymentserver/operational": "appxdeployment-server",
+             "msexchange management": "msexchange-management",
+             "microsoft-iis-configuration/operational": "iis-configuration",
+             "microsoft-windows-security-mitigations/kernelmode": "security-mitigations",
+             "microsoft-windows-security-mitigations/usermode": "security-mitigations",
+             "microsoft-windows-shell-core/operational": "shell-core",
+             "microsoft-windows-driverframeworks-usermode/operational": "driver-framework",
+             "openssh/operational": "openssh",
+             "microsoft-windows-appxpackaging/operational": "appxpackaging-om",
+             "microsoft-windows-appmodel-runtime/admin": "appmodel-runtime",
+             "microsoft-windows-capi2/operational": "capi2",
+             "microsoft-servicebus-client": "microsoft-servicebus-client",
+             "microsoft-windows-diagnosis-scripted/operational": "diagnosis-scripted",
+             "microsoft-windows-ldap-client/debug": "ldap",
+             "microsoft-windows-lsa/operational": "lsa-server",
+             "microsoft-windows-certificateservicesclient-lifecycle-system/operational":
+                 "certificateservicesclient-lifecycle-system",
+             "microsoft-windows-smbserver/connectivity": "smbserver-connectivity"}
 
 
 def _has(ev, *names):
@@ -540,12 +604,17 @@ def profiles(row) -> set:
             eid = int(str(eid).strip())
         except ValueError:
             eid = None
+        # Sysmon for Linux shares the event IDs, on channel "Linux-Sysmon/Operational":
+        # profiled as Windows, no Linux Sigma rule ever ran on it (2026-10-15).
+        lin = "linux-sysmon" in chan or "linux-sysmon" in prov
+        osname = "linux" if lin else "windows"
         svc = _CHANNELS.get(chan)
-        out.add(("windows", None, svc))
+        if not lin:
+            out.add(("windows", None, svc))
         if "sysmon" in chan or "sysmon" in prov:
             cat = _SYSMON.get(eid)
             if cat:
-                out.add(("windows", cat, "sysmon"))
+                out.add((osname, cat, "sysmon"))
                 if cat in _REGISTRY:
                     out.add(("windows", "registry_event", "sysmon"))
                 if eid == 12:                          # Sysmon 12 = a key or value added OR deleted
@@ -554,6 +623,9 @@ def profiles(row) -> set:
                     out.add((None, "dns", None))
         if eid == 4688:
             out.add(("windows", "process_creation", "security"))
+        if eid == 4657 and chan == "security":                 # registry value modified (object auditing)
+            out.add(("windows", "registry_set", "security"))
+            out.add(("windows", "registry_event", "security"))
         if eid in (4104, 4103) and "powershell" in chan:
             out.add(("windows", "ps_script" if eid == 4104 else "ps_module", "powershell"))
         if eid in (400, 403, 600, 800) and chan == "windows powershell":
@@ -566,6 +638,12 @@ def profiles(row) -> set:
     if cmd not in (None, "") and proc not in (None, ""):
         win = "\\" in str(proc) or str(proc).lower().endswith(".exe") or ".exe" in str(cmd).lower()
         out.add(("windows" if win else "linux", "process_creation", None))
+    # osquery process events: macOS EndpointSecurity (es_process_events) or the Linux
+    # audit / eBPF tables. Profiles are cached per row SHAPE, so this must not turn on a
+    # value: exec, fork and exit rows share one shape (an exit row only repeats the path).
+    oq = str(ev.get("name") or "")
+    if oq in ("es_process_events", "process_events", "bpf_process_events") and _has(ev, "columns.path"):
+        out.add(("macos" if oq.startswith("es_") else "linux", "process_creation", None))
     if _has(ev, "eventType") and _has(ev, "actor.alternateId", "actor.id", "displayMessage"):
         out.add(("okta", None, "okta"))
     if _has(ev, "userPrincipalName") and _has(ev, "appDisplayName", "ResultType", "resultType", "status.errorCode",
@@ -578,7 +656,10 @@ def profiles(row) -> set:
         out.add(("azure", None, "activitylogs"))
     if _has(ev, "riskEventType"):
         out.add(("azure", None, "riskdetection"))
-    if _has(ev, "Workload") and _has(ev, "Operation"):
+    # O365 Management Activity: Workload, or (a field-trimmed export) RecordType /
+    # the organisation next to Operation and UserId.
+    if _has(ev, "Operation") and (_has(ev, "Workload") or (_has(ev, "UserId") and _has(
+            ev, "RecordType", "OrganizationId", "OrganizationName"))):
         out.add(("m365", None, "threat_management"))
         out.add(("m365", None, "audit"))
     if _has(ev, "protoPayload.methodName", "protoPayload.serviceName"):
@@ -589,8 +670,16 @@ def profiles(row) -> set:
     if _has(ev, "eventSource") and _has(ev, "eventName") and _has(ev, "awsRegion", "userIdentity.type",
                                                                    "recipientAccountId"):
         out.add(("aws", None, "cloudtrail"))
+    if _has(ev, "api.operation") and str(ev.get("metadata.product.name") or "").lower() == "cloudtrail":
+        out.add(("aws", None, "cloudtrail"))                # the same log as OCSF (AWS Security Lake)
     if _has(ev, "action") and _has(ev, "actor", "actor_id") and _has(ev, "org", "repo", "business", "@timestamp"):
         out.add(("github", None, "audit"))
+    if _has(ev, "action") and _has(ev, "actionlabel") and _has(ev, "isotimestamp", "timestamp"):
+        out.add(("cisco", None, "duo"))                     # Duo Admin API administrator log
+    if _has(ev, "EventType") and _has(ev, "InitiatorIP") and _has(ev, "DeviceUUID", "ConnectionID"):
+        out.add(("cisco", None, "secure_firewall"))         # FTD / FMC eStreamer record
+    if _has(ev, "verb") and _has(ev, "objectRef.resource") and _has(ev, "auditID"):
+        out.add(("kubernetes", None, "audit"))              # API server audit event (audit.k8s.io)
     if _has(ev, "type") and re.match(r"audit\(", str(ev.get("msg") or "")):
         out.add(("linux", None, "auditd"))
     if _has(ev, "id.orig_h"):
@@ -616,7 +705,10 @@ def profiles(row) -> set:
     host_path = any(re.match(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?/", u) for u in urls)
     if ((full_url or _has(ev, "cs-host", "c-uri")) and _has(ev, "c-useragent", "cs-host", "cs-method", "useragent",
                                                             "user_agent", "method", "http.request.method")) \
-            or (host_path and _has(ev, "dst_ip", "dstip", "destination.ip", "dst")):
+            or (host_path and _has(ev, "dst_ip", "dstip", "destination.ip", "dst")) \
+            or (_has(ev, "url", "c-uri") and _has(ev, "urlcategory", "url_category", "urlclass", "urlsupercategory")):
+        # (A URL with its category: only a secure web gateway / URL filter writes one --
+        # Zscaler NSS logs "host" without a path and the server as "serverip".)
         out.add((None, "proxy", None))
     # HTTP seen on the wire (Suricata http / fileinfo, Zeek http.log): both ends of
     # the request are in it, so the proxy AND web server rules are about it.
@@ -638,6 +730,12 @@ def profiles(row) -> set:
         # A free-text line: the keyword rules of the syslog services it may come from.
         for svc in (None, "auth", "sshd", "syslog", "sudo", "cron", "vsftpd", "guacamole", "clamav"):
             out.add(("linux", None, svc))
+        # ESXi syslog too. Not decided by the line's content: profiles are cached per
+        # row SHAPE and every free-text row has one shape. The ESXi rules match
+        # ESXi-only text (esxcli ..., vob.user.ssh.enabled), so other lines stay quiet.
+        out.add(("esxi", None, None))
+    if _has(ev, "_text") and _has(ev, "message_id") and re.search(r"%(ASA|FTD)-\d-", str(ev.get("_text"))):
+        out.add(("cisco", None, "asa"))                     # ASA / FTD syslog (fields from sigma_event)
     return out
 
 
@@ -657,7 +755,10 @@ class _Lazy(dict):
 
 def _applies(rule, profs) -> bool:
     for p, c, s in profs:
-        if (rule["product"] in (None, p) and rule["category"] in (None, c) and rule["service"] in (None, s)
+        # "web" is Splunk's Web data model (rules from sigma-escu): any HTTP record, a
+        # proxy's or firewall's URL log as much as a web server's access log.
+        cat_ok = rule["category"] in (None, c) or (rule["category"] == "web" and c in ("proxy", "webserver"))
+        if (rule["product"] in (None, p) and cat_ok and rule["service"] in (None, s)
                 and (rule["product"] or rule["category"] or rule["service"])):
             return True
     return False

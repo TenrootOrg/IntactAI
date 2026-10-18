@@ -1,0 +1,43 @@
+title: Cisco Secure Firewall - Communication Over Suspicious Ports
+id: d85c05c8-42c0-4e4a-87e7-4e1bb3e844e3
+status: experimental
+description: The following analytic detects potential reverse shell activity by identifying connections involving ports commonly
+  associated with remote access tools, shell listeners, or tunneling utilities. It leverages Cisco Secure Firewall Threat
+  Defense logs and monitors destination ports against a list of non-standard, high-risk port values often used in post-exploitation
+  scenarios. Adversaries frequently configure tools like netcat, Meterpreter, or other backdoors to listen or connect over
+  uncommon ports such as 4444, 2222, or 51820 to bypass standard monitoring and firewall rules. If confirmed malicious, this
+  activity may represent command and control (C2) tunneling, lateral movement, or unauthorized remote access.
+references:
+- https://research.splunk.com/d85c05c8-42c0-4e4a-87e7-4e1bb3e844e3/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1021
+- attack.t1055
+- attack.t1059.001
+- attack.t1105
+- attack.t1219
+- attack.t1571
+logsource:
+  product: cisco
+  service: secure_firewall
+detection:
+  sel1:
+    EventType: ConnectionEvent
+  sel2:
+    ResponderPort:
+    - '888'
+    - '999'
+    - '2200'
+    - '2222'
+    - '4000'
+    - '4444'
+    - '6789'
+    - '8531'
+    - '50501'
+    - '51820'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_secure_firewall_threat_defense/connection_event/connection_events.log

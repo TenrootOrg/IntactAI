@@ -1,0 +1,31 @@
+title: MacOS LoginHook Persistence
+id: a04832e7-9d1d-49b1-a684-e31bcd775c77
+status: experimental
+description: 'Identifies attempts to configure a macOS LoginHook via the defaults utility. LoginHooks enable automatic execution
+  of a script or program upon user login and have historically been abused for persistence.
+
+  Creation or modification of this setting may indicate an attempt to establish startup execution outside standard LaunchAgent
+  mechanisms.'
+references:
+- https://research.splunk.com/a04832e7-9d1d-49b1-a684-e31bcd775c77/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1037.002
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    CommandLine: '*defaults *'
+  sel2:
+    CommandLine: '*write*'
+  sel3:
+    CommandLine: '*loginwindow*'
+  sel4:
+    CommandLine: '*loginhook*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1037.002/osquery_logon_scripts/osquery.log

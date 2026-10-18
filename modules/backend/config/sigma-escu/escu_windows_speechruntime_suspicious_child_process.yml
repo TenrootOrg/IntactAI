@@ -1,0 +1,34 @@
+title: Windows SpeechRuntime Suspicious Child Process
+id: f7bb956f-b956-42a5-8c2c-ff9cdbbf7526
+status: experimental
+description: SpeechRuntime is vulnerable to an attack that allows a user to run code on another user's session remotely and
+  stealthily by exploiting a Windows COM class. When this class is invoked, it launches SpeechRuntime.exe in the context of
+  the currently logged-on user. Because this COM class is susceptible to COM Hijacking, the attacker can alter the registry
+  remotely to point to a malicious DLL. By dropping that DLL on the target system (e.g., via SMB) and triggering the COM object,
+  the attacker causes the malicious DLL to load into SpeechRuntime.exe and executing under the user's context. This detection
+  identifies suspicious child processes of SpeechRuntime.exe that could indicate abuse of this vulnerability.
+references:
+- https://research.splunk.com/f7bb956f-b956-42a5-8c2c-ff9cdbbf7526/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1021.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*SpeechRuntime.exe*'
+  sel2:
+    CommandLine:
+    - '*cmd.exe*'
+    - '*powershell.exe*'
+    - '*rundll32.exe*'
+    - '*bitsadmin.exe*'
+    - '*wmic.exe*'
+    - '*cscript.exe*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.003/lateral_movement_speechruntime/windows-sysmon.log

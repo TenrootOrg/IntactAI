@@ -1,0 +1,39 @@
+title: Execution of File with Multiple Extensions
+id: b06a555e-dce0-417d-a2eb-28a5d8d66ef7
+status: experimental
+description: The following analytic detects the execution of files with multiple extensions, such as ".doc.exe" or ".pdf.exe".
+  This behavior is identified using Endpoint Detection and Response (EDR) telemetry, focusing on process creation events where
+  the file name contains double extensions. This activity is significant because attackers often use double extensions to
+  disguise malicious executables as benign documents, increasing the likelihood of user execution. If confirmed malicious,
+  this technique can lead to unauthorized code execution, potentially compromising the endpoint and allowing further malicious
+  activities.
+references:
+- https://research.splunk.com/b06a555e-dce0-417d-a2eb-28a5d8d66ef7/
+author: Splunk Security Content (Apache-2.0), Rico Valdez, Teoderick Contreras, Splunk
+tags:
+- attack.t1036.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine:
+    - '*.doc.exe'
+    - '*.xls.exe'
+    - '*.ppt.exe'
+    - '*.htm.exe'
+    - '*.html.exe'
+    - '*.txt.exe'
+    - '*.pdf.exe'
+    - '*.docx.exe'
+    - '*.xlsx.exe'
+    - '*.pptx.exe'
+    - '*.one.exe'
+    - '*.bat.exe'
+    - '*.rtf.exe'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036.003/atomic_red_team/windows-sysmon.log

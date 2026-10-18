@@ -1,0 +1,38 @@
+title: Windows Unusual File Creation in Confluence Directory
+id: aa9d80d9-ed47-44da-aceb-2909ca4dc19e
+status: experimental
+description: 'The following analytic detects executable file formats being created within the Confluence main directory.
+
+  This can be indicative of exploitation of the Confluence web services to stage malware.
+
+  This won''t catch adversaries who modify the output location outside the Confluence directory when exploiting.'
+references:
+- https://research.splunk.com/aa9d80d9-ed47-44da-aceb-2909ca4dc19e/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1190
+- attack.t1608.001
+- attack.t1608.002
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename: '*\\Atlassian\\Confluence\\*'
+  sel2:
+    TargetFilename:
+    - '*.bat'
+    - '*.cmd'
+    - '*.dat'
+    - '*.dll'
+    - '*.exe'
+    - '*.msc'
+    - '*.ps1'
+    - '*.vbe'
+    - '*.vbs'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/snapattack/snapattack.log

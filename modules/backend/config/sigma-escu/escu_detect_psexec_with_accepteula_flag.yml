@@ -1,0 +1,32 @@
+title: Detect PsExec With accepteula Flag
+id: 27c3a83d-cada-47c6-9042-67baf19d2574
+status: experimental
+description: The following analytic identifies the execution of `PsExec.exe` with the `accepteula` flag in the command line.
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process execution logs and command-line
+  arguments. This activity is significant because PsExec is commonly used by threat actors to execute code on remote systems,
+  and the `accepteula` flag indicates first-time usage, which could signify initial compromise. If confirmed malicious, this
+  activity could allow attackers to gain remote code execution capabilities, potentially leading to further system compromise
+  and lateral movement within the network.
+references:
+- https://research.splunk.com/27c3a83d-cada-47c6-9042-67baf19d2574/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Splunk
+tags:
+- attack.t1021.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\psexec.exe'
+    - '*\\psexec64.exe'
+  sel2:
+    OriginalFileName: psexec.c
+  sel3:
+    CommandLine: '*accepteula*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.002/atomic_red_team/windows-sysmon.log

@@ -1,0 +1,39 @@
+title: Windows Masquerading Explorer As Child Process
+id: 61490da9-52a1-4855-a0c5-28233c88c481
+status: experimental
+description: 'The following analytic identifies instances where explorer.exe is spawned by unusual parent processes such as
+  cmd.exe, powershell.exe, or regsvr32.exe.
+
+  This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process and parent process
+  relationships.
+
+  This activity is significant because explorer.exe is typically initiated by userinit.exe, and deviations from this norm
+  can indicate code injection or process masquerading attempts by malware like Qakbot.
+
+  If confirmed malicious, this behavior could allow attackers to execute arbitrary code, evade detection, and maintain persistence
+  within the environment.'
+references:
+- https://research.splunk.com/61490da9-52a1-4855-a0c5-28233c88c481/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1574.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage:
+    - '*\\cmd.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+    - '*\\regsvr32.exe'
+  sel2:
+    Image: '*\\explorer.exe'
+  sel3:
+    CommandLine: '*\\explorer.exe'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/qakbot/sysmon.log

@@ -1,0 +1,34 @@
+title: Windows Driver Load Non-Standard Path
+id: 9216ef3d-066a-4958-8f27-c84589465e62
+status: experimental
+description: The following analytic detects the loading of new Kernel Mode Drivers from non-standard paths using Windows EventCode
+  7045. It identifies drivers not located in typical directories like Windows, Program Files, or SystemRoot. This activity
+  is significant because adversaries may use these non-standard paths to load malicious or vulnerable drivers, potentially
+  bypassing security controls. If confirmed malicious, this could allow attackers to execute code at the kernel level, escalate
+  privileges, or maintain persistence within the environment, posing a severe threat to system integrity and security.
+references:
+- https://research.splunk.com/9216ef3d-066a-4958-8f27-c84589465e62/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1014
+- attack.t1068
+logsource:
+  product: windows
+  service: system
+detection:
+  sel1:
+    EventID: '7045'
+  sel2:
+    ServiceType: kernel mode driver
+  sel3:
+    ImagePath|re: (?i)^(\w:\\Program Files\\|\w:\\Program Files \(x86\)\\|\w:\\Windows\\System32\\|\w:\\Windows\\SysWOW64\\|\w:\\ProgramData\\Microsoft\\Windows
+      Defender\\Definition Updates\\|\w:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\|%SystemRoot%|\\SystemRoot\\|SystemRoot\\)
+  condition: ((sel1 and sel2) and not sel3)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/drivers/xml7045_windows-system.log
+x-intact-burst: false
+x-intact: 'Fired 5 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

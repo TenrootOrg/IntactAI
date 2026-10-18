@@ -1,0 +1,30 @@
+title: Windows Theme File Creation in Unusual Location
+id: a11f5f36-2c32-4323-8cb0-0fec84b3188d
+status: experimental
+description: Detects theme files being created in unusual locations. These files, used to customize desktop appearances, have
+  been used for remote code execution and NTLM coercion attacks.
+references:
+- https://research.splunk.com/a11f5f36-2c32-4323-8cb0-0fec84b3188d/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1187
+- attack.t1557.001
+- attack.t1021.002
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*\\Desktop\\*'
+    - '*\\Documents\\*'
+    - '*\\Downloads\\*'
+    - '*\\Temp\\*'
+  sel2:
+    TargetFilename: '*.theme'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1187/snapattack/snapattack.log

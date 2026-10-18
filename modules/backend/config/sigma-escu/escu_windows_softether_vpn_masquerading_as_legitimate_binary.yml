@@ -1,0 +1,33 @@
+title: Windows SoftEther VPN Masquerading as Legitimate Binary
+id: 69fe4cb7-807e-4012-a17f-cd288215b038
+status: experimental
+description: 'Flax Typhoon actors have been identified downloading and using SoftEther VPN software to obfuscate their activity.
+
+  This searches for the SoftEther VPN binary running with the obfuscated binary names they use for the process.'
+references:
+- https://research.splunk.com/69fe4cb7-807e-4012-a17f-cd288215b038/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1036
+- attack.t1572
+logsource:
+  product: windows
+  service: sysmon
+  category: process_creation
+detection:
+  sel1:
+    EventID: '1'
+  sel2:
+    CommandLine:
+    - '*conhost.exe*'
+    - '*dllhost.exe*'
+  sel3:
+    Company: '*SoftEther*'
+  sel4:
+    OriginalFileName: vpnbridge*.exe
+  condition: (sel1 and sel2 and (sel3 or sel4))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036/snapattack/snapattack.log

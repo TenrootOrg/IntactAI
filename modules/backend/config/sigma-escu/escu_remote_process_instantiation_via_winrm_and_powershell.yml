@@ -1,0 +1,40 @@
+title: Remote Process Instantiation via WinRM and PowerShell
+id: ba24cda8-4716-11ec-8009-3e22fbd008af
+status: experimental
+description: The following analytic detects the execution of `powershell.exe` with arguments used to start a process on a
+  remote endpoint via the WinRM protocol, specifically targeting the `Invoke-Command` cmdlet. It leverages data from Endpoint
+  Detection and Response (EDR) agents, focusing on command-line executions and process telemetry. This activity is significant
+  as it may indicate lateral movement or remote code execution attempts by adversaries. If confirmed malicious, this could
+  allow attackers to execute arbitrary code on remote systems, potentially leading to further compromise and lateral spread
+  within the network.
+references:
+- https://research.splunk.com/ba24cda8-4716-11ec-8009-3e22fbd008af/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1021.006
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\pwsh.exe'
+  sel2:
+    Image: '*\\powershell.exe'
+  sel3:
+    OriginalFileName: pwsh.dll
+  sel4:
+    OriginalFileName: PowerShell.EXE
+  sel5:
+    OriginalFileName: powershell_ise.EXE
+  sel6:
+    Image: '*\\powershell_ise.exe'
+  sel7:
+    CommandLine: '*Invoke-Command*'
+  sel8:
+    CommandLine: '*-ComputerName*'
+  condition: ((((((sel1 or sel2) or sel3) or sel4) or sel5) or sel6) and (sel7 and sel8))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.006/lateral_movement_psh/windows-sysmon.log

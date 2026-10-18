@@ -1,0 +1,29 @@
+title: Remote Process Instantiation via DCOM and PowerShell Script Block
+id: fa1c3040-4680-11ec-a618-3e22fbd008af
+status: experimental
+description: The following analytic detects the execution of PowerShell commands that initiate a process on a remote endpoint
+  via the DCOM protocol. It leverages PowerShell Script Block Logging (EventCode=4104) to identify the use of ShellExecute
+  and ExecuteShellCommand. This activity is significant as it may indicate lateral movement or remote code execution attempts
+  by adversaries. If confirmed malicious, this behavior could allow attackers to execute arbitrary code on remote systems,
+  potentially leading to further compromise and persistence within the network.
+references:
+- https://research.splunk.com/fa1c3040-4680-11ec-a618-3e22fbd008af/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1021.003
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Document.Application.ShellExecute*'
+  sel3:
+    ScriptBlockText: '*Document.ActiveView.ExecuteShellCommand*'
+  condition: (sel1 and (sel2 or sel3))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.006/lateral_movement_psh/windows-powershell-xml.log

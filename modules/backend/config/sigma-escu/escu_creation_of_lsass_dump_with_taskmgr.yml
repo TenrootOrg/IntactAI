@@ -1,0 +1,31 @@
+title: Creation of lsass Dump with Taskmgr
+id: b2fbe95a-9c62-4c12-8a29-24b97e84c0cd
+status: experimental
+description: 'The following analytic detects the creation of an lsass.exe process dump using Windows Task Manager.
+
+  It leverages Sysmon EventID 11 to identify file creation events where the target filename matches *lsass*.dmp.
+
+  This activity is significant because creating an lsass dump can be a precursor to credential theft, as the dump file contains
+  sensitive information such as user passwords.'
+references:
+- https://research.splunk.com/b2fbe95a-9c62-4c12-8a29-24b97e84c0cd/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1003.001
+logsource:
+  product: windows
+  service: sysmon
+  category: file_event
+detection:
+  sel1:
+    EventID: '11'
+  sel2:
+    Image: '*\\taskmgr.exe'
+  sel3:
+    TargetFilename: '*lsass*.dmp'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1003.001/atomic_red_team/windows-sysmon.log

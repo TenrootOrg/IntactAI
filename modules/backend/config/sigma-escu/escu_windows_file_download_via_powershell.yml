@@ -1,0 +1,60 @@
+title: Windows File Download Via PowerShell
+id: 58c4e56c-b5b8-46a3-b5fb-6537dca3c6de
+status: experimental
+description: 'The following analytic detects the use of PowerShell''s download methods such as
+
+  "DownloadString" and "DownloadData" from the WebClient class or Invoke-WebRequest
+
+  and it''s aliases "IWR" or "Curl".
+
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on
+
+  process execution logs that include command-line details.
+
+  This activity can be significant such methods and functions are commonly used in malicious
+
+  PowerShell scripts to fetch and execute remote code.
+
+  If confirmed malicious, this behavior could allow an attacker to download and run
+
+  arbitrary code, potentially leading to unauthorized access, data exfiltration,
+
+  or further compromise of the affected system.'
+references:
+- https://research.splunk.com/58c4e56c-b5b8-46a3-b5fb-6537dca3c6de/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1059.001
+- attack.t1105
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\pwsh.exe'
+  sel2:
+    Image: '*\\powershell.exe'
+  sel3:
+    OriginalFileName: pwsh.dll
+  sel4:
+    OriginalFileName: PowerShell.EXE
+  sel5:
+    OriginalFileName: powershell_ise.EXE
+  sel6:
+    Image: '*\\powershell_ise.exe'
+  sel7:
+    CommandLine:
+    - '*iwr *'
+    - '*Invoke-WebRequest*'
+    - '*wget *'
+    - curl
+    - '*.DownloadData*'
+    - '*.DownloadFile*'
+    - '*.DownloadString*'
+  condition: ((((((sel1 or sel2) or sel3) or sel4) or sel5) or sel6) and sel7)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/atomic_red_team/windows-sysmon.log
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_network_visibility_module/cisco_nvm_flowdata/nvm_flowdata.log

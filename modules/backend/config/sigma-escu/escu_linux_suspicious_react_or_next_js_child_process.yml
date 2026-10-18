@@ -1,0 +1,103 @@
+title: Linux Suspicious React or Next.js Child Process
+id: cda04e9c-1950-43ab-87d6-e333a3d7f107
+status: experimental
+description: 'This analytic detects Linux processes such as sh, bash, and common Linux LOLBINs being spawned by React or Next.js
+  application servers.
+
+  In the context of CVE-2025-55182 / React2Shell / CVE-2025-66478 for Next.js, successful exploitation can lead to arbitrary
+  JavaScript execution on the server, which in turn is commonly used to invoke Node''s child_process APIs (for example child_process.execSync)
+  to run OS-level commands.
+
+  Public proof-of-concept payloads and observed in-the-wild exploit traffic show patterns where the vulnerable React Server
+  Components handler triggers process.mainModule.require(''child_process'').execSync() to execute binaries such as ping, curl,
+  or arbitrary shells on the underlying host.
+
+  This detection focuses on suspicious child processes where a Next/React server process spawns an uncommon process.
+
+  Such activity might be a strong indicator of exploitation of the aforementioned vulnerability.'
+references:
+- https://research.splunk.com/cda04e9c-1950-43ab-87d6-e333a3d7f107/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1190
+- attack.t1059.004
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    ParentImage: '*/node'
+  sel2:
+    ParentCommandLine:
+    - '*--experimental-https*'
+    - '*--experimental-next-config-strip-types*'
+    - '*/node_modules/next*'
+    - '*next dev*'
+    - '*next start*'
+    - '*node_modules/.bin*'
+    - '*react-scripts start*'
+    - '*start-server.js*'
+  sel3:
+    Image:
+    - '*/awk'
+    - '*/gawk'
+    - '*/ifconfig'
+    - '*/lua'
+    - '*/nc'
+    - '*/ncat'
+    - '*/netcat'
+    - '*/openssl'
+    - '*/perl'
+    - '*/php'
+    - '*/python'
+    - '*/python2'
+    - '*/python3'
+    - '*/ruby'
+    - '*/socat'
+    - '*/telnet'
+  sel4:
+    Image:
+    - '*/curl'
+    - '*/wget'
+  sel5:
+    CommandLine: '*|*'
+  sel6:
+    Image:
+    - '*/bash'
+    - '*/dash'
+    - '*/sh'
+  sel7:
+    CommandLine: '*-c*'
+  sel8:
+    Image:
+    - '*/bash'
+    - '*/dash'
+    - '*/ksh'
+    - '*/sh'
+    - '*/zsh'
+  sel9:
+    CommandLine:
+    - '*/dev/tcp/*'
+    - '*/dev/udp/*'
+    - '*0>&1*'
+    - '*curl*'
+    - '*exec *>&*'
+    - '*fsockopen*'
+    - '*ifconfig*'
+    - '*mkfifo*'
+    - '*nc *'
+    - '*ncat*'
+    - '*netcat*'
+    - '*proc_open*'
+    - '*s_client*'
+    - '*socat*'
+    - '*socket*'
+    - '*subprocess*'
+    - '*TCPSocket*'
+    - '*wget*'
+  condition: (sel1 and sel2 and (((sel3 or (sel4 and sel5)) or (sel6 and not (sel7))) or (sel8 and sel9)))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/emerging_threats/react2shell/react2shell_linux.log

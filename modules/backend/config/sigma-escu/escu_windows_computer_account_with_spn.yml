@@ -1,0 +1,31 @@
+title: Windows Computer Account With SPN
+id: 9a3e57e7-33f4-470e-b25d-165baa6e8357
+status: experimental
+description: The following analytic detects the addition of Service Principal Names (SPNs) HOST and RestrictedKrbHost to a
+  computer account, indicative of KrbRelayUp behavior. This detection leverages Windows Security Event Logs, specifically
+  EventCode 4741, to identify changes in SPNs. This activity is significant as it is commonly associated with Kerberos-based
+  attacks, which can be used to escalate privileges or perform lateral movement within a network. If confirmed malicious,
+  this behavior could allow an attacker to impersonate services, potentially leading to unauthorized access to sensitive resources.
+references:
+- https://research.splunk.com/9a3e57e7-33f4-470e-b25d-165baa6e8357/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1558
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4741'
+  sel2:
+    NewUacValue: '0x80'
+  sel3:
+    ServicePrincipalNames:
+    - '*HOST/*'
+    - '*RestrictedKrbHost/*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1558/windows_computer_account_with_spn/windows-xml.log

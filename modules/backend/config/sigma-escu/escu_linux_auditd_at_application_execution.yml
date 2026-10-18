@@ -1,0 +1,36 @@
+title: Linux Auditd At Application Execution
+id: 9f306e0a-1c36-469e-8892-968ca12470dd
+status: experimental
+description: The following analytic detects the execution of the "At" application in Linux, which can be used by attackers
+  to create persistence entries on a compromised host. This detection leverages data from Endpoint Detection and Response
+  (EDR) agents, focusing on process names and parent process names associated with "at" or "atd". This activity is significant
+  because the "At" application can be exploited to maintain unauthorized access or deliver additional malicious payloads.
+  If confirmed malicious, this behavior could lead to data theft, ransomware attacks, or other severe consequences. Immediate
+  investigation is required to determine the legitimacy of the execution and mitigate potential risks.
+references:
+- https://research.splunk.com/9f306e0a-1c36-469e-8892-968ca12470dd/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1053.002
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    type: SYSCALL
+  sel2:
+    comm:
+    - at
+    - atd
+  sel3:
+    exe:
+    - /usr/bin/at
+    - /usr/bin/atd
+  sel4:
+    uid: daemon
+  condition: (sel1 and (sel2 or sel3) and not (sel4))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1053.002/linux_new_auditd_at/linux_auditd_new_at.log

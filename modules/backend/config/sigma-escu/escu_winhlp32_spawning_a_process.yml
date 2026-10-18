@@ -1,0 +1,31 @@
+title: Winhlp32 Spawning a Process
+id: d17dae9e-2618-11ec-b9f5-acde48001122
+status: experimental
+description: The following analytic detects winhlp32.exe spawning a child process that loads a file from appdata, programdata,
+  or temp directories. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process
+  creation events. This activity is significant because winhlp32.exe has known vulnerabilities and can be exploited to execute
+  malicious code. If confirmed malicious, an attacker could use this technique to execute arbitrary scripts, escalate privileges,
+  or maintain persistence within the environment. Analysts should review parallel processes, module loads, and file modifications
+  for further suspicious behavior.
+references:
+- https://research.splunk.com/d17dae9e-2618-11ec-b9f5-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1055
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\winhlp32.exe'
+  sel2:
+    CommandLine:
+    - '*\\appdata\\*'
+    - '*\\programdata\\*'
+    - '*\\temp\\*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/remcos/remcos/windows-sysmon.log

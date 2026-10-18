@@ -1,0 +1,39 @@
+title: Jscript Execution Using Cscript App
+id: 002f1e24-146e-11ec-a470-acde48001122
+status: experimental
+description: 'The following analytic detects the execution of JScript using the cscript.exe process.
+
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process and command-line telemetry.
+
+  This behavior is significant because JScript files are typically executed by wscript.exe, making cscript.exe execution unusual
+  and potentially indicative of malicious activity, such as the FIN7 group''s tactics.
+
+  If confirmed malicious, this activity could allow attackers to execute arbitrary scripts, leading to code execution, data
+  exfiltration, or further system compromise.'
+references:
+- https://research.splunk.com/002f1e24-146e-11ec-a470-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1059.007
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\cscript.exe'
+  sel2:
+    ParentCommandLine: '*//e:jscript*'
+  sel3:
+    Image: '*\\cscript.exe'
+  sel4:
+    CommandLine: '*//e:jscript*'
+  sel5:
+    CommandLine: '*/Job:AgentHIScript*'
+  sel6:
+    ParentCommandLine: '*/Job:AgentHIScript*'
+  condition: (((sel1 and sel2) or (sel3 and sel4)) and not (sel5) and not (sel6))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/fin7/fin7_macro_js_1/sysmon.log

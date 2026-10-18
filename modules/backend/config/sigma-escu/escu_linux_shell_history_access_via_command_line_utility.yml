@@ -1,0 +1,45 @@
+title: Linux Shell History Access Via Command Line Utility
+id: 0e4c2544-b27a-4a2d-b9be-cac8efe515fb
+status: experimental
+description: 'The following analytic detects attempts to read shell history files (bash, zsh, fish, etc.).
+
+  A history file is a log file that records all the commands executed in a shell on a Linux or Unix-based operating system.
+
+  A malicious actor who gains access to a user''s shell history file can potentially obtain sensitive information and use
+  it to compromise the user''s system and data.'
+references:
+- https://research.splunk.com/0e4c2544-b27a-4a2d-b9be-cac8efe515fb/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1552.003
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image:
+    - '*/cat'
+    - '*/fmt'
+    - '*/head'
+    - '*/less'
+    - '*/more'
+    - '*/nano'
+    - '*/sort'
+    - '*/tail'
+    - '*/uniq'
+    - '*/vi'
+    - '*/vim'
+  sel2:
+    CommandLine:
+    - '*.bash_history*'
+    - '*.history*'
+    - '*.sh_history*'
+    - '*.zhistory*'
+    - '*.zsh_history*'
+    - '*fish_history*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1552.003/linux_bash_history_access/snapattack_linux.log

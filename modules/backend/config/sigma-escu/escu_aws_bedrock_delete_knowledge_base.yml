@@ -1,0 +1,28 @@
+title: AWS Bedrock Delete Knowledge Base
+id: 8b4e3d62-f743-11ee-9f6e-acde48001123
+status: experimental
+description: The following analytic identifies attempts to delete AWS Bedrock Knowledge Bases, which are resources that store
+  and manage domain-specific information for AI models. It monitors AWS CloudTrail logs for DeleteKnowledgeBase API calls.
+  This activity could indicate an adversary attempting to remove knowledge bases after compromising credentials, potentially
+  to disrupt business operations or remove traces of data access. Deleting knowledge bases could impact model performance,
+  remove critical business context, or be part of a larger attack to degrade AI capabilities. If confirmed malicious, this
+  could represent a deliberate attempt to cause service disruption or data loss.
+references:
+- https://research.splunk.com/8b4e3d62-f743-11ee-9f6e-acde48001123/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Splunk
+tags:
+- attack.t1485
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  sel1:
+    eventSource: bedrock.amazonaws.com
+  sel2:
+    eventName: DeleteKnowledgeBase
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1485/aws_delete_knowledge_base/cloudtrail.json

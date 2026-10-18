@@ -1,0 +1,25 @@
+title: ESXi Loghost Config Tampering
+id: 64bc2fa3-c493-44b4-8e94-3e5dbf71377e
+status: experimental
+description: This detection identifies changes to the syslog loghost configuration on an ESXi host, which may indicate an
+  attempt to disrupt log forwarding and evade detection.
+references:
+- https://research.splunk.com/64bc2fa3-c493-44b4-8e94-3e5dbf71377e/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1685
+logsource:
+  product: esxi
+detection:
+  sel1:
+    text: '*Set called with key*'
+  sel2:
+    text:
+    - '*Syslog.global.logHost*'
+    - '*Syslog.global.logdir*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.003/esxi_loghost_config_tampering/esxi_loghost_config_tampering.log

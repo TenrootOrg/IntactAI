@@ -1,0 +1,33 @@
+title: Windows Level RMM Watchdog Task Created
+id: c4abe40f-91fb-42c0-bcc1-74ada766d0d8
+status: experimental
+description: 'Detects the watchdog task created when Level is installed.
+
+  Level is a commercial remote management tool from Level.io.
+
+  Remote management tools, when used for legitimate purposes, can help IT professionals and system administrators remotely
+  access and manage computer systems.
+
+  However, threat actors may exploit these tools for malicious purposes.
+
+  It can be used to maintain persistence and execution on a host by a malicious actor.'
+references:
+- https://research.splunk.com/c4abe40f-91fb-42c0-bcc1-74ada766d0d8/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1053
+- attack.t1219
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4698'
+  sel2:
+    TaskName: \\Level\\Level Watchdog
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1053/snapattack/snapattack.log

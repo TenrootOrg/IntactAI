@@ -1,0 +1,33 @@
+title: Exchange PowerShell Module Usage
+id: 2d10095e-05ae-11ec-8fdf-acde48001122
+status: experimental
+description: The following analytic detects the usage of specific Exchange PowerShell modules, such as New-MailboxExportRequest,
+  New-ManagementRoleAssignment, New-MailboxSearch, and Get-Recipient. It leverages PowerShell Script Block Logging (EventCode
+  4104) to identify these commands. This activity is significant because these modules can be exploited by adversaries who
+  have gained access via ProxyShell or ProxyNotShell vulnerabilities. If confirmed malicious, attackers could export mailbox
+  contents, assign management roles, conduct mailbox searches, or view recipient objects, potentially leading to data exfiltration,
+  privilege escalation, or unauthorized access to sensitive information.
+references:
+- https://research.splunk.com/2d10095e-05ae-11ec-8fdf-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1059.001
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText:
+    - '*New-MailboxExportRequest*'
+    - '*New-ManagementRoleAssignment*'
+    - '*New-MailboxSearch*'
+    - '*Get-Recipient*'
+    - Search-Mailbox
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/exchange/windows-powershell.log

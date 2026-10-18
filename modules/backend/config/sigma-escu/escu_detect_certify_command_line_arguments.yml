@@ -1,0 +1,40 @@
+title: Detect Certify Command Line Arguments
+id: e6d2dc61-a8b9-4b03-906c-da0ca75d71b8
+status: experimental
+description: The following analytic detects the use of Certify or Certipy tools to enumerate Active Directory Certificate
+  Services (AD CS) environments. It leverages Endpoint Detection and Response (EDR) data, focusing on specific command-line
+  arguments associated with these tools. This activity is significant because it indicates potential reconnaissance or exploitation
+  attempts targeting AD CS, which could lead to unauthorized access or privilege escalation. If confirmed malicious, attackers
+  could gain insights into the AD CS infrastructure, potentially compromising sensitive certificates and escalating their
+  privileges within the network.
+references:
+- https://research.splunk.com/e6d2dc61-a8b9-4b03-906c-da0ca75d71b8/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1649
+- attack.t1105
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine:
+    - '* find *'
+    - '* auth *'
+    - '* request *'
+    - '* req *'
+    - '* download *'
+  sel2:
+    CommandLine:
+    - '* /vulnerable*'
+    - '* /enrolleeSuppliesSubject *'
+    - '* /json /outfile*'
+    - '* /ca*'
+    - '* -username *'
+    - '* -u *'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1649/certify_abuse/certify_esc1_abuse_sysmon.log

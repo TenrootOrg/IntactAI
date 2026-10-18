@@ -1,0 +1,50 @@
+title: Detect Certify With PowerShell Script Block Logging
+id: f533ca6c-9440-4686-80cb-7f294c07812a
+status: experimental
+description: The following analytic detects the use of the Certify tool via an in-memory PowerShell function to enumerate
+  Active Directory Certificate Services (AD CS) environments. It leverages PowerShell Script Block Logging (EventCode 4104)
+  to identify specific command patterns associated with Certify's enumeration and exploitation functions. This activity is
+  significant as it indicates potential reconnaissance or exploitation attempts against AD CS, which could lead to unauthorized
+  certificate issuance. If confirmed malicious, attackers could leverage this to escalate privileges, persist in the environment,
+  or access sensitive information by abusing AD CS.
+references:
+- https://research.splunk.com/f533ca6c-9440-4686-80cb-7f294c07812a/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1059.001
+- attack.t1649
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*find *'
+  sel3:
+    ScriptBlockText:
+    - '* /vulnerable*'
+    - '* -vulnerable*'
+    - '* /enrolleeSuppliesSubject *'
+    - '* /json /outfile*'
+  sel4:
+    ScriptBlockText:
+    - '*auth *'
+    - '*req *'
+  sel5:
+    ScriptBlockText:
+    - '* -ca *'
+    - '* -username *'
+    - '* -u *'
+  sel6:
+    ScriptBlockText:
+    - '*request *'
+    - '*download *'
+  sel7:
+    ScriptBlockText: '* /ca:*'
+  condition: (sel1 and (((sel2 and sel3) or (sel4 and sel5)) or (sel6 and sel7)))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1649/certify_abuse/certify_esc1_abuse_powershell.log

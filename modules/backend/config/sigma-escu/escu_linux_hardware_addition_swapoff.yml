@@ -1,0 +1,25 @@
+title: Linux Hardware Addition SwapOff
+id: c1eea697-99ed-44c2-9b70-d8935464c499
+status: experimental
+description: The following analytic detects the execution of the "swapoff" command, which disables the swapping of paging
+  devices on a Linux system. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process execution
+  logs. This activity is significant because disabling swap can be a tactic used by malware, such as Awfulshred, to evade
+  detection and hinder forensic analysis. If confirmed malicious, this action could allow an attacker to manipulate system
+  memory management, potentially leading to data corruption, system instability, or evasion of memory-based detection mechanisms.
+references:
+- https://research.splunk.com/c1eea697-99ed-44c2-9b70-d8935464c499/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1200
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image: '*/swapoff'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/awfulshred/test1/sysmon_linux.log

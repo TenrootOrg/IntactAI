@@ -1,0 +1,37 @@
+title: Creation of Shadow Copy
+id: eb120f5f-b879-4a63-97c1-93352b5df844
+status: experimental
+description: The following analytic detects the creation of shadow copies using Vssadmin or Wmic. It leverages data from Endpoint
+  Detection and Response (EDR) agents, focusing on process execution logs that include command-line details. This activity
+  is significant because creating shadow copies can be a precursor to ransomware attacks or data exfiltration, allowing attackers
+  to bypass file locks and access sensitive data. If confirmed malicious, this behavior could enable attackers to maintain
+  persistence, recover deleted files, or prepare for further malicious activities, posing a significant risk to the integrity
+  and confidentiality of the system.
+references:
+- https://research.splunk.com/eb120f5f-b879-4a63-97c1-93352b5df844/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1003.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\vssadmin.exe'
+  sel2:
+    CommandLine: '*create*'
+  sel3:
+    CommandLine: '*shadow*'
+  sel4:
+    Image: '*\\wmic.exe'
+  sel5:
+    CommandLine: '*shadowcopy*'
+  sel6:
+    CommandLine: '*create*'
+  condition: ((sel1 and sel2 and sel3) or (sel4 and sel5 and sel6))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1003.003/atomic_red_team/windows-sysmon.log
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1003.003/atomic_red_team/crowdstrike_falcon.log

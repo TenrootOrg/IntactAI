@@ -1,0 +1,33 @@
+title: Linux Auditd Possible Access To Sudoers File
+id: 8be88f46-f7e8-4ae6-b15e-cf1b13392834
+status: experimental
+description: 'The following analytic detects potential access or modification of the /etc/sudoers file on a Linux system.
+
+  It leverages data from Linux Auditd, focusing on events of type PATH or CWD.
+
+  This activity could be significant because the sudoers file controls user permissions for executing commands with elevated
+  privileges.
+
+  Correlate this with related EXECVE or PROCTITLE events to identify the process or user responsible for the access or modification.
+
+  If confirmed malicious, an attacker could gain persistence or escalate privileges, compromising the security of the targeted
+  host.'
+references:
+- https://research.splunk.com/8be88f46-f7e8-4ae6-b15e-cf1b13392834/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1548.003
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    type: PATH
+  sel2:
+    full_path|re: /etc/sudoers.*
+  condition: sel1 and sel2
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548.003/auditd_path_sudoers/path_sudoers.log

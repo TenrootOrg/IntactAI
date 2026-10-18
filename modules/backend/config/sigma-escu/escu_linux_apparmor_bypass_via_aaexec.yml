@@ -1,0 +1,43 @@
+title: Linux Apparmor Bypass Via Aaexec
+id: b6d2a2b8-ad52-4a12-8956-dbf10012d1b8
+status: experimental
+description: The following analytic detects aa-exec being used to launch a binary under the trinity, chrome, or flatpak AppArmor
+  profiles where the executed target is not the legitimate application those profiles are intended to confine. This behavior
+  is consistent with abuse of userns,-carrying AppArmor profiles to bypass Ubuntu's unprivileged user namespace restrictions
+  as seen in the CVE-2026-46331 privilege escalation exploit. The analytic flags execution when the target command following
+  -- is invoked via a relative path, resolves outside standard trusted  install directories for these applications, or shares
+  the same binary name as the calling parent process. Adversaries and red teams may abuse this technique to escalate privileges
+  by tricking aa-exec into granting a namespace-creation capability to an arbitrary binary rather than the trusted application
+  the profile was written for.
+references:
+- https://research.splunk.com/b6d2a2b8-ad52-4a12-8956-dbf10012d1b8/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image: '*aa-exec'
+  sel2:
+    CommandLine: '* -p *'
+  sel3:
+    CommandLine: '*--*'
+  sel4:
+    CommandLine:
+    - '*trinity*'
+    - '*chrome*'
+    - '*flatpak*'
+  sel5:
+    CommandLine:
+    - /user*
+    - /opt*
+    - /snap*
+    - /var/lib/flatpak*
+  condition: (sel1 and sel2 and sel3 and sel4 and not (sel5))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/linux_pedit/sysmon_linux.log

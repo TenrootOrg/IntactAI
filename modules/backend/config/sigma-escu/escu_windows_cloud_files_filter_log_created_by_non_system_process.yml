@@ -1,0 +1,37 @@
+title: Windows Cloud Files Filter Log Created by Non-System Process
+id: 2e0042b9-8a75-49ca-b3a2-948f04b752bf
+status: experimental
+description: 'Detects a non-system process causing creation of CldFlt0.etl under C:\Windows\System32\LogFiles\CloudFiles\.
+
+  This path is initialised by the CldFlt driver when a process calls CfRegisterSyncRoot() or CfConnectSyncRoot().
+
+  In the RedSun exploit this is a side-effect of the DoCloudStuff() function that registers a fake sync provider to create
+  the cloud-tagged bait file.
+
+  Legitimate cloud providers (OneDrive etc.) register sync roots from SYSTEM-level service processes, not from user-context
+  executables.'
+references:
+- https://research.splunk.com/2e0042b9-8a75-49ca-b3a2-948f04b752bf/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+logsource:
+  product: windows
+  service: sysmon
+  category: file_event
+detection:
+  sel1:
+    EventID: '11'
+  sel2:
+    TargetFilename: '*\\Windows\\System32\\LogFiles\\CloudFiles\\*'
+  sel3:
+    Image:
+    - '*:\\Windows\\System32*'
+    - '*:\\Windows\\SysWOW64*'
+    - '*:\\Program Files\\WindowsApps\\*'
+  condition: (sel1 and sel2 and not (sel3))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/redsun/windows-sysmon.log

@@ -1,0 +1,29 @@
+title: Suspicious Rundll32 dllregisterserver
+id: 8c00a385-9b86-4ac0-8932-c9ec3713b159
+status: experimental
+description: The following analytic detects the execution of rundll32.exe with the DllRegisterServer command to load a DLL.
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line executions and process details.
+  This activity is significant as it may indicate an attempt to register a malicious DLL, which can be a method for code execution
+  or persistence. If confirmed malicious, an attacker could gain unauthorized code execution, escalate privileges, or maintain
+  persistence within the environment, posing a severe security risk.
+references:
+- https://research.splunk.com/8c00a385-9b86-4ac0-8932-c9ec3713b159/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.011
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\rundll32.exe'
+  sel2:
+    OriginalFileName: RUNDLL32.EXE
+  sel3:
+    CommandLine: '*dllregisterserver*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.011/atomic_red_team/windows-sysmon.log

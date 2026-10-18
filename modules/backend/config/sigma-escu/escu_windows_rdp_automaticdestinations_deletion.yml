@@ -1,0 +1,33 @@
+title: Windows Rdp AutomaticDestinations Deletion
+id: e40a40a1-9fea-4554-abdf-b164422f0627
+status: experimental
+description: This detection identifies the deletion of files within the AutomaticDestinations folder, located under a user’s
+  AppData\Roaming\Microsoft\Windows\Recent directory. These files are part of the Windows Jump List feature, which records
+  recently accessed files and folders tied to specific applications. Each .automaticDestinations-ms file corresponds to a
+  program (e.g., Explorer, Word, Notepad) and can be valuable for forensic analysis of user activity. Adversaries may target
+  this folder to erase evidence of their actions, such as which documents or directories were accessed during a session. This
+  type of deletion is rarely seen during normal user activity and may indicate deliberate anti-forensic behavior. When correlated
+  with suspicious logon events, RDP usage, or script execution, this activity may represent an attempt to cover tracks after
+  data access, lateral movement, or staging for exfiltration. Detecting removal of these artifacts can highlight post-compromise
+  cleanup efforts and he
+references:
+- https://research.splunk.com/e40a40a1-9fea-4554-abdf-b164422f0627/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1070.004
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  sel1:
+    EventID:
+    - '23'
+    - '26'
+  sel2:
+    TargetFilename: '*\\Recent\\AutomaticDestinations*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1070.004/automatic_file_deleted/automatic_file_deleted.log

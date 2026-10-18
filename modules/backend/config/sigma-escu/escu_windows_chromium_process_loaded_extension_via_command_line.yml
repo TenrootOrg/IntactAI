@@ -1,0 +1,27 @@
+title: Windows Chromium Process Loaded Extension via Command-Line
+id: 1b8a468a-52e3-4206-b14a-73165441684c
+status: experimental
+description: The following analytic detects instances where Google Chrome is started with the --load-extension command-line
+  flag, which allows loading unpacked or non-standard extensions. This behavior can indicate attempts to bypass enterprise
+  extension policies, install malicious extensions, or load potentially harmful browser components. Monitoring such activity
+  helps identify unauthorized extension usage, potential malware persistence mechanisms, or policy violations that could compromise
+  browser security.
+references:
+- https://research.splunk.com/1b8a468a-52e3-4206-b14a-73165441684c/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1185
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\Chrome.exe'
+  sel2:
+    CommandLine: '*--load-extension*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1185/chrome_load_extensions/chrome_load_extension.log

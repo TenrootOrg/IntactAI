@@ -1,0 +1,42 @@
+title: Windows Excel Spawning Microsoft Project Application
+id: ee54241e-0815-4423-9729-e1f5dfc402de
+status: experimental
+description: 'The following analytic identifies the execution of uncommon Microsoft application executables as child processes
+  of Microsoft Excel.
+
+  Under normal conditions, Excel primarily spawns internal Office-related processes, and the creation of executables such
+  as WINPROJ.EXE, FOXPROW.exe, or SCHDPLUS.exe is uncommon in typical business workflows.
+
+  Adversaries may abuse this behavior to blend malicious activity within trusted applications, execute unauthorized code,
+  or bypass application control mechanisms.
+
+  This technique aligns with common tradecraft where Office applications are leveraged as initial access or execution vectors
+  due to their prevalence in enterprise environments.
+
+  Detecting this relationship helps defenders spot suspicious child processes that may indicate malware execution, persistence
+  mechanisms, or attempts to establish command-and-control.
+
+  Security teams should investigate the parent Excel process, the context of the ActivateMicrosoftApp() execution, and any
+  subsequent networ'
+references:
+- https://research.splunk.com/ee54241e-0815-4423-9729-e1f5dfc402de/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1021.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\EXCEL.EXE'
+  sel2:
+    Image:
+    - '*\\WINPROJ.EXE'
+    - '*\\FOXPROW.exe'
+    - '*\\SCHDPLUS.exe'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.003/excel_activemicrosoftapp/sysmon_winprojexe.log

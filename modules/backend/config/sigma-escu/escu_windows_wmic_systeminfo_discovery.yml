@@ -1,0 +1,31 @@
+title: Windows Wmic Systeminfo Discovery
+id: 97937ece-cb13-4dbc-9684-c0dc3afd400a
+status: experimental
+description: The following analytic detects the execution of Windows Management Instrumentation Command-line (WMIC) commands
+  used for computer system discovery on a Windows system. Specifically, it monitors for commands such as “wmic computersystem”
+  that retrieve detailed information about the computer’s model, manufacturer, name, domain, and other system attributes.
+  While these commands are commonly used by administrators for inventory and troubleshooting, they may also be exploited by
+  adversaries to gain insight into the target environment during the reconnaissance phase of an attack. Identifying and alerting
+  on WMIC computer system queries helps security teams recognize unauthorized information gathering and take steps to mitigate
+  potential threats.
+references:
+- https://research.splunk.com/97937ece-cb13-4dbc-9684-c0dc3afd400a/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1082
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    OriginalFileName: wmic.exe
+  sel3:
+    CommandLine: '* computersystem*'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/lamehug/T1082/wmic_cmd/wmic_cmd.log

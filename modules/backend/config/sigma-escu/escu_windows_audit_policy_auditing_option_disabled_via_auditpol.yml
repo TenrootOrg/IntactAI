@@ -1,0 +1,39 @@
+title: Windows Audit Policy Auditing Option Disabled via Auditpol
+id: 663a7a50-b752-4c84-975b-8325ca3f6f9e
+status: experimental
+description: The following analytic identifies the execution of `auditpol.exe` with the "/set", "/option" and "/value:disable"
+  command-line arguments used to disable specific auditing options of the audit policy. It leverages data from Endpoint Detection
+  and Response (EDR) agents, focusing on process names and command-line executions. This activity can be significant as it
+  indicates potential defense evasion by adversaries or Red Teams, aiming to limit data that can be leveraged for detections
+  and audits. If confirmed malicious, this behavior could allow attackers to bypass defenses, and plan further attacks, potentially
+  leading to full machine compromise or lateral movement.
+references:
+- https://research.splunk.com/663a7a50-b752-4c84-975b-8325ca3f6f9e/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1685.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\auditpol.exe'
+  sel2:
+    OriginalFileName: AUDITPOL.EXE
+  sel3:
+    CommandLine: '*/set*'
+  sel4:
+    CommandLine: '*/option:*'
+  sel5:
+    CommandLine: '*/value:disable*'
+  sel6:
+    CommandLine:
+    - '*FullPrivilegeAuditing*'
+    - '*AuditBaseObjects*'
+    - '*AuditBaseDirectories*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5 and sel6)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.002/auditpol_tampering/auditpol_tampering_sysmon.log

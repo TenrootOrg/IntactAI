@@ -1,0 +1,31 @@
+title: Windows Wmic DiskDrive Discovery
+id: 85e88c80-e4ee-4c65-b02e-3c54d94c7a51
+status: experimental
+description: The following analytic detects the use of Windows Management Instrumentation Command-line (WMIC) for disk drive
+  discovery activities on a Windows system. This process involves monitoring commands such as “wmic diskdrive” which are often
+  used by administrators for inventory and diagnostics but can also be leveraged by attackers to enumerate hardware details
+  for malicious purposes. Detecting these commands is essential for identifying potentially unauthorized asset reconnaissance
+  or pre-attack mapping behaviors. By capturing and analyzing WMIC disk drive queries, security teams can gain visibility
+  into suspicious activities, enabling them to respond promptly and strengthen the organization’s security posture against
+  insider threats or lateral movement attempts.
+references:
+- https://research.splunk.com/85e88c80-e4ee-4c65-b02e-3c54d94c7a51/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1082
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    OriginalFileName: wmic.exe
+  sel3:
+    CommandLine: '* diskdrive*'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/lamehug/T1082/wmic_cmd/wmic_cmd.log

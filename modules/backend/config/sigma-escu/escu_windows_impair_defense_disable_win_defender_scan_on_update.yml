@@ -1,0 +1,29 @@
+title: Windows Impair Defense Disable Win Defender Scan On Update
+id: 0418e72f-e710-4867-b656-0688e1523e09
+status: experimental
+description: The following analytic detects modifications to the Windows registry that disable the Windows Defender Scan On
+  Update feature. It leverages data from the Endpoint.Registry datamodel, specifically looking for changes to the "DisableScanOnUpdate"
+  registry setting with a value of "0x00000001". This activity is significant because disabling automatic scans can leave
+  systems vulnerable to malware and other threats. If confirmed malicious, this action could allow attackers to bypass Windows
+  Defender, facilitating further compromise and persistence within the environment.
+references:
+- https://research.splunk.com/0418e72f-e710-4867-b656-0688e1523e09/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Windows Defender\\Signature Updates\\DisableScanOnUpdate'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable-windows-security-defender-features/windefender-bypas-2-sysmon.log

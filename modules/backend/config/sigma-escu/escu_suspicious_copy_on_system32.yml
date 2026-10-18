@@ -1,0 +1,58 @@
+title: Suspicious Copy on System32
+id: ce633e56-25b2-11ec-9e76-acde48001122
+status: experimental
+description: 'The following analytic detects potentially suspicious file copy operations targeting the
+
+  System32 or SysWow64 directories as source, often indicative of malicious activity.
+
+  It leverages data from Endpoint Detection and Response (EDR) agents,
+
+  focusing on activity initiated by command-line tools like cmd.exe or PowerShell.
+
+  This behavior is significant as it may indicate an attempt to evade defenses by copying
+
+  an existing binary from the system directory and renaming it.
+
+  If confirmed malicious, this activity could allow an attacker to execute
+
+  code undetected and potentially leading to system compromise or further lateral movement
+
+  within the network.'
+references:
+- https://research.splunk.com/ce633e56-25b2-11ec-9e76-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1036.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage:
+    - '*\\cmd.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+    - '*\\sqlps.exe'
+    - '*\\sqltoolsps.exe'
+  sel2:
+    Image:
+    - '*\\copy.exe'
+    - '*\\xcopy.exe'
+  sel3:
+    OriginalFileName:
+    - copy.exe
+    - xcopy.exe
+  sel4:
+    CommandLine:
+    - '* "C:\\Windows\\System32\\*'
+    - '* \\''C:\\Windows\\System32\\*'
+    - '* C:\\Windows\\System32\\*'
+    - '* "C:\\Windows\\SysWow64\\*'
+    - '* \\''C:\\Windows\\SysWow64\\*'
+    - '* C:\\Windows\\SysWow64\\*'
+  condition: (sel1 and (sel2 or sel3) and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036.003/copy_sysmon/sysmon.log

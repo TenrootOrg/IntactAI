@@ -1,0 +1,32 @@
+title: Linux Node Privilege Escalation
+id: 2e58a4ff-398f-42f4-8fd0-e01ebfe2a8ce
+status: experimental
+description: The following analytic identifies the execution of Node.js with elevated privileges using sudo, specifically
+  when spawning child processes. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line
+  executions that include specific Node.js commands. This activity is significant because running Node.js as a superuser without
+  dropping privileges can allow unauthorized access to the file system and potential privilege escalation. If confirmed malicious,
+  this could enable an attacker to maintain privileged access, execute arbitrary code, and compromise sensitive data within
+  the environment.
+references:
+- https://research.splunk.com/2e58a4ff-398f-42f4-8fd0-e01ebfe2a8ce/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Splunk
+tags:
+- attack.t1548.003
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    CommandLine: '*sudo*node*'
+  sel2:
+    CommandLine: '*-e*'
+  sel3:
+    CommandLine: '*child_process.spawn*'
+  sel4:
+    CommandLine: '*stdio*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548/node/sysmon_linux.log

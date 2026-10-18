@@ -1,0 +1,32 @@
+title: Windows Phishing PDF File Executes URL Link
+id: 2fa9dec8-9d8e-46d3-96c1-202c06f0e6e1
+status: experimental
+description: The following analytic detects suspicious PDF viewer processes spawning browser application child processes.
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process and parent process names. This
+  activity is significant as it may indicate a PDF spear-phishing attempt where a malicious URL link is executed, leading
+  to potential payload download. If confirmed malicious, this could allow attackers to execute code, escalate privileges,
+  or persist in the environment by exploiting the user's browser to connect to a malicious site.
+references:
+- https://research.splunk.com/2fa9dec8-9d8e-46d3-96c1-202c06f0e6e1/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1566.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage:
+    - '*\\AcroRd32.exe'
+    - '*\\FoxitPDFReader.exe'
+  sel2:
+    Image:
+    - '*\\firefox.exe'
+    - '*\\chrome.exe'
+    - '*\\iexplore.exe'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566.001/phishing_pdf_uri/sysmon.log

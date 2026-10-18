@@ -1,0 +1,43 @@
+title: Cisco ASA - AAA Policy Tampering
+id: 8f2c4e9a-5d3b-4c7e-9a1f-6e8d5b2c3a9f
+status: experimental
+description: 'This analytic detects modifications to authentication and authorization (AAA) security policies on Cisco ASA
+  devices via CLI or ASDM.
+
+  AAA policies control critical security mechanisms including authentication attempts, lockout thresholds, password policies,
+  and access control settings that protect administrative access to network infrastructure.
+
+  Adversaries or malicious insiders may weaken authentication policies to facilitate brute force attacks, disable account
+  lockouts to enable unlimited password attempts, reduce password complexity requirements, or modify authorization settings
+  to elevate privileges and maintain persistent access.
+
+  The detection monitors for command execution events containing AAA-related commands such as `aaa authentication`, `aaa authorization`,
+  or `aaa local authentication`, focusing on changes to authentication attempts, lockout policies, and access control configurations.
+
+  Investigate any unauthorized modifications to AAA policies, especially changes that weake'
+references:
+- https://research.splunk.com/8f2c4e9a-5d3b-4c7e-9a1f-6e8d5b2c3a9f/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1556.004
+logsource:
+  product: cisco
+  service: asa
+detection:
+  sel1:
+    message_id:
+    - '111008'
+    - '111010'
+  sel2:
+    command:
+    - aaa authentication*
+    - aaa authorization*
+    - aaa local authentication*
+    - aaa-server*
+    - no aaa*
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_asa/generic/cisco_asa_generic_logs.log

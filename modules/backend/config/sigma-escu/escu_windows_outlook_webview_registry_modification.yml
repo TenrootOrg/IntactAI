@@ -1,0 +1,30 @@
+title: Windows Outlook WebView Registry Modification
+id: 6e1ad5d4-d9af-496a-96ec-f31c11cd09f2
+status: experimental
+description: The following analytic identifies modifications to specific Outlook registry values related to WebView and Today
+  features. It detects when a URL is set in these registry locations, which could indicate attempts to manipulate Outlook's
+  web-based components. The analytic focuses on changes to the "URL" value within Outlook's WebView and Today registry paths.
+  This activity is significant as it may represent an attacker's effort to redirect Outlook's web content or inject malicious
+  URLs. If successful, this technique could lead to phishing attempts, data theft, or serve as a stepping stone for further
+  compromise of the user's email client and potentially sensitive information.
+references:
+- https://research.splunk.com/6e1ad5d4-d9af-496a-96ec-f31c11cd09f2/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Software\\Microsoft\\Office\\*\\Outlook\\WebView\\*'
+  sel2:
+    TargetObject: '*\\Software\\Microsoft\\Office\\*\\Outlook\\Today'
+  sel3:
+    TargetObject: '*\\URL'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/atomic_red_team/windows-sysmon-webview.log

@@ -1,0 +1,40 @@
+title: Windows Renamed Python Binary was Executed
+id: 6735153f-2da0-4eba-a428-288898613837
+status: experimental
+description: 'The following analytic identifies a Python process being executed where it''s process name does not match
+
+  it''s original file name attribute. Processes that have been renamed and executed may be an indicator that
+
+  an adversary is attempting to evade defenses or execute malicious code.'
+references:
+- https://research.splunk.com/6735153f-2da0-4eba-a428-288898613837/
+author: Splunk Security Content (Apache-2.0), Onur Mustafa Erdogan, Splunk
+tags:
+- attack.t1036.003
+- attack.t1059.006
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    OriginalFileName:
+    - py*
+    - python*
+    - ipyw*
+  sel2:
+    Image:
+    - '*\\dwagent.exe'
+    - '*\\WinUtils.exe'
+  sel3:
+    OriginalFileName|re: (?i)^(?:py|pyw|python|pythonw|python32|python64|pythonw32|pythonw64|ipyw32|ipyw64|python3|pythonw3|python3\.\w+|pythonw3\.\w+)\.exe$
+  sel4:
+    Image|re: (?i)^(?:py|pyw|pip|pip3|python|pythonw|python32|python64|pythonw32|pythonw64|ipyw32|ipyw64|python3|pythonw3|python3\.\w+|pythonw3\.\w+|pip3\.\w+|idle3\.\w+)\.exe$
+  condition: ((sel1 and not (sel2)) and sel3 and not sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036.003/renamed_python_binary/renamed_python_binary.log
+x-intact-burst: false
+x-intact: 'Fired 2 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

@@ -1,0 +1,30 @@
+title: Windows Wmic CPU Discovery
+id: 6fc46cae-a8c0-4296-b07a-8e52d4322587
+status: experimental
+description: The following analytic detects the use of WMIC (Windows Management Instrumentation Command-line) for CPU discovery,
+  often executed with commands such as “wmic cpu get name” This behavior is commonly associated with reconnaissance, where
+  adversaries seek to gather details about system hardware, assess processing power, or determine if the environment is virtualized.
+  While WMIC is a legitimate administrative tool, its use for CPU queries outside of normal inventory or management scripts
+  can indicate malicious intent. Monitoring command-line executions of WMIC with CPU-related arguments and correlating with
+  other discovery activity can help identify attacker reconnaissance.
+references:
+- https://research.splunk.com/6fc46cae-a8c0-4296-b07a-8e52d4322587/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1082
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    OriginalFileName: wmic.exe
+  sel3:
+    CommandLine: '* cpu*'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/lamehug/T1082/wmic_cmd/wmic_cmd.log

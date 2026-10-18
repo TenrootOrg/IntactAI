@@ -1,0 +1,12 @@
+# SigmaHQ rules run at LOW (context, not a detection, not counted toward a burst):
+# each fired 10+ times on 1.24 M benign Windows events (Nextron benign workstation + DC,
+# 2026-10-15). Fewer hits (one admin action) stay medium. id: why
+
+df9a0e0e-fedb-4d6c-8668-d765dfc92aa7: "Suspicious Non PowerShell WSMAN COM Provider -- 11 benign hits"
+9ae01559-cf7e-4f8e-8e14-4c290a1b4784: "CredUI.DLL Loaded By Uncommon Process -- 14 benign hits"
+65236ec7-ace0-4f0c-82fd-737b04fd4dcb: "EVTX Created In Uncommon Location -- 602 benign hits"
+96f697b0-b499-4e5d-9908-a67bec11cdb6: "Removal of Potential COM Hijacking Registry Keys -- 237 benign hits"
+0b7889b4-5577-4521-a60a-3376ee7f9f7b: "WMI Persistence -- 12 benign hits"
+# Posture, not attack: true on every normal login of a tenant without enforced MFA.
+40e17d88-87da-414e-b253-8dc1e4f9555b: "GCP Successful Single-Factor Authentication -- every login where MFA is not enforced"
+c977cb50-3dff-4a9f-b873-9290f56132f1: "AppX Located in Uncommon Directory Added to Deployment Pipeline -- 331 benign hits (AppX channel, 2026-10-15)"

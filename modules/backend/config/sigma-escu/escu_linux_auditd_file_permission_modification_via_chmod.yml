@@ -1,0 +1,32 @@
+title: Linux Auditd File Permission Modification Via Chmod
+id: 5f1d2ea7-eec0-4790-8b24-6875312ad492
+status: experimental
+description: The following analytic detects suspicious file permission modifications using the `chmod` command, which may
+  indicate an attacker attempting to alter access controls on critical files or directories. Such modifications can be used
+  to grant unauthorized users elevated privileges or to conceal malicious activities by restricting legitimate access. By
+  monitoring for unusual or unauthorized `chmod` usage, this analytic helps identify potential security breaches, allowing
+  security teams to respond promptly to prevent privilege escalation, data tampering, or other unauthorized actions on the
+  system.
+references:
+- https://research.splunk.com/5f1d2ea7-eec0-4790-8b24-6875312ad492/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk, Ivar Nygård
+tags:
+- attack.t1222.002
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    proctitle: '*chmod*'
+  sel2:
+    proctitle:
+    - '* 777 *'
+    - '* 755 *'
+    - '*+*x*'
+    - '* 754 *'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1222.002/linux_auditd_chmod_exec_attrib/auditd_proctitle_chmod.log

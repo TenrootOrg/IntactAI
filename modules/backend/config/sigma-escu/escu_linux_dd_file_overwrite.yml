@@ -1,0 +1,27 @@
+title: Linux DD File Overwrite
+id: 9b6aae5e-8d85-11ec-b2ae-acde48001122
+status: experimental
+description: The following analytic detects the use of the 'dd' command to overwrite files on a Linux system. It leverages
+  data from Endpoint Detection and Response (EDR) agents, focusing on process execution logs that include command-line details.
+  This activity is significant because adversaries often use the 'dd' command to destroy or irreversibly overwrite files,
+  disrupting system availability and services. If confirmed malicious, this behavior could lead to data destruction, making
+  recovery difficult and potentially causing significant operational disruptions.
+references:
+- https://research.splunk.com/9b6aae5e-8d85-11ec-b2ae-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1485
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image: '*/dd'
+  sel2:
+    CommandLine: '*of=*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1485/linux_dd_file_overwrite/sysmon_linux.log

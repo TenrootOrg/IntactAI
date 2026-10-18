@@ -1,0 +1,32 @@
+title: Windows Software Discovery Via PowerShell
+id: 213b4187-1bb9-449e-9406-5bb686a53440
+status: experimental
+description: 'Detects the use of PowerShell based registry queries to pull installed software information from the Uninstall
+  key.
+
+  This will give an attacker version information on installed software which could be used to identify further vulnerabilities.
+
+  False positives are unlikely as this is an unusual key to query with PowerShell.'
+references:
+- https://research.splunk.com/213b4187-1bb9-449e-9406-5bb686a53440/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1518
+- attack.t1059.001
+- attack.t1012
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Get-ItemProperty *'
+  sel3:
+    ScriptBlockText: '*Windows\\CurrentVersion\\Uninstall*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1518/snapattack/snapattack.log

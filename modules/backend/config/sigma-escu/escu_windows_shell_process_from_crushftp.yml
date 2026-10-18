@@ -1,0 +1,45 @@
+title: Windows Shell Process from CrushFTP
+id: 459628e3-1b00-4e9b-9e5b-7da8961aea35
+status: experimental
+description: The following analytic identifies instances where CrushFTP's service process (crushftpservice.exe) spawns shell
+  processes like cmd.exe or powershell.exe. This detection leverages data from Endpoint Detection and Response (EDR) agents,
+  focusing on process creation events. This activity is significant because CrushFTP should not normally spawn interactive
+  shell processes during regular operations. If confirmed malicious, this behavior could indicate successful exploitation
+  of vulnerabilities like CVE-2025-31161, potentially allowing attackers to execute arbitrary commands with the privileges
+  of the CrushFTP service.
+references:
+- https://research.splunk.com/459628e3-1b00-4e9b-9e5b-7da8961aea35/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1059.001
+- attack.t1059.003
+- attack.t1190
+- attack.t1505
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\crushftpservice.exe'
+  sel2:
+    Image: '*\\cmd.exe'
+  sel3:
+    OriginalFileName: Cmd.Exe
+  sel4:
+    Image: '*\\pwsh.exe'
+  sel5:
+    Image: '*\\powershell.exe'
+  sel6:
+    OriginalFileName: pwsh.dll
+  sel7:
+    OriginalFileName: PowerShell.EXE
+  sel8:
+    OriginalFileName: powershell_ise.EXE
+  sel9:
+    Image: '*\\powershell_ise.exe'
+  condition: (sel1 and ((sel2 or sel3) or (((((sel4 or sel5) or sel6) or sel7) or sel8) or sel9)))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/crushftp/windows-sysmon.log

@@ -1,0 +1,29 @@
+title: PowerShell Start or Stop Service
+id: 04207f8a-e08d-4ee6-be26-1e0c4488b04a
+status: experimental
+description: The following analytic identifies the use of PowerShell's Start-Service or Stop-Service cmdlets on an endpoint.
+  It leverages PowerShell Script Block Logging to detect these commands. This activity is significant because attackers can
+  manipulate services to disable or stop critical functions, causing system instability or disrupting business operations.
+  If confirmed malicious, this behavior could allow attackers to disable security services, evade detection, or disrupt essential
+  services, leading to potential system downtime and compromised security.
+references:
+- https://research.splunk.com/04207f8a-e08d-4ee6-be26-1e0c4488b04a/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1059.001
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText:
+    - '*start-service*'
+    - '*stop-service*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/atomic_red_team/start_stop_service_windows-powershell.log

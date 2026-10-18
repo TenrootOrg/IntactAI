@@ -1,0 +1,29 @@
+title: Ivanti Connect Secure System Information Access via Auth Bypass
+id: d51c13dd-a232-4c83-a2bb-72ab36233c5d
+status: experimental
+description: The following analytic identifies attempts to exploit the CVE-2023-46805 and CVE-2024-21887 vulnerabilities in
+  Ivanti Connect Secure. It detects GET requests to the /api/v1/totp/user-backup-code/../../system/system-information URI,
+  which leverage an authentication bypass to access system information. The detection uses the Web datamodel to identify requests
+  with a 200 OK response, indicating a successful exploit attempt. This activity is significant as it reveals potential unauthorized
+  access to sensitive system information. If confirmed malicious, attackers could gain critical insights into the system,
+  facilitating further exploitation and compromise.
+references:
+- https://research.splunk.com/d51c13dd-a232-4c83-a2bb-72ab36233c5d/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1190
+logsource:
+  category: web
+detection:
+  sel1:
+    c-uri: '*/api/v1/totp/user-backup-code/../../system/system-information*'
+  sel2:
+    cs-method: GET
+  sel3:
+    sc-status: '200'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/ivanti/suricata_ivanti_secure_connect_checkphase.log

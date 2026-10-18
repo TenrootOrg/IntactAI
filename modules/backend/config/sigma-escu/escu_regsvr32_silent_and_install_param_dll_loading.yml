@@ -1,0 +1,40 @@
+title: Regsvr32 Silent and Install Param Dll Loading
+id: f421c250-24e7-11ec-bc43-acde48001122
+status: experimental
+description: The following analytic detects the loading of a DLL using the regsvr32 application with the silent parameter
+  and DLLInstall execution. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process command-line
+  arguments and parent process details. This activity is significant as it is commonly used by RAT malware like Remcos and
+  njRAT to load malicious DLLs on compromised machines. If confirmed malicious, this technique could allow attackers to execute
+  arbitrary code, maintain persistence, and further compromise the system.
+references:
+- https://research.splunk.com/f421c250-24e7-11ec-bc43-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1218.010
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\regsvr32.exe'
+  sel2:
+    OriginalFileName: REGSVR32.EXE
+  sel3:
+    CommandLine:
+    - '*/i*'
+    - '*-i*'
+  sel4:
+    CommandLine:
+    - '*/s*'
+    - '*-s*'
+  sel5:
+    CommandLine: '*Microsoft\\TeamsMeetingAddin*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and not (sel5))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.005/vbs_wscript/sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 3 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

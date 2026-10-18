@@ -1,0 +1,63 @@
+title: Windows Privileged Group Modification
+id: b8cbef2c-2cc3-4550-b0fc-9715b7852df9
+status: experimental
+description: 'This analytic detects modifications to privileged groups in Active Directory, including addition, creation,
+  deletion, and changes to various types of groups such as local, global, universal, and LDAP query groups.
+
+  It specifically monitors for changes to high-privilege groups like "Administrators", "Domain Admins", "Enterprise Admins",
+  and "ESX Admins", among others.
+
+  This detection is particularly relevant in the context of potential exploitation of vulnerabilities like the VMware ESXi
+  Active Directory Integration Authentication Bypass (CVE-2024-37085), where attackers may attempt to manipulate privileged
+  groups to gain unauthorized access to systems.'
+references:
+- https://research.splunk.com/b8cbef2c-2cc3-4550-b0fc-9715b7852df9/
+author: Splunk Security Content (Apache-2.0), Brandon Sternfield, Optiv + ClearShark
+tags:
+- attack.t1136.001
+- attack.t1136.002
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID:
+    - '4727'
+    - '4731'
+    - '4744'
+    - '4749'
+    - '4754'
+    - '4756'
+    - '4759'
+    - '4783'
+    - '4790'
+  sel2:
+    TargetUserName:
+    - Account Operators
+    - Administrators
+    - Admins DNS
+    - Backup Operators
+    - DnsAdmins
+    - Domain Admins
+    - Enterprise Admins
+    - Enterprise Key Admins
+    - ESX Admins
+    - ESXi Admins
+    - Group Policy Creator Owners
+    - Hyper-V Administrators
+    - Key Admins
+    - Print Operators
+    - Remote Desktop Users
+    - Remote Management Users
+    - Replicators
+    - Schema Admins
+    - Server Operators
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1136.001/atomic_red_team/windows-security-esxadmins.log
+x-intact-burst: false
+x-intact: 'Fired 7 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

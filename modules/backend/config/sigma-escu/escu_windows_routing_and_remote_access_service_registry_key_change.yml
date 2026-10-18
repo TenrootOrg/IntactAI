@@ -1,0 +1,28 @@
+title: Windows Routing and Remote Access Service Registry Key Change
+id: a93df51e-e612-40b7-a105-33e288160575
+status: experimental
+description: 'This analytic identifies the modification of the Windows RemoteAccess Registry Entry.
+
+  This technique can be used by malware, adversaries, threat actors and red teamers to gain persistence on a system by tampering
+  with the key to add a custom DLL to be loaded.
+
+  This technique was also observed to be used by Gh0st RAT malware.
+
+  Upon seeing this behavior, it is recommended to review the system services events especially the remote access services.'
+references:
+- https://research.splunk.com/a93df51e-e612-40b7-a105-33e288160575/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Services\\RemoteAccess\\RouterManagers\\Ip*'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/remote_access_reg/remote_access_reg.log

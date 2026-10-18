@@ -1,0 +1,128 @@
+title: Windows RMM Tool Execution
+id: 4afbd373-b769-4f82-8375-41e0153e46f9
+status: experimental
+description: 'Detects process creation events of various remote access tools.
+
+  Remote management tools, when used for legitimate purposes, can help IT professionals and system administrators remotely
+  access and manage computer systems.
+
+  However, threat actors may exploit these tools for malicious purposes.'
+references:
+- https://research.splunk.com/4afbd373-b769-4f82-8375-41e0153e46f9/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1219
+logsource:
+  product: windows
+  service: sysmon
+  category: process_creation
+detection:
+  sel1:
+    EventID: '1'
+  sel2:
+    Company:
+    - AmidaWare*
+    - Ammyy LLC*
+    - AnyDesk Software*
+    - ATERA Networks*
+    - bomgar*
+    - FleetDeck*
+    - GoTo, Inc*
+    - IDrive Inc*
+    - LogMeIn, Inc*
+    - MMSOFT Design*
+    - N-able*
+    - NetSupport Ltd*
+    - NinjaRMM*
+    - Remote Utilities*
+    - SimpleHelp*
+    - Servably*
+    - ScreenConnect*
+    - Splashtop*
+    - TeamViewer Germany*
+    - ZOHO Corporation*
+  sel3:
+    Description:
+    - Advanced Monitoring Agent*
+    - AnyDesk*
+    - Ammyy Admin*
+    - AteraAgent*
+    - BeyondTrust Remote Support*
+    - FleetDeck*
+    - GoToAssist*
+    - GoToMyPC*
+    - Kaseya Live Connect*
+    - N-able*
+    - NetSupport Client Application*
+    - NinjaRMM*
+    - Pulseway*
+    - RemotePC*
+    - Remote Utilities*
+    - ScreenConnect*
+    - SimpleHelp Remote*
+    - Splashtop*
+    - Tactical RMM Agentz*
+    - Take Control Agent*
+    - Zoho Assist*
+  sel4:
+    Product:
+    - Advanced Monitoring Agent*
+    - AnyDesk*
+    - Ammyy Admin*
+    - AteraAgent*
+    - BeyondTrust Remote Support*
+    - FleetDeck*
+    - GoToAssist*
+    - GoToMyPC*
+    - Kaseya Live Connect*
+    - NetSupport Remote Control*
+    - NetSupport Manager*
+    - NinjaRMM*
+    - Pulseway*
+    - Remote Access*
+    - Remote Support*
+    - Remote Utilities*
+    - RemotePC*
+    - Syncro*
+    - ScreenConnect*
+    - Splashtop*
+    - Tactical RMM Agent*
+    - Take Control Agent*
+    - TeamViewer*
+    - Zoho Assist*
+  sel5:
+    Image:
+    - '*AgentPackage*'
+    - '*AnyDesk.exe*'
+    - '*AteraAgent.exe*'
+    - '*BASupSrvc*'
+    - '*fleetdeck*'
+    - '*level.exe*'
+    - '*MeshAgent*'
+    - '*MspPlatform\\PME\\Installers*'
+    - '*NableCommand*'
+    - '*N-able Technologies*'
+    - '*NinjaRMM*'
+    - '*nxexec.exe*'
+    - '*nxserv*'
+    - '*nxplayer*'
+    - '*PCMonitor*'
+    - '*Pulseway*'
+    - '*remcmdstub.exe*'
+    - '*rustdesk.exe*'
+    - '*ScreenConnect*'
+    - '*Splashtop*'
+    - '*SRAgent.exe*'
+    - '*tacticalrmm.exe*'
+    - '*TakeControlTechConsole*'
+    - '*tailscale*'
+    - '*TeamViewer*'
+    - '*ZA_Connect*'
+    - '*ZMAgent*'
+    - '*ZohoMeeting*'
+  condition: (sel1 and (((sel2 or sel3) or sel4) or sel5))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1219/snapattack/snapattack.log

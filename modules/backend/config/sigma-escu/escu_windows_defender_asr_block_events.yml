@@ -1,0 +1,31 @@
+title: Windows Defender ASR Block Events
+id: 026f5f4e-e99f-4155-9e63-911ba587300b
+status: experimental
+description: 'This detection searches for ASR block events that are generated when a process or application attempts to perform
+  an action that is blocked by an ASR rule.
+
+  Typically, these will be enabled in block most after auditing and tuning the ASR rules themselves.'
+references:
+- https://research.splunk.com/026f5f4e-e99f-4155-9e63-911ba587300b/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1059
+- attack.t1566.001
+- attack.t1566.002
+logsource:
+  product: windows
+  service: windefend
+detection:
+  sel1:
+    EventID:
+    - '1121'
+    - '1126'
+    - '1129'
+    - '1131'
+    - '1133'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059/defender/asr_block.log

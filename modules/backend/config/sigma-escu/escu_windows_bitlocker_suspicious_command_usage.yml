@@ -1,0 +1,32 @@
+title: Windows BitLocker Suspicious Command Usage
+id: d0e6ec70-6e40-41a2-8b93-8d9ff077a746
+status: experimental
+description: This analytic is developed to detect the usage of BitLocker commands used to disable or impact boot settings.
+  The malware ShrinkLocker uses various commands change how BitLocker handles encryption, potentially bypassing TPM requirements,
+  enabling BitLocker without TPM, and enforcing specific startup key and PIN configurations. Such modifications can weaken
+  system security, making it easier for unauthorized access and data breaches. Detecting these changes is crucial for maintaining
+  robust encryption and data protection.
+references:
+- https://research.splunk.com/d0e6ec70-6e40-41a2-8b93-8d9ff077a746/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1486
+- attack.t1490
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\manage-bde.exe'
+  sel2:
+    CommandLine:
+    - '* -protectors -disable *'
+    - '* -protectors -delete *'
+    - '* -forcerecovery *'
+    - '* -lock *'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1486/bitlocker_sus_commands/bitlocker_sus_commands.log

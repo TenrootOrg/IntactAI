@@ -1,0 +1,31 @@
+title: Windows Rundll32 Execution With Log.DLL
+id: f9593331-804c-4268-8b4c-2693c5ae786c
+status: experimental
+description: 'Identifies the execution of rundll32 with a command line argument of "log.dll", as used in the Lotus Blossom
+  Chrysalis backdoor campaign.
+
+  Attackers placed a malicious "log.dll" in "%AppData%\Bluetooth" and invoked it via rundll32.exe "log.dll,LogInit" to decrypt
+  and execute ShellCode.
+
+  The legitimate Bitdefender Submission Wizard (BDSubmit.exe, bdsw.exe) also uses log.dll and is vulnerable to DLL sideloading.'
+references:
+- https://research.splunk.com/f9593331-804c-4268-8b4c-2693c5ae786c/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1574
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\rundll32.exe'
+  sel2:
+    OriginalFileName: RUNDLL32.EXE
+  sel3:
+    CommandLine: '* log.dll*'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1574.002/lotus_blossom_chrysalis/windows-sysmon.log

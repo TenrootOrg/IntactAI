@@ -1,0 +1,36 @@
+title: Windows Indicator Removal Via Rmdir
+id: c4566d2c-b094-48a1-9c59-d66e22065560
+status: experimental
+description: The following analytic detects the execution of the 'rmdir' command with '/s' and '/q' options to delete files
+  and directory trees. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line
+  executions and process metadata. This activity is significant as it may indicate malware attempting to remove traces or
+  components during cleanup operations. If confirmed malicious, this behavior could allow attackers to eliminate forensic
+  evidence, hinder incident response efforts, and maintain persistence by removing indicators of compromise.
+references:
+- https://research.splunk.com/c4566d2c-b094-48a1-9c59-d66e22065560/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1070
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*rmdir*'
+  sel2:
+    CommandLine: '* /s *'
+  sel3:
+    CommandLine: '* /q *'
+  sel4:
+    ParentImage:
+    - '*\\explorer.exe'
+    - '*HPDock*'
+  condition: (sel1 and sel2 and sel3 and not (sel4))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1070/rmdir_delete_files_and_dir/rmdir.log
+x-intact-burst: false
+x-intact: 'Fired 1 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

@@ -1,0 +1,31 @@
+title: Linux Usermod Root UID Set
+id: fe143ad6-ef29-4571-be14-0cd08a32ff34
+status: experimental
+description: The following analytic detects the use of usermod to set a user's UID to 0. This functionally sets the user as
+  a root user with full permissions. This approach can be used to bypass regular privilege escalation mechanisms, giving the
+  attacker full control over the system while appearing as a regular user in most monitoring tools.
+references:
+- https://research.splunk.com/fe143ad6-ef29-4571-be14-0cd08a32ff34/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1098
+- attack.t1078
+- attack.t1548.001
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image: '*/usermod'
+  sel2:
+    CommandLine:
+    - '* -u 0 *'
+    - '* -u 0'
+  sel3:
+    CommandLine: '*--uid 0*'
+  condition: (sel1 and (sel2 or sel3))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1098/linux_usermod_root_uid_set/snapattack_linux.log

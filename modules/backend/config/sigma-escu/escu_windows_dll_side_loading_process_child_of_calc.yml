@@ -1,0 +1,28 @@
+title: Windows DLL Side-Loading Process Child Of Calc
+id: 295ca9ed-e97b-4520-90f7-dfb6469902e1
+status: experimental
+description: The following analytic identifies suspicious child processes spawned by calc.exe, indicative of a potential DLL
+  side-loading technique. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process
+  GUIDs, names, and parent processes. In previous versions of the "calc.exe" binary, namely on Windows 7, it was vulnerable
+  to DLL side-loading, where an attacker is able to load an arbitrary DLL named "WindowsCodecs.dll". This activity was observed
+  in Qakbot malware, back in 2022. If confirmed malicious, this behavior could allow attackers to execute arbitrary code,
+  maintain persistence, and escalate privileges, posing a severe threat to the environment.
+references:
+- https://research.splunk.com/295ca9ed-e97b-4520-90f7-dfb6469902e1/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1574.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\calc.exe'
+  sel2:
+    Image: '*\\win32calc.exe'
+  condition: (sel1 and not sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/qakbot/sysmon.log

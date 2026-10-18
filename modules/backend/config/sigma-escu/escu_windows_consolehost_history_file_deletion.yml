@@ -1,0 +1,29 @@
+title: Windows ConsoleHost History File Deletion
+id: a203040e-f8fd-49bb-8424-d2fabf277322
+status: experimental
+description: The following analytic detects the deletion of the ConsoleHost_history.txt file, which stores command history
+  for PowerShell sessions. Attackers may attempt to remove this file to cover their tracks and evade detection during post-exploitation
+  activities. This detection focuses on file deletion commands executed via PowerShell, Command Prompt, or scripting languages
+  that specifically target ConsoleHost_history.txt, typically located at %APPDATA%\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt.
+  Identifying such activity can help uncover potential anti-forensic behavior and suspicious administrative actions.
+references:
+- https://research.splunk.com/a203040e-f8fd-49bb-8424-d2fabf277322/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1070.003
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  sel1:
+    EventID:
+    - '23'
+    - '26'
+  sel2:
+    TargetFilename: '*\\Microsoft\\Windows\\PowerShell\\PSReadline\\ConsoleHost_history.txt'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1070.003/ConsoleHost_History_deletion/delete_pwh_history_file.log

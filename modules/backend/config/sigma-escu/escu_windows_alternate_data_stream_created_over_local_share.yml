@@ -1,0 +1,42 @@
+title: Windows Alternate Data Stream Created Over Local Share
+id: e974a5c9-cbe9-4b4a-8fba-b55e7dbc8259
+status: experimental
+description: 'The following analytic detects the creation of an NTFS alternate data stream (ADS) accessed over a local administrative
+  share targeting the loopback address (127.0.0.1).
+
+  It leverages Windows Security Event Logs with EventCode 5145 to identify this activity.
+
+  Legitimate local processes access files directly rather than through a local SMB share.
+
+  This behavior is a hallmark of the ShieldBreak exploit, which abuses a symbolic link swap through a loopback share to redirect
+  a privileged, Defender-driven write into an alternate data stream on a system-owned file, ultimately landing attacker content
+  in C:\Windows\System32.
+
+  If confirmed malicious, this activity indicates an in-progress local privilege escalation attempt and should be investigated
+  immediately.'
+references:
+- https://research.splunk.com/e974a5c9-cbe9-4b4a-8fba-b55e7dbc8259/
+author: Splunk Security Content (Apache-2.0), Onur Mustafa Erdogan, Splunk
+tags:
+- attack.t1564.004
+- attack.t1021.002
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '5145'
+  sel2:
+    IpAddress:
+    - 127.0.0.1
+    - ::1
+  sel3:
+    ObjectType: File
+  sel4:
+    RelativeTargetName|re: (?i)\:\w+$
+  condition: ((sel1 and sel2 and sel3) and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/emerging_threats/ShieldBreak/ads_over_local_share.log

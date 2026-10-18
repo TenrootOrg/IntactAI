@@ -1,0 +1,39 @@
+title: Windows Powershell RemoteSigned File
+id: f7f7456b-470d-4a95-9703-698250645ff4
+status: experimental
+description: The following analytic identifies the use of the "remotesigned" execution policy for PowerShell scripts. It leverages
+  data from Endpoint Detection and Response (EDR) agents, focusing on command-line executions containing "remotesigned" and
+  "-File". This activity is significant because the "remotesigned" policy allows locally created scripts to run without restrictions,
+  posing a potential security risk. If confirmed malicious, an attacker could execute unauthorized scripts, leading to code
+  execution, privilege escalation, or persistence within the environment.
+references:
+- https://research.splunk.com/f7f7456b-470d-4a95-9703-698250645ff4/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1059.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\pwsh.exe'
+  sel2:
+    Image: '*\\powershell.exe'
+  sel3:
+    OriginalFileName: pwsh.dll
+  sel4:
+    OriginalFileName: PowerShell.EXE
+  sel5:
+    OriginalFileName: powershell_ise.EXE
+  sel6:
+    Image: '*\\powershell_ise.exe'
+  sel7:
+    CommandLine: '* remotesigned *'
+  sel8:
+    CommandLine: '* -File *'
+  condition: ((((((sel1 or sel2) or sel3) or sel4) or sel5) or sel6) and sel7 and sel8)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/powershell_remotesigned/remotesigned_sysmon.log

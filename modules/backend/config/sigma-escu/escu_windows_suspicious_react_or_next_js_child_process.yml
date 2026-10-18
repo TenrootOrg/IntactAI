@@ -1,0 +1,92 @@
+title: Windows Suspicious React or Next.js Child Process
+id: baa80bc8-7c9c-4395-b458-b69feb92830a
+status: experimental
+description: 'This analytic detects Windows processes such as cmd.exe, PowerShell, and common Windows LOLBINs being spawned
+  by React or Next.js application servers.
+
+  In the context of CVE-2025-55182 / React2Shell / CVE-2025-66478 for Next.js, successful exploitation can lead to arbitrary
+  JavaScript execution on the server, which in turn is used to invoke Node''s child_process APIs (for example child_process.execSync)
+  to run OS-level commands.
+
+  This detection focuses on suspicious child processes where a Next/React server process spawns an uncommon process.
+
+  Such activity might be a strong indicator of exploitation of the aforementioned vulnerability.'
+references:
+- https://research.splunk.com/baa80bc8-7c9c-4395-b458-b69feb92830a/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1190
+- attack.t1059.003
+- attack.t1059.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\node.exe'
+  sel2:
+    ParentCommandLine:
+    - '*--experimental-https*'
+    - '*--experimental-next-config-strip-types*'
+    - '*\\node_modules\\next*'
+    - '*next dev*'
+    - '*next start*'
+    - '*next" start*'
+    - '*node_modules\\.bin\\\\..\\next*'
+    - '*react-scripts start*'
+    - '*start-server.js*'
+  sel3:
+    Image:
+    - '*\\bash.exe'
+    - '*\\bitsadmin.exe'
+    - '*\\calc.exe'
+    - '*\\CalculatorApp.exe'
+    - '*\\certutil.exe'
+    - '*\\cscript.exe'
+    - '*\\curl.exe'
+    - '*\\ftp.exe'
+    - '*\\ipconfig.exe'
+    - '*\\mshta.exe'
+    - '*\\netstat.exe'
+    - '*\\OpenConsole.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+    - '*\\regsvr32.exe'
+    - '*\\rundll32.exe'
+    - '*\\sh.exe'
+    - '*\\tftp.exe'
+    - '*\\wget.exe'
+    - '*\\win32calc.exe'
+    - '*\\wmic.exe'
+    - '*\\wscript.exe'
+    - '*\\wsl.exe'
+    - '*\\wt.exe'
+  sel4:
+    Image: '*\\cmd.exe'
+  sel5:
+    CommandLine: '*/d /s /c *'
+  sel6:
+    Image: '*\\cmd.exe'
+  sel7:
+    CommandLine: '*/d /s /c *'
+  sel8:
+    CommandLine: '*git config --local --get remote.origin.url*'
+  sel9:
+    CommandLine: '*netstat -ano | findstr /C:*'
+  sel10:
+    CommandLine: '* | findstr LISTENING*'
+  sel11:
+    ParentCommandLine: '*--experimental-https*'
+  sel12:
+    CommandLine: '*\\mkcert\\*'
+  sel13:
+    CommandLine:
+    - '* -CAROOT*'
+    - '* -install *'
+  condition: (sel1 and sel2 and ((sel3 or (sel4 and not (sel5))) or (sel6 and sel7 and not (((sel8 or (sel9 and sel10)) or
+    (sel11 and sel12 and sel13))))))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/emerging_threats/react2shell/react2shell_windows.log

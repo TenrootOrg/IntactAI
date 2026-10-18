@@ -1,0 +1,26 @@
+title: Windows File Association Modification via Ftype
+id: bab530d7-f3b4-428d-a3e6-30d7d0393fc8
+status: experimental
+description: 'This analytic detects the use of the `ftype` command to modify Windows file associations.
+
+  Attackers can abuse this functionality to change how specific file types are handled, potentially redirecting legitimate
+  file execution to malicious payloads.
+
+  If confirmed malicious, this behavior may enable persistence, execution of unauthorized code, or evasion of security controls.'
+references:
+- https://research.splunk.com/bab530d7-f3b4-428d-a3e6-30d7d0393fc8/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1059.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*ftype*=*'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.003/snapattack/snapattack.log

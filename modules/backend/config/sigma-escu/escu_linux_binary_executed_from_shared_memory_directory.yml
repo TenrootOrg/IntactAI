@@ -1,0 +1,28 @@
+title: Linux Binary Executed from Shared Memory Directory
+id: 2e954190-d547-447c-94d7-d8acac97873b
+status: experimental
+description: The following analytic identifies the execution of a binary by root from Linux shared memory directories (/dev/shm/
+  and /run/shm/). Threat actors place executables in these directories to persist on high-uptime servers as system backdoors.
+  Both /dev/shm and /run/shm are tmpfs-backed directories that exist only in virtual memory with no persistent storage, making
+  them attractive for staging fileless or semi-fileless malware while avoiding disk forensics.
+references:
+- https://research.splunk.com/2e954190-d547-447c-94d7-d8acac97873b/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1059
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image:
+    - /dev/shm/*
+    - /run/shm/*
+  sel2:
+    User: root
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059/linux_binary_executed_from_shared_memory_directory/snapattack_linux.log

@@ -1,0 +1,26 @@
+title: FodHelper UAC Bypass
+id: 909f8fd8-7ac8-11eb-a1f3-acde48001122
+status: experimental
+description: The following analytic detects the execution of fodhelper.exe, which is known to exploit a User Account Control
+  (UAC) bypass by leveraging specific registry keys. The detection method uses Endpoint Detection and Response (EDR) telemetry
+  to identify when fodhelper.exe spawns a child process and accesses the registry keys. This activity is significant because
+  it indicates a potential privilege escalation attempt by an attacker. If confirmed malicious, the attacker could execute
+  commands with elevated privileges, leading to unauthorized system changes and potential full system compromise.
+references:
+- https://research.splunk.com/909f8fd8-7ac8-11eb-a1f3-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1112
+- attack.t1548.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\fodhelper.exe'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548.002/atomic_red_team/windows-sysmon.log

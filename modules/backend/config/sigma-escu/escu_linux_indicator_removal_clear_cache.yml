@@ -1,0 +1,38 @@
+title: Linux Indicator Removal Clear Cache
+id: e0940505-0b73-4719-84e6-cb94c44a5245
+status: experimental
+description: The following analytic detects processes that clear or free page cache on a Linux system. It leverages Endpoint
+  Detection and Response (EDR) data, focusing on specific command-line executions involving the kernel system request `drop_caches`.
+  This activity is significant as it may indicate an attempt to delete forensic evidence or the presence of wiper malware
+  like Awfulshred. If confirmed malicious, this behavior could allow an attacker to cover their tracks, making it difficult
+  to investigate other malicious activities or system compromises.
+references:
+- https://research.splunk.com/e0940505-0b73-4719-84e6-cb94c44a5245/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1070
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image:
+    - '*/dash'
+    - '*/sudo'
+    - '*/bash'
+  sel2:
+    CommandLine:
+    - '* echo 3 &gt; *'
+    - '* echo 2 &gt; *'
+    - '* echo 1 &gt; *'
+    - '* echo 3 > *'
+    - '* echo 2 > *'
+    - '* echo 1 > *'
+  sel3:
+    CommandLine: '*/proc/sys/vm/drop_caches'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/awfulshred/test3/sysmon_linux.log

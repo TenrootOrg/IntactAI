@@ -1,0 +1,37 @@
+title: Modify ACL permission To Files Or Folder
+id: 7e8458cc-acca-11eb-9e3f-acde48001122
+status: experimental
+description: The following analytic detects the modification of ACL permissions to files or folders, making them accessible
+  to everyone or to system account. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on processes
+  like "cacls.exe," "icacls.exe," and "xcacls.exe" with specific command-line arguments. This activity is significant as it
+  may indicate an adversary attempting to evade ACLs or access protected files. If confirmed malicious, this could allow unauthorized
+  access to sensitive data, potentially leading to data breaches or further system compromise.
+references:
+- https://research.splunk.com/7e8458cc-acca-11eb-9e3f-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1222
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\icacls.exe'
+    - '*\\cacls.exe'
+    - '*\\xcacls.exe'
+  sel2:
+    CommandLine:
+    - '*/grant*'
+    - '*/g:*'
+    - '*/g *'
+  sel3:
+    CommandLine:
+    - '* SYSTEM:*'
+    - '* S-1-1-0:*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/xmrig_miner/windows-sysmon.log

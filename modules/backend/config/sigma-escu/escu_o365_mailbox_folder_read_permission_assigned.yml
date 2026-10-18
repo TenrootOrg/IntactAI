@@ -1,0 +1,38 @@
+title: O365 Mailbox Folder Read Permission Assigned
+id: 1435475e-2128-4417-a34f-59770733b0d5
+status: experimental
+description: The following analytic identifies instances where read permissions are assigned to mailbox folders within an
+  Office 365 environment. It leverages the `o365_management_activity` data source, specifically monitoring the `ModifyFolderPermissions`
+  and `AddFolderPermissions` operations, while excluding Calendar, Contacts, and PersonMetadata objects. This activity is
+  significant as unauthorized read permissions can lead to data exposure and potential information leakage. If confirmed malicious,
+  an attacker could gain unauthorized access to sensitive emails, leading to data breaches and compromising the confidentiality
+  of organizational communications.
+references:
+- https://research.splunk.com/1435475e-2128-4417-a34f-59770733b0d5/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1098.002
+logsource:
+  product: m365
+  service: audit
+detection:
+  sel1:
+    Workload: Exchange
+  sel2:
+    Operation: ModifyFolderPermissions
+  sel3:
+    Operation: AddFolderPermissions
+  sel4:
+    Workload: Exchange
+  sel5:
+    object: Calendar
+  sel6:
+    object: Contacts
+  sel7:
+    object: PersonMetadata
+  condition: (sel1 and (sel2 or sel3) and sel4 and not sel5 and not sel6 and not sel7)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1098.002/o365_mailbox_folder_read_granted/o365_mailbox_folder_read_granted.log

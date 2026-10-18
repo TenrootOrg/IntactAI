@@ -84,13 +84,13 @@ _NAMES = {
               "destinationhostname dhost fqdn sni servername",
     "hash": "sha256 sha256hashdata processsha256 actionfilesha256 filesha256 filehashsha256 "
             "processhashsha256 sha256hash hashsha256 hash sha1 md5 filehash imphash",
-    "rule": "ruledescription alertname alerttitle rulename alarmrulename detectionname threatname "
+    "rule": "ruledescription alertname alerttitle rulename intrusionrulemessage alarmrulename detectionname threatname "
             "riskname threatcontentname signaturename signaturemsg protectionname riskeventtype displaymessage "
             "displayname title rule signature alert detectname detection attack threat reason circumstances "
             "eventname cefname name model tactic category eventtype",
     "severity": "severityname severity eventseverity alertseverity threatseverity crlevel "
                 "risklevelduringsignin risklevel severitylevel rulelevel cefseverity "
-                "riskscore riskbasedpriority magnitude severityid priority level sev",
+                "riskscore riskbasedpriority magnitude severityid priority priorityid level sev",
     "message": "message msg fulllog raw description details eventmessage summary notes line",
     "http_method": "csmethod httpmethod requestmethod httprequestmethod clientrequestmethod method",
     "http_status": "scstatus httpstatus statuscode httpresponsestatuscode responsecode edgeresponsestatus",
@@ -196,9 +196,50 @@ def read_text(path) -> str:
     opener = gzip.open if head == b"\x1f\x8b" else open
     with opener(path, "rb") as f:
         data = f.read()
-    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return data.decode("utf-16", "replace")
-    return data.decode("utf-8-sig", "replace")
+    text = data.decode("utf-16", "replace") if data[:2] in (b"\xff\xfe", b"\xfe\xff") \
+        else data.decode("utf-8-sig", "replace")
+    # auditd's enriched format puts \x1d (group separator) before the interpreted fields
+    # (UID="root"); str.splitlines() breaks a line there, so every record became two.
+    return text.translate(_SEPARATORS)
+
+
+_SEPARATORS = {0x1c: " ", 0x1d: " ", 0x1e: " "}
+
+
+_PAIR_NAME = ("name", "key", "Name", "Key")
+_PAIR_VALUE = ("value", "Value", "multiValue", "boolValue", "intValue", "multiIntValue")
+
+
+_CHANGE_NAME = ("Name", "name", "displayName", "DisplayName")
+_CHANGE_SIDES = (("NewValue", "newValue"), ("OldValue", "oldValue"))
+
+
+def _name_value_pairs(items):
+    """[{"name": "a", "value": 1}, ...] -> {"a": 1}; a change list (O365
+    ModifiedProperties [{"Name", "NewValue", "OldValue"}], Entra modifiedProperties
+    [{"displayName", "newValue", "oldValue"}]) -> {"a.NewValue": .., "a.OldValue": ..}.
+    None when the list is anything else."""
+    out = {}
+    for it in items:
+        if not isinstance(it, dict):
+            return None
+        n = next((it[k] for k in _CHANGE_NAME + _PAIR_NAME if k in it), None)
+        if not isinstance(n, str) or not n:
+            return None
+        sides = [(side[0], next((it[k] for k in side if k in it), None)) for side in _CHANGE_SIDES]
+        if any(k in it for side in _CHANGE_SIDES for k in side):
+            if len(it) > 3:
+                return None
+            for label, v in sides:
+                if v not in (None, ""):
+                    out[f"{n}.{label}"] = v
+            continue
+        vals = [it[k] for k in _PAIR_VALUE if k in it]
+        if len(vals) != 1 or len(it) > 3:
+            return None
+        v = vals[0]
+        out[n] = ", ".join(str(x) for x in v) if isinstance(v, list) else v
+    return out
 
 
 def _flat(o, pre="", out=None, depth=0):
@@ -215,6 +256,15 @@ def _flat(o, pre="", out=None, depth=0):
     else:
         out[pre] = o
     return out
+
+
+def _splunk_export(o):
+    """A Splunk search export (REST / CLI, output_mode=json) wraps each event as
+    {"preview": false, "result": {...}}: the event is the result."""
+    if isinstance(o, dict) and isinstance(o.get("result"), dict) \
+            and set(o) <= {"preview", "offset", "result", "lastrow", "lastRow"}:
+        return o["result"]
+    return o
 
 
 def _json_records(o, depth=0):
@@ -335,12 +385,35 @@ def _auditd(row):
     return row
 
 
+def _auditd_paths(rows):
+    """auditd logs a file as the process named it: "sudoers" after `cd /etc`. The
+    event's CWD record (same audit id) says where it was; each PATH record gets the
+    full path as full_path, which the path rules read."""
+    cwd = {}
+    for r in rows:
+        if r.get("type") == "CWD" and r.get("cwd"):
+            cwd[str(r.get("msg"))] = r["cwd"]
+    for r in rows:
+        name = r.get("name")
+        if r.get("type") == "PATH" and name and name != "(null)":
+            base = cwd.get(str(r.get("msg")))
+            r["full_path"] = name if name.startswith("/") or not base else base.rstrip("/") + "/" + name
+    return rows
+
+
 def _kv_row(line):
     pairs = _KV.findall(line)
     if len(pairs) < 3:
         return None
     row = {k: v.strip("\"'") for k, v in pairs}
-    if "type" in row and str(row.get("msg", "")).startswith("audit("):
+    if "type" in row and "msg=audit(" in line:
+        # A user-space record (SERVICE_STOP, ADD_USER, USER_CMD...) carries its fields in
+        # a second msg='unit=auditd comm="systemd" exe=...'; the outer pairs alone lose them.
+        inner = str(row.get("msg") or "")
+        if "=" in inner and not inner.startswith("audit("):
+            for k, v in _KV.findall(inner):
+                if v.strip("\"'") not in ("", "?"):        # auditd writes ? for "none" (hostname=?)
+                    row.setdefault(k, v.strip("\"'"))
         # ausearch -i writes "msg=audit(02/20/2025 10:02:51.145:899) :": the date
         # holds a space, so the pair stopped at it -- take the whole stamp back.
         m = re.search(r"msg=audit\(([^)]*)\)", line)
@@ -353,6 +426,11 @@ def _kv_row(line):
     pre = line[:line.find(pairs[0][0] + "=")].strip()
     if pre:
         row["syslog_header"] = pre
+    # Words after the last pair are the message itself (ESXi Hostd: "sub=... user=root]
+    # Event 105 : ESXi Shell ... has been enabled"); the pairs alone lose it.
+    last = list(_KV.finditer(line))[-1]
+    if len(line[last.end():].split()) >= 3:
+        row["_line"] = line
     return row
 
 
@@ -423,12 +501,21 @@ def _xml_rows(text):
     body = re.sub(r"<\?xml[^>]*\?>", "", body)
     try:
         root = ET.fromstring(body)
+        evs = [root] if root.tag == "Event" else root.findall(".//Event")
     except ET.ParseError:
         try:                                    # one <Event> per line, no root (Splunk XmlWinEventLog)
             root = ET.fromstring(f"<Events>{body}</Events>")
+            evs = root.findall(".//Event")
         except ET.ParseError:
-            return []
-    evs = [root] if root.tag == "Event" else root.findall(".//Event")
+            # One bad byte anywhere -- between events, or inside one -- failed the
+            # WHOLE file: a 65-event PowerShell export read as nothing. Each event
+            # on its own; only a broken one is lost.
+            evs = []
+            for chunk in re.findall(r"<Event[\s>].*?</Event>", body, re.S):
+                try:
+                    evs.append(ET.fromstring(chunk))
+                except ET.ParseError:
+                    continue
     rows = []
     for ev in evs[:MAX_ROWS]:
         r = {}
@@ -576,7 +663,9 @@ def _layout_rows(lines):
                 continue
             body = m.group("csv") if "csv" in lo["rx"].groupindex else ln
             try:
-                if lo.get("quote") == "none":
+                if lo.get("delimiter") == "whitespace":       # padded columns (Squid's elapsed time)
+                    vals = body.split()
+                elif lo.get("quote") == "none":
                     vals = body.split(lo.get("delimiter") or ",")
                 else:
                     vals = next(csv.reader([body], delimiter=lo.get("delimiter") or ","))
@@ -588,6 +677,10 @@ def _layout_rows(lines):
                 or cols.get("default") or []
             empty = set(lo.get("empty") or ()) | {"", None}
             r = {names[i] if i < len(names) else f"c{i + 1}": v for i, v in enumerate(vals) if v not in empty}
+            for n in [n for n in r if "/" in n]:          # "action/status": TCP_MISS/200 holds two fields
+                a, b = n.split("/", 1)
+                va, _, vb = str(r.pop(n)).partition("/")
+                r.update({k: v for k, v in ((a, va), (b, vb)) if v not in empty})
             pre = ln[:m.start("csv")].strip() if "csv" in lo["rx"].groupindex else ""
             if pre:
                 r["syslog_header"] = pre
@@ -625,7 +718,7 @@ def read(text) -> tuple[str, list, list]:
     if s[:1] in "[{":
         try:
             recs = _json_records(json.loads(s))
-            rows = [r for r in (_guard(_flat, r) for r in recs if isinstance(r, dict)) if r]
+            rows = [r for r in (_guard(_flat, _splunk_export(r)) for r in recs if isinstance(r, dict)) if r]
             if rows:
                 return "json", rows[:MAX_ROWS], []
         except (ValueError, RecursionError):
@@ -652,8 +745,12 @@ def read(text) -> tuple[str, list, list]:
         ln = ln.strip()
         if not ln.startswith("{"):
             return None
-        o = json.loads(ln)
-        return _flat(o) if isinstance(o, dict) else None
+        try:
+            o = json.loads(ln)
+        except ValueError:
+            # Cisco eStreamer writes an empty number as a bare dash ("Impact":-).
+            o = json.loads(re.sub(r'(":\s*)-(\s*[,}])', r"\1null\2", ln))
+        return _flat(_splunk_export(o)) if isinstance(o, dict) else None
 
     def by_line(fn):
         rows, left = [], []
@@ -673,7 +770,8 @@ def read(text) -> tuple[str, list, list]:
         if got:
             return got
     if share(_kv_row) >= 0.6:
-        return ("kv", *by_line(_kv_row))
+        rows, left = by_line(_kv_row)
+        return ("kv", _auditd_paths(rows), left)
     got = _guard(_delimited, lines)
     return got if got else ("", [], [])
 
@@ -769,6 +867,10 @@ def _fits_values(field, vals, col) -> bool:
         bad = sum(1 for x in shapes if x in ("ip", "user", "time", "url"))
         return bad < 0.5 * k and all(len(str(v)) <= 255 for v in vals)
     if field == "user":
+        # A "...id" column of bare numbers is a database id (Cisco eStreamer UserID 9999997
+        # = "no authentication"), not an account anyone logs in with.
+        if _norm_name(col).endswith("id") and all(str(v).strip().isdigit() for v in vals):
+            return False
         if any(f == "host" for f, _ in _cands(col)):        # "source": an account only if it looks like one
             return sum(1 for x in shapes if x == "user") >= 0.5 * k
         return sum(1 for x in shapes if x in ("ip", "time", "url", "hash")) < 0.5 * k
@@ -935,11 +1037,17 @@ def recognized(rows) -> bool:
     # structure when they also give a time; else they are text lines, and the free
     # text readers (sign-in phrases, keyword rules) do better with them.
     raw0 = rows[0].get("raw") or {}
-    unnamed = isinstance(raw0, dict) and raw0 and all(re.fullmatch(r"c\d+|_line|syslog_header", str(c))
-                                                     for c in raw0)
+    unnamed = isinstance(raw0, dict) and raw0 and all(_UNNAMED.fullmatch(str(c)) for c in raw0)
     if unnamed and sum(1 for r in rows if r["n"].get("ts")) < 0.5 * k:
         return False
+    # auditd PATH / CWD / SERVICE_STOP records carry no host or address, but the
+    # auditd Sigma rules are written for exactly these records: as text they never run.
+    if sum(1 for r in rows if str((r.get("raw") or {}).get("msg") or "").startswith("audit(")) >= 0.5 * k:
+        return True
     return j >= 0.5 * k
+
+
+_UNNAMED = re.compile(r"c\d+|_line|syslog_header")
 
 
 def _sev_scale(col, vals):
@@ -953,7 +1061,7 @@ def _sev_scale(col, vals):
             pass
     top = max(nums) if nums else 0
     name = _norm_name(col)
-    if top and top <= 4 and (name.endswith("priority") or name == "alertseverity"):
+    if top and top <= 4 and (name.endswith("priority") or name in ("alertseverity", "priorityid")):
         return "inverted"
     if name == "rulelevel" and top <= 15:
         return 15
@@ -1191,14 +1299,23 @@ def _row_tz(r):
     return _TZ_ABBR.get(z.lower())
 
 
+# "-", "N/A", "(null)": a log's way of saying no account / no host. As a value it
+# would become an identity ("-") that every such event shares.
+_NO_NAME = re.compile(r"\s*(-|n/?a|null|\(null\)|none|\?)\s*", re.I)
+
+
+def _blank(f, v):
+    return v in (None, "") or (f in ("user", "host") and bool(_NO_NAME.fullmatch(str(v))))
+
+
 def _norm_row(r, mapping, alt, scale, tcol, mapped):
     """One row's normalized fields (normalize() guards it)."""
     n = {}
     for f, col in mapping.items():
         v = r.get(col)
-        if v in (None, ""):
-            v = next((r.get(c) for c in alt.get(f, ()) if r.get(c) not in (None, "")), None)
-        if v in (None, ""):
+        if _blank(f, v):
+            v = next((r.get(c) for c in alt.get(f, ()) if not _blank(f, r.get(c))), None)
+        if _blank(f, v):
             continue
         if f == "ts":
             v = f"{v} {r.get(tcol)}" if tcol and r.get(tcol) else str(v)
@@ -1484,6 +1601,72 @@ def _model(case_id, run_id, log):
             (lambda o: investigate._revert_obj(o, mask)) if mask is not None else None)
 
 
+_ASA_ID = re.compile(r"%(?:ASA|FTD)-\d-(\d{6}):")
+_ASA_CMD = re.compile(r"executed the '(.*)' command\.?\s*$|, executed '(.*)'\s*$|executed cmd: (.*?)\s*$")
+_ASA_USER = re.compile(r"\bUser '([^']+)'")
+
+
+def _asa_fields(text):
+    """A Cisco ASA / FTD syslog line: the fields Splunk's add-on extracts from it
+    (message_id, command, user), which the ASA rules name."""
+    m = _ASA_ID.search(text)
+    if not m:
+        return {}
+    out = {"message_id": m.group(1)}
+    c = _ASA_CMD.search(text)
+    if c:
+        out["command"] = next(g for g in c.groups() if g is not None)
+    u = _ASA_USER.search(text)
+    if u:
+        out["user"] = u.group(1)
+    return out
+
+
+def sigma_event(raw):
+    """The form of a row a Sigma rule is matched against: the row as the product
+    wrote it, or -- for a free-text line -- its text."""
+    text = raw.get("text") if set(raw) <= {"line", "text"} else None
+    # A line split on spaces (c1, c2, ... -- ESXi, appliance syslog) has no field a
+    # rule can name: its only matchable form is the line itself.
+    if text is None and raw.get("_line"):
+        if all(_UNNAMED.fullmatch(str(c)) for c in raw):
+            text = raw["_line"]
+        else:                           # named fields AND a message: rules may read either
+            return {**raw, "_text": raw["_line"], "text": raw["_line"]}
+    if text is not None:
+        return {"_text": text, "text": text, **_asa_fields(text)}
+    more = rule_fields(raw)
+    return {**raw, **more} if more else raw
+
+
+def rule_fields(raw, depth=0) -> dict:
+    """Fields the rules name that live inside a value: the keys of a JSON object kept as
+    text (Duo's description -> description.require_lock, as Splunk's spath reads it) and
+    the entries of a name/value or change list (Google parameters ->
+    event.parameters.login_challenge_method; O365 ModifiedProperties ->
+    ModifiedProperties.<name>.NewValue). For the rules only, never normalize(): a
+    "Parameters.Priority" pair once became the severity column of every O365 rule change."""
+    more = {}
+    for k, v in raw.items():
+        if not isinstance(v, str) or len(v) > 20000 or v[:1] not in "{[" or v[-1:] not in "}]":
+            continue
+        try:
+            o = json.loads(v)
+        except ValueError:
+            continue
+        if isinstance(o, list) and len(o) == 1 and isinstance(o[0], dict) and _name_value_pairs(o) is None:
+            o = o[0]                       # Entra targetResources: a list of one object is that object
+        if isinstance(o, dict):
+            flat = {kk: vv for kk, vv in _flat(o, k).items() if kk not in raw}
+            more.update(flat)
+            if depth < 3:                  # its own change lists (targetResources.modifiedProperties)
+                more.update({kk: vv for kk, vv in rule_fields(flat, depth + 1).items() if kk not in more})
+        elif isinstance(o, list) and o:
+            for kk, vv in (_name_value_pairs(o) or {}).items():
+                more.setdefault(f"{k}.{kk}", vv)
+    return more
+
+
 def sigma_pass(out, log=None) -> dict:
     """Run the community Sigma rules (SigmaHQ, /opt/sigma-rules) over every row --
     the structured row as the product wrote it, a free-text line as text. A hit
@@ -1507,9 +1690,8 @@ def sigma_pass(out, log=None) -> dict:
             _verdict(r["n"], native_hits({"text": raw["text"]}, ncache))
     for i, r in enumerate(out):
         raw = r.get("raw") or {}
-        ev = {"_text": raw["text"], "text": raw["text"]} if set(raw) <= {"line", "text"} and "text" in raw else raw
         try:
-            hits = sigma_eval.evaluate(ev, loaded["rules"], cache)
+            hits = sigma_eval.evaluate(sigma_event(raw), loaded["rules"], cache)
         except Exception:                                  # noqa: BLE001 -- one row, never the file
             continue
         if not hits:
@@ -1523,7 +1705,11 @@ def sigma_pass(out, log=None) -> dict:
             n["severity"] = top["level"]
         if not product_alert or not n.get("rule"):
             n["rule"] = top["title"]
-        n["detected_by"] = sorted(set(n.get("detected_by") or []) | {f"sigma: {h['title']}" for h in hits[:5]})
+        # A rule that fires on normal systems is labelled context: the burst rule counts
+        # only "sigma:" hits, so ordinary noise never adds up to a suspicious burst.
+        n["detected_by"] = sorted(set(n.get("detected_by") or [])
+                                  | {f"sigma{'' if h.get('burst', True) else ' (context)'}: {h['title']}"
+                                     for h in hits[:5]})
         if any(h["mitre"] for h in hits):
             n["mitre"] = sorted({m for h in hits for m in h["mitre"]} | set(n.get("mitre") or []))
         for h in hits:

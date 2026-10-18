@@ -1,0 +1,32 @@
+title: Remote Process Instantiation via WinRM and Winrs
+id: 0dd296a2-4338-11ec-ba02-3e22fbd008af
+status: experimental
+description: The following analytic detects the execution of `winrs.exe` with command-line arguments used to start a process
+  on a remote endpoint. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process names and
+  command-line executions mapped to the `Processes` node of the `Endpoint` data model. This activity is significant as it
+  may indicate lateral movement or remote code execution attempts by adversaries. If confirmed malicious, this could allow
+  attackers to execute arbitrary code on remote systems, potentially leading to further compromise and lateral spread within
+  the network.
+references:
+- https://research.splunk.com/0dd296a2-4338-11ec-ba02-3e22fbd008af/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1021.006
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\winrs.exe'
+  sel2:
+    OriginalFileName: winrs.exe
+  sel3:
+    CommandLine: '*-r:*'
+  sel4:
+    CommandLine: '*-remote:*'
+  condition: ((sel1 or sel2) and (sel3 or sel4))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.006/lateral_movement/windows-sysmon.log

@@ -1,0 +1,38 @@
+title: Cisco Secure Firewall - Lumma Stealer Download Attempt
+id: 66f22f52-fbae-4be7-a263-561dacb63613
+status: experimental
+description: 'This analytic detects Lumma Stealer download attempts using Cisco Secure Firewall Intrusion Events.
+
+  It leverages Cisco Secure Firewall Threat Defense IntrusionEvent logs to identify cases where Snort signatures with IDs
+  64797, 64798, 64799, 64800, 64801, 64167, 64168, 64169 have been triggered. If confirmed malicious, this behavior could
+  indicate an active infection of Lumma Stealer.'
+references:
+- https://research.splunk.com/66f22f52-fbae-4be7-a263-561dacb63613/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk, Talos NTDR
+tags:
+- attack.t1041
+- attack.t1573.002
+logsource:
+  product: cisco
+  service: secure_firewall
+detection:
+  sel1:
+    EventType: IntrusionEvent
+  sel2:
+    SignatureID:
+    - '62710'
+    - '62711'
+    - '62712'
+    - '62713'
+    - '62714'
+    - '62715'
+    - '62716'
+    - '62717'
+    - '64810'
+    - '64811'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_secure_firewall_threat_defense/lumma_stealer/lumma_stealer_events.log

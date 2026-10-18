@@ -1,0 +1,27 @@
+title: O365 Threat Intelligence Suspicious File Detected
+id: 00958c7b-35db-4e7a-ad13-31550a7a7c64
+status: experimental
+description: The following analytic identifies when a malicious file is detected within the Microsoft Office 365 ecosystem
+  through the Advanced Threat Protection engine. Attackers may stage and execute malicious files from within the Microsoft
+  Office 365 ecosystem. Any detections from built-in Office 365 capabilities should be monitored and responded to appropriately.
+  Certain premium Office 365 capabilities such as Safe Attachment and Safe Links further enhance these detection and response
+  functions.
+references:
+- https://research.splunk.com/00958c7b-35db-4e7a-ad13-31550a7a7c64/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1204.002
+logsource:
+  product: m365
+  service: audit
+detection:
+  sel1:
+    Workload: ThreatIntelligence
+  sel2:
+    Operation: AtpDetection
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566/o365_various_alerts/o365_various_alerts.log

@@ -1,0 +1,48 @@
+title: Scheduled Task Deleted Or Created via CMD
+id: d5af132c-7c17-439c-9d31-13d55340f36c
+status: experimental
+description: The following analytic detects the creation or deletion of scheduled tasks via schtasks.exe when invoked with
+  create or delete flags, specifically focusing on those executions where the process includes additional parameters such
+  as /tr, /sc, or /ru. The detection uses Endpoint Detection and Response (EDR) telemetry mapped to the Endpoint data model,
+  and filters out events originating from trusted system paths like C:\Windows\System32 or C:\Program Files. It further narrows
+  results to cases where schtasks.exe is launched by potentially suspicious parent processes such as cmd.exe, wscript.exe,
+  or cscript.exe, and excludes service accounts. This behavior may indicate adversary efforts to gain persistence or evade
+  detection by manipulating scheduled tasks using scripts or command shells. If confirmed malicious, such activity could lead
+  to unauthorized code execution or the removal of monitoring mechanisms on endpoints.
+references:
+- https://research.splunk.com/d5af132c-7c17-439c-9d31-13d55340f36c/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Splunk
+tags:
+- attack.t1053.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\cmd.exe'
+  sel2:
+    Image: '*\\schtasks.exe'
+  sel3:
+    CommandLine:
+    - '*/create*'
+    - '*-create*'
+    - '*/delete*'
+    - '*-delete*'
+  sel4:
+    CommandLine:
+    - '* "C:\\Program Files (x86)\\*'
+    - '* "C:\\Program Files\\*'
+    - '* "C:\\Windows\\System32\\*'
+    - '* "C:\\Windows\\SysWOW64\\*'
+    - '* C:\\Program Files (x86)\\*'
+    - '* C:\\Program Files\\*'
+    - '* C:\\Windows\\System32\\*'
+    - '* C:\\Windows\\SysWOW64\\*'
+  sel5:
+    User: '*$'
+  condition: (sel1 and sel2 and sel3 and not (sel4) and not (sel5))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1053.005/atomic_red_team/windows-sysmon.log

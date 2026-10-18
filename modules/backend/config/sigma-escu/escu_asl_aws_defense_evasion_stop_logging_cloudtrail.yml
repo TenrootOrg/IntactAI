@@ -1,0 +1,27 @@
+title: ASL AWS Defense Evasion Stop Logging Cloudtrail
+id: 0b78a8f9-1d31-4d23-85c8-56ad13d5b4c1
+status: experimental
+description: The following analytic detects `StopLogging` events within AWS CloudTrail logs, a critical action that adversaries
+  may use to evade detection. By halting the logging of their malicious activities, attackers aim to operate undetected within
+  a compromised AWS environment. This detection is achieved by monitoring for specific CloudTrail log entries that indicate
+  the cessation of logging activities. Identifying such behavior is crucial for a Security Operations Center (SOC), as it
+  signals an attempt to undermine the integrity of logging mechanisms, potentially allowing malicious activities to proceed
+  without observation. The impact of this evasion tactic is significant, as it can severely hamper incident response and forensic
+  investigations by obscuring the attacker's actions.
+references:
+- https://research.splunk.com/0b78a8f9-1d31-4d23-85c8-56ad13d5b4c1/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1685.002
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  sel1:
+    api.operation: StopLogging
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.008/stop_delete_cloudtrail/asl_ocsf_cloudtrail_2.json

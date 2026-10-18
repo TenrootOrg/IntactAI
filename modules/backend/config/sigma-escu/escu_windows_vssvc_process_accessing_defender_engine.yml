@@ -1,0 +1,32 @@
+title: Windows VSSVC Process Accessing Defender Engine
+id: 0c398be7-e33a-4882-9546-12166ceaf73c
+status: experimental
+description: 'Detects vssvc.exe opening a handle to MsMpEng.exe.
+
+  In the RedSun exploit, VSS participates in the cloud-file restore race that directs WD to write through the NTFS junction.
+
+  This handle acquisition is observed at the exact moment of exploitation.
+
+  vssvc querying MsMpEng is not expected in normal operation.'
+references:
+- https://research.splunk.com/0c398be7-e33a-4882-9546-12166ceaf73c/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+logsource:
+  product: windows
+  service: sysmon
+  category: process_access
+detection:
+  sel1:
+    EventID: '10'
+  sel2:
+    TargetImage: '*\\MsMpEng.exe'
+  sel3:
+    SourceImage: '*\\vssvc.exe'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/redsun/windows-sysmon.log

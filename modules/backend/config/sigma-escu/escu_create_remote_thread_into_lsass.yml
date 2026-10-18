@@ -1,0 +1,38 @@
+title: Create Remote Thread into LSASS
+id: 67d4dbef-9564-4699-8da8-03a151529edc
+status: experimental
+description: 'The following analytic detects the creation of a remote thread in the Local Security Authority Subsystem Service
+  (LSASS).
+
+  This behavior is identified using Sysmon EventID 8 logs, focusing on processes that create remote threads in lsass.exe.
+
+  This activity is significant because it is commonly associated with credential dumping, a tactic used by adversaries to
+  steal user authentication credentials.
+
+  If confirmed malicious, this could allow attackers to gain unauthorized access to sensitive information, leading to potential
+  compromise of the entire network.
+
+  Analysts should investigate to differentiate between legitimate tools and potential threats.'
+references:
+- https://research.splunk.com/67d4dbef-9564-4699-8da8-03a151529edc/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1003.001
+logsource:
+  product: windows
+  service: sysmon
+  category: create_remote_thread
+detection:
+  sel1:
+    EventID: '8'
+  sel2:
+    TargetImage: '*\\lsass.exe'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1003.001/atomic_red_team/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 8 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

@@ -1,0 +1,35 @@
+title: Windows Defender Threat Detected on Kernel Object Path
+id: 702631e8-90ce-43db-90fd-cf0228edc8ad
+status: experimental
+description: 'The following analytic detects a Windows Defender malware detection or remediation event where the scanned path
+  resolves through the NT object manager namespace (\globalroot\).
+
+  It leverages Windows Defender Operational log EventCodes 1116 and 1117 to identify this activity.
+
+  In the ShieldBreak exploit, this is how Defender is coerced into hydrating a cloud file placeholder and copying attacker
+  content through a symbolic link chain that ultimately writes into C:\Windows\System32.
+
+  If confirmed malicious, this activity indicates an attempt to weaponize Windows Defender''s own scanning pipeline for local
+  privilege escalation.'
+references:
+- https://research.splunk.com/702631e8-90ce-43db-90fd-cf0228edc8ad/
+author: Splunk Security Content (Apache-2.0), Onur Mustafa Erdogan, Splunk
+tags:
+- attack.t1068
+- attack.t1211
+logsource:
+  product: windows
+  service: windefend
+detection:
+  sel1:
+    EventID:
+    - '1116'
+    - '1117'
+  sel2:
+    Path: '*\\globalroot\\*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/emerging_threats/ShieldBreak/defender_kernel_object.log

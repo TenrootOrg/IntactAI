@@ -1,0 +1,46 @@
+title: Windows AD Computer SPN Modified By User Account
+id: dbe30a35-b56d-4a7a-82c4-2433da06b342
+status: experimental
+description: 'The following analytic detects a user account (non-machine account) adding or removing a servicePrincipalName
+  (SPN) on a computer object in Active Directory, via Windows Security Event 5136.
+
+  In normal AD operations, SPN values on computer objects are managed exclusively by the computer account itself (during domain
+  join or name change), by Domain Controllers during replication, or by the SYSTEM/NETWORK SERVICE context — all of which
+  appear as accounts ending in the dollar sign ($) convention.
+
+  A named user account writing to the servicePrincipalName attribute of a computer object is anomalous and may indicate an
+  attacker with delegated WriteProperty rights over computer accounts performing SPN manipulation.'
+references:
+- https://research.splunk.com/dbe30a35-b56d-4a7a-82c4-2433da06b342/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1562.010
+- attack.t1558.003
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '5136'
+  sel2:
+    AttributeLDAPDisplayName: servicePrincipalName
+  sel3:
+    ObjectClass: computer
+  sel4:
+    SubjectUserName: '*$'
+  sel5:
+    SubjectUserSid:
+    - S-1-5-18
+    - S-1-5-19
+    - S-1-5-20
+  sel6:
+    SubjectUserName:
+    - '*ANONYMOUS*'
+    - '*NT AUTHORITY*'
+    - '*SYSTEM'
+  condition: (sel1 and sel2 and sel3 and not (sel4) and not (sel5) and not (sel6))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.010/kerberloss/windows-xml.log

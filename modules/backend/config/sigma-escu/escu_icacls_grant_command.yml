@@ -1,0 +1,43 @@
+title: ICACLS Grant Command
+id: b1b1e316-accc-11eb-a9b4-acde48001122
+status: experimental
+description: 'The following analytic detects the use of the ICACLS command to grant
+
+  additional access permissions to files or directories. It leverages data from Endpoint
+
+  Detection and Response (EDR) agents, focusing on specific process names and command-line
+
+  arguments. This activity is significant because it is commonly used by Advanced
+
+  Persistent Threats (APTs) and coinminer scripts to evade detection and maintain
+
+  control over compromised systems. If confirmed malicious, this behavior could allow
+
+  attackers to manipulate file permissions, potentially leading to unauthorized access,
+
+  data exfiltration, or further system compromise.'
+references:
+- https://research.splunk.com/b1b1e316-accc-11eb-a9b4-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1222
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\icacls.exe'
+    - '*\\cacls.exe'
+    - '*\\xcacls.exe'
+  sel2:
+    CommandLine:
+    - '*/grant*'
+    - '*/g:*'
+    - '*/g *'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/xmrig_miner/windows-sysmon.log

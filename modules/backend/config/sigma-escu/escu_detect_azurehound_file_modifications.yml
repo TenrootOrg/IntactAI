@@ -1,0 +1,35 @@
+title: Detect AzureHound File Modifications
+id: 1c34549e-c31b-11eb-996b-acde48001122
+status: experimental
+description: The following analytic detects the creation of specific AzureHound-related files, such as `*-azurecollection.zip`
+  and various `.json` files, on disk. It leverages data from the Endpoint.Filesystem datamodel, focusing on file creation
+  events with specific filenames. This activity is significant because AzureHound is a tool used to gather information about
+  Azure environments, similar to SharpHound for on-premises Active Directory. If confirmed malicious, this activity could
+  indicate an attacker is collecting sensitive Azure environment data, potentially leading to further exploitation or privilege
+  escalation within the cloud infrastructure.
+references:
+- https://research.splunk.com/1c34549e-c31b-11eb-996b-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1069.001
+- attack.t1069.002
+- attack.t1087.001
+- attack.t1087.002
+- attack.t1482
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*-azurecollection.zip'
+    - '*-azprivroleadminrights.json'
+    - '*-azglobaladminrights.json'
+    - '*-azcloudappadmins.json'
+    - '*-azapplicationadmins.json'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/sharphound/windows-sysmon.log

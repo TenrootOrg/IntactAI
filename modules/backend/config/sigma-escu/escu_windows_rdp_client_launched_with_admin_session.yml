@@ -1,0 +1,32 @@
+title: Windows RDP Client Launched with Admin Session
+id: 1af84ac8-05ea-4f11-8541-b2d1e45a7744
+status: experimental
+description: This detection identifies the execution of the Windows Remote Desktop Client (mstsc.exe) with the "/v" and /admin
+  command-line arguments. The "/v" flag specifies the remote host to connect to, while the /admin flag initiates a connection
+  to the target system’s console session, often used for administrative purposes. This combination may indicate that a user
+  or attacker is performing privileged remote access, potentially to manage a system without disrupting existing user sessions.
+  While such usage may be legitimate for IT administrators, it is less common in typical user behavior. Threat actors may
+  abuse this capability during lateral movement to maintain stealthy access to high-value systems. Monitoring for this pattern
+  can help detect interactive hands-on-keyboard activity, privilege abuse, or attempts to access critical infrastructure without
+  leaving typical login traces associated with non-admin RDP sessions.
+references:
+- https://research.splunk.com/1af84ac8-05ea-4f11-8541-b2d1e45a7744/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1021.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\mstsc.exe'
+  sel2:
+    CommandLine: '*/v:*'
+  sel3:
+    CommandLine: '*/admin*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.001/mstsc_admini/mstsc_admin.log

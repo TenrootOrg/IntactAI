@@ -1,0 +1,33 @@
+title: Linux Auditd Unix Shell Configuration Modification
+id: 66f737c6-3f7f-46ed-8e9b-cc0e5bf01f04
+status: experimental
+description: 'The following analytic detects suspicious access or modifications to Unix shell configuration files, which may
+  indicate an attempt to alter system behavior or gain unauthorized access.
+
+  Unix shell configuration files, such as `.bashrc` or `.profile`, control user environment settings and command execution.
+
+  Unauthorized changes to these files can be used to execute malicious commands, escalate privileges, or hide malicious activities.
+
+  By monitoring for unusual or unauthorized modifications to shell configuration files, this analytic helps identify potential
+  security threats, allowing security teams to respond quickly and mitigate risks.
+
+  Correlate this with related EXECVE or PROCTITLE events to identify the process or user responsible for the access or modification.'
+references:
+- https://research.splunk.com/66f737c6-3f7f-46ed-8e9b-cc0e5bf01f04/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1546.004
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    type: PATH
+  sel2:
+    full_path|re: /etc/profile|/etc/shells|/etc/profile\.d/.*|/etc/bash\.bashrc.*|/etc/bashrc|.*/zsh/zprofile|.*/zsh/zshrc|.*/zsh/zlogin|.*/zsh/zlogout|/etc/csh\.cshrc.*|/etc/csh\.login.*|/root/\.bashrc.*|/root/\.bash_profile.*|/root/\.profile.*|/root/\.zshrc.*|/root/\.zprofile.*|/home/.*/\.bashrc.*|/home/.*/\.zshrc.*|/home/.*/\.bash_profile.*|/home/.*/\.zprofile.*|/home/.*/\.profile.*|/home/.*/\.bash_login.*|/home/.*/\.bash_logout.*|/home/.*/\.zlogin.*|/home/.*/\.zlogout.*
+  condition: sel1 and sel2
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1546.004/linux_auditd_unix_shell_mod_config/linux_path_profile_d.log

@@ -1,0 +1,49 @@
+title: Windows Browser Process Launched with Unusual Flags
+id: 841e2abc-0442-4e7f-b445-b22680632a08
+status: experimental
+description: The following analytic detects the use of unusual browser flags, specifically --mute-audio and --do-not-elevate,
+  which deviate from standard browser launch behavior. These flags may indicate automated scripts, testing environments, or
+  attempts to modify browser functionality for silent operation or restricted privilege execution. Detection focuses on non-standard
+  launch parameters, unexpected process behavior, or deviations from baseline configurations. Monitoring such flag usage helps
+  identify potentially suspicious activity, misconfigurations, or policy violations, enabling security teams to investigate
+  anomalies, ensure system compliance, and differentiate legitimate administrative or testing uses from unusual or unauthorized
+  operations.
+references:
+- https://research.splunk.com/841e2abc-0442-4e7f-b445-b22680632a08/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1185
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage:
+    - '*\\chrome.exe'
+    - '*\\msedge.exe'
+    - '*\\brave.exe'
+    - '*\\firefox.exe'
+    - '*\\explorer.exe'
+  sel2:
+    ParentImage:
+    - C:\\Program Files*
+    - C:\\Windows\\System32\\*
+    - C:\\Windows\\SysWow64\\*
+  sel3:
+    Image:
+    - '*\\chrome.exe'
+    - '*\\msedge.exe'
+    - '*\\brave.exe'
+    - '*\\firefox.exe'
+  sel4:
+    CommandLine:
+    - '*--mute-audio*'
+    - '*--no-de-elevate*'
+    - '*--do-not-de-elevate*'
+    - '*--disable-audio*'
+  condition: (not (sel1) and not (sel2) and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1185/browser_unusual_flag/castle_chrome_shell32.log

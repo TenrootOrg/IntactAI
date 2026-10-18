@@ -1,0 +1,37 @@
+title: Detect SharpHound File Modifications
+id: 42b4b438-beed-11eb-ba1d-acde48001122
+status: experimental
+description: The following analytic detects the creation of files typically associated with SharpHound, a reconnaissance tool
+  used for gathering domain and trust data. It leverages file modification events from the Endpoint.Filesystem data model,
+  focusing on default file naming patterns like `*_BloodHound.zip` and various JSON files. This activity is significant as
+  it indicates potential domain enumeration, which is a precursor to more targeted attacks. If confirmed malicious, an attacker
+  could gain detailed insights into the domain structure, facilitating lateral movement and privilege escalation.
+references:
+- https://research.splunk.com/42b4b438-beed-11eb-ba1d-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1069.001
+- attack.t1069.002
+- attack.t1087.001
+- attack.t1087.002
+- attack.t1482
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*bloodhound.zip'
+    - '*_computers.json'
+    - '*_gpos.json'
+    - '*_domains.json'
+    - '*_users.json'
+    - '*_groups.json'
+    - '*_ous.json'
+    - '*_containers.json'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/sharphound/windows-sysmon.log

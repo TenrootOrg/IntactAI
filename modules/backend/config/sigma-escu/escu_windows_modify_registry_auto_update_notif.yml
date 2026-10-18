@@ -1,0 +1,30 @@
+title: Windows Modify Registry Auto Update Notif
+id: 4d1409df-40c7-4b11-aec4-bd0e709dfc12
+status: experimental
+description: The following analytic detects a suspicious modification to the Windows registry that changes the auto-update
+  notification setting to "Notify before download." This detection leverages data from the Endpoint.Registry data model, focusing
+  on specific registry paths and values. This activity is significant because it is a known technique used by adversaries,
+  including malware like RedLine Stealer, to evade detection and potentially deploy additional payloads. If confirmed malicious,
+  this modification could allow attackers to bypass security measures, maintain persistence, and exploit vulnerabilities on
+  the target host.
+references:
+- https://research.splunk.com/4d1409df-40c7-4b11-aec4-bd0e709dfc12/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU\\AUOptions'
+  sel2:
+    Details:
+    - '* (0x00000002)'
+    - '0x00000002'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/redline/modify_registry/sysmon.log

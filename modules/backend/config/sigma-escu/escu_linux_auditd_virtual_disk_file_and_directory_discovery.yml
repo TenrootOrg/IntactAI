@@ -1,0 +1,33 @@
+title: Linux Auditd Virtual Disk File And Directory Discovery
+id: eec78cef-d4c8-4b35-8f5b-6922102a4a41
+status: experimental
+description: The following analytic detects suspicious discovery of virtual disk files and directories, which may indicate
+  an attacker's attempt to locate and access virtualized storage environments. Virtual disks can contain sensitive data or
+  critical system configurations, and unauthorized discovery attempts could signify preparatory actions for data exfiltration
+  or further compromise. By monitoring for unusual or unauthorized searches for virtual disk files and directories, this analytic
+  helps identify potential reconnaissance activities, enabling security teams to respond promptly and safeguard against unauthorized
+  access and data breaches.
+references:
+- https://research.splunk.com/eec78cef-d4c8-4b35-8f5b-6922102a4a41/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1083
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    CommandLine:
+    - '*find*'
+    - '*grep*'
+  sel2:
+    CommandLine:
+    - '*.vhd*'
+    - '*.vhdx*'
+    - '*.vmdk*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1083/linux_auditd_find_virtual_disk/auditd_execve_find_vhd.log

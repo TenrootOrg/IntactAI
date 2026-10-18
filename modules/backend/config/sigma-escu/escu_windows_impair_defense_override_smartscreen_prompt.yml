@@ -1,0 +1,29 @@
+title: Windows Impair Defense Override SmartScreen Prompt
+id: 08058866-7987-486f-b042-275715ef6e9d
+status: experimental
+description: The following analytic detects modifications to the Windows registry that override the Windows Defender SmartScreen
+  prompt. It leverages data from the Endpoint.Registry data model, specifically monitoring changes to the "PreventSmartScreenPromptOverride"
+  registry setting. This activity is significant because it indicates an attempt to disable the prevention of user overrides
+  for SmartScreen prompts, potentially allowing users to bypass security warnings. If confirmed malicious, this could lead
+  to users inadvertently executing or accessing harmful content, increasing the risk of security incidents or system compromises.
+references:
+- https://research.splunk.com/08058866-7987-486f-b042-275715ef6e9d/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Microsoft\\Edge\\PreventSmartScreenPromptOverride'
+  sel2:
+    Details:
+    - '* (0x00000000)'
+    - '0x00000000'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable-windows-security-defender-features/windefender-bypas-2-sysmon.log

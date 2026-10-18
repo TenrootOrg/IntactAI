@@ -1,0 +1,31 @@
+title: Windows Ldifde Directory Object Behavior
+id: 35cd29ca-f08c-4489-8815-f715c45460d3
+status: experimental
+description: The following analytic identifies the use of Ldifde.exe, a command-line utility for creating, modifying, or deleting
+  LDAP directory objects. This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process
+  execution and command-line arguments. Monitoring Ldifde.exe is significant because it can be used by attackers to manipulate
+  directory objects, potentially leading to unauthorized changes or data exfiltration. If confirmed malicious, this activity
+  could allow an attacker to gain control over directory services, escalate privileges, or access sensitive information within
+  the network.
+references:
+- https://research.splunk.com/35cd29ca-f08c-4489-8815-f715c45460d3/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1105
+- attack.t1069.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\ldifde.exe'
+  sel2:
+    CommandLine:
+    - '*-i *'
+    - '*-f *'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1069.002/AD_discovery/ldifde_windows-sysmon.log

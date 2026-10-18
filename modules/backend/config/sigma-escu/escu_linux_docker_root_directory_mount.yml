@@ -1,0 +1,32 @@
+title: Linux Docker Root Directory Mount
+id: aa049566-f76a-43b9-908c-3c27e079fd43
+status: experimental
+description: 'This detection identifies Docker containers that mount the host''s root directory into the container filesystem.
+
+  Mounting the entire host root directory into a container effectively grants the container visibility and potential write
+  access to all files on the host system.
+
+  If the container is running as root or with elevated capabilities (e.g., --privileged), the risk is significantly increased.'
+references:
+- https://research.splunk.com/aa049566-f76a-43b9-908c-3c27e079fd43/
+author: Splunk Security Content (Apache-2.0), Gowthamaraj Rajendran, Splunk, Emil Elsetrønning
+tags:
+- attack.t1611
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image: '*/docker*'
+  sel2:
+    CommandLine:
+    - '* -v *'
+    - '* --volume *'
+  sel3:
+    CommandLine: '* /:/*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548/docker/sysmon_linux.log

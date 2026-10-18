@@ -1,0 +1,35 @@
+title: Windows Default Group Policy Object Modified with GPME
+id: eaf688b3-bb8f-454d-b105-920a862cd8cb
+status: experimental
+description: The following analytic detects modifications to default Group Policy Objects (GPOs) using the Group Policy Management
+  Editor (GPME). It leverages the Endpoint data model to identify processes where `mmc.exe` executes `gpme.msc` with specific
+  GUIDs related to default GPOs. This activity is significant because default GPOs, such as the `Default Domain Controllers
+  Policy` and `Default Domain Policy`, are critical for enforcing security policies across the domain. If malicious, such
+  modifications could allow an attacker to gain further access, establish persistence, or deploy malware across numerous hosts,
+  severely compromising the network's security.
+references:
+- https://research.splunk.com/eaf688b3-bb8f-454d-b105-920a862cd8cb/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1484.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\mmc.exe'
+  sel2:
+    CommandLine: '*gpme.msc*'
+  sel3:
+    CommandLine: '*31B2F340-016D-11D2-945F-00C04FB984F9*'
+  sel4:
+    CommandLine: '*6AC1786C-016F-11D2-945F-00C04fB984F9*'
+  condition: (sel1 and sel2 and (sel3 or sel4))
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1484.001/default_domain_policy_modified/windows-security.log
+x-intact-burst: false
+x-intact: 'Fired 4 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

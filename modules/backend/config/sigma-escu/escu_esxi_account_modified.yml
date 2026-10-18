@@ -1,0 +1,30 @@
+title: ESXi Account Modified
+id: b5e3b024-a7bb-4019-8975-46cf54485e78
+status: experimental
+description: This detection identifies the creation, deletion, or modification of a local user account on an ESXi host. This
+  activity may indicate unauthorized access, indicator removal, or persistence attempts by an attacker seeking to establish
+  or maintain control of the host.
+references:
+- https://research.splunk.com/b5e3b024-a7bb-4019-8975-46cf54485e78/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1136.001
+- attack.t1078
+- attack.t1098
+logsource:
+  product: esxi
+detection:
+  sel1:
+    text: '*esxcli system account*'
+  sel2:
+    text:
+    - '*-i *'
+    - '*--id*'
+  sel3:
+    text: '*[shell*'
+  condition: (sel1 and sel2 and not (sel3))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1098/esxi_account_modification/esxi_account_modified.log

@@ -1,0 +1,86 @@
+title: Services LOLBAS Execution Process Spawn
+id: ba9e1954-4c04-11ec-8b74-3e22fbd008af
+status: experimental
+description: The following analytic identifies `services.exe` spawning a LOLBAS (Living Off the Land Binaries and Scripts)
+  execution process. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process creation events
+  where `services.exe` is the parent process. This activity is significant because adversaries often abuse the Service Control
+  Manager to execute malicious code via native Windows binaries, facilitating lateral movement. If confirmed malicious, this
+  behavior could allow attackers to execute arbitrary code, escalate privileges, or maintain persistence within the environment,
+  posing a severe security risk.
+references:
+- https://research.splunk.com/ba9e1954-4c04-11ec-8b74-3e22fbd008af/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1543.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\services.exe'
+  sel2:
+    Image:
+    - '*\\Regsvcs.exe'
+    - '*\\Ftp.exe'
+    - '*\\OfflineScannerShell.exe'
+    - '*\\Rasautou.exe'
+    - '*\\Schtasks.exe'
+    - '*\\Xwizard.exe'
+    - '*\\Dllhost.exe'
+    - '*\\Pnputil.exe'
+    - '*\\Atbroker.exe'
+    - '*\\Pcwrun.exe'
+    - '*\\Ttdinject.exe'
+    - '*\\Mshta.exe'
+    - '*\\Bitsadmin.exe'
+    - '*\\Certoc.exe'
+    - '*\\Ieexec.exe'
+    - '*\\Microsoft.Workflow.Compiler.exe'
+    - '*\\Runscripthelper.exe'
+    - '*\\Forfiles.exe'
+    - '*\\Msbuild.exe'
+    - '*\\Register-cimprovider.exe'
+    - '*\\Tttracer.exe'
+    - '*\\Ie4uinit.exe'
+    - '*\\Bash.exe'
+    - '*\\Hh.exe'
+    - '*\\SettingSyncHost.exe'
+    - '*\\Cmstp.exe'
+    - '*\\Mmc.exe'
+    - '*\\Stordiag.exe'
+    - '*\\Scriptrunner.exe'
+    - '*\\Odbcconf.exe'
+    - '*\\Extexport.exe'
+    - '*\\Msdt.exe'
+    - '*\\WorkFolders.exe'
+    - '*\\Diskshadow.exe'
+    - '*\\Mavinject.exe'
+    - '*\\Regasm.exe'
+    - '*\\Gpscript.exe'
+    - '*\\Rundll32.exe'
+    - '*\\Regsvr32.exe'
+    - '*\\Msiexec.exe'
+    - '*\\Wuauclt.exe'
+    - '*\\Presentationhost.exe'
+    - '*\\Wmic.exe'
+    - '*\\Runonce.exe'
+    - '*\\Syncappvpublishingserver.exe'
+    - '*\\Verclsid.exe'
+    - '*\\Infdefaultinstall.exe'
+    - '*\\Explorer.exe'
+    - '*\\Installutil.exe'
+    - '*\\Netsh.exe'
+    - '*\\Wab.exe'
+    - '*\\Dnscmd.exe'
+    - '*\\At.exe'
+    - '*\\Pcalua.exe'
+    - '*\\Msconfig.exe'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1543.003/lateral_movement_lolbas/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 8 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

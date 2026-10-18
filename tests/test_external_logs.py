@@ -129,6 +129,14 @@ class Shapes(unittest.TestCase):
                  "collector.hostname": "siem-collector-1", "type_id": 8031}] * 3
         self.assertEqual("device_name", X.detect_columns(rows)["host"])
 
+    def test_one_bad_spot_in_event_xml_loses_only_itself(self):
+        ev = ("<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='P'/>"
+              "<EventID>4104</EventID><Channel>Microsoft-Windows-PowerShell/Operational</Channel></System>"
+              "<EventData><Data Name='ScriptBlockText'>Get-DomainComputer {n}</Data></EventData></Event>")
+        text = "\r\n".join([ev.format(n=1), "garbage & < here", ev.format(n=2), ev.format(n=3).replace("</Data>", "")])
+        rows = X._xml_rows(text)
+        self.assertEqual(["Get-DomainComputer 1", "Get-DomainComputer 2"], [r["ScriptBlockText"] for r in rows])
+
     def test_gzip_and_utf16_are_read(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "a.gz")
@@ -142,6 +150,104 @@ class Shapes(unittest.TestCase):
 
     def test_free_text_is_not_a_structure(self):
         self.assertEqual(("", []), X.parse(FREE))
+
+    def test_auditd_enriched_separator_is_not_a_line_break(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "audit.log")
+        rec = ("type=ADD_USER msg=audit(1722960000.100:%d): pid=1 uid=0 auid=0 ses=1 msg='op=adding user "
+               "id=1001 exe=\"/usr/sbin/useradd\" hostname=web01 addr=? terminal=pts/0 res=success'\x1dUID=\"root\"\n")
+        with open(p, "w") as f:
+            f.write("".join(rec % i for i in range(5)))
+        fm, rows, left = X.read(X.read_text(p))
+        self.assertEqual(("kv", 5, 0), (fm, len(rows), len(left)))
+        self.assertEqual(("ADD_USER", "/usr/sbin/useradd", "root"), (rows[0]["type"], rows[0]["exe"], rows[0]["UID"]))
+
+    def test_auditd_path_records_stay_structured(self):
+        # PATH / CWD records have no host or address; as text no auditd rule saw them.
+        text = "\n".join(f"type=CWD msg=audit(1764000000.{i}:{i}): cwd=\"/etc\"\n"
+                          f"type=PATH msg=audit(1764000000.{i}:{i}): item=0 name=\"sudoers\" inode=1 nametype=NORMAL"
+                          for i in range(3))
+        fm, rows, _ = X.read(text)
+        self.assertTrue(X.recognized(X.normalize(rows, X.detect_columns(rows))))
+        self.assertEqual("/etc/sudoers", [r for r in rows if r["type"] == "PATH"][0]["full_path"])
+
+    def test_auditd_user_space_record_fields(self):
+        row = X._kv_row("type=SERVICE_STOP msg=audit(1722965459.146:15207): pid=1 uid=0 auid=4294967295 "
+                        "ses=4294967295 subj=unconfined msg='unit=auditd comm=\"systemd\" "
+                        "exe=\"/usr/lib/systemd/systemd\" hostname=? addr=? terminal=? res=success'"
+                        "UID=\"root\" AUID=\"unset\"")
+        self.assertEqual(("auditd", "systemd", "success", "audit(1722965459.146:15207)"),
+                         (row.get("unit"), row.get("comm"), row.get("res"), row.get("msg")))
+        self.assertNotIn("hostname", row)                  # "?" is none
+
+    def test_cisco_estreamer_intrusion_event(self):
+        # A bare dash ("Impact":-) broke the JSON; PriorityID is the IDS scale (1 = worst);
+        # the rule is IntrusionRuleMessage; UserID 9999997 is "no authentication", no user.
+        line = ('{"EventType":"IntrusionEvent", "EventSecond":1740804347, "InitiatorIP":"23.48.99.12", '
+                '"ResponderIP":"172.16.3.110", "ResponderPort":51500, "PriorityID":%d, "SignatureID":62710, '
+                '"Impact":-, "IntrusionRuleMessage":"MALWARE-OTHER Win.Malware.Lumma variant download attempt", '
+                '"UserID":9999997}')
+        fm, rows, _ = X.read("\n".join(line % p for p in (1, 1, 2, 3)))
+        n = X.normalize(rows, X.detect_columns(rows))
+        self.assertEqual("jsonl", fm)
+        self.assertEqual(["high", "high", "medium", "low"], [r["n"].get("severity") for r in n])
+        self.assertEqual("MALWARE-OTHER Win.Malware.Lumma variant download attempt", n[0]["n"]["rule"])
+        self.assertNotIn("user", n[0]["n"])
+
+    def test_a_dash_is_no_user(self):
+        # 4688 by a service: TargetUserName "-", the account is the subject.
+        rows = [{"TimeCreated": "2026-10-01T10:00:00Z", "Computer": "WS01", "SubjectUserName": "AR-WIN-DC$",
+                 "TargetUserName": "-", "NewProcessName": "C:\\Windows\\System32\\cmd.exe"}] * 3
+        n = X.normalize(rows, X.detect_columns(rows))
+        self.assertEqual("AR-WIN-DC$", n[0]["n"].get("user"))
+
+    def test_splunk_search_export_is_unwrapped(self):
+        line = ('{"preview":false,"result":{"eventType":"AwsApiCall","eventName":"UpdateSAMLProvider",'
+                '"sourceIPAddress":"66.176.252.11","userIdentity.principalId":"AROA:rsoto@splunk.local"}}')
+        fm, rows, _ = X.read("\n".join([line] * 3))
+        self.assertEqual(("jsonl", "UpdateSAMLProvider"), (fm, rows[0].get("eventName")))
+        self.assertNotIn("preview", rows[0])
+
+    def test_name_value_pairs_are_fields(self):
+        # Google Reports keeps an event's details as [{"name": ..., "value"/"multiValue": ...}]
+        r = X.sigma_event(X._flat({"event": {"name": "login_failure", "parameters": [
+            {"name": "login_type", "value": "google_password"},
+            {"name": "login_challenge_method", "multiValue": ["password", "google_authenticator"]}]}}))
+        self.assertEqual("google_password", r["event.parameters.login_type"])
+        self.assertEqual("password, google_authenticator", r["event.parameters.login_challenge_method"])
+        self.assertIn("event.parameters", r)                # the JSON text stays
+        self.assertNotIn("x.a", X.sigma_event(X._flat({"x": [{"a": 1, "b": 2, "c": 3, "d": 4}, {"a": 5}]})))  # not pairs
+        self.assertEqual(1, X.sigma_event(X._flat({"x": [{"a": 1, "b": 2, "c": 3, "d": 4}]}))["x.a"])  # one object
+        # For the rules only: an O365 "Parameters" pair named Priority once became the
+        # severity column, so every transport-rule change read as an alert.
+        rows = [{"CreationTime": "2026-10-01T10:00:00", "Operation": "New-TransportRule", "UserId": "a@b.com",
+                 "Parameters": [{"Name": "Priority", "Value": "2"}, {"Name": "Name", "Value": "fwd"}]}] * 3
+        fm, got, _ = X.read("\n".join(__import__("json").dumps(r) for r in rows))
+        n = X.normalize(got, X.detect_columns(got))
+        self.assertIsNone(n[0]["n"].get("severity"))
+
+    def test_a_change_list_has_old_and_new_fields(self):
+        r = X.sigma_event(X._flat({"Operation": "Update user.", "ModifiedProperties": [
+            {"Name": "StrongAuthenticationMethod", "NewValue": "[{MethodType: 6}]", "OldValue": "[]"}]}))
+        self.assertEqual("[{MethodType: 6}]", r["ModifiedProperties.StrongAuthenticationMethod.NewValue"])
+        self.assertEqual("[]", r["ModifiedProperties.StrongAuthenticationMethod.OldValue"])
+        r = X.sigma_event(X._flat({"targetResources": {"modifiedProperties": [
+            {"displayName": "AccountEnabled", "oldValue": "[false]", "newValue": "[true]"}]}}))
+        self.assertEqual("[true]", r["targetResources.modifiedProperties.AccountEnabled.NewValue"])
+
+    def test_squid_native_access_log(self):
+        # Padded columns and "TCP_MISS/200": read as unnamed columns, no web rule saw it.
+        text = "\n".join(["1157689312.049   5006 10.105.21.199 TCP_MISS/200 19763 CONNECT login.yahoo.com:443 "
+                          "badeyek DIRECT/209.73.177.115 -",
+                          "1157689320.327    864 10.105.21.199 TCP_DENIED/403 10182 GET http://evil.example/x.jsp?cmd=id "
+                          "- NONE/- text/html"] * 3)
+        fm, rows, _ = X.read(text)
+        self.assertEqual("squid-native", fm)
+        self.assertEqual({"src_ip": "10.105.21.199", "action": "TCP_DENIED", "status": "403", "method": "GET",
+                          "url": "http://evil.example/x.jsp?cmd=id", "hierarchy": "NONE"},
+                         {k: rows[1][k] for k in ("src_ip", "action", "status", "method", "url", "hierarchy")})
+        self.assertNotIn("dst_ip", rows[1])                 # "-" is empty
+        self.assertNotIn("user", rows[1])
 
 
 class FreeText(unittest.TestCase):

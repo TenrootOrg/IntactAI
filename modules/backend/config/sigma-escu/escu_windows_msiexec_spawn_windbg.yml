@@ -1,0 +1,27 @@
+title: Windows MSIExec Spawn WinDBG
+id: 9a18f7c2-1fe3-47b8-9467-8b3976770a30
+status: experimental
+description: The following analytic identifies the unusual behavior of MSIExec spawning WinDBG. It detects this activity by
+  analyzing endpoint telemetry data, specifically looking for instances where 'msiexec.exe' is the parent process of 'windbg.exe'.
+  This behavior is significant as it may indicate an attempt to debug or tamper with system processes, which is uncommon in
+  typical user activity and could signify malicious intent. If confirmed malicious, this activity could allow an attacker
+  to manipulate or inspect running processes, potentially leading to privilege escalation or persistence within the environment.
+references:
+- https://research.splunk.com/9a18f7c2-1fe3-47b8-9467-8b3976770a30/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.007
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\msiexec.exe'
+  sel2:
+    Image: '*\\windbg.exe'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.007/atomic_red_team/windbg_msiexec.log

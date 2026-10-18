@@ -1,0 +1,44 @@
+title: Windows Cmdline Tool Execution From Non-Shell Process
+id: 2afa393f-b88d-41b7-9793-623c93a2dfde
+status: experimental
+description: The following analytic identifies instances where `ipconfig.exe`, `systeminfo.exe`, or similar tools are executed
+  by a non-standard shell parent process, excluding CMD, PowerShell, or Explorer. This detection leverages Endpoint Detection
+  and Response (EDR) telemetry to monitor process creation events. Such behavior is significant as it may indicate adversaries
+  using injected processes to perform system discovery, a tactic observed in FIN7's JSSLoader. If confirmed malicious, this
+  activity could allow attackers to gather critical host information, aiding in further exploitation or lateral movement within
+  the network.
+references:
+- https://research.splunk.com/2afa393f-b88d-41b7-9793-623c93a2dfde/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1059.007
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\ipconfig.exe'
+    - '*\\systeminfo.exe'
+    - '*\\net1.exe'
+    - '*\\arp.exe'
+    - '*\\nslookup.exe'
+    - '*\\route.exe'
+    - '*\\netstat.exe'
+    - '*\\hostname.exe'
+    - '*\\whoami.exe'
+  sel2:
+    ParentImage:
+    - '*\\cmd.exe'
+    - '*\\powershell.exe'
+    - '*\\powershell_ise.exe'
+    - '*\\pwsh.exe'
+    - '*\\explorer.exe'
+    - '*\\-'
+    - '*\\unknown'
+  condition: (sel1 and not (sel2))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/fin7/jssloader/sysmon.log

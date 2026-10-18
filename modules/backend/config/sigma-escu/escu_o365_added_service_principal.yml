@@ -1,0 +1,32 @@
+title: O365 Added Service Principal
+id: 1668812a-6047-11eb-ae93-0242ac130002
+status: experimental
+description: The following analytic detects the addition of new service principal accounts in O365 tenants. It leverages data
+  from the `o365_management_activity` dataset, specifically monitoring for operations related to adding or creating service
+  principals. This activity is significant because attackers can exploit service principals to gain unauthorized access and
+  perform malicious actions within an organization's environment. If confirmed malicious, this could allow attackers to interact
+  with APIs, access resources, and execute operations on behalf of the organization, potentially leading to data breaches
+  or further compromise.
+references:
+- https://research.splunk.com/1668812a-6047-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Rod Soto, Splunk
+tags:
+- attack.t1136.003
+logsource:
+  product: m365
+  service: audit
+detection:
+  sel1:
+    Workload: AzureActiveDirectory
+  sel2:
+    Operation: '*Add service principal*'
+  sel3:
+    Operation: '*principal*'
+  sel4:
+    action: created
+  condition: (sel1 and (sel2 or (sel3 and sel4)))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1136.003/o365_added_service_principal/o365_add_service_principal.log

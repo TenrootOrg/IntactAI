@@ -1,0 +1,28 @@
+title: Powershell Creating Thread Mutex
+id: 637557ec-ca08-11eb-bd0a-acde48001122
+status: experimental
+description: The following analytic detects the execution of PowerShell scripts using the `mutex` function via EventCode 4104.
+  This detection leverages PowerShell Script Block Logging to identify scripts that create thread mutexes, a technique often
+  used in obfuscated scripts to ensure only one instance runs on a compromised machine. This activity is significant as it
+  may indicate the presence of sophisticated malware or persistence mechanisms. If confirmed malicious, the attacker could
+  maintain exclusive control over a process, potentially leading to further exploitation or persistence within the environment.
+references:
+- https://research.splunk.com/637557ec-ca08-11eb-bd0a-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1027.005
+- attack.t1059.001
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Threading.Mutex*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/powershell_script_block_logging/sbl_xml.log

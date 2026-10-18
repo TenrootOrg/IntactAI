@@ -1,0 +1,35 @@
+title: Windows InstallUtil Uninstall Option
+id: cfa7b9ac-43f0-11ec-9b48-acde48001122
+status: experimental
+description: The following analytic detects the use of the Windows InstallUtil.exe binary with the `/u` (uninstall) switch,
+  which can execute code while bypassing application control. This detection leverages data from Endpoint Detection and Response
+  (EDR) agents, focusing on process names, parent processes, and command-line executions. This activity is significant because
+  it can indicate an attempt to execute malicious code without administrative privileges. If confirmed malicious, an attacker
+  could achieve code execution, potentially leading to further system compromise or persistence within the environment.
+references:
+- https://research.splunk.com/cfa7b9ac-43f0-11ec-9b48-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\installutil.exe'
+  sel2:
+    OriginalFileName: InstallUtil.exe
+  sel3:
+    CommandLine:
+    - '*/u*'
+    - '*uninstall*'
+  sel4:
+    CommandLine: '*C:\\WINDOWS\\CCM\\*'
+  sel5:
+    ParentImage: '*\\Microsoft.SharePoint.Migration.ClientInstaller.exe'
+  condition: ((sel1 or sel2) and sel3 and not (sel4) and not (sel5))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.004/atomic_red_team/windows-sysmon.log

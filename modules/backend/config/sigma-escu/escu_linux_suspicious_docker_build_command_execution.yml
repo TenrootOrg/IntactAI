@@ -1,0 +1,31 @@
+title: Linux Suspicious Docker Build Command Execution
+id: dc4a58d2-fde3-4bdd-a36b-7368b2523589
+status: experimental
+description: 'The following analytic detects docker build being executed on Dockerfiles within the /tmp directory.
+
+  This is not a typical location for this activity and can indicate an actor adding a container for malicious future actions.'
+references:
+- https://research.splunk.com/dc4a58d2-fde3-4bdd-a36b-7368b2523589/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1610
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    CommandLine: '*docker*'
+  sel2:
+    CommandLine: '*build*'
+  sel3:
+    CommandLine: '*-f *'
+  sel4:
+    CommandLine: '* /tmp*'
+  sel5:
+    CurrentDirectory: /tmp*
+  condition: (sel1 and sel2 and ((sel3 and sel4) or sel5))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1610/linux_suspicious_docker_build/snapattack_linux.log

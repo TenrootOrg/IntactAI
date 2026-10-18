@@ -1,0 +1,80 @@
+title: Single Letter Process On Endpoint
+id: a4214f0b-e01c-41bc-8cc4-d2b71e3056b4
+status: experimental
+description: The following analytic detects processes with names consisting of a single letter, which is often indicative
+  of malware or an attacker attempting to evade detection. This detection leverages data from Endpoint Detection and Response
+  (EDR) agents, focusing on process names and command-line executions. This activity is significant because attackers use
+  such techniques to obscure their presence and carry out malicious activities like data theft or ransomware attacks. If confirmed
+  malicious, this behavior could lead to unauthorized access, data exfiltration, or system compromise. Immediate investigation
+  is required to determine the legitimacy of the process.
+references:
+- https://research.splunk.com/a4214f0b-e01c-41bc-8cc4-d2b71e3056b4/
+author: Splunk Security Content (Apache-2.0), David Dorsey, Splunk
+tags:
+- attack.t1204.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\_.exe'
+    - '*\\-.exe'
+    - '*\\,.exe'
+    - '*\\;.exe'
+    - '*\\!.exe'
+    - '*\\''.exe'
+    - '*\\(.exe'
+    - '*\\).exe'
+    - '*\\@.exe'
+    - '*\\&.exe'
+    - '*\\#.exe'
+    - '*\\%.exe'
+    - '*\\`.exe'
+    - '*\\^.exe'
+    - '*\\+.exe'
+    - '*\\=.exe'
+    - '*\\~.exe'
+    - '*\\$.exe'
+    - '*\\0.exe'
+    - '*\\1.exe'
+    - '*\\2.exe'
+    - '*\\3.exe'
+    - '*\\4.exe'
+    - '*\\5.exe'
+    - '*\\6.exe'
+    - '*\\7.exe'
+    - '*\\8.exe'
+    - '*\\9.exe'
+    - '*\\a.exe'
+    - '*\\b.exe'
+    - '*\\c.exe'
+    - '*\\d.exe'
+    - '*\\e.exe'
+    - '*\\f.exe'
+    - '*\\g.exe'
+    - '*\\h.exe'
+    - '*\\i.exe'
+    - '*\\j.exe'
+    - '*\\k.exe'
+    - '*\\l.exe'
+    - '*\\m.exe'
+    - '*\\N.exe'
+    - '*\\o.exe'
+    - '*\\p.exe'
+    - '*\\q.exe'
+    - '*\\r.exe'
+    - '*\\s.exe'
+    - '*\\t.exe'
+    - '*\\u.exe'
+    - '*\\v.exe'
+    - '*\\w.exe'
+    - '*\\x.exe'
+    - '*\\y.exe'
+    - '*\\z.exe'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1204.002/single_letter_exe/windows-sysmon.log

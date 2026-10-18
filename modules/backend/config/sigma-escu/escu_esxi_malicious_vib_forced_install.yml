@@ -1,0 +1,28 @@
+title: ESXi Malicious VIB Forced Install
+id: 5d4d2cd2-7b65-4474-97cf-e9b203bcd770
+status: experimental
+description: Detects potentially malicious installation of VMware Installation Bundles (VIBs) using the --force flag. The
+  --force option bypasses signature and compatibility checks, allowing unsigned, community-supported, or incompatible VIBs
+  to be installed on an ESXi host. This behavior is uncommon in normal administrative operations and is often observed in
+  post-compromise scenarios where adversaries attempt to install backdoored or unauthorized kernel modules, drivers, or monitoring
+  tools to establish persistence or gain deeper control of the hypervisor.
+references:
+- https://research.splunk.com/5d4d2cd2-7b65-4474-97cf-e9b203bcd770/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1505.006
+logsource:
+  product: esxi
+detection:
+  sel1:
+    text: '* image profile with validation disabled. *'
+  sel2:
+    text: '* image profile bypassing signing and acceptance level verification. *'
+  sel3:
+    text: '* vib without valid signature, *'
+  condition: ((sel1 or sel2) or sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1505.006/esxi_malicious_vib/esxi_malicious_vib_forced_install.log

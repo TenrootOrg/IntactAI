@@ -1,0 +1,30 @@
+title: Windows Impair Defense Disable Win Defender Compute File Hashes
+id: fe52c280-98bd-4596-b6f6-a13bbf8ac7c6
+status: experimental
+description: The following analytic detects modifications to the Windows registry that disable Windows Defender's file hash
+  computation by setting the EnableFileHashComputation value to 0. This detection leverages data from the Endpoint.Registry
+  data model, focusing on changes to the specific registry path associated with Windows Defender. Disabling file hash computation
+  can significantly impair Windows Defender's ability to detect and scan for malware, making it a critical behavior to monitor.
+  If confirmed malicious, this activity could allow attackers to bypass Windows Defender, facilitating undetected malware
+  execution and persistence in the environment.
+references:
+- https://research.splunk.com/fe52c280-98bd-4596-b6f6-a13bbf8ac7c6/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Windows Defender\\MpEngine\\EnableFileHashComputation'
+  sel2:
+    Details:
+    - '* (0x00000000)'
+    - '0x00000000'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable-windows-security-defender-features/windefender-bypas-2-sysmon.log

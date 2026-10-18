@@ -1,0 +1,27 @@
+title: Windows Registry Modification for Safe Mode Persistence
+id: c6149154-c9d8-11eb-9da7-acde48001122
+status: experimental
+description: The following analytic identifies modifications to the SafeBoot registry keys, specifically within the Minimal
+  and Network paths. This detection leverages registry activity logs from endpoint data sources like Sysmon or EDR tools.
+  Monitoring these keys is crucial as adversaries can use them to persist drivers or services in Safe Mode, with Network allowing
+  network connections. If confirmed malicious, this activity could enable attackers to maintain persistence even in Safe Mode,
+  potentially bypassing certain security measures and facilitating further malicious actions.
+references:
+- https://research.splunk.com/c6149154-c9d8-11eb-9da7-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Michael Haag, Splunk
+tags:
+- attack.t1547.001
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject:
+    - '*SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Minimal\\*'
+    - '*SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Network\\*'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/ransomware_ttp/data1/windows-sysmon.log

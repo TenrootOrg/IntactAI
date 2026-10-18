@@ -1,0 +1,30 @@
+title: Windows System Binary Proxy Execution Compiled HTML File Decompile
+id: 2acf0e19-4149-451c-a3f3-39cd3c77e37d
+status: experimental
+description: The following analytic detects the use of the decompile parameter with the HTML Help application (HH.exe). This
+  behavior is identified through Endpoint Detection and Response (EDR) telemetry, focusing on command-line executions involving
+  the decompile parameter. This activity is significant because it is an uncommon command and has been associated with APT41
+  campaigns, where it was used to unpack HTML help files for further malicious actions. If confirmed malicious, this technique
+  could allow attackers to execute arbitrary commands, potentially leading to further compromise and persistence within the
+  environment.
+references:
+- https://research.splunk.com/2acf0e19-4149-451c-a3f3-39cd3c77e37d/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\hh.exe'
+  sel2:
+    OriginalFileName: HH.EXE
+  sel3:
+    CommandLine: '*-decompile*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.001/atomic_red_team/hh_decom_windows-sysmon.log

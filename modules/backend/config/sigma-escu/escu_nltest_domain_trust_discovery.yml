@@ -1,0 +1,32 @@
+title: NLTest Domain Trust Discovery
+id: c3e05466-5f22-11eb-ae93-0242ac130002
+status: experimental
+description: The following analytic identifies the execution of `nltest.exe` with command-line arguments `/domain_trusts`
+  or `/all_trusts` to query Domain Trust information. It leverages data from Endpoint Detection and Response (EDR) agents,
+  focusing on process execution logs and command-line arguments. This activity is significant as it indicates potential reconnaissance
+  efforts by adversaries to understand domain trust relationships, which can inform their lateral movement strategies. If
+  confirmed malicious, this activity could enable attackers to map out trusted domains, facilitating further compromise and
+  pivoting within the network.
+references:
+- https://research.splunk.com/c3e05466-5f22-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1482
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\nltest.exe'
+  sel2:
+    OriginalFileName: nltestrk.exe
+  sel3:
+    CommandLine: '*/domain_trusts*'
+  sel4:
+    CommandLine: '*/all_trusts*'
+  condition: ((sel1 or sel2) and (sel3 or sel4))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1482/atomic_red_team/windows-sysmon.log

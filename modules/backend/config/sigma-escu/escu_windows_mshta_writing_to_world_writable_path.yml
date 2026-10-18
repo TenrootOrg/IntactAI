@@ -1,0 +1,48 @@
+title: Windows MSHTA Writing to World Writable Path
+id: efbcf8ee-bc75-47f1-8985-a5c638c4faf0
+status: experimental
+description: The following analytic identifies instances of `mshta.exe` writing files to world-writable directories. It leverages
+  Sysmon EventCode 11 logs to detect file write operations by `mshta.exe` to directories like `C:\Windows\Tasks` and `C:\Windows\Temp`.
+  This activity is significant as it often indicates an attempt to establish persistence or execute malicious code, deviating
+  from the utility's legitimate use. If confirmed malicious, this behavior could lead to the execution of multi-stage payloads,
+  potentially resulting in full system compromise and unauthorized access to sensitive information.
+references:
+- https://research.splunk.com/efbcf8ee-bc75-47f1-8985-a5c638c4faf0/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1218.005
+logsource:
+  product: windows
+  service: sysmon
+  category: file_event
+detection:
+  sel1:
+    EventID: '11'
+  sel2:
+    Image: '*\\mshta.exe'
+  sel3:
+    OriginalFileName: mshta.exe
+  sel4:
+    TargetFilename:
+    - '*\\Windows\\PLA\\Reports\\*'
+    - '*\\Windows\\PLA\\Rules\\*'
+    - '*\\Windows\\PLA\\Templates\\*'
+    - '*\\Windows\\Registration\\CRMLog\\*'
+    - '*\\Windows\\System32\\Com\\dmp\\*'
+    - '*\\Windows\\System32\\LogFiles\\WMI\\*'
+    - '*\\Windows\\System32\\Microsoft\\Crypto\\RSA\\MachineKeys\\*'
+    - '*\\Windows\\System32\\spool\\drivers\\color\\*'
+    - '*\\Windows\\System32\\spool\\PRINTERS\\*'
+    - '*\\Windows\\System32\\spool\\SERVERS\\*'
+    - '*\\Windows\\System32\\Tasks\\*'
+    - '*\\Windows\\SysWOW64\\Com\\dmp\\*'
+    - '*\\Windows\\SysWOW64\\Tasks\\*'
+    - '*\\Windows\\Tasks\\*'
+    - '*\\Windows\\Temp\\*'
+    - '*\\Windows\\tracing\\*'
+  condition: (sel1 and (sel2 or sel3) and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.005/atomic_red_team/mshta_tasks_windows-sysmon.log

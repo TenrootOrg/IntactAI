@@ -1,0 +1,30 @@
+title: O365 Security And Compliance Alert Triggered
+id: 5b367cdd-8dfc-49ac-a9b7-6406cf27f33e
+status: experimental
+description: The following analytic identifies alerts triggered by the Office 365 Security and Compliance Center, indicating
+  potential threats or policy violations. It leverages data from the `o365_management_activity` dataset, focusing on events
+  where the workload is SecurityComplianceCenter and the operation is AlertTriggered. This activity is significant as it highlights
+  security and compliance issues within the O365 environment, which are crucial for maintaining organizational security. If
+  confirmed malicious, these alerts could indicate attempts to breach security policies, leading to unauthorized access, data
+  exfiltration, or other malicious activities.
+references:
+- https://research.splunk.com/5b367cdd-8dfc-49ac-a9b7-6406cf27f33e/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1078.004
+logsource:
+  product: m365
+  service: audit
+detection:
+  sel1:
+    Workload: SecurityComplianceCenter
+  sel2:
+    Category: ThreatManagement
+  sel3:
+    Operation: AlertTriggered
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1078.004/o365_security_and_compliance_alert_triggered/o365_security_and_compliance_alert_triggered.log

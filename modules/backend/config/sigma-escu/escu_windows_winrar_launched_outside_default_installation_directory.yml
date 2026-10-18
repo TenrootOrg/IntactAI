@@ -1,0 +1,33 @@
+title: Windows WinRAR Launched Outside Default Installation Directory
+id: 3b711292-9793-4a88-8e89-6e016cfbc09c
+status: experimental
+description: 'This Analytics detects the execution of WinRAR or RAR outside the default installation directory.
+
+  This behavior can be significant as it could indicate attempts to archive collected sensitive data from the endpoint for
+  exfiltration.
+
+  We recommend reviewing the process path and the parent process path to determine if the execution is legitimate and if possible
+  validate the data being archived.'
+references:
+- https://research.splunk.com/3b711292-9793-4a88-8e89-6e016cfbc09c/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1047
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\Winrar.exe'
+    - '*\\rar.exe'
+  sel2:
+    Image:
+    - '*:\\Program Files (x86)\\WinRAR\\*'
+    - '*:\\Program Files\\WinRAR\\*'
+  condition: (sel1 and not (sel2))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1047/susp_winrar/blank123.log

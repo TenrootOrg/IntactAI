@@ -1,0 +1,31 @@
+title: MacOS Gatekeeper Bypass
+id: 2c9346f3-bbeb-48ce-8411-fc13d09d83a5
+status: experimental
+description: 'Detects known MacOS security bypass techniques that may be used to enable malicious code execution.
+
+  Specifically monitors for attempts to remove the com.apple.quarantine attribute using xattr, or to disable Gatekeeper protections
+  via spctl --master-disable, both of which can allow untrusted or malicious applications to execute without standard system
+  safeguards.'
+references:
+- https://research.splunk.com/2c9346f3-bbeb-48ce-8411-fc13d09d83a5/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1553.001
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    CommandLine: '*xattr*'
+  sel2:
+    CommandLine: '*com.apple.quarantine*'
+  sel3:
+    CommandLine: '*spctl*'
+  sel4:
+    CommandLine: '*master-disable*'
+  condition: ((sel1 and sel2) or (sel3 and sel4))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1553.001/osquery_gatekeeper/osquery.log

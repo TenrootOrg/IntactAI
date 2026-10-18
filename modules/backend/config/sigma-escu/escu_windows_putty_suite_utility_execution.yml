@@ -1,0 +1,43 @@
+title: Windows PuTTY Suite Utility Execution
+id: 64d5263e-0f29-4641-81ed-03b39c27ecd4
+status: experimental
+description: 'This analytic detects the execution of programs associated with the PuTTY SSH client suite, including putty.exe,
+  pscp.exe, plink.exe, psftp.exe, and puttygen.exe.
+
+  This activity is significant because these tools can be used to establish unauthorized remote connections, transfer files,
+  or execute commands on remote systems.
+
+  If identified in an unusual context, such as non-administrative accounts or unexpected systems, it may indicate attempts
+  to bypass security controls, perform lateral movement, or exfiltrate data, which could lead to further network compromise.'
+references:
+- https://research.splunk.com/64d5263e-0f29-4641-81ed-03b39c27ecd4/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1021.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\putty.exe'
+    - '*\\pscp.exe'
+    - '*\\plink.exe'
+    - '*\\psftp.exe'
+    - '*\\puttygen.exe'
+  sel2:
+    OriginalFileName:
+    - PuTTY
+    - PSCP
+    - Plink
+    - PSFTP
+    - PuTTYgen
+  condition: (sel1 or sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.004/snapattack/snapattack.log
+x-intact-burst: false
+x-intact: 'Fired 1 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

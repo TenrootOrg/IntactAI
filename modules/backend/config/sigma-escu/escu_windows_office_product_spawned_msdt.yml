@@ -1,0 +1,40 @@
+title: Windows Office Product Spawned MSDT
+id: a3148fad-3734-4b7f-9a71-62f08d39fab1
+status: experimental
+description: The following analytic detects a Microsoft Office product spawning the Windows msdt.exe process. This detection
+  leverages data from Endpoint Detection and Response (EDR) agents, focusing on process creation events where Office applications
+  are the parent process. This activity is significant as it may indicate an attempt to exploit protocol handlers to bypass
+  security controls, even if macros are disabled. If confirmed malicious, this behavior could allow an attacker to execute
+  arbitrary code, potentially leading to system compromise, data exfiltration, or further lateral movement within the network.
+references:
+- https://research.splunk.com/a3148fad-3734-4b7f-9a71-62f08d39fab1/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Teoderick Contreras, Splunk
+tags:
+- attack.t1566.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage:
+    - '*\\EQNEDT32.exe'
+    - '*\\excel.exe'
+    - '*\\Graph.exe'
+    - '*\\msaccess.exe'
+    - '*\\mspub.exe'
+    - '*\\onenote.exe'
+    - '*\\onenoteim.exe'
+    - '*\\onenotem.exe'
+    - '*\\outlook.exe'
+    - '*\\powerpnt.exe'
+    - '*\\visio.exe'
+    - '*\\winproj.exe'
+    - '*\\winword.exe'
+  sel2:
+    Image: '*\\msdt.exe'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566.001/macro/msdt.log

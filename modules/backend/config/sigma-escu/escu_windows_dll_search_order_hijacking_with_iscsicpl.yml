@@ -1,0 +1,38 @@
+title: Windows DLL Search Order Hijacking with iscsicpl
+id: f39ee679-3b1e-4f47-841c-5c3c580acda2
+status: experimental
+description: The following analytic detects DLL search order hijacking involving iscsicpl.exe. It identifies when iscsicpl.exe
+  loads a malicious DLL from a new path, triggering the payload execution. This detection leverages data from Endpoint Detection
+  and Response (EDR) agents, focusing on child processes spawned by iscsicpl.exe. This activity is significant as it indicates
+  a potential attempt to execute unauthorized code via DLL hijacking. If confirmed malicious, this could allow an attacker
+  to execute arbitrary code, escalate privileges, or maintain persistence within the environment.
+references:
+- https://research.splunk.com/f39ee679-3b1e-4f47-841c-5c3c580acda2/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1574.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\iscsicpl.exe'
+  sel2:
+    Image:
+    - '*\\cmd.exe'
+    - '*\\powershell.exe'
+    - '*\\powershell_ise.exe'
+    - '*\\pwsh.exe'
+    - '*\\sh.exe'
+    - '*\\bash.exe'
+    - '*\\wscript.exe'
+    - '*\\cscript.exe'
+    - '*\\wt.exe'
+    - '*\\WindowsTerminal.exe'
+    - '*\\mshta.exe'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1574.001/iscsicpl/iscsicpl-windows-sysmon.log

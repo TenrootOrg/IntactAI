@@ -1,0 +1,27 @@
+title: ESXi Download Errors
+id: 515cccd0-c4d8-4427-92d9-8a8f8b5a71dc
+status: experimental
+description: This detection identifies failed file download attempts on ESXi hosts by looking for specific error messages
+  in the system logs. These failures may indicate unauthorized or malicious attempts to install or update components—such
+  as VIBs or scripts
+references:
+- https://research.splunk.com/515cccd0-c4d8-4427-92d9-8a8f8b5a71dc/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1601.001
+- attack.t1685
+logsource:
+  product: esxi
+detection:
+  sel1:
+    text:
+    - '*Download failed*'
+    - '*Failed to download file*'
+    - '*File download error*'
+    - '*Could not download*'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1601.001/esxi_download_errors/esxi_download_errors.log

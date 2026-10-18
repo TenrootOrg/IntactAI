@@ -1,0 +1,26 @@
+title: Windows Impair Defense Change Win Defender Quick Scan Interval
+id: 783f0798-f679-4c17-b3b3-187febf0b9b8
+status: experimental
+description: The following analytic detects modifications to the Windows registry that change the Windows Defender Quick Scan
+  Interval. It leverages data from the Endpoint.Registry data model, focusing on changes to the "QuickScanInterval" registry
+  path. This activity is significant because altering the scan interval can impair Windows Defender's ability to detect malware
+  promptly, potentially allowing threats to persist undetected. If confirmed malicious, this modification could enable attackers
+  to bypass security measures, maintain persistence, and execute further malicious activities without being detected by quick
+  scans.
+references:
+- https://research.splunk.com/783f0798-f679-4c17-b3b3-187febf0b9b8/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Windows Defender\\Scan\\QuickScanInterval'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable-windows-security-defender-features/windefender-bypas-2-sysmon.log

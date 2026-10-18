@@ -1,0 +1,28 @@
+title: GetDomainGroup with PowerShell Script Block
+id: 09725404-a44f-4ed3-9efa-8ed5d69e4c53
+status: experimental
+description: The following analytic detects the execution of the `Get-DomainGroup` cmdlet using PowerShell Script Block Logging
+  (EventCode=4104). This cmdlet, part of the PowerView tool, is used to enumerate domain groups within a Windows domain. The
+  detection leverages script block text to identify this specific command. Monitoring this activity is crucial as it may indicate
+  an adversary or Red Team performing reconnaissance to gain situational awareness and map out Active Directory structures.
+  If confirmed malicious, this activity could lead to further exploitation, including privilege escalation and lateral movement
+  within the network.
+references:
+- https://research.splunk.com/09725404-a44f-4ed3-9efa-8ed5d69e4c53/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1069.002
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*Get-DomainGroup*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.001/powershell_script_block_logging/domaingroup.log

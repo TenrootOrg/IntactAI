@@ -1,0 +1,39 @@
+title: Windows System Shutdown CommandLine
+id: 4fee57b8-d825-4bf3-9ea8-bf405cdb614c
+status: experimental
+description: The following analytic identifies the execution of the Windows shutdown command via the command line interface.
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process names and command-line arguments.
+  This activity is significant because attackers may use the shutdown command to erase tracks, cause disruption, or ensure
+  changes take effect after installing backdoors. If confirmed malicious, this activity could lead to system downtime, denial
+  of service, or evasion of security tools, impacting the overall security posture of the network.
+references:
+- https://research.splunk.com/4fee57b8-d825-4bf3-9ea8-bf405cdb614c/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1529
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\shutdown.exe'
+  sel2:
+    OriginalFileName: shutdown.exe
+  sel3:
+    CommandLine: '*shutdown*'
+  sel4:
+    CommandLine:
+    - '* /s*'
+    - '* -s*'
+  sel5:
+    CommandLine:
+    - '* /t*'
+    - '* -t*'
+    - '* /f*'
+    - '* -f*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/dcrat/shutdown_commandline/sysmon.log

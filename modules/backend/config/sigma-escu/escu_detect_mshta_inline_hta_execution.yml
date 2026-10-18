@@ -1,0 +1,32 @@
+title: Detect mshta inline hta execution
+id: a0873b32-5b68-11eb-ae93-0242ac130002
+status: experimental
+description: The following analytic detects the execution of "mshta.exe" with inline protocol handlers such as "JavaScript",
+  "VBScript", and "About". It leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line arguments
+  and process details. This activity is significant because mshta.exe can be exploited to execute malicious scripts, potentially
+  leading to unauthorized code execution. If confirmed malicious, this could allow an attacker to execute arbitrary code,
+  escalate privileges, or establish persistence within the environment, posing a severe security risk.
+references:
+- https://research.splunk.com/a0873b32-5b68-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Michael Haag, Splunk
+tags:
+- attack.t1218.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\mshta.exe'
+  sel2:
+    OriginalFileName: MSHTA.EXE
+  sel3:
+    CommandLine:
+    - '*vbscript*'
+    - '*javascript*'
+    - '*about*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1218.005/atomic_red_team/windows-sysmon.log

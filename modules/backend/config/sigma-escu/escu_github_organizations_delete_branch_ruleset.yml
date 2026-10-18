@@ -1,0 +1,30 @@
+title: GitHub Organizations Delete Branch Ruleset
+id: 8e454f64-4bd6-45e6-8a94-1b482593d721
+status: experimental
+description: 'The following analytic detects when branch rulesets are deleted in GitHub Organizations. The detection monitors
+  GitHub Organizations audit logs for branch ruleset deletion events by tracking actor details, repository information, and
+  associated metadata. For a SOC, identifying deleted branch rulesets is critical as it could indicate attempts to bypass
+  code review requirements and security controls. Branch rulesets are essential security controls that enforce code review,
+  prevent force pushes, and maintain code quality. Disabling these protections could allow malicious actors to directly push
+  unauthorized code changes or backdoors to protected branches. The impact of disabled branch protection includes potential
+  code tampering, bypass of security reviews, introduction of vulnerabilities or malicious code, and compromise of software
+  supply chain integrity. This activity could be part of a larger attack chain where an adversary first disables security
+  controls before attempting to inject '
+references:
+- https://research.splunk.com/8e454f64-4bd6-45e6-8a94-1b482593d721/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1685
+- attack.t1195
+logsource:
+  product: github
+  service: audit
+detection:
+  sel1:
+    action: repository_ruleset.destroy
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/github_delete_branch_ruleset/github.json

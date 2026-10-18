@@ -1,0 +1,42 @@
+title: Windows WBAdmin File Recovery From Backup
+id: 0175f0b7-728d-4038-bbf1-1c30d6ee3d31
+status: experimental
+description: 'The following analytic identifies the execution of wbadmin.exe with arguments indicative of restoring files
+  from an existing backup.
+
+  WBAdmin is a legitimate Windows Backup utility used for creating, managing, and restoring backups. However, adversaries
+  may abuse it to restore specific files (e.g., sensitive credentials, configuration files, or malware stagers) from prior
+  backups to regain access or re-establish persistence after cleanup or encryption events.
+
+  Monitoring this behavior is important because restoring individual files from a system backup outside of approved recovery
+  workflows may indicate an attacker attempting to retrieve deleted or encrypted data, recover previously dropped payloads,
+  or access prior system states as part of post-compromise activity.
+
+  If confirmed malicious, this action could enable attackers to regain operational footholds, extract sensitive data, or restore
+  tampered components, undermining remediation and containment efforts.'
+references:
+- https://research.splunk.com/0175f0b7-728d-4038-bbf1-1c30d6ee3d31/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1490
+- attack.t1565.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wbadmin.exe'
+  sel2:
+    OriginalFileName: WBADMIN.EXE
+  sel3:
+    CommandLine: '*start*'
+  sel4:
+    CommandLine: '*recovery*'
+  sel5:
+    CommandLine: '*itemtype:file*'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1565.001/wbadmin_recovery/wbadmin_recovery.log

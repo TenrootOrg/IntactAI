@@ -1,0 +1,39 @@
+title: Windows WinPEAS PowerShell Script Execution
+id: 5cb208df-e1aa-478d-ab2f-8270ff9999b9
+status: experimental
+description: 'Detects the execution of the WinPEAS PowerShell script via default function names used within the script.
+
+  winPEAS is a Windows tool that stands for Windows Privilege Escalation Awesome Script.
+
+  Similar to its Linux counterpart, linpeas.sh, winPEAS is designed to automate the process of identifying potential privilege
+  escalation paths on Windows systems.'
+references:
+- https://research.splunk.com/5cb208df-e1aa-478d-ab2f-8270ff9999b9/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1590
+- attack.t1007
+- attack.t1082
+- attack.t1033
+- attack.t1592.002
+- attack.t1592.004
+- attack.t1016
+- attack.t1615
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText:
+    - '*returnHotFixID*'
+    - '*Start-ACLCheck*'
+    - '*UnquotedServicePathCheck*'
+    - '*Get-ClipBoardText*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1590/snapattack/snapattack.log

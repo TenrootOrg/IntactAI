@@ -1,0 +1,33 @@
+title: Windows Devtunnels Execution
+id: b2630bb6-97df-405a-88b5-de6bb2c12cc3
+status: experimental
+description: 'Detects the execution of Microsoft devtunnels.exe.
+
+  Microsoft Devtunnels is a feature within Visual Studio that allows developers to expose their local development environment
+  to the internet via secure, temporary tunnels, enabling external access for testing webhooks, APIs, and other services.
+
+  While designed for legitimate development purposes, an attacker could exploit this feature to expose a compromised system
+  or service to the internet, creating a covert communication channel that bypasses network security measures.
+
+  By using Dev Tunnels, the attacker can establish a remote connection to the compromised environment, facilitate data exfiltration,
+  or maintain command-and-control communications while avoiding detection by blending their activities with legitimate development
+  traffic.'
+references:
+- https://research.splunk.com/b2630bb6-97df-405a-88b5-de6bb2c12cc3/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1090
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    OriginalFileName: devtunnel.dll
+  sel2:
+    Image: '*\\devtunnel.exe'
+  condition: (sel1 or sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1090/snapattack/snapattack.log

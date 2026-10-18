@@ -1,0 +1,43 @@
+title: Windows Powershell Commands from DNS TXT
+id: b61353cd-5b09-4699-8b86-6517a9038043
+status: experimental
+description: 'The following analytic detects execution of powershell commands retrieved from a remote DNS TXT query response.
+
+  The use of the DNS TXT record for C2 is an uncommon method for malware that is resilient due to the need for DNS in normal
+  networking
+
+  activities.
+
+  This can ensure that their C2 is not blocked by any firewalls.'
+references:
+- https://research.splunk.com/b61353cd-5b09-4699-8b86-6517a9038043/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1071.004
+- attack.t1059.001
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText:
+    - '*resolve-dnsname *'
+    - '*nslookup *'
+    - '*dig *'
+  sel3:
+    ScriptBlockText:
+    - '*-Type TXT*'
+    - '*type=txt*'
+    - '* TXT*'
+  sel4:
+    ScriptBlockText:
+    - '*. (*'
+    - '*IEX*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1071.004/windows_powershell_commands_from_dns_txt/snapattack_windows.log

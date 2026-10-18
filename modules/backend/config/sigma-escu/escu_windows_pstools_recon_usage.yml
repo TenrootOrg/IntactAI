@@ -1,0 +1,62 @@
+title: Windows PsTools Recon Usage
+id: 9a5f4b3e-1d2b-4c6f-9a8e-3b7d2f5c1a6e
+status: experimental
+description: 'The following analytic identifies execution of Sysinternals PsTools and Sysinternals Suit binaries that are
+  commonly used for reconnaissance and information gathering on
+
+  Windows endpoints.
+
+  PsTools (PsExec, PsFile, PsGetSid, PsInfo, PsPing, etc.) or Sysinternals Suit tools, are frequently used by administrators
+  for legitimate maintenance but are also leveraged by threat actors to collect system, account, network and service information
+  during discovery and lateral movement.
+
+  This detection focuses on process execution and PE metadata telemetry (OriginalFileName).
+
+  If confirmed malicious, this activity can indicate targeted reconnaissance and foothold escalation, enabling subsequent
+  lateral movement or credential abuse.'
+references:
+- https://research.splunk.com/9a5f4b3e-1d2b-4c6f-9a8e-3b7d2f5c1a6e/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali
+tags:
+- attack.t1082
+- attack.t1046
+- attack.t1018
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\PsGetsid.exe'
+    - '*\\PsGetsid64.exe'
+    - '*\\PsInfo.exe'
+    - '*\\PsInfo64.exe'
+    - '*\\pslist.exe'
+    - '*\\pslist64.exe'
+    - '*\\PsLoggedon.exe'
+    - '*\\PsLoggedon64.exe'
+    - '*\\psloglist.exe'
+    - '*\\psloglist64.exe'
+    - '*\\PsPing.exe'
+    - '*\\PsPing64.exe'
+    - '*\\PsService.exe'
+    - '*\\PsService64.exe'
+    - '*\\Tcpvcon.exe'
+    - '*\\Tcpvcon64.exe'
+    - '*\\Tcpvcon64a.exe'
+  sel2:
+    OriginalFileName:
+    - PsGetSid.exe
+    - Psinfo.exe
+    - pslist.exe
+    - psloggedon.exe
+    - psloglist.exe
+    - psping.exe
+    - psservice.exe
+    - Tcpvcon.exe
+  condition: (sel1 or sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1082/sysinternals_pstools/sysinternals_pstools.log

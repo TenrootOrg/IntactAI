@@ -1,0 +1,42 @@
+title: Windows EDRSilencer Execution
+id: a206324d-4945-4b0c-a731-87c311ddae2f
+status: experimental
+description: 'Detects the usage of EDRSilencer.
+
+  Inspired by the closed-source FireBlock tool from MdSec NightHawk, this custom tool was developed to block outbound traffic
+  of running Endpoint Detection and Response (EDR) processes using Windows Filtering Platform (WFP) APIs.
+
+  Its features include searching for running EDR processes and applying WFP filters to block outbound traffic, adding filters
+  for specific processes, and removing filters either individually or globally.
+
+  The tool includes a custom implementation to avoid file handle access issues with EDR processes by bypassing the CreateFileW
+  API.
+
+  It supports a wide range of EDRs, including Microsoft Defender, Carbon Black, SentinelOne, and more, though further testing
+  on various EDRs is recommended.
+
+  The tool has been tested on Windows 10 and Windows Server 2016, and its usage involves simple commands for blocking or unblocking
+  traffic.'
+references:
+- https://research.splunk.com/a206324d-4945-4b0c-a731-87c311ddae2f/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\EDRSilencer.exe'
+  sel2:
+    CommandLine:
+    - '* blockedr'
+    - '* blockedr *'
+  sel3:
+    CommandLine: '*blockedreport*'
+  condition: (sel1 or (sel2 and not (sel3)))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562/snapattack/snapattack.log

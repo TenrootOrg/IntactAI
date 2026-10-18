@@ -1,0 +1,33 @@
+title: MacOS Osascript Executing Interactive Shell
+id: 01168215-d1c7-4a37-8bd3-c5b64664c947
+status: experimental
+description: 'This analytic detects the macOS osascript utility being used with an interactive Bash invocation, identified
+  by the presence
+
+  of "bash -i" in the command line.
+
+  Adversaries may abuse osascript and AppleScript''s shell execution capabilities to launch
+
+  interactive shells, establish remote access, or execute post-exploitation commands.'
+references:
+- https://research.splunk.com/01168215-d1c7-4a37-8bd3-c5b64664c947/
+author: Splunk Security Content (Apache-2.0), Radka Viskova, Splunk
+tags:
+- attack.t1059.002
+- attack.t1059.004
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    Image: '*/osascript'
+  sel2:
+    CommandLine: '*bash *'
+  sel3:
+    CommandLine: '* -i*'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.002/osascript_spawns_shell_process/osascript_spawns_shell_process.log

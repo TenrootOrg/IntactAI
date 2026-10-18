@@ -1,0 +1,32 @@
+title: Windows Finger.exe Connecting to a Remote Host
+id: 86a5686a-7bc4-469c-9f88-2620279ede6e
+status: experimental
+description: 'The following analytic identifies the `finger.exe` utility being spawned with a command line containing an `@`
+  character, indicating a remote host/server was specified.
+
+  The Finger protocol utility is largely obsolete in modern environments and has been abused by adversaries as a living-off-the-land
+  binary (LOLBIN) to retrieve encoded payloads or establish covert command-and-control communication with an attacker-controlled
+  finger server.
+
+  This behavior is uncommon in legitimate enterprise usage and warrants investigation.'
+references:
+- https://research.splunk.com/86a5686a-7bc4-469c-9f88-2620279ede6e/
+author: Splunk Security Content (Apache-2.0), Onur Mustafa Erdogan, Splunk
+tags:
+- attack.t1071
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\finger.exe'
+  sel2:
+    OriginalFileName: finger.exe
+  sel3:
+    CommandLine: '*@*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1071/finger_remote_host/finger_remote_host.log

@@ -1,0 +1,30 @@
+title: Windows Powershell Logoff User via Quser
+id: 6d70780d-4cfe-4820-bafd-1b43941986b5
+status: experimental
+description: 'The following analytic detects the process of logging off a user through the use of the quser and logoff commands.
+
+  By monitoring for these commands, the analytic identifies actions where a user session is forcibly terminated, which could
+  be part of an administrative task or a potentially unauthorized access attempt.
+
+  This detection helps identify potential misuse or malicious activity where a user''s access is revoked without proper authorization,
+  providing insight into potential security incidents involving account management or session manipulation.'
+references:
+- https://research.splunk.com/6d70780d-4cfe-4820-bafd-1b43941986b5/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1059.001
+- attack.t1531
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*quser*logoff*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1531/log_off_user/pwh_quser_logoff.log

@@ -1,0 +1,30 @@
+title: Powershell Using memory As Backing Store
+id: c396a0c4-c9f2-11eb-b4f5-acde48001122
+status: experimental
+description: The following analytic detects suspicious PowerShell script execution using memory streams as a backing store,
+  identified via EventCode 4104. It leverages PowerShell Script Block Logging to capture scripts that create new objects with
+  memory streams, often used to decompress and execute payloads in memory. This activity is significant as it indicates potential
+  in-memory execution of malicious code, bypassing traditional file-based detection. If confirmed malicious, this technique
+  could allow attackers to execute arbitrary code, maintain persistence, or escalate privileges without leaving a trace on
+  the disk.
+references:
+- https://research.splunk.com/c396a0c4-c9f2-11eb-b4f5-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1059.001
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*New-Object*'
+  sel3:
+    ScriptBlockText: '*IO.MemoryStream*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/honeypots/pwsh/windows-powershell-xml.log

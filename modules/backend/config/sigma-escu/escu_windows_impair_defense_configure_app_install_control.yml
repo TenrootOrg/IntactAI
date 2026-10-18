@@ -1,0 +1,36 @@
+title: Windows Impair Defense Configure App Install Control
+id: c54b7439-cfb1-44c3-bb35-b0409553077c
+status: experimental
+description: The following analytic detects modifications to the Windows registry that disable the Windows Defender SmartScreen
+  App Install Control feature. It leverages data from the Endpoint.Registry data model to identify changes to specific registry
+  values. This activity is significant because disabling App Install Control can allow users to install potentially malicious
+  web-based applications without restrictions, increasing the risk of security vulnerabilities. If confirmed malicious, this
+  action could lead to the installation of harmful applications, potentially compromising the system and exposing sensitive
+  information.
+references:
+- https://research.splunk.com/c54b7439-cfb1-44c3-bb35-b0409553077c/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Microsoft\\Windows Defender\\SmartScreen\\ConfigureAppInstallControl'
+  sel2:
+    Details:
+    - '* (Anywhere)'
+    - Anywhere
+  sel3:
+    TargetObject: '*\\Microsoft\\Windows Defender\\SmartScreen\\ConfigureAppInstallControlEnabled'
+  sel4:
+    Details:
+    - '* (0x00000000)'
+    - '0x00000000'
+  condition: ((sel1 and sel2) or (sel3 and sel4))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable-windows-security-defender-features/windefender-bypas-2-sysmon.log

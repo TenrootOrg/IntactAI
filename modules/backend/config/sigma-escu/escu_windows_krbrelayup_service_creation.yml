@@ -1,0 +1,26 @@
+title: Windows KrbRelayUp Service Creation
+id: e40ef542-8241-4419-9af4-6324582ea60a
+status: experimental
+description: The following analytic detects the creation of a service with the default name "KrbSCM" associated with the KrbRelayUp
+  tool. It leverages Windows System Event Logs, specifically EventCode 7045, to identify this activity. This behavior is significant
+  as KrbRelayUp is a known tool used for privilege escalation attacks. If confirmed malicious, this activity could allow an
+  attacker to escalate privileges, potentially gaining unauthorized access to sensitive systems and data.
+references:
+- https://research.splunk.com/e40ef542-8241-4419-9af4-6324582ea60a/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1543.003
+logsource:
+  product: windows
+  service: system
+detection:
+  sel1:
+    EventID: '7045'
+  sel2:
+    ServiceName: KrbSCM
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1543.003/windows_krbrelayup_service_creation/windows-xml.log

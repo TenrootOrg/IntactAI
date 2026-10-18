@@ -1,0 +1,33 @@
+title: Windows Privilege Escalation Attempt Via MSI Rollback
+id: f40a5edd-8086-4ad8-868a-805270e9b167
+status: experimental
+description: 'Detects an attacker abusing the Windows Installer rollback mechanism to escalate privileges from a standard
+  user to SYSTEM without triggering a UAC prompt, using a technique known as FolderContentsDeleteToFolderDelete.
+
+  Windows Installer (msiexec.exe) creates rollback scripts during software installation to undo changes if an installation
+  fails.
+
+  These rollback scripts are generated and executed by the Windows Installer service, which runs as SYSTEM.
+
+  The FolderContentsDeleteToFolderDelete technique abuses this trusted mechanism by crafting a malicious rollback script that
+  instructs the SYSTEM-level Installer service to delete attacker-chosen files or directories — effectively giving a low-privileged
+  attacker the ability to make SYSTEM-level filesystem modifications without any privilege prompt.'
+references:
+- https://research.splunk.com/f40a5edd-8086-4ad8-868a-805270e9b167/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*/target "C:\\Config.msi" *'
+  sel2:
+    CommandLine: '*/initial*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/snapattack/snapattack.log

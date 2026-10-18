@@ -1,0 +1,28 @@
+title: Windows Command Obfuscation with Environment Variable Substrings
+id: 08a9ddcc-5b02-4055-abc5-945ba399f596
+status: experimental
+description: 'Detects command obfuscation by using a technique to build a target command using character indexes from environment
+  variables.
+
+  This hides the true intent of the command by building it on the fly.
+
+  In Windows command prompt, you can use the :~ format to extract substrings from environment variable values.
+
+  This behavior has been observed in various malware families, including Cobalt Strike and Meterpreter.'
+references:
+- https://research.splunk.com/08a9ddcc-5b02-4055-abc5-945ba399f596/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1027.010
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    CommandLine: '*%%*:~*,*'
+  condition: sel1
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1027.010/snapattack/snapattack.log

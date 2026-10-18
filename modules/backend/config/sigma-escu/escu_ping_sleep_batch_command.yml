@@ -1,0 +1,65 @@
+title: Ping Sleep Batch Command
+id: ce058d6c-79f2-11ec-b476-acde48001122
+status: experimental
+description: 'The following analytic identifies the use of ping commands as a delay or sleep mechanism within batch-style
+  command execution.
+
+  It leverages process creation telemetry from Endpoint Detection and Response (EDR) agents and examines process and parent
+  process command-line fields for ping commands that specify a count and are chained with additional commands using command
+  separators or redirection operators.
+
+  While execution of the command may generate individual process creation events, such as a separate ping.exe process, this
+  analytic specifically focuses on the original command string passed to a command interpreter, such as cmd.exe /c, that combines
+  the ping-based delay with subsequent command execution.
+
+  Adversaries may use ping as an alternative to explicit sleep or timeout commands to introduce execution delays, potentially
+  evading automated analysis, sandboxing, or behavior-based detection.
+
+  Because ping is commonly used for legitimate network troubleshooting, findings should be revi'
+references:
+- https://research.splunk.com/ce058d6c-79f2-11ec-b476-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1497.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentCommandLine: '*ping*'
+  sel2:
+    ParentCommandLine:
+    - '*-n*'
+    - '*/n*'
+  sel3:
+    ParentCommandLine:
+    - '*& *'
+    - '*&amp;*'
+    - '*&C:*'
+    - '*&gt;*'
+    - '*>*'
+    - '*||*'
+    - '*&*'
+  sel4:
+    Image: '*\\ping.exe'
+  sel5:
+    OriginalFileName: ping.exe
+  sel6:
+    CommandLine:
+    - '*-n*'
+    - '*/n*'
+  sel7:
+    CommandLine:
+    - '*& *'
+    - '*&amp;*'
+    - '*&C:*'
+    - '*&gt;*'
+    - '*>*'
+    - '*||*'
+    - '*&*'
+  condition: ((sel1 and sel2 and sel3) or ((sel4 or sel5) and sel6 and sel7))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1497.003/ping_sleep/sysmon.log

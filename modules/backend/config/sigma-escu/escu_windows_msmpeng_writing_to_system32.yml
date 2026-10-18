@@ -1,0 +1,33 @@
+title: Windows MsMpEng Writing to System32
+id: dc615235-1241-411a-b170-b34a4c8924aa
+status: experimental
+description: 'Detects MsMpEng.exe creating a file in C:\\Windows\\System32\\.
+
+  This should never happen under normal operation Windows Defender does not install kernel drivers at runtime.
+
+  In the BlueHammer exploit, the TOCTOU race causes MsMpEng (SYSTEM) to write the attacker''s driver payload directly into
+  the drivers directory.'
+references:
+- https://research.splunk.com/dc615235-1241-411a-b170-b34a4c8924aa/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1068
+- attack.t1543.003
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  sel1:
+    EventID: '15'
+  sel2:
+    EventID: '11'
+  sel3:
+    Image: '*\\MsMpEng.exe'
+  sel4:
+    TargetFilename: '*:\\Windows\\System32\\*'
+  condition: ((sel1 or sel2) and sel3 and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1068/bluehammer/windows-sysmon.log

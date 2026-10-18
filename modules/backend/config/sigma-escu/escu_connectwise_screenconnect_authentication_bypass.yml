@@ -1,0 +1,31 @@
+title: ConnectWise ScreenConnect Authentication Bypass
+id: d3f7a803-e802-448b-8eb2-e796b223bfff
+status: experimental
+description: The following analytic detects attempts to exploit the ConnectWise ScreenConnect CVE-2024-1709 vulnerability,
+  which allows attackers to bypass authentication via an alternate path or channel. It leverages web request logs to identify
+  access to the SetupWizard.aspx page, indicating potential exploitation. This activity is significant as it can lead to unauthorized
+  administrative access and remote code execution. If confirmed malicious, attackers could create administrative users and
+  gain full control over the affected system, posing severe security risks. Immediate remediation by updating to version 23.9.8
+  or above is recommended.
+references:
+- https://research.splunk.com/d3f7a803-e802-448b-8eb2-e796b223bfff/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1190
+logsource:
+  category: web
+detection:
+  sel1:
+    c-uri:
+    - '*/SetupWizard.aspx/*'
+    - '*/SetupWizard/'
+  sel2:
+    sc-status: '200'
+  sel3:
+    cs-method: POST
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/screenconnect/connectwise_auth_suricata.log

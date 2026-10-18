@@ -1,0 +1,47 @@
+title: Windows Phantom DLL Created on Disk
+id: 34cb2dfb-1dec-4b6b-bc72-c3904e5e4521
+status: experimental
+description: 'The following analytic detects creation of DLL files with names associated with phantom DLL hijacking opportunities.
+
+  These DLLs are usually absent from standard Windows installations, but legitimate Windows components or services may attempt
+  to load them when they are present in expected search paths such as System32.
+
+  Phantom DLL hijacking involves placing a malicious DLL where a legitimate process will search for a non-existent dependency,
+  allowing the attacker-controlled library to execute in that process context.
+
+  ShieldBreak is one example where the exploit redirects a privileged Defender-driven write into C:\Windows\System32\phoneinfo.dll
+  and then triggers Windows Error Reporting so wermgr.exe loads the planted DLL at SYSTEM integrity.
+
+  If confirmed malicious, this activity can indicate preparation for code execution, persistence, or local privilege escalation
+  through DLL search order hijacking.'
+references:
+- https://research.splunk.com/34cb2dfb-1dec-4b6b-bc72-c3904e5e4521/
+author: Splunk Security Content (Apache-2.0), Onur Mustafa Erdogan, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1574.001
+- attack.t1068
+logsource:
+  category: file_event
+  product: windows
+detection:
+  sel1:
+    TargetFilename:
+    - '*:\\Windows\\System32\\axeonoffhelper.dll'
+    - '*:\\Windows\\System32\\cdpsgshims.dll'
+    - '*:\\Windows\\System32\\oci.dll'
+    - '*:\\Windows\\System32\\offdmpsvc.dll'
+    - '*:\\Windows\\System32\\shellchromeapi.dll'
+    - '*:\\Windows\\System32\\TSMSISrv.dll'
+    - '*:\\Windows\\System32\\TSVIPSrv.dll'
+    - '*:\\Windows\\System32\\wbem\\wbemcomn.dll'
+    - '*:\\Windows\\System32\\WLBSCTRL.dll'
+    - '*:\\Windows\\System32\\wow64log.dll'
+    - '*:\\Windows\\System32\\WptsExtensions.dll'
+    - '*\\phoneinfo.dll'
+    - '*\\SprintCSP.dll'
+  condition: sel1
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/emerging_threats/ShieldBreak/phoneinfo_dll_created.log

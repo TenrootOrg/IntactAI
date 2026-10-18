@@ -1,0 +1,36 @@
+title: Windows Devtunnels Image Loaded
+id: 15bb8eb7-8e68-490b-9032-18f7adce53c7
+status: experimental
+description: 'Detects image load events associated with Microsoft Devtunnels usage.
+
+  Microsoft Devtunnels is a feature within Visual Studio that allows developers to expose their local development environment
+  to the internet via secure, temporary tunnels, enabling external access for testing webhooks, APIs, and other services.
+
+  While designed for legitimate development purposes, an attacker could exploit this feature to expose a compromised system
+  or service to the internet, creating a covert communication channel that bypasses network security measures.
+
+  By using Dev Tunnels, the attacker can establish a remote connection to the compromised environment, facilitate data exfiltration,
+  or maintain command-and-control communications while avoiding detection by blending their activities with legitimate development
+  traffic.'
+references:
+- https://research.splunk.com/15bb8eb7-8e68-490b-9032-18f7adce53c7/
+author: Splunk Security Content (Apache-2.0), Raven Tait, Splunk
+tags:
+- attack.t1090
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    ImageLoaded: '*\\AppData\\Local\\Temp\\.net\\devtunnel\\*'
+  sel3:
+    ImageLoaded: '*devtunnel.dll'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1090/snapattack/snapattack.log

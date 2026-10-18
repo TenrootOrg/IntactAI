@@ -1,0 +1,32 @@
+title: Remote System Discovery with Wmic
+id: d82eced3-b1dc-42ab-859e-a2fc98827359
+status: experimental
+description: The following analytic detects the execution of `wmic.exe` with specific command-line arguments used to discover
+  remote systems within a domain. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process
+  names and command-line executions. This activity is significant as it indicates potential reconnaissance efforts by adversaries
+  to map out network resources and Active Directory structures. If confirmed malicious, this behavior could allow attackers
+  to gain situational awareness, identify critical systems, and plan further attacks, potentially leading to unauthorized
+  access and data exfiltration.
+references:
+- https://research.splunk.com/d82eced3-b1dc-42ab-859e-a2fc98827359/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1018
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    CommandLine: '*/NAMESPACE:\\\\root\\directory\\ldap*'
+  sel3:
+    CommandLine: '*ds_computer*'
+  sel4:
+    CommandLine: '*GET ds_samaccountname*'
+  condition: (sel1 and (sel2 and sel3 and sel4))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1018/AD_discovery/windows-sysmon.log

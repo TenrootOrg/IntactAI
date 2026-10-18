@@ -1,0 +1,33 @@
+title: WBAdmin Delete System Backups
+id: cd5aed7e-5cea-11eb-ae93-0242ac130002
+status: experimental
+description: The following analytic detects the execution of wbadmin.exe with flags that delete backup files, specifically
+  targeting catalog or system state backups. It leverages data from Endpoint Detection and Response (EDR) agents, focusing
+  on process names and command-line arguments. This activity is significant because it is commonly used by ransomware to prevent
+  recovery by deleting system backups. If confirmed malicious, this action could severely hinder recovery efforts, leading
+  to prolonged downtime and potential data loss.
+references:
+- https://research.splunk.com/cd5aed7e-5cea-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1490
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wbadmin.exe'
+  sel2:
+    OriginalFileName: WBADMIN.EXE
+  sel3:
+    CommandLine: '*delete*'
+  sel4:
+    CommandLine: '*catalog*'
+  sel5:
+    CommandLine: '*backup*'
+  condition: ((sel1 or sel2) and sel3 and (sel4 or sel5))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1490/atomic_red_team/windows-sysmon.log

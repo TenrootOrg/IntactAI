@@ -1,0 +1,33 @@
+title: JetBrains TeamCity RCE Attempt
+id: 89a58e5f-1365-4793-b45c-770abbb32b6c
+status: experimental
+description: 'The following analytic detects attempts to exploit the CVE-2023-42793 vulnerability in JetBrains TeamCity On-Premises.
+
+  It identifies suspicious POST requests to /app/rest/users/id:1/tokens/RPC2, leveraging the Web datamodel to monitor specific
+  URL patterns and HTTP methods.
+
+  This activity is significant as it may indicate an unauthenticated attacker attempting to gain administrative access via
+  Remote Code Execution (RCE).
+
+  If confirmed malicious, this could allow the attacker to execute arbitrary code, potentially compromising the entire TeamCity
+  environment and leading to further unauthorized access and data breaches.'
+references:
+- https://research.splunk.com/89a58e5f-1365-4793-b45c-770abbb32b6c/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1190
+logsource:
+  category: web
+detection:
+  sel1:
+    c-uri: '*/app/rest/users/id:1/tokens/RPC2*'
+  sel2:
+    sc-status: '200'
+  sel3:
+    cs-method: POST
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/jetbrains/teamcity.log

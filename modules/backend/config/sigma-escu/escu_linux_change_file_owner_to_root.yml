@@ -1,0 +1,29 @@
+title: Linux Change File Owner To Root
+id: c1400ea2-6257-11ec-ad49-acde48001122
+status: experimental
+description: The following analytic detects the use of the 'chown' command to change a file owner to 'root' on a Linux system.
+  It leverages Endpoint Detection and Response (EDR) telemetry, specifically monitoring command-line executions and process
+  details. This activity is significant as it may indicate an attempt to escalate privileges by adversaries, malware, or red
+  teamers. If confirmed malicious, this action could allow an attacker to gain root-level access, leading to full control
+  over the compromised host and potential persistence within the environment.
+references:
+- https://research.splunk.com/c1400ea2-6257-11ec-ad49-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1222.002
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image: '*/chown'
+  sel2:
+    CommandLine: '*chown *'
+  sel3:
+    CommandLine: '* root *'
+  condition: ((sel1 or sel2) and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1548.001/chmod_uid/sysmon_linux.log

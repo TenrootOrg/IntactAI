@@ -1,0 +1,30 @@
+title: Windows Impair Defense Change Win Defender Tracing Level
+id: fe9391cd-952a-4c64-8f56-727cb0d4f2d4
+status: experimental
+description: The following analytic detects modifications to the Windows registry specifically targeting the "WppTracingLevel"
+  setting within Windows Defender. This detection leverages data from the Endpoint.Registry data model to identify changes
+  in the registry path associated with Windows Defender tracing levels. Such modifications are significant as they can impair
+  the diagnostic capabilities of Windows Defender, potentially hiding malicious activities. If confirmed malicious, this activity
+  could allow an attacker to evade detection and maintain persistence within the environment, leading to further compromise
+  and data exfiltration.
+references:
+- https://research.splunk.com/fe9391cd-952a-4c64-8f56-727cb0d4f2d4/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Windows Defender\\Reporting\\WppTracingLevel'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/disable-windows-security-defender-features/windefender-bypas-2-sysmon.log

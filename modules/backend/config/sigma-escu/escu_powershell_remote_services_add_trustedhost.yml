@@ -1,0 +1,32 @@
+title: Powershell Remote Services Add TrustedHost
+id: bef21d24-297e-45e3-9b9a-c6ac45450474
+status: experimental
+description: The following analytic detects the execution of a PowerShell script that modifies the 'TrustedHosts' configuration
+  via EventCode 4104. It leverages PowerShell Script Block Logging to identify commands targeting WSMan settings, specifically
+  those altering or concatenating trusted hosts. This activity is significant as it can indicate attempts to manipulate remote
+  connection settings, potentially allowing unauthorized remote access. If confirmed malicious, this could enable attackers
+  to establish persistent remote connections, bypass security protocols, and gain unauthorized access to sensitive systems
+  and data.
+references:
+- https://research.splunk.com/bef21d24-297e-45e3-9b9a-c6ac45450474/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1021.006
+logsource:
+  product: windows
+  category: ps_script
+detection:
+  sel1:
+    EventID: '4104'
+  sel2:
+    ScriptBlockText: '*WSMan:\\localhost\\Client\\TrustedHosts*'
+  sel3:
+    ScriptBlockText:
+    - '* -Value *'
+    - '* -Concatenate *'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1021.006/wsman_trustedhost/wsman_pwh.log

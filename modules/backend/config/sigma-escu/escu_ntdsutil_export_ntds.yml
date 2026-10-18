@@ -1,0 +1,29 @@
+title: Ntdsutil Export NTDS
+id: da63bc76-61ae-11eb-ae93-0242ac130002
+status: experimental
+description: The following analytic detects the use of Ntdsutil to export the Active Directory database (NTDS.dit). It leverages
+  data from Endpoint Detection and Response (EDR) agents, focusing on process names and command-line arguments. This activity
+  is significant because exporting NTDS.dit can be a precursor to offline password cracking, posing a severe security risk.
+  If confirmed malicious, an attacker could gain access to sensitive credentials, potentially leading to unauthorized access
+  and privilege escalation within the network.
+references:
+- https://research.splunk.com/da63bc76-61ae-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Patrick Bareiss, Splunk
+tags:
+- attack.t1003.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\ntdsutil.exe'
+  sel2:
+    CommandLine: '*ntds*'
+  sel3:
+    CommandLine: '*create*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1003.003/atomic_red_team/windows-sysmon.log

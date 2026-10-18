@@ -1,0 +1,38 @@
+title: Windows FFmpeg DirectShow Video Capture
+id: 636f1a0b-562a-4629-80f6-5ad46d2ebdee
+status: experimental
+description: This analytic detects active video capture performed by FFmpeg (ffmpeg.exe) via the Windows DirectShow (dshow)
+  interface, a technique observed in SalatStealer and related UAC-0252 campaigns. After enumerating available devices, threat
+  actors invoke FFmpeg with a specific video capture command that references a named webcam device (video=), requests MJPEG
+  encoding (mjpeg), and uses the dshow input filter — all from a temporary directory to reduce forensic footprint. This sequence
+  moves beyond reconnaissance into active collection, aligning with MITRE ATT&CK T1125 (Video Capture), where adversaries
+  silently record from the victim's webcam to gather intelligence or capture sensitive on-screen activity. The presence of
+  ffmpeg.exe in a temp path combined with these DirectShow video arguments is highly anomalous outside of dedicated multimedia
+  or screen-recording software, making it a strong signal of covert surveillance activity.
+references:
+- https://research.splunk.com/636f1a0b-562a-4629-80f6-5ad46d2ebdee/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1125
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\ffmpeg.exe'
+  sel2:
+    OriginalFileName: ffmpeg.exe
+  sel3:
+    Image: '*\\temp\\*'
+  sel4:
+    CommandLine: '*video=*'
+  sel5:
+    CommandLine: '* mjpeg *'
+  sel6:
+    CommandLine: '* dshow *'
+  condition: ((sel1 or sel2) and sel3 and sel4 and sel5 and sel6)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1125/salat_stealer_ffmpeg/ffmpeg_event.log

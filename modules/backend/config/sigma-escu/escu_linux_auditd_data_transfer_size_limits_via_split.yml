@@ -1,0 +1,27 @@
+title: Linux Auditd Data Transfer Size Limits Via Split
+id: 4669561d-3bbd-44e3-857c-0e3c6ef2120c
+status: experimental
+description: The following analytic detects suspicious data transfer activities that involve the use of the `split` syscall,
+  potentially indicating an attempt to evade detection by breaking large files into smaller parts. Attackers may use this
+  technique to bypass size-based security controls, facilitating the covert exfiltration of sensitive data. By monitoring
+  for unusual or unauthorized use of the `split` syscall, this analytic helps identify potential data exfiltration attempts,
+  allowing security teams to intervene and prevent the unauthorized transfer of critical information from the network.
+references:
+- https://research.splunk.com/4669561d-3bbd-44e3-857c-0e3c6ef2120c/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1030
+logsource:
+  product: linux
+  service: auditd
+detection:
+  sel1:
+    CommandLine: '*split*'
+  sel2:
+    CommandLine: '*-b *'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1030/linux_auditd_split_b_exec/auditd_execve_split.log

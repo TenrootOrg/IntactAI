@@ -1,0 +1,44 @@
+title: WMIC XSL Execution via URL
+id: 787e9dd0-4328-11ec-a029-acde48001122
+status: experimental
+description: 'The following analytic detects `wmic.exe` loading a remote XSL script
+
+  via a URL. This detection leverages Endpoint Detection and Response (EDR) data,
+
+  focusing on command-line executions that include HTTP/HTTPS URLs and the /FORMAT
+
+  switch. This activity is significant as it indicates a potential application control
+
+  bypass, allowing adversaries to execute JScript or VBScript within an XSL file.
+
+  If confirmed malicious, this technique can enable attackers to execute arbitrary
+
+  code, escalate privileges, or maintain persistence using a trusted Windows tool,
+
+  posing a severe threat to the environment.'
+references:
+- https://research.splunk.com/787e9dd0-4328-11ec-a029-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1220
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\wmic.exe'
+  sel2:
+    OriginalFileName: wmic.exe
+  sel3:
+    CommandLine:
+    - '*http://*'
+    - '*https://*'
+  sel4:
+    CommandLine: '*/format:*'
+  condition: ((sel1 or sel2) and sel3 and sel4)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1220/atomic_red_team/windows-sysmon.log
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_network_visibility_module/cisco_nvm_flowdata/nvm_flowdata.log

@@ -1,0 +1,34 @@
+title: Windows Default Group Policy Object Modified
+id: fe6a6cc4-9e0d-4d66-bcf4-2c7f44860876
+status: experimental
+description: The following analytic detects modifications to default Group Policy Objects (GPOs) using Event ID 5136. It monitors
+  changes to the `Default Domain Controllers Policy` and `Default Domain Policy`, which are critical for enforcing security
+  settings across domain controllers and all users/computers, respectively. This activity is significant because unauthorized
+  changes to these GPOs can indicate an adversary with privileged access attempting to deploy persistence mechanisms or execute
+  malware across the network. If confirmed malicious, such modifications could lead to widespread compromise, allowing attackers
+  to maintain control and execute arbitrary code on numerous hosts.
+references:
+- https://research.splunk.com/fe6a6cc4-9e0d-4d66-bcf4-2c7f44860876/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1484.001
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '5136'
+  sel2:
+    ObjectClass: groupPolicyContainer
+  sel3:
+    AttributeLDAPDisplayName: versionNumber
+  sel4:
+    ObjectDN: CN={31B2F340-016D-11D2-945F-00C04FB984F9},CN=POLICIES,CN=SYSTEM,DC=*
+  sel5:
+    ObjectDN: CN={6AC1786C-016F-11D2-945F-00C04fB984F9},CN=POLICIES,CN=SYSTEM,DC=*
+  condition: (sel1 and sel2 and sel3 and (sel4 or sel5))
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1484.001/default_domain_policy_modified/windows-security.log

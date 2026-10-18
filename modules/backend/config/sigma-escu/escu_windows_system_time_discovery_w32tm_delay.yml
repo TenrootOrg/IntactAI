@@ -1,0 +1,35 @@
+title: Windows System Time Discovery W32tm Delay
+id: b2cc69e7-11ba-42dc-a269-59c069a48870
+status: experimental
+description: The following analytic identifies the use of the w32tm.exe utility with the /stripchart function, which is indicative
+  of DCRat malware delaying its payload execution. This detection leverages data from Endpoint Detection and Response (EDR)
+  agents, focusing on specific command-line arguments used by w32tm.exe. This activity is significant as it may indicate an
+  attempt to evade detection by delaying malicious actions such as C2 communication and beaconing. If confirmed malicious,
+  this behavior could allow an attacker to maintain persistence and execute further malicious activities undetected.
+references:
+- https://research.splunk.com/b2cc69e7-11ba-42dc-a269-59c069a48870/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1124
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\w32tm.exe'
+  sel2:
+    CommandLine: '* /stripchart *'
+  sel3:
+    CommandLine: '* /computer:localhost *'
+  sel4:
+    CommandLine: '* /period:*'
+  sel5:
+    CommandLine: '* /dataonly *'
+  sel6:
+    CommandLine: '* /samples:*'
+  condition: (sel1 and sel2 and sel3 and sel4 and sel5 and sel6)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/dcrat/dcrat_delay_execution/sysmon.log

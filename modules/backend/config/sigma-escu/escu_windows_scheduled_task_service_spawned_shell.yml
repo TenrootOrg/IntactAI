@@ -1,0 +1,57 @@
+title: Windows Scheduled Task Service Spawned Shell
+id: d8120352-3b62-4e3c-8cb6-7b47584dd5e8
+status: experimental
+description: 'The following analytic detects when the Task Scheduler service ("svchost.exe -k netsvcs -p -s Schedule") spawns
+  common command line, scripting, or shell execution binaries such as "powershell.exe" or "cmd.exe".
+
+  This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on process and parent process
+  relationships.
+
+  This activity is significant as attackers often abuse the Task Scheduler for execution and persistence, blending in with
+  legitimate Windows operations.
+
+  If confirmed malicious, this could allow attackers to execute arbitrary code, maintain persistence, or escalate privileges
+  within the environment.'
+references:
+- https://research.splunk.com/d8120352-3b62-4e3c-8cb6-7b47584dd5e8/
+author: Splunk Security Content (Apache-2.0), Steven Dick
+tags:
+- attack.t1053.005
+- attack.t1059
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    ParentImage: '*\\svchost.exe'
+  sel2:
+    ParentCommandLine: '*-k*'
+  sel3:
+    ParentCommandLine: '*netsvcs*'
+  sel4:
+    ParentCommandLine: '*-p*'
+  sel5:
+    ParentCommandLine: '*-s*'
+  sel6:
+    ParentCommandLine: '*Schedule*'
+  sel7:
+    Image:
+    - '*\\bash.exe'
+    - '*\\cmd.exe'
+    - '*\\cscript.exe'
+    - '*\\ksh.exe'
+    - '*\\powershell.exe'
+    - '*\\pwsh.exe'
+    - '*\\scrcons.exe'
+    - '*\\sh.exe'
+    - '*\\wscript.exe'
+    - '*\\zsh.exe'
+  condition: (sel1 and sel2 and sel3 and sel4 and sel5 and sel6 and sel7)
+level: low
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/gootloader/partial_ttps/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 6 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

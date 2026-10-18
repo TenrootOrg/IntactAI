@@ -1,0 +1,28 @@
+title: Windows Modify Registry on Smart Card Group Policy
+id: 1522145a-8e86-4f83-89a8-baf62a8f489d
+status: experimental
+description: This analytic is developed to detect suspicious registry modifications targeting the "scforceoption" key. Altering
+  this key enforces smart card login for all users, potentially disrupting normal access methods. Unauthorized changes to
+  this setting could indicate an attempt to restrict access or force a specific authentication method, possibly signifying
+  malicious intent to manipulate system security protocols.
+references:
+- https://research.splunk.com/1522145a-8e86-4f83-89a8-baf62a8f489d/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1112
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  sel1:
+    TargetObject: '*\\Windows\\CurrentVersion\\Policies\\System\\scforceoption*'
+  sel2:
+    Details:
+    - '* (0x00000001)'
+    - '0x00000001'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1112/smart_card_group_policy/scforceoption-reg.log

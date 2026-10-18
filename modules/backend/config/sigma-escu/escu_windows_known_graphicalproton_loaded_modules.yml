@@ -1,0 +1,43 @@
+title: Windows Known GraphicalProton Loaded Modules
+id: bf471c94-0324-4b19-a113-d02749b969bc
+status: experimental
+description: The following analytic detects the loading of DLL modules associated with the GraphicalProton backdoor implant,
+  commonly used by SVR in targeted attacks. It leverages Sysmon EventCode 7 to identify specific DLLs loaded by processes.
+  This activity is significant as it may indicate the presence of a sophisticated backdoor, warranting immediate investigation.
+  If confirmed malicious, the attacker could gain persistent access to the compromised host, potentially leading to further
+  exploitation and data exfiltration.
+references:
+- https://research.splunk.com/bf471c94-0324-4b19-a113-d02749b969bc/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1574.001
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    ImageLoaded:
+    - '*\\AclNumsInvertHost.dll'
+    - '*\\ModeBitmapNumericAnimate.dll'
+    - '*\\UnregisterAncestorAppendAuto.dll'
+    - '*\\DeregisterSeekUsers.dll'
+    - '*\\ScrollbarHandleGet.dll'
+    - '*\\PerformanceCaptionApi.dll'
+    - '*\\WowIcmpRemoveReg.dll'
+    - '*\\BlendMonitorStringBuild.dll'
+    - '*\\HandleFrequencyAll.dll'
+    - '*\\HardSwapColor.dll'
+    - '*\\LengthInMemoryActivate.dll'
+    - '*\\ParametersNamesPopup.dll'
+    - '*\\ModeFolderSignMove.dll'
+    - '*\\ChildPaletteConnected.dll'
+    - '*\\AddressResourcesSpec.dll'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1574.002/svr_loaded_modules/loaded_module_svr.log

@@ -1,0 +1,30 @@
+title: O365 New Federated Domain Added
+id: e155876a-6048-11eb-ae93-0242ac130002
+status: experimental
+description: The following analytic identifies the addition of a new federated domain in an Office 365 environment. This behavior
+  is detected by analyzing Office 365 management activity logs, specifically filtering for Workload=Exchange and Operation="Add-FederatedDomain".
+  The addition of a new federated domain is significant as it may indicate unauthorized changes or potential compromises.
+  If confirmed malicious, attackers could establish a backdoor, bypass security measures, or exfiltrate data, leading to data
+  breaches and unauthorized access to sensitive information. Immediate investigation is required to review the details of
+  the added domain and any concurrent suspicious activities.
+references:
+- https://research.splunk.com/e155876a-6048-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Rod Soto, Mauricio Velazco Splunk
+tags:
+- attack.t1136.003
+logsource:
+  product: m365
+  service: audit
+detection:
+  sel1:
+    Operation:
+    - '*add*'
+    - '*new*'
+  sel2:
+    Operation: '*domain*'
+  condition: (sel1 and sel2)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1136.003/o365_new_federated_domain_added/o365_add_federated_domain.log

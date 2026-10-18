@@ -1,0 +1,43 @@
+title: Windows Scheduled Task Created Via XML
+id: 7e03b682-3965-4598-8e91-a60a40a3f7e4
+status: experimental
+description: 'The following analytic detects the creation of scheduled tasks in Windows using schtasks.exe with the "XML"
+  parameter.
+
+  This detection leverages data from Endpoint Detection and Response (EDR) agents, focusing on command-line executions and
+  process details.
+
+  This activity is significant as it is a common technique for establishing persistence or achieving privilege escalation,
+  often used by malware like Trickbot and Winter-Vivern. While creating a scheduled task via XML may be legitimate, it can
+  also be abused by attackers. If confirmed malicious, this could allow attackers to maintain access, execute additional payloads,
+  and potentially lead to data theft or ransomware deployment.'
+references:
+- https://research.splunk.com/7e03b682-3965-4598-8e91-a60a40a3f7e4/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1053.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\schtasks.exe'
+  sel2:
+    OriginalFileName: schtasks.exe
+  sel3:
+    CommandLine:
+    - '* /create *'
+    - '* -create *'
+  sel4:
+    CommandLine:
+    - '* /xml *'
+    - '* -xml *'
+  condition: ((sel1 or sel2) and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/winter-vivern/scheduledtask/sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 11 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

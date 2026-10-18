@@ -1,0 +1,40 @@
+title: MacOS AppleScript Shell Execution and Compilation
+id: ceee1f2b-4b40-4721-b91e-40d1134e9dc4
+status: experimental
+description: 'The following analytic detects the use of macOS AppleScript utilities to execute shell commands or compile AppleScript
+  containing shell-command logic.
+
+  The analytic identifies `osascript` invocations using AppleScript''s `do shell script` command, which executes shell commands
+  on the host.
+
+  It also identifies `osacompile` invocations referencing `do shell script`. `osacompile` compiles AppleScript into a compiled
+  script but does not execute it directly.
+
+  Adversaries may abuse these utilities to execute shell commands, stage AppleScript payloads, or prepare scripts for later
+  execution. Matches involving `osacompile` should be interpreted as script compilation or staging rather than confirmed shell-command
+  execution.'
+references:
+- https://research.splunk.com/ceee1f2b-4b40-4721-b91e-40d1134e9dc4/
+author: Splunk Security Content (Apache-2.0), Radka Viskova, Splunk
+tags:
+- attack.t1059.002
+logsource:
+  category: process_creation
+  product: macos
+detection:
+  sel1:
+    Image:
+    - '*/osascript'
+    - '*/osacompile'
+  sel2:
+    CommandLine: '*do *'
+  sel3:
+    CommandLine: '* shell *'
+  sel4:
+    CommandLine: '* script*'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059.002/osascript_do_shell_script/osascript_do_shell_script.log

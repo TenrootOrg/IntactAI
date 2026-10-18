@@ -1,0 +1,28 @@
+title: Schtasks Run Task On Demand
+id: bb37061e-af1f-11eb-a159-acde48001122
+status: experimental
+description: The following analytic detects the execution of a Windows Scheduled Task on demand via the shell or command line.
+  It leverages process-related data, including process name, parent process, and command-line executions, sourced from endpoint
+  logs. The detection focuses on 'schtasks.exe' with an associated 'run' command. This activity is significant as adversaries
+  often use it to force the execution of their created Scheduled Tasks for persistent access or lateral movement within a
+  compromised machine. If confirmed malicious, this could allow attackers to maintain persistence or move laterally within
+  the network, potentially leading to further compromise.
+references:
+- https://research.splunk.com/bb37061e-af1f-11eb-a159-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1053
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\schtasks.exe'
+  sel2:
+    CommandLine: '*/run*'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/xmrig_miner/windows-sysmon.log

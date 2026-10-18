@@ -1,0 +1,31 @@
+title: Adobe ColdFusion Unauthenticated Arbitrary File Read
+id: 695aceae-21db-4e7f-93ac-a52e39d02b93
+status: experimental
+description: 'The following analytic detects potential exploitation of the Adobe ColdFusion vulnerability, CVE-2023-26360,
+  which allows unauthenticated arbitrary file read.
+
+  It monitors POST requests to the "/cf_scripts/scripts/ajax/ckeditor/*" endpoint using the Web datamodel.
+
+  This activity can be significant due to the vulnerability''s high CVSS score of 9.8, indicating severe risk.
+
+  If confirmed malicious, it could lead to unauthorized data access, further attacks, or severe operational disruptions.'
+references:
+- https://research.splunk.com/695aceae-21db-4e7f-93ac-a52e39d02b93/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Splunk
+tags:
+- attack.t1190
+logsource:
+  category: web
+detection:
+  sel1:
+    c-uri: '*/cf_scripts/scripts/ajax/ckeditor/*'
+  sel2:
+    sc-status: '200'
+  sel3:
+    cs-method: POST
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1190/adobe/cve_2023_29360_coldfusion.log

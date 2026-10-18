@@ -1,0 +1,34 @@
+title: Certutil exe certificate extraction
+id: 337a46be-600f-11eb-ae93-0242ac130002
+status: experimental
+description: 'The following analytic identifies the use of certutil.exe with arguments indicating the manipulation or extraction
+  of certificates.
+
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process names and command-line arguments.
+
+  This activity is significant because extracting certificates can allow attackers to sign new authentication tokens, particularly
+  in federated environments like Windows ADFS.
+
+  If confirmed malicious, this could enable attackers to forge authentication tokens, potentially leading to unauthorized
+  access and privilege escalation within the network.'
+references:
+- https://research.splunk.com/337a46be-600f-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Rod Soto, Splunk
+tags:
+- attack.t1649
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\certutil.exe'
+  sel2:
+    OriginalFileName: certutil.exe
+  sel3:
+    CommandLine: '*-exportPFX*'
+  condition: ((sel1 or sel2) and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/suspicious_behaviour/certutil_exe_certificate_extraction/windows-sysmon.log
