@@ -17,14 +17,18 @@ tags:
 - attack.t1195.002
 logsource:
   category: file_event
-  product: windows
 detection:
   sel1:
     TargetFilename:
+    - '*/cloud.json'
     - '*\\cloud.json'
+    - '*/contents.json'
     - '*\\contents.json'
+    - '*/environment.json'
     - '*\\environment.json'
+    - '*/truffleSecrets.json'
     - '*\\truffleSecrets.json'
+    - '*/actionsSecrets.json'
     - '*\\actionsSecrets.json'
   condition: sel1
 level: medium

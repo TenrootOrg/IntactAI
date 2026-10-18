@@ -1,0 +1,43 @@
+title: Windows Office Product Loading Taskschd DLL
+id: d7297cfa-1f04-4714-bfbe-3679e0666959
+status: experimental
+description: The following analytic detects an Office document creating a scheduled task, either through a macro VBA API or
+  by loading `taskschd.dll`. This detection leverages Sysmon EventCode 7 to identify when Office applications load the `taskschd.dll`
+  file. This activity is significant as it is a common technique used by malicious macro malware to establish persistence
+  or initiate beaconing. If confirmed malicious, this could allow an attacker to maintain persistence, execute arbitrary commands,
+  or schedule future malicious activities, posing a significant threat to the environment.
+references:
+- https://research.splunk.com/d7297cfa-1f04-4714-bfbe-3679e0666959/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1566.001
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    Image:
+    - '*\\EQNEDT32.exe'
+    - '*\\excel.exe'
+    - '*\\Graph.exe'
+    - '*\\msaccess.exe'
+    - '*\\mspub.exe'
+    - '*\\onenote.exe'
+    - '*\\onenoteim.exe'
+    - '*\\onenotem.exe'
+    - '*\\outlook.exe'
+    - '*\\powerpnt.exe'
+    - '*\\visio.exe'
+    - '*\\winproj.exe'
+    - '*\\winword.exe'
+  sel3:
+    ImageLoaded: '*\\taskschd.dll'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566.001/datasets/windows-sysmon.log

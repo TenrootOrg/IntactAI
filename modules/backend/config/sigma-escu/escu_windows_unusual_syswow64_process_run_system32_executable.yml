@@ -26,5 +26,5 @@ x-escu:
   tests:
   - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1036.009/32bit_process_execute_64bit/32bit_spawn_64bit.log
 x-intact-burst: false
-x-intact: 'Fired 30 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+x-intact: 'Fired 60 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
   counted toward a burst.'

@@ -1,0 +1,46 @@
+title: Windows Office Product Loading VBE7 DLL
+id: 7cfec906-2697-43f7-898b-83634a051d9a
+status: experimental
+description: The following analytic identifies office documents executing macro code. It leverages Sysmon EventCode 7 to detect
+  when processes like WINWORD.EXE or EXCEL.EXE load specific DLLs associated with macros (e.g., VBE7.DLL). This activity is
+  significant because macros are a common attack vector for delivering malicious payloads, such as malware. If confirmed malicious,
+  this could lead to unauthorized code execution, data exfiltration, or further compromise of the system. Disabling macros
+  by default is recommended to mitigate this risk.
+references:
+- https://research.splunk.com/7cfec906-2697-43f7-898b-83634a051d9a/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1566.001
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    Image:
+    - '*\\EQNEDT32.exe'
+    - '*\\excel.exe'
+    - '*\\Graph.exe'
+    - '*\\msaccess.exe'
+    - '*\\mspub.exe'
+    - '*\\onenote.exe'
+    - '*\\onenoteim.exe'
+    - '*\\onenotem.exe'
+    - '*\\outlook.exe'
+    - '*\\powerpnt.exe'
+    - '*\\visio.exe'
+    - '*\\winproj.exe'
+    - '*\\winword.exe'
+  sel3:
+    ImageLoaded:
+    - '*\\VBE7INTL.DLL'
+    - '*\\VBE7.DLL'
+    - '*\\VBEUI.DLL'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566.001/datasets/windows-sysmon.log

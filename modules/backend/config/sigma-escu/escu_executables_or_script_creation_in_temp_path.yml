@@ -46,5 +46,5 @@ x-escu:
   tests:
   - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/xmrig_miner/windows-sysmon.log
 x-intact-burst: false
-x-intact: 'Fired 969 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+x-intact: 'Fired 1938 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
   counted toward a burst.'

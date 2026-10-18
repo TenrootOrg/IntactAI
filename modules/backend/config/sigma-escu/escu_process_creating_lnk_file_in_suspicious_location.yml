@@ -46,5 +46,5 @@ x-escu:
   tests:
   - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566.002/lnk_file_temp_folder/windows-sysmon.log
 x-intact-burst: false
-x-intact: 'Fired 50 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+x-intact: 'Fired 100 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
   counted toward a burst.'

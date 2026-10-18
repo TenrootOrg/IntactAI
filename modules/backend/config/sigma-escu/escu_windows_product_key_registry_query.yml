@@ -1,0 +1,27 @@
+title: Windows Product Key Registry Query
+id: 977da0c0-c7d5-45de-8b7e-f79e959ca13d
+status: experimental
+description: 'This Analytic detects the execution of a process attempting to access the registry for product key recovery
+  purposes.
+
+  This behavior could be significant as it might indicate potential malware activity or attempts to bypass security measures
+  or data exfiltration.'
+references:
+- https://research.splunk.com/977da0c0-c7d5-45de-8b7e-f79e959ca13d/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1012
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4663'
+  sel2:
+    ObjectName: '*\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SoftwareProtectionPlatform'
+  condition: (sel1 and sel2)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1012/backup_product_key_registry/backup_protection.log

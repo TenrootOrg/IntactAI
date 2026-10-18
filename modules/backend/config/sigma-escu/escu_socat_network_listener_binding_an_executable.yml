@@ -1,0 +1,30 @@
+title: Socat Network Listener Binding an Executable
+id: 72482d45-1d05-46f5-bb6c-e2b709a8073a
+status: experimental
+description: 'The following analytic detects the execution of the socat utility with command-line arguments that configure
+  a TCP or OpenSSL listener and bind an executable to incoming connections.
+
+  Socat is a legitimate network utility, but this behavior may be used to expose executables, establish bind shells, facilitate
+  remote command execution, or support lateral movement.'
+references:
+- https://research.splunk.com/72482d45-1d05-46f5-bb6c-e2b709a8073a/
+author: Splunk Security Content (Apache-2.0), Maria Jose Erquiaga, Splunk
+tags:
+- attack.t1059
+- attack.t1572
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image: '*/socat*'
+  sel2:
+    CommandLine: '*exec:*'
+  sel3:
+    CommandLine: '*-listen:*'
+  condition: (sel1 and sel2 and sel3)
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059/utility_socat_listener_binding_executable/osquery.log

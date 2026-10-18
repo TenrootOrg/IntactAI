@@ -1,0 +1,54 @@
+title: Windows Office Product Loaded MSHTML Module
+id: 4cc015c9-687c-40d2-adcc-46350f66e10c
+status: experimental
+description: The following analytic detects the loading of the mshtml.dll module into an Office product, which is indicative
+  of CVE-2021-40444 exploitation. It leverages Sysmon EventID 7 to monitor image loads by specific Office processes. This
+  activity is significant because it can indicate an attempt to exploit a vulnerability in the MSHTML component via a malicious
+  document. If confirmed malicious, this could allow an attacker to execute arbitrary code, potentially leading to system
+  compromise, data exfiltration, or further network penetration.
+references:
+- https://research.splunk.com/4cc015c9-687c-40d2-adcc-46350f66e10c/
+author: Splunk Security Content (Apache-2.0), Michael Haag, Mauricio Velazco, Splunk
+tags:
+- attack.t1566.001
+logsource:
+  product: windows
+  service: sysmon
+  category: image_load
+detection:
+  sel1:
+    EventID: '7'
+  sel2:
+    Image:
+    - '*\\EQNEDT32.exe'
+    - '*\\excel.exe'
+    - '*\\Graph.exe'
+    - '*\\msaccess.exe'
+    - '*\\mspub.exe'
+    - '*\\onenote.exe'
+    - '*\\onenoteim.exe'
+    - '*\\onenotem.exe'
+    - '*\\outlook.exe'
+    - '*\\powerpnt.exe'
+    - '*\\visio.exe'
+    - '*\\winproj.exe'
+    - '*\\winword.exe'
+    - '*\\wordpad.exe'
+    - '*\\wordview.exe'
+  sel3:
+    ImageLoaded:
+    - '*\\mshtml.dll'
+    - '*\\Microsoft.mshtml.dll'
+    - '*\\IE.Interop.MSHTML.dll'
+    - '*\\MshtmlDac.dll'
+    - '*\\MshtmlDed.dll'
+    - '*\\MshtmlDer.dll'
+  condition: (sel1 and sel2 and sel3)
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1566.001/macro/windows-sysmon_mshtml.log
+x-intact-burst: false
+x-intact: 'Fired 1 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

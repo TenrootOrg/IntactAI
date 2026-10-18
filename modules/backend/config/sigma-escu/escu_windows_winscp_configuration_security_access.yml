@@ -1,0 +1,36 @@
+title: Windows WinSCP Configuration Security Access
+id: 90013cc4-585b-4437-a95f-099933974f3e
+status: experimental
+description: 'This analytic detects unauthorized access to the WinSCP security configuration folder by processes other than
+  WinSCP itself.
+
+  WinSCP stores sensitive SSH and FTP session credentials, including passwords and private key references, under the user
+  profile path Martin Prikryl\WinSCP 2\Configuration\Security. Information-stealing malware such as Phantom Stealer targets
+  this directory to harvest stored credentials for exfiltration.
+
+  The detection uses Windows Security Event 4663 (Object Access) to identify any non-WinSCP process reading or accessing files
+  within this path, which is abnormal during routine system operation.
+
+  Analysts should investigate the accessing process, its parent, and any associated network activity to determine whether
+  a credential theft attempt is underway.'
+references:
+- https://research.splunk.com/90013cc4-585b-4437-a95f-099933974f3e/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1552.001
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4663'
+  sel2:
+    ObjectName: '*\\Martin Prikryl\\WinSCP 2\\Configuration\\Security*'
+  sel3:
+    ProcessName: '*:\\Program Files (x86)\\WinSCP\\WinSCP.exe'
+  condition: (sel1 and sel2 and not (sel3))
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1552.001/winscp_access/winscp_phnatom.log

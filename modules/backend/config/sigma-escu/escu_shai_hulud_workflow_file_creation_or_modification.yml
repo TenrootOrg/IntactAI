@@ -19,7 +19,6 @@ tags:
 - attack.t1195
 logsource:
   category: file_event
-  product: windows
 detection:
   sel1:
     TargetFilename:

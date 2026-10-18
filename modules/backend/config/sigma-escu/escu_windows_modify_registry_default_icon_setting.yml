@@ -26,5 +26,5 @@ x-escu:
   tests:
   - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/lockbit_ransomware/sysmon.log
 x-intact-burst: false
-x-intact: 'Fired 1048 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+x-intact: 'Fired 2096 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
   counted toward a burst.'

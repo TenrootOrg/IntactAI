@@ -30,5 +30,5 @@ x-escu:
   tests:
   - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1003.001/atomic_red_team/windows-sysmon_creddump.log
 x-intact-burst: false
-x-intact: 'Fired 306 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+x-intact: 'Fired 344 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
   counted toward a burst.'
