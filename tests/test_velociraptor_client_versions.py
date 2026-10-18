@@ -350,6 +350,38 @@ class PackagesBuiltByTheRun(unittest.TestCase):
         self.assertTrue(any("NOT safe to push" in m for m in logs))
 
 
+class UpgradeAllWithoutAPilot(unittest.TestCase):
+    """The pilot is optional: Upgrade all runs without one when the operator
+    confirmed (without_pilot), and is still refused when nobody said so."""
+
+    def _start(self, **kw):
+        from unittest import mock
+        from services import velociraptor_clients as vc
+        from services import workflow_service as ws
+        logs, started = [], []
+        status = {"server_version": "0.77.3", "clients": []}
+        target = {"client_id": "C.1", "hostname": "H", "os": "windows", "version": "0.77.2"}
+        with mock.patch.object(vc, "running_upgrade", return_value=None), \
+             mock.patch.object(vc, "client_versions", return_value=status), \
+             mock.patch.object(vc, "packages_ready", return_value={"package_id": "p1"}), \
+             mock.patch.object(vc, "pilot_passed", return_value=False), \
+             mock.patch.object(vc, "upgrade_targets", return_value=([target], [])), \
+             mock.patch.object(ws, "create_automation_run", return_value="run1"), \
+             mock.patch.object(ws, "add_log_to_run", side_effect=lambda rid, m, lvl="info", force=False: logs.append(m)), \
+             mock.patch.object(ws, "update_run_status"), \
+             mock.patch("threading.Thread", side_effect=lambda **k: mock.Mock(start=lambda: started.append(1))):
+            return vc.start_upgrade("rest", **kw), logs, started
+
+    def test_refused_without_a_pilot_unless_confirmed(self):
+        with self.assertRaisesRegex(ValueError, "no pilot has passed for 0.77.3"):
+            self._start()
+
+    def test_runs_without_a_pilot_when_confirmed_and_says_so(self):
+        run_id, logs, started = self._start(without_pilot=True)
+        self.assertEqual(("run1", [1]), (run_id, started))
+        self.assertTrue(any("without a pilot" in m for m in logs))
+
+
 class RoutesFindTheirFunctions(unittest.TestCase):
     """An edit once dropped pilot_passed: every test passed, the tab answered 500."""
 

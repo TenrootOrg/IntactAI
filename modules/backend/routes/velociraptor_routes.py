@@ -1241,7 +1241,8 @@ def velociraptor_upgrade_clients():
     body = request.get_json(silent=True) or {}
     try:
         run_id = start_upgrade(body.get("stage"), body.get("client_ids") or None,
-                               label=(body.get("label") or "").strip() or None, limit=body.get("limit") or None)
+                               label=(body.get("label") or "").strip() or None, limit=body.get("limit") or None,
+                               without_pilot=body.get("without_pilot") is True)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:  # noqa: BLE001

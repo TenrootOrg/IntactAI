@@ -539,7 +539,7 @@ def running_upgrade():
                  if r.get("automation_type") == RUN_TYPE and r.get("status") in ("running", "pending")), None)
 
 
-def start_upgrade(stage, client_ids=None, label=None, limit=None):
+def start_upgrade(stage, client_ids=None, label=None, limit=None, without_pilot=False):
     """Preflight, then start the run. Returns run_id; raises ValueError (the
     operator's reason) when it must not start."""
     import threading
@@ -566,8 +566,12 @@ def start_upgrade(stage, client_ids=None, label=None, limit=None):
     # happens every few months; building takes ~15 s). A new server version means new
     # packages, so the pilot gate starts over.
     pkg = packages_ready(server)
-    if stage == "rest" and not (pkg and pilot_passed(pkg["package_id"])):
-        raise ValueError(f"upgrade a pilot client first -- the rest follow once one came back on {server}")
+    # A pilot is recommended, not required: the operator may upgrade the fleet
+    # without one, but must say so (without_pilot), so a stale page or a script
+    # that never heard of the pilot still cannot skip it by accident.
+    no_pilot = stage == "rest" and not (pkg and pilot_passed(pkg["package_id"]))
+    if no_pilot and not without_pilot:
+        raise ValueError(f"no pilot has passed for {server} -- run one, or confirm upgrading without it")
     targets, refused = upgrade_targets(status, stage, client_ids, label=label, limit=limit)
     if not targets:
         why = "; ".join(refused[:5]) if refused else (
@@ -584,6 +588,8 @@ def start_upgrade(stage, client_ids=None, label=None, limit=None):
                               "from": c["version"]} for c in targets],
                  "watch_until": time.time() + WATCH[stage]["seconds"],
                  "upgraded": [], "failed": [], "pending": [c["client_id"] for c in targets]})
+    if no_pilot:
+        add_log_to_run(run_id, f"Started without a pilot for {server} (the operator confirmed)", "warning")
     for why in refused[:20]:
         add_log_to_run(run_id, f"Skipped {why}", "warning")
     if len(refused) > 20:

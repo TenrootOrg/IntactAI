@@ -1614,8 +1614,8 @@
                                             <div class="flex items-center gap-2 mt-2">
                                                 <span class="text-xs text-gray-500" x-text="$store.settings.veloWaveText()"></span>
                                                 <button @click="$store.settings.startVeloUpgrade('rest')" class="ml-auto bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1 rounded text-white"
-                                                        :disabled="!$store.settings.veloUpgrade.pilot_passed || !$store.settings.veloUpgrade.eligible || $store.settings.veloUpgrade.running"
-                                                        :title="$store.settings.veloUpgrade.running ? 'An upgrade is in progress — wait until it finishes.' : (!$store.settings.veloUpgrade.eligible ? 'No client is behind the server.' : ($store.settings.veloUpgrade.pilot_passed ? '' : 'Available once a pilot client upgraded with these packages.'))"
+                                                        :disabled="!$store.settings.veloUpgrade.eligible || $store.settings.veloUpgrade.running"
+                                                        :title="$store.settings.veloUpgrade.running ? 'An upgrade is in progress — wait until it finishes.' : (!$store.settings.veloUpgrade.eligible ? 'No client is behind the server.' : ($store.settings.veloUpgrade.pilot_passed ? '' : 'No pilot has passed with these packages yet: you will be asked to confirm.'))"
                                                         x-text="'Upgrade all (' + ($store.settings.veloUpgrade.eligible || 0).toLocaleString() + ')'"></button>
                                             </div>
                                         </div>

@@ -277,6 +277,12 @@ document.addEventListener('alpine:init', () => {
             } else {
                 body = { stage };
                 who = (this.veloUpgrade.eligible || 0).toLocaleString() + ' client(s)';
+                // The pilot is optional: it is the cheap way to catch a bad package on
+                // one machine, not a lock on the fleet. Without one, say so once.
+                if (!this.veloUpgrade.pilot_passed) {
+                    if (!confirm('No pilot has passed for ' + ver + ' yet. A bad package would then reach every client at once. Upgrade all ' + who + ' anyway?')) return;
+                    body.without_pilot = true;
+                }
             }
             if (!confirm('Upgrade the Velociraptor client on ' + who + ' to ' + ver + '? Each client restarts during the upgrade.'
                          + (stage === 'rest' ? ' Followed in Settings → Actions for 24 hours, checked once an hour.' : ''))) return;

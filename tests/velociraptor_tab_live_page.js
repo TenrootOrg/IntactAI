@@ -107,7 +107,7 @@ const check = (name, ok, got) => { console.log((ok ? 'ok   ' : 'FAIL ') + name +
   check('wave text', st.veloWaveText().length > 10, st.veloWaveText());
   const all = $$('button').find(b => b.textContent.trim().startsWith('Upgrade all ('));
   check('one "Upgrade all (N)" button, no label/size fields', !!all && !$('input[placeholder="Label (optional)"]') && !$('input[placeholder="Max clients"]'), '');
-  check('Upgrade all disabled without a passed pilot or eligible clients', all.disabled === !(st.veloUpgrade.pilot_passed && st.veloUpgrade.eligible), '');
+  check('Upgrade all clickable whenever a client is behind (the pilot is optional)', all.disabled === !st.veloUpgrade.eligible, '');
   // sortable headers (server-side) + the Upgrade column
   const th = t => $$('th').find(h => h.textContent.trim().startsWith(t));
   check('Upgrade column', !!th('Upgrade') && !th('State'), $$('th').map(h => h.textContent.trim()).join(','));
