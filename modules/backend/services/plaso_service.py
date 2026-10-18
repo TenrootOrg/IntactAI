@@ -134,6 +134,15 @@ def run_pinfo(plaso_file, logger=None, run_id=None):
                     return
                 if set(line_text.strip()) <= {'-'} and line_text.strip():
                     return
+                # pinfo ends the section with "Total : N". Summing it too counted
+                # every event twice (19 events reported as 38); take it as the
+                # count instead. Plaso 20260720 also prints a "per data type"
+                # section first, with its own Total -- not this section, ignored.
+                name, _, tail = line_text.rpartition(':')
+                if name.strip() == 'Total' and tail.strip().isdigit():
+                    event_count = int(tail.strip())
+                    in_parser_section = False
+                    return
                 event_count += _try_sum(line_text)
 
         while True:
