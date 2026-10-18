@@ -332,7 +332,7 @@ def _condition(text, names):
         while peek() == "and":
             take()
             rhs = atom()
-            node = (lambda a, b: lambda r: a(r) and b(r))(node, rhs)
+            node = (lambda r, a=node, b=rhs: a(r) and b(r))
         return node
 
     def expr():
@@ -340,7 +340,7 @@ def _condition(text, names):
         while peek() == "or":
             take()
             rhs = conj()
-            node = (lambda a, b: lambda r: a(r) or b(r))(node, rhs)
+            node = (lambda r, a=node, b=rhs: a(r) or b(r))
         return node
     node = expr()
     if pos[0] != len(toks):
