@@ -235,6 +235,15 @@ class Shapes(unittest.TestCase):
             {"displayName": "AccountEnabled", "oldValue": "[false]", "newValue": "[true]"}]}}))
         self.assertEqual("[true]", r["targetResources.modifiedProperties.AccountEnabled.NewValue"])
 
+    def test_github_audit_actor_is_the_user(self):
+        # A GitHub audit record names who did it only as "actor"; without it the file was
+        # "not recognised" and read as text, so no GitHub rule ever ran on it.
+        rows = [{"@timestamp": 1736845067149, "action": "repo.destroy", "actor": "P4T12ICK", "actor_id": 8362376,
+                 "org": "pbtest2", "repo": "pbtest2/pbtest2"}] * 3
+        n = X.normalize(rows, X.detect_columns(rows))
+        self.assertEqual("P4T12ICK", n[0]["n"].get("user"))
+        self.assertTrue(X.recognized(n))
+
     def test_osquery_host_identifier_is_the_host(self):
         # Rows of other osquery tables carry nothing else to join on; without the host
         # the file was "not recognised" and read as text, so no process rule ran.
