@@ -692,12 +692,14 @@ def _label_clients(ids, label, op):
 
 def spread_seconds(n, mb=27):
     """The random delay before each client downloads: 2 s per 27 MB (about 13.5
-    MB/s off the Velociraptor server), at least 10 min, at most 4 h. `n` clients of
+    MB/s off the Velociraptor server), at least 1 min, at most 4 h. The floor was
+    10 min, which made a two-client lab wait up to 10 minutes for nothing; a few
+    downloads at once are no load, and big fleets get their spread from the size. `n` clients of
     `mb` each -- or pass the total as n=1, mb=<all MB>. Sized by MEGABYTES: the Linux
     binary is 85 MB, three times the MSI, and the Windows and Linux hunts download
     at the same time, so a count-based window put ~3x the traffic through on a
     Linux-heavy fleet."""
-    return int(min(4 * 3600, max(600, 2 * n * mb / 27)))
+    return int(min(4 * 3600, max(60, 2 * n * mb / 27)))
 
 
 def _names(rows, n=3):

@@ -283,7 +283,8 @@ class Fleet(unittest.TestCase):
         self.assertEqual(t, [])
 
     def test_downloads_spread_with_the_wave(self):
-        self.assertEqual(spread_seconds(5), 600)                 # at least 10 min
+        self.assertEqual(spread_seconds(5), 60)                  # at least 1 min
+        self.assertEqual(spread_seconds(100), 200)               # a small fleet: its own size, not 10 min
         self.assertEqual(spread_seconds(1000), 2000)             # 2 s a client
         self.assertEqual(spread_seconds(50000), 4 * 3600)        # at most 4 h
         # sized by megabytes: 1,000 Linux clients (85 MB) need ~3x the MSI window
