@@ -748,9 +748,11 @@ def register(runner, cfg):
                                "assertions written, deliberately not run"}
 
         detail = {}
-        rules = "/opt/sigma-rules/rules/cloud/aws"
+        # The image's SigmaHQ copy (SIGMA_RULES_DIR); the rules sit one level
+        # down, per service (cloud/aws/cloudtrail/*.yml).
         r = shell.docker(["exec", "intact_backend", "sh", "-c",
-                          f"ls {rules}/*.yml 2>/dev/null | wc -l"])
+                          'find "${SIGMA_RULES_DIR:-/opt/sigma-rules}/rules/cloud/aws" '
+                          "-name '*.yml' 2>/dev/null | wc -l"])
         count = int((r.out.strip() or "0").splitlines()[-1] or 0) if r.ok else 0
         detail["aws_sigma_rules"] = count
         ctx.check("the AWS SIGMA rule pack has rules", count > 0,

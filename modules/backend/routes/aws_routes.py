@@ -30,6 +30,7 @@ from services.aws.pipeline import (
     run_aws_pipeline,
 )
 from services.aws.collectors import demo_fixtures_enabled, parse_uploaded_logs
+from services.azure.sigma_runner import AWS_RULES_PATH
 from services.aws.sigma_runner import (
     validate_rules_directory,
     list_custom_rules,
@@ -144,7 +145,10 @@ def get_rules_info():
     try:
         rules_valid, rules_msg = validate_rules_directory()
         # Count rules under the cloud/aws subtree without loading them all.
-        rule_dir = '/opt/sigma-rules/rules/cloud/aws'
+        # The image's SigmaHQ copy, as load_aws_rules reads it: the old
+        # /opt/sigma-rules is an empty mount point once aws_sigma is gone, and
+        # counting there showed 0 rules while 55 ran.
+        rule_dir = AWS_RULES_PATH
         count = 0
         if os.path.isdir(rule_dir):
             for root, _, files in os.walk(rule_dir):
