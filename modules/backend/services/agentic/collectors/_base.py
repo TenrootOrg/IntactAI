@@ -3,6 +3,7 @@
 Agentic Collectors - Velociraptor artifact collection logic
 """
 
+import re
 import json
 import logging
 import os
@@ -212,7 +213,18 @@ ARTIFACT_TIME_PARAMS = {
     "Windows.Hayabusa.Rules": {"date_after": "DateAfter", "date_before": "DateBefore",
                                "rule_level": "RuleLevel"},
 }
-_SEV_TO_RULELEVEL = {"low": "low", "medium": "medium", "high": "high", "critical": "critical"}
+# Hayabusa's own RuleLevel choices. Windows.Sigma.Base looks the value up in exactly
+# this table, and anything else -- the 'medium' this used to send -- found no entry
+# and matched EVERY level: one workstation returned 10 M rows (95% low/informational,
+# e.g. two rules per Code Integrity 5038 event), and fusing a 69-client hunt of that
+# took the backend and Velociraptor down with 12-17 GB each.
+_SEV_TO_RULELEVEL = {"critical": "Critical", "high": "Critical and High",
+                     "medium": "Critical, High, and Medium",
+                     "low": "Critical, High, Medium, and Low", "informational": "All"}
+# Below medium a Hayabusa hit never becomes a finding on its own (low scores 5,
+# informational 0) but is most of the volume. A run's min_severity, or an
+# artifact_params override, can still ask for more.
+HAYABUSA_DEFAULT_SEVERITY = "medium"
 
 
 def _vql_quote(v) -> str:
@@ -227,7 +239,7 @@ def build_artifact_spec(artifacts, settings=None):
     pre-trim volume. Operators can override via settings['artifact_params'][artifact]."""
     settings = settings or {}
     start_iso, end_iso = calculate_time_range(settings.get('time_filter'))
-    min_sev = (settings.get('min_severity') or 'informational')
+    min_sev = (settings.get('min_severity') or HAYABUSA_DEFAULT_SEVERITY)
     overrides = settings.get('artifact_params') or {}
     parts = []
     for artifact in artifacts:
@@ -240,7 +252,11 @@ def build_artifact_spec(artifacts, settings=None):
                 params[spec['date_before']] = end_iso
             if 'rule_level' in spec and min_sev in _SEV_TO_RULELEVEL:
                 params[spec['rule_level']] = _SEV_TO_RULELEVEL[min_sev]
-        params.update(overrides.get(artifact) or {})        # operator escape-hatch wins
+        extra = overrides.get(artifact) if isinstance(overrides.get(artifact), dict) else {}
+        params.update(extra)                                 # operator escape-hatch wins
+        # Names go into the VQL unquoted (values are escaped): a request can
+        # carry overrides now, so only plain identifiers get through.
+        params = {k: v for k, v in params.items() if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", str(k))}
         if params:
             kv = ", ".join(f"{k}='{_vql_quote(v)}'" for k, v in params.items())
             parts.append(f'`{artifact}`=dict({kv})')

@@ -469,6 +469,12 @@ def is_hunt_registered(hunt_id):
             channel.close()
 
 
+def _hunt_spec(artifact_name):
+    """The hunt's per-artifact parameters (Hayabusa's severity floor among them)."""
+    from services.agentic.collectors._base import build_artifact_spec
+    return build_artifact_spec([artifact_name])
+
+
 def create_velociraptor_hunt(
     artifact_name,
     description="",
@@ -524,7 +530,7 @@ def create_velociraptor_hunt(
 LET collection = hunt(
     description='Intact.AI Hunt: {description}',
     artifacts='{artifact_name}',
-    spec=dict(`{artifact_name}`=dict()),
+    spec=dict({_hunt_spec(artifact_name)}),
     expires=now() + {expire_seconds},
     timeout={timeout_seconds},
     max_rows={max_rows},

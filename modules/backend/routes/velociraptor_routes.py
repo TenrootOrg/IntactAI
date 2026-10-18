@@ -231,7 +231,7 @@ def _hunt_labels_clause(include_labels):
 
 def _create_single_velo_hunt(stub, artifacts, hunt_desc, expire_seconds, timeout_seconds,
                              cpu_limit, flow_max_rows, flow_max_bytes, log_fn,
-                             include_labels=None):
+                             include_labels=None, artifact_params=None):
     """Build + send the VQL `hunt()` call against the Velociraptor gRPC
     stub for a given artifact list, return `(hunt_id, error_str)`.
 
@@ -240,7 +240,10 @@ def _create_single_velo_hunt(stub, artifacts, hunt_desc, expire_seconds, timeout
     plumbing in one place. ``include_labels`` (optional) scopes the hunt to
     clients carrying ANY of those Velociraptor labels; empty => all clients."""
     artifacts_list = json.dumps(artifacts)
-    spec_parts = ", ".join([f"`{a}`=dict()" for a in artifacts])
+    # Per-artifact parameters, not bare dict(): Hayabusa gets its severity floor
+    # here too (hunts used to run it at "All" -- see build_artifact_spec).
+    from services.agentic.collectors._base import build_artifact_spec
+    spec_parts = build_artifact_spec(artifacts, {"artifact_params": artifact_params or {}})
     # max_logs is rejected by hunt() (collect_client-only) so we omit.
     query = f"""
 LET collection = hunt(
@@ -324,6 +327,9 @@ def run_bestpractice_hunts():
                     "error": f"artifacts[{i}] is not a valid Velociraptor artifact name"
                 }), 400
         blueprint_name = data.get('blueprint_name', 'Custom')
+        # {artifact: {param: value}}: overrides the per-artifact defaults (e.g. a
+        # lower Hayabusa RuleLevel). Names are checked in build_artifact_spec.
+        artifact_params = data.get('artifact_params') if isinstance(data.get('artifact_params'), dict) else {}
         # Expiry / timeout / CPU are chosen on the Hunt page (defaults from the
         # blueprint) and are interpolated into the hunt's VQL, so they must be
         # whole numbers in range. They used to be taken from the body unchecked.
@@ -421,7 +427,7 @@ def run_bestpractice_hunts():
                         stub, [a], hunt_desc, expire_seconds, timeout_seconds,
                         cpu_limit, flow_max_rows, flow_max_bytes,
                         log_fn=lambda m, lvl='info', _rid=rid: add_log_to_run(_rid, m, lvl),
-                        include_labels=include_labels,
+                        include_labels=include_labels, artifact_params=artifact_params,
                     )
                     if hunt_id:
                         add_log_to_run(rid, f"Hunt created: {hunt_id}")
@@ -483,7 +489,8 @@ def run_bestpractice_hunts():
 
         # Build artifact list and spec for bulk hunt
         artifacts_list = json.dumps(artifacts)
-        spec_parts = ", ".join([f'`{a}`=dict()' for a in artifacts])
+        from services.agentic.collectors._base import build_artifact_spec
+        spec_parts = build_artifact_spec(artifacts, {"artifact_params": artifact_params})
         # blueprint_name is free-form (unlike artifacts, which are
         # shape-validated above), so it must never be spliced into the VQL
         # literal raw. JSON-encode it exactly like _create_single_velo_hunt()
