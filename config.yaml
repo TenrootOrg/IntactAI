@@ -154,10 +154,10 @@ modules:
     password: '123123'
 project_name: intact
 versions:
-  elk: '9.4.8'
+  elk: '9.5.5'
   iris: v2.4.29
   plaso: '20260512'
-  portainer: '2.39.8'
+  portainer: '2.45.2'
   timesketch: '20260630'
   velociraptor: '0.77.3'
   # Kept for older releases' packages and upgrade bookkeeping only: a release no
