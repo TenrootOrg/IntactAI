@@ -1144,12 +1144,13 @@ function _evLog(x){
   const st=busy?`<span style="color:var(--muted)">${notes?'condensing the notes…':'reading the file…'}</span>`
     :L.status==='failed'?`<span style="color:var(--crit)">could not be read: ${esc(L.error||'')}</span>`
     :L.status==='completed'&&notes?`${L.facts?`<b>${(+L.facts).toLocaleString()} fact(s)</b> from `:''}${(+L.lines||0).toLocaleString()} line(s)${L.facts?` · <span class="elink" onclick="dtFacts('${esc(x.id)}')">${window._dtOpen===x.id?'hide':'show'} facts</span>`:" · no model configured: kept as searchable text"}`
-    :L.status==='completed'?`${(+L.rows||0).toLocaleString()} row(s)${L.alerts?` · <b>${(+L.alerts).toLocaleString()} alert(s)</b>`:''} · ${esc(EV_VIA[L.via]||L.via||'')}${L.first_ts?` · ${esc(String(L.first_ts).slice(0,16))} → ${esc(String(L.last_ts||'').slice(0,16))}`:''}${L.leftover_lines?` · <span title="Lines that did not fit the file's structure — read by the model or kept as text">${(+L.leftover_lines).toLocaleString()} other line(s) kept</span>`:''}${L.row_errors?` · <span style="color:var(--warn,#d29922)" title="Rows with values the reader could not take — kept as text with their indicators">${(+L.row_errors).toLocaleString()} unreadable row(s) kept as text</span>`:''}`
+    :L.status==='completed'?`${(+L.rows||0).toLocaleString()} row(s)${L.alerts?` · <b>${(+L.alerts).toLocaleString()} alert(s)</b>`:''} · ${esc(EV_VIA[L.via]||L.via||'')}${L.first_ts?` · ${esc(String(L.first_ts).slice(0,16))} → ${esc(String(L.last_ts||'').slice(0,16))}`:''}${L.leftover_lines?` · <span title="Lines that did not fit the file's structure — read by the model or kept as text">${(+L.leftover_lines).toLocaleString()} other line(s) kept</span>`:''}${L.row_errors?` · <span style="color:var(--warn,#d29922)" title="Rows with values the reader could not take — kept as text with their indicators">${(+L.row_errors).toLocaleString()} unreadable row(s) kept as text</span>`:''}${L.description&&L.description.text?` · <span class="elink" onclick="dtDesc('${esc(x.id)}')">${window._ddOpen===x.id?'hide':'show'} model description</span>${L.description.truncated?` <span style="color:var(--warn,#d29922)" title="The file is larger than the model's context window">(read ${(+L.description.lines_described||0).toLocaleString()} of ${(+L.description.lines_total||0).toLocaleString()} lines)</span>`:''}`:''}`
     :'<span style="color:var(--muted)">not parsed</span>';
   return `<div style="font-size:12px;margin:3px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
     <span style="border:1px solid var(--bd);border-radius:10px;padding:0 7px;font-size:11px" title="${notes?"What the customer said: condensed into facts for chat and the report, never a detection":"Log data: parsed into the case and fused like a collection"}">${notes?'Incident notes':'Log data · '+esc(t)}</span><span>${st}</span>
     <label style="margin-left:auto;font-size:12px" title="${notes?'In: chat and the report read its facts. Out: kept, but not used.':'In: the next Refusion fuses it and chat can search it. Out: kept, but not used.'}"><input type="checkbox" style="width:auto" ${x.ai?'checked':''} onchange="evUseInAnalysis('${esc(x.id)}',this.checked)"/> Use in analysis</label></div>
-    ${notes&&window._dtOpen===x.id?`<div id="dt-facts-${esc(x.id)}" style="font-size:12px;margin:4px 0 2px">${window._dtFacts&&window._dtFacts.id===x.id?_dtFactsHtml(window._dtFacts.facts):'<span style="color:var(--muted)">loading…</span>'}</div>`:''}`;
+    ${notes&&window._dtOpen===x.id?`<div id="dt-facts-${esc(x.id)}" style="font-size:12px;margin:4px 0 2px">${window._dtFacts&&window._dtFacts.id===x.id?_dtFactsHtml(window._dtFacts.facts):'<span style="color:var(--muted)">loading…</span>'}</div>`:''}
+    ${!notes&&window._ddOpen===x.id&&L.description&&L.description.text?`<div style="font-size:12px;margin:4px 0 2px;white-space:pre-wrap;border-left:2px solid var(--bd);padding-left:8px" title="Written by the model from the file itself; chat and the report read it with the rest of the case">${esc(L.description.text)}</div>`:''}`;
 }
 function evUseInAnalysis(id, on){
   fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({ai:!!on})})
@@ -1205,6 +1206,12 @@ function dtFacts(id){
     .then(r=>{ window._dtFacts={id, facts:(r&&r.facts)||[]}; if(tab==='data') renderData(curInfo); })
     .catch(e=>toast('Facts not loaded: '+e.message));
 }
+function dtDesc(id){ window._ddOpen=window._ddOpen===id?null:id; renderData(curInfo); }
+function _dtWindow(info){
+  const W=info&&info.model_window;
+  if(!W||!W.model) return '<div class="cfghint">No model configured: a log file the reader does not recognise is kept as searchable text; nothing describes it.</div>';
+  return `<div class="cfghint">Model <b>${esc(W.model)}</b> · context window ${W.context_tokens?'<b>'+(+W.context_tokens).toLocaleString()+' tokens</b>':'unknown'} · a log file the reader does not recognise is given to it whole, up to ${(+W.budget_chars||0).toLocaleString()} characters, for a description that chat and the report read with the rest of the case.</div>`;
+}
 function renderData(info){
   const L=_dataList(), notes=L.filter(x=>x.data_type===EV_NOTES), logs=L.filter(x=>x.data_type!==EV_NOTES);
   const o=(k,l)=>`<option value="${k}">${l}</option>`;
@@ -1212,6 +1219,7 @@ function renderData(info){
     <b>Incident notes</b> — the customer's own account: a chat with them, interview notes, an e-mail thread — are condensed by the case's model into short facts (impact, what they did, what they saw), each tied to its line, and chat and the report read those as <i>reported, not verified</i>; never a detection. Both are listed in the report under <b>External data</b>.</p>
     <div class="row" style="gap:8px;margin:6px 0"><button onclick="window._dtAdd=!window._dtAdd;renderData(curInfo)">${window._dtAdd?'Close':'+ Add external data'}</button>
       <span style="color:var(--muted);font-size:12px">${L.length} file(s) · up to 100 MB each</span></div>
+    ${_dtWindow(info)}
     ${window._dtAdd?`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:640px">
       <label>File</label><input type="file" id="dtn-file"/>
       <label>What is it</label><select id="dtn-dtype">${o('auto','Log data — any kind: detect it automatically')}${EV_LOGTYPES.map(([k,l])=>o(k,'Log data — '+l)).join('')}${o(EV_NOTES,"Incident notes — the customer's account (chat, interview notes, e-mails)")}</select>

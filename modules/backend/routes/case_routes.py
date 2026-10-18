@@ -416,6 +416,7 @@ def get_case(case_id):
                                       or d.get("name") == store.SYSTEM_CASE_NAME),
                     **store.case_info(d),
                     "case_files": _case_files.with_log_status(_case_files.listing(d)),
+                    "model_window": _model_window(),
                     "include_evidence": _case_files.included(d),
                     # the SELECTED scope's reports only: each scope has its own
                     "report_history": _report_history.history(d, scope=store._active_scope_id(d)),
@@ -600,6 +601,16 @@ def download_case_file(case_id, file_id):
         resp = send_file(p, as_attachment=True, download_name=item["file_name"])
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
+
+
+def _model_window():
+    """The selected model's context window, for the External data tab (what an
+    unrecognised attachment can be given to the model whole)."""
+    try:
+        from services.fusion import external_logs
+        return external_logs.model_window()
+    except Exception:                                      # noqa: BLE001 -- a hint, never an error
+        return None
 
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>/facts", methods=["GET"])

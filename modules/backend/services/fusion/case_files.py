@@ -91,7 +91,8 @@ def with_log_status(items) -> list:
         det = run.get("details") or {}
         x["log"] = {"status": run.get("status") or "missing", "error": run.get("error") or "",
                     **{k: det.get(k) for k in ("format", "via", "rows", "alerts", "first_ts", "last_ts",
-                                               "data_type", "leftover_lines", "row_errors", "facts", "lines")}}
+                                               "data_type", "leftover_lines", "row_errors", "facts", "lines",
+                                               "description")}}
     return items
 
 

@@ -263,7 +263,7 @@ class Page(unittest.TestCase):
                  for c in ("EV_LOGTYPES", "EV_VIA", "EV_SOURCES", "EV_NOTES", "DT_KINDS")] + \
                 [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0)
                  for n in ("_evFields", "_evThumb", "_evItem", "renderEvidence", "renderData", "_dtFactsHtml",
-                           "_evHostList", "_evPickers", "_evLog", "_evFollow")] + \
+                           "_evHostList", "_evPickers", "_evLog", "_evFollow", "_dtWindow")] + \
                 [re.search(r"function %s\(.*?\}\n" % n, src).group(0) for n in ("_evSize", "_evSrc", "_evList", "_evOnly",
                                                                                   "_dataList")]
         js = ("const esc=s=>String(s); const window={}; let OUT=''; const $=()=>({set innerHTML(v){OUT=v}});"
@@ -304,6 +304,26 @@ console.log(JSON.stringify([all, one, bad, form, linked]));""")
         self.assertIn("Date &amp; time", form)
         self.assertNotIn("the AI use", form)                                           # evidence never goes to the AI
         self.assertNotIn("evn-host", linked.replace("eva", "evn"))                     # from the Timeline: host comes from the event
+
+    def test_the_models_window_and_a_files_description(self):
+        out = self.run_js("""
+const desc={text:'Staging activity (L1-L40)', lines_described:40, lines_total:90, truncated:true};
+curInfo={case_id:'c1', model_window:{model:'gpt-test', context_tokens:128000, budget_chars:380000},
+  case_files:[{id:'0123456789c1',name:'odd',description:'d',file_name:'odd.log',size:9,sha256:'ab'.repeat(32),kind:'text',ai:true,host:'',time:'',source:'other',source_other:'',finding_id:'',data_type:'edr',
+  log:{status:'completed',rows:90,alerts:0,via:'indicators',description:desc}}]};
+renderData(curInfo); const page=OUT;
+window._ddOpen='0123456789c1'; renderData(curInfo); const open=OUT;
+curInfo.model_window=null; window._ddOpen=null; renderData(curInfo); const nomodel=OUT;
+console.log(JSON.stringify([page, open, nomodel]));""")
+        page, opened, nomodel = out
+        self.assertIn("Model <b>gpt-test</b> · context window <b>128,000 tokens</b>", page)
+        self.assertIn("up to 380,000 characters", page)
+        self.assertIn("show model description", page)
+        self.assertIn("(read 40 of 90 lines)", page)                   # did not fit the window
+        self.assertNotIn("Staging activity", page)                     # shown on click
+        self.assertIn("Staging activity (L1-L40)", opened)
+        self.assertIn("hide model description", opened)
+        self.assertIn("No model configured", nomodel)
 
     def test_log_data_shows_how_it_was_read_and_its_switch(self):
         out = self.run_js("""

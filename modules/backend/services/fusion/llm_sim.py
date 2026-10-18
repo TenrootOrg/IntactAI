@@ -1791,11 +1791,20 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
         out["analyst_timeline_events"] = [
             {k: e.get(k) for k in ("ts", "host", "title", "severity", "status", "notes") if e.get(k)}
             for e in manual_events]
+    described = [r for r in reported or [] if isinstance(r, dict) and r.get("kind") == "data_description"]
+    reported = [r for r in reported or [] if not (isinstance(r, dict) and r.get("kind") == "data_description")]
     if reported:
         # What the customer SAID (a chat with the victim, interview notes), condensed
         # into checked facts at upload. Context, never evidence: it explains a gap
         # ("IT reimaged WS01") and states the impact the logs cannot show.
         out["reported_by_customer_not_verified"] = list(reported)
+    if described:
+        # Log attachments no reader recognised, described by the model at upload from
+        # the file itself (up to its context window). Not parsed and not fused: what
+        # the logs show in the model's words, with the line numbers it cites.
+        out["log_data_described_by_model"] = [
+            {k: d[k] for k in ("source", "description", "lines_described", "lines_total") if d.get(k)}
+            for d in described]
     return out
 
 

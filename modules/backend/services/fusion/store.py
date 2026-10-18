@@ -1358,10 +1358,12 @@ def _payload_too_big(fp, log=None):
 
 
 def _reported(case_id):
-    """Facts from the case's incident notes (the customer's own account)."""
+    """Facts from the case's incident notes (the customer's own account), and the
+    model's descriptions of log attachments no reader recognised (kind
+    "data_description"; analyst_context keeps them apart from what the customer said)."""
     try:
-        from .external_logs import reported_facts
-        return reported_facts(case_id) or None
+        from .external_logs import reported_facts, data_descriptions
+        return (reported_facts(case_id) or []) + (data_descriptions(case_id) or []) or None
     except Exception:                                      # noqa: BLE001 -- context, never a blocker
         return None
 
