@@ -321,6 +321,17 @@ class MoreWindowsChannels(unittest.TestCase):
             self.assertIn(("windows", None, svc), S.profiles(ev), chan)
 
 
+class WildcardAfterABackslash(unittest.TestCase):
+    def test_an_escaped_backslash_then_a_wildcard(self):
+        # "USBSTOR\\\\*" = a backslash, then any text: the star was read as escaped.
+        r = rule({"sel": {"TargetObject": "HKLM\\\\System\\\\CurrentControlSet\\\\Enum\\\\USBSTOR\\\\*"},
+                  "condition": "sel"}, {"category": "registry_event", "product": "windows"})
+        self.assertTrue(hit(r, {"TargetObject": "HKLM\\System\\CurrentControlSet\\Enum\\USBSTOR\\Disk&Ven_X\\FriendlyName"}))
+        r = rule({"sel": {"CommandLine": "a\\*b"}, "condition": "sel"})
+        self.assertTrue(hit(r, {"CommandLine": "a*b"}))
+        self.assertFalse(hit(r, {"CommandLine": "axxb"}))
+
+
 class EsxiSyslog(unittest.TestCase):
     """ESXi lines read as structure (key=value, or columns split on spaces) lost the
     message the ESXi rules match: all 23 Splunk ESXi detections were silent."""
