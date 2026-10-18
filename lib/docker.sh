@@ -447,9 +447,12 @@ download_offline_collector_binaries() {
     # library deps — runs on ANY Linux x86_64 with kernel >= 2.6.32.
     # The new "Linux (musl)" download button on the dashboard serves
     # this variant repacked with the live client.config.
+    # No plain linux-amd64: from 0.77.3 it needs GLIBC_2.38, so a Linux collector
+    # is built from the -musl build (offline_collector/constants.py prefers it),
+    # and a release package carries only that. Requiring the plain one made every
+    # air-gapped install report it "missing".
     local binaries=(
         "velociraptor-v${velo_version}-windows-amd64.exe"
-        "velociraptor-v${velo_version}-linux-amd64"
         "velociraptor-v${velo_version}-linux-amd64-musl"
         "velociraptor-v${velo_version}-darwin-amd64"
     )

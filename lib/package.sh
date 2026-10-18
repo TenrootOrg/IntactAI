@@ -108,6 +108,53 @@ stage_dfiq_from_package() {
 # package actually shipped, so the caller can correct a stale
 # config.yaml versions.backend rather than trust it -- see lib/config.sh and
 # lib/modules/backend.sh:deploy_backend.
+# Stage the package's Velociraptor binaries into the image build context
+# (modules/velociraptor/clients/...) with the .version sidecars
+# stage_velociraptor_client_binaries() checks. Its own function so it can be tested.
+_pkg_stage_velociraptor_build() {
+    local work="$1"
+    local velo_dir="${SCRIPT_DIR}/modules/velociraptor"
+    local velo_bin
+    # The static musl build is the Linux binary from 0.77.3 on (the plain one
+    # needs GLIBC_2.38): packages carry only it. Older packages carry the plain
+    # one. Never binaries/legacy/, which holds the 0.7.1 musl build.
+    velo_bin="$(find "$work" -type f -name 'velociraptor-v*-linux-amd64-musl' ! -path '*/legacy/*' 2>/dev/null | head -1)"
+    [[ -n "$velo_bin" ]] || velo_bin="$(find "$work" -type f -name 'velociraptor-v*-linux-amd64' ! -path '*/legacy/*' 2>/dev/null | head -1)"
+    if [[ -n "$velo_bin" ]]; then
+        local vfile vver
+        vfile="$(basename "$velo_bin")"
+        vver="$(sed -n 's/^velociraptor-v\(.*\)-linux-amd64\(-musl\)\{0,1\}$/\1/p' <<< "$vfile")"
+        local expect_ver; expect_ver="$(read_config "['versions']['velociraptor']" 2>/dev/null)"
+        if [[ -n "$expect_ver" && "$expect_ver" != "$vver" ]]; then
+            log_warn "  Bundled Velociraptor client is v${vver} but config.yaml pins v${expect_ver}"
+        fi
+        mkdir -p "${velo_dir}/clients/linux" "${velo_dir}/clients/mac" "${velo_dir}/clients/windows"
+        local _pairs=(
+            "${vfile}|${velo_dir}/clients/linux/velociraptor"
+            "velociraptor-v${vver}-darwin-amd64|${velo_dir}/clients/mac/velociraptor_client"
+            "velociraptor-v${vver}-windows-amd64.exe|${velo_dir}/clients/windows/velociraptor_client.exe"
+            "velociraptor-v${vver}-windows-amd64.msi|${velo_dir}/clients/windows/velociraptor_client.msi"
+        )
+        local _p _srcname _dest _src staged_ctx=0
+        for _p in "${_pairs[@]}"; do
+            _srcname="${_p%%|*}"; _dest="${_p##*|}"
+            _src="$(find "$work" -type f -name "$_srcname" 2>/dev/null | head -1)"
+            [[ -n "$_src" ]] || continue
+            cp -f "$_src" "$_dest" && staged_ctx=$((staged_ctx + 1))
+            [[ "$_dest" != *.msi ]] && chmod 755 "$_dest" 2>/dev/null || true
+            printf '%s\n' "$vver" > "${_dest}.version"
+        done
+        (( staged_ctx > 0 )) && log_success "  Staged ${staged_ctx} Velociraptor client binary/binaries for the image build (v${vver})"
+        local _collector_src
+        _collector_src="$(find "$work" -type f -name 'velociraptor-collector' 2>/dev/null | head -1)"
+        if [[ -n "$_collector_src" ]]; then
+            mkdir -p "${SCRIPT_DIR}/data/tools"
+            cp -f "$_collector_src" "${SCRIPT_DIR}/data/tools/velociraptor-collector"
+            log_success "  Staged velociraptor-collector into data/tools"
+        fi
+    fi
+}
+
 load_images_from_package() {
     # Takes ONE OR MORE assets. Per-module assets share a top-level directory
     # name, so extracting them all into one place merges them into the single
@@ -431,42 +478,7 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
     # download_offline_collector_binaries()'s check but NOT this one, and the
     # image build re-fetches ~250 MB from github.com even though the package
     # already carried it (observed 2026-08-04).
-    local velo_dir="${SCRIPT_DIR}/modules/velociraptor"
-    local velo_bin
-    velo_bin="$(find "$work" -type f -name 'velociraptor-v*-linux-amd64' ! -name '*-musl' 2>/dev/null | head -1)"
-    if [[ -n "$velo_bin" ]]; then
-        local vfile vver
-        vfile="$(basename "$velo_bin")"
-        vver="$(sed -n 's/^velociraptor-v\(.*\)-linux-amd64$/\1/p' <<< "$vfile")"
-        local expect_ver; expect_ver="$(read_config "['versions']['velociraptor']" 2>/dev/null)"
-        if [[ -n "$expect_ver" && "$expect_ver" != "$vver" ]]; then
-            log_warn "  Bundled Velociraptor client is v${vver} but config.yaml pins v${expect_ver}"
-        fi
-        mkdir -p "${velo_dir}/clients/linux" "${velo_dir}/clients/mac" "${velo_dir}/clients/windows"
-        local _pairs=(
-            "velociraptor-v${vver}-linux-amd64|${velo_dir}/clients/linux/velociraptor"
-            "velociraptor-v${vver}-darwin-amd64|${velo_dir}/clients/mac/velociraptor_client"
-            "velociraptor-v${vver}-windows-amd64.exe|${velo_dir}/clients/windows/velociraptor_client.exe"
-            "velociraptor-v${vver}-windows-amd64.msi|${velo_dir}/clients/windows/velociraptor_client.msi"
-        )
-        local _p _srcname _dest _src staged_ctx=0
-        for _p in "${_pairs[@]}"; do
-            _srcname="${_p%%|*}"; _dest="${_p##*|}"
-            _src="$(find "$work" -type f -name "$_srcname" 2>/dev/null | head -1)"
-            [[ -n "$_src" ]] || continue
-            cp -f "$_src" "$_dest" && staged_ctx=$((staged_ctx + 1))
-            [[ "$_dest" != *.msi ]] && chmod 755 "$_dest" 2>/dev/null || true
-            printf '%s\n' "$vver" > "${_dest}.version"
-        done
-        (( staged_ctx > 0 )) && log_success "  Staged ${staged_ctx} Velociraptor client binary/binaries for the image build (v${vver})"
-        local _collector_src
-        _collector_src="$(find "$work" -type f -name 'velociraptor-collector' 2>/dev/null | head -1)"
-        if [[ -n "$_collector_src" ]]; then
-            mkdir -p "${SCRIPT_DIR}/data/tools"
-            cp -f "$_collector_src" "${SCRIPT_DIR}/data/tools/velociraptor-collector"
-            log_success "  Staged velociraptor-collector into data/tools"
-        fi
-    fi
+    _pkg_stage_velociraptor_build "$work"
 
     # Stage the remaining payload directories the release ships. Until now this
     # function looked at `binaries/` and nothing else, then `rm -rf "$work"`
