@@ -44,6 +44,20 @@ class RuleLevel(unittest.TestCase):
         spec = build_artifact_spec([HB], {"artifact_params": {HB: {"x='1') , evil=(": "y"}}})
         self.assertNotIn("evil", spec)
 
+    def test_default_window_is_one_year(self):
+        from datetime import datetime, timedelta
+        import re
+        got = re.search(r"DateAfter='([^']+)'", build_artifact_spec([HB])).group(1)
+        age = datetime.utcnow() - datetime.strptime(got, "%Y-%m-%dT%H:%M:%SZ")
+        self.assertLess(abs(age - timedelta(days=365)), timedelta(minutes=5))
+
+    def test_a_run_window_or_override_beats_the_default(self):
+        tf = {"enabled": True, "mode": "between", "start_datetime": "2026-01-02T00:00:00Z"}
+        self.assertIn("DateAfter='2026-01-02T00:00:00Z'", build_artifact_spec([HB], {"time_filter": tf}))
+        spec = build_artifact_spec([HB], {"artifact_params": {HB: {"DateAfter": "2020-05-05T00:00:00Z"}}})
+        self.assertIn("DateAfter='2020-05-05T00:00:00Z'", spec)
+        self.assertEqual(1, spec.count("DateAfter="))
+
     def test_other_artifacts_stay_bare(self):
         self.assertEqual("`Windows.Forensics.SAM`=dict()", build_artifact_spec(["Windows.Forensics.SAM"]))
 

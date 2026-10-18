@@ -225,6 +225,10 @@ _SEV_TO_RULELEVEL = {"critical": "Critical", "high": "Critical and High",
 # informational 0) but is most of the volume. A run's min_severity, or an
 # artifact_params override, can still ask for more.
 HAYABUSA_DEFAULT_SEVERITY = "medium"
+# With no time window Hayabusa reads every event log back to the first record, and
+# old records are volume, rarely the incident. A run's time_filter or an
+# artifact_params DateAfter still sets it; 0 sends no DateAfter at all.
+HAYABUSA_DEFAULT_LOOKBACK_DAYS = int(os.environ.get("HAYABUSA_DEFAULT_LOOKBACK_DAYS", "365"))
 
 
 def _vql_quote(v) -> str:
@@ -239,6 +243,8 @@ def build_artifact_spec(artifacts, settings=None):
     pre-trim volume. Operators can override via settings['artifact_params'][artifact]."""
     settings = settings or {}
     start_iso, end_iso = calculate_time_range(settings.get('time_filter'))
+    if not start_iso and HAYABUSA_DEFAULT_LOOKBACK_DAYS > 0:
+        start_iso = (datetime.utcnow() - timedelta(days=HAYABUSA_DEFAULT_LOOKBACK_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
     min_sev = (settings.get('min_severity') or HAYABUSA_DEFAULT_SEVERITY)
     overrides = settings.get('artifact_params') or {}
     parts = []
