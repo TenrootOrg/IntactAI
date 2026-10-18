@@ -764,6 +764,11 @@ def save_config():
             from services.fusion import llm_sim, store
             if _before is not None and llm_sim._config_id(llm_sim._agentic_cfg()) != _before:
                 stopped = store.supersede_report_generations("the AI settings changed")
+                # The selected model's window is cached for 5 minutes; a log
+                # attachment described right after a model change used the old
+                # one (seen: "model: None" after the first LLM was configured).
+                from services.fusion import external_logs
+                external_logs._WINDOW_CACHE.update(at=0.0, v=None)
         except Exception as _e:                            # noqa: BLE001
             print(f"[CONFIG] could not retire in-flight report generations: {_e}", flush=True)
         return jsonify({"status": "saved", "message": "Configuration saved successfully",

@@ -108,6 +108,26 @@ class Window(unittest.TestCase):
         self.assertLessEqual(self._w(1_000_000, "codex-subscription")["budget_chars"], 1_048_576)
 
 
+class SavingSettingsDropsTheCachedWindow(unittest.TestCase):
+    def test_a_model_change_is_seen_by_the_next_description(self):
+        import importlib, json as _j
+        try:
+            from flask import Flask
+            sys.modules.pop("routes.config_routes", None)
+            cr = importlib.import_module("routes.config_routes")
+        except Exception as e:                              # noqa: BLE001
+            self.skipTest(f"no flask here: {e}")
+        from services.fusion import llm_sim
+        X._WINDOW_CACHE.update(at=10**12, v={"model": None})              # a stale window
+        cfgs = iter([{"online_llm": {"model": "a"}}, {"online_llm": {"model": "b"}}])
+        app = Flask(__name__); app.register_blueprint(cr.config_bp)
+        with mock.patch.object(llm_sim, "_agentic_cfg", lambda: next(cfgs)), \
+                mock.patch.object(cr, "save_frontend_config", lambda c: True, create=True), \
+                mock.patch("services.fusion.store.supersede_report_generations", lambda why: 0):
+            app.test_client().put("/api/config", data=_j.dumps({"agentic": {}}), content_type="application/json")
+        self.assertIsNone(X._WINDOW_CACHE["v"])
+
+
 class IntoTheContext(unittest.TestCase):
     def test_descriptions_are_apart_from_what_the_customer_said(self):
         fact = {"kind": "impact", "what": "payroll server encrypted", "source": "call.txt"}
