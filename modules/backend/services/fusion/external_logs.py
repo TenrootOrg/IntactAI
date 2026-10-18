@@ -58,7 +58,7 @@ _NAMES = {
     "host": "hostname host computername computerdnsname devicename dvchostname agentcomputername "
             "agentname agenthostname devicehostname computerhostname threattargethostname impactedhost "
             "machinename endpointname workstation computer endpoint dvchost sourcehost "
-            "srchostname clienthostname compromisedentity location source",
+            "srchostname clienthostname hostidentifier compromisedentity location source",
     "user": "userprincipalname upn username user_name accountname targetusername subjectusername "
             "user account suser duser deviceusername processuser actoralternateid actoremail "
             "actorusername actorsusername useremailaddress principalemail threattargetusername "

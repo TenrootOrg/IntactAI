@@ -235,6 +235,15 @@ class Shapes(unittest.TestCase):
             {"displayName": "AccountEnabled", "oldValue": "[false]", "newValue": "[true]"}]}}))
         self.assertEqual("[true]", r["targetResources.modifiedProperties.AccountEnabled.NewValue"])
 
+    def test_osquery_host_identifier_is_the_host(self):
+        # Rows of other osquery tables carry nothing else to join on; without the host
+        # the file was "not recognised" and read as text, so no process rule ran.
+        rows = [{"name": "pack_osquery", "hostIdentifier": "MacBookPro", "calendarTime": "Thu Feb 19 13:49:32 2026 UTC",
+                 "action": "added", "columns": {"version": "5.10"}}] * 3
+        n = X.normalize([X._flat(r) for r in rows], X.detect_columns([X._flat(r) for r in rows]))
+        self.assertEqual("MacBookPro", n[0]["n"].get("host"))
+        self.assertTrue(X.recognized(n))
+
     def test_squid_native_access_log(self):
         # Padded columns and "TCP_MISS/200": read as unnamed columns, no web rule saw it.
         text = "\n".join(["1157689312.049   5006 10.105.21.199 TCP_MISS/200 19763 CONNECT login.yahoo.com:443 "
