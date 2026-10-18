@@ -155,9 +155,22 @@ upgrade_module_intact() {
     if (( rc == 0 )); then
         discard_backup "$bak"
         rm -rf "$snap"
+        local sidecars_ok=1
+        _intact_move_sidecars || { sidecars_ok=0; log_error "  a sidecar could not move to the package's version (see above)"; }
         # Sidecars that proxy the backend cache its IP; recreating them after
         # the swap is what stops a 502 that looks like the upgrade failed.
         _intact_recreate_sidecars || log_warn "  could not recreate tusd/nginx"
+        _intact_sidecars_or_revert || sidecars_ok=0
+        if (( ! sidecars_ok )); then
+            # The backend moved and nginx/tusd did not: degraded, not "upgraded".
+            # u_end already counted intact as OK, so take it back out of that list
+            # rather than reporting it twice.
+            local i
+            for i in "${!UPGRADE_OK[@]}"; do
+                [[ "${UPGRADE_OK[$i]}" == "intact "* ]] && unset 'UPGRADE_OK[$i]'
+            done
+            UPGRADE_DEGRADED+=("intact — nginx/tusd are still on their old versions (see the log)")
+        fi
         _intact_clear_legacy_upgrade_state || true
     else
         log_warn "  the pre-upgrade tree snapshot is kept at ${snap}"

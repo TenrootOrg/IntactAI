@@ -127,6 +127,84 @@ _intact_bring_up() {
     return $rc
 }
 
+# Move tusd and the platform nginx to the versions this package ships. The
+# packager records them ONLY in the tar names (images/tusd-<v>.tar,
+# images/intact-nginx-<v>.tar): neither is in the manifest, and the box's
+# config.yaml holds the old pin, so _u_stamp_transitive never saw a new value
+# and nothing loaded the tars either. A release that bumped nginx (1.31.7, five
+# CVEs) left every upgraded box on the old one, silently -- the recreate below
+# runs with --pull never on whatever .env still said.
+#
+# Run after the backend swap succeeded: a sidecar that cannot move is logged as
+# an error and keeps its old, working version; it never rolls the backend back.
+_INTACT_SIDECARS_MOVED=()
+_intact_move_sidecars() {
+    local spec env_var mod prefix repo cfg_key v cur envf rc=0
+    _INTACT_SIDECARS_MOVED=()
+    for spec in "TUSD_VERSION:backend:tusd-:tusproject/tusd:backend_tusd" \
+                "NGINX_VERSION:nginx:intact-nginx-:nginx:nginx"; do
+        IFS=: read -r env_var mod prefix repo cfg_key <<<"$spec"
+        v="$(_intact_pkg_image_version "$prefix" | head -1)"
+        [[ -n "$v" ]] || continue          # package carries none: keep the box's pin
+        envf="${SCRIPT_DIR}/modules/${mod}/.env"
+        cur="$(read_env_var "$envf" "$env_var" 2>/dev/null || echo '')"
+        [[ "$cur" == "$v" ]] && continue
+        _u_image_present "${repo}:${v}" || _u_load_tars_matching "${prefix}${v}"
+        if ! _u_image_present "${repo}:${v}"; then
+            log_error "  ${repo}:${v} is not present after loading ${prefix}${v}.tar; ${env_var} stays ${cur:-unset}"
+            rc=1
+            continue
+        fi
+        update_env_var "$envf" "$env_var" "$v" || { rc=1; continue; }
+        _pin_module_version "$cfg_key" "$v" || true
+        _INTACT_SIDECARS_MOVED+=("${envf}|${env_var}|${cur}|${cfg_key}")
+        log_info "  sidecar pin ${env_var}: ${cur:-unset} -> ${v} (from the package)"
+    done
+    return $rc
+}
+
+# Every page, the upgrade dialog included, reaches the box through nginx. A new
+# nginx that will not start on our nginx.conf would leave a box with no UI and an
+# upgrade that reported success: the intact probe only asks the backend. So after
+# a sidecar moved, ask the way the browser does -- TLS, through the proxy, to
+# the backend -- and if that or tusd is not up, put the old pins back and
+# recreate again. docker exec, not a host curl: the engine may be running in
+# the helper container, where 127.0.0.1 is not the box.
+_intact_sidecars_serve() {
+    local deadline=$((SECONDS + ${U_SIDECAR_WAIT:-120})) st
+    while (( SECONDS < deadline )); do
+        st="$("${DOCKER_BIN:-docker}" inspect -f '{{.State.Status}}' intact_tusd 2>/dev/null)"
+        if [[ "$st" == "running" ]] && [[ "$("${DOCKER_BIN:-docker}" exec intact_nginx \
+                curl -sk -o /dev/null -w '%{http_code}' --max-time 5 https://127.0.0.1/api/health 2>/dev/null)" == "200" ]]; then
+            return 0
+        fi
+        sleep "${U_PROBE_INTERVAL:-5}"
+    done
+    return 1
+}
+
+_intact_sidecars_or_revert() {
+    (( ${#_INTACT_SIDECARS_MOVED[@]} )) || return 0
+    if _intact_sidecars_serve; then
+        log_success "  nginx serves /api/health over TLS and tusd is running on the new versions"
+        return 0
+    fi
+    log_error "  nginx or tusd is not serving on the new version(s); putting the old pins back"
+    local m envf env_var old cfg_key
+    for m in "${_INTACT_SIDECARS_MOVED[@]}"; do
+        IFS='|' read -r envf env_var old cfg_key <<<"$m"
+        [[ -n "$old" ]] || continue
+        update_env_var "$envf" "$env_var" "$old" || true
+        _pin_module_version "$cfg_key" "$old" || true
+        log_error "    ${env_var} -> ${old}"
+    done
+    _intact_recreate_sidecars
+    _intact_sidecars_serve \
+        && log_warn "  the old nginx/tusd serve again; this release's sidecar versions need a look" \
+        || log_error "  nginx still does not serve /api/health -- the dashboard is unreachable; see ${LOG_FILE:-the log}"
+    return 1
+}
+
 _intact_recreate_sidecars() {
     ( cd "${SCRIPT_DIR}/modules/backend" \
       && "${DOCKER_BIN:-docker}" compose up -d --no-build --pull never tusd \
