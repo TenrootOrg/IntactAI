@@ -190,6 +190,42 @@ test_presidio_follows_intact_through_only() {
     assert_eq "${PLAN_ACTION[presidio]}" "upgrade"
 }
 
+# Timesketch 20261014 reads our .plaso files with its own Plaso >= 20260720,
+# which cannot read a .plaso made by an older Plaso: Plaso must move first,
+# must come along with Timesketch, and Timesketch must not move without it.
+test_plaso_is_upgraded_before_timesketch() {
+    _setup
+    local i p=-1 t=-1
+    for i in "${!UPGRADE_ORDER[@]}"; do
+        [[ "${UPGRADE_ORDER[$i]}" == plaso ]] && p=$i
+        [[ "${UPGRADE_ORDER[$i]}" == timesketch ]] && t=$i
+    done
+    assert_true test "$p" -ge 0 -a "$p" -lt "$t"
+}
+
+test_plaso_follows_timesketch_through_only() {
+    _setup
+    _plan_module_enabled() { return 0; }
+    UPKG_VERSIONS[timesketch]=20261014; PLAN_CURRENT[timesketch]=20260630
+    UPKG_VERSIONS[plaso]=20260720; PLAN_CURRENT[plaso]=20260512
+    UPGRADE_ONLY="timesketch"
+    plan_build
+    assert_eq "${PLAN_ACTION[plaso]}" "upgrade"
+}
+
+test_timesketch_waits_for_a_plaso_that_failed() {
+    _setup
+    UPGRADE_FAILED=(); UPGRADE_ROLLED_BACK=()
+    assert_false _u_failed_requirement timesketch
+    UPGRADE_ROLLED_BACK=("plaso — health gate (rc=1); restored to 20260512")
+    assert_eq "$(_u_failed_requirement timesketch)" "plaso"
+    UPGRADE_ROLLED_BACK=("plasoish — not plaso")
+    assert_false _u_failed_requirement timesketch
+    UPGRADE_ROLLED_BACK=(); UPGRADE_FAILED=("plaso")
+    assert_eq "$(_u_failed_requirement timesketch)" "plaso"
+    assert_false _u_failed_requirement elk
+}
+
 test_presidio_stays_out_of_a_run_without_intact() {
     _setup
     UPKG_VERSIONS[presidio]=2.2.364; PLAN_CURRENT[presidio]=""

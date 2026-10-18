@@ -582,6 +582,13 @@ main() {
             *)       continue ;;
         esac
 
+        local dep
+        if dep="$(_u_failed_requirement "$m")"; then
+            log_warn "${m}: not upgraded -- ${dep} did not reach ${PLAN_TARGET[$dep]:-its target}, and ${m} needs it"
+            u_skip "$m" "${dep} did not upgrade (required first)"
+            continue
+        fi
+
         fn="upgrade_module_${m}"
         if ! declare -F "$fn" >/dev/null; then
             # Named explicitly rather than skipped quietly: a module in the

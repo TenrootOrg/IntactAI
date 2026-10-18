@@ -14,8 +14,29 @@ ALWAYS_INSTALLED=(intact presidio)
 # own ticks, and it has never heard of a module a newer release introduces --
 # the Import screen shows it as an unticked "install". Without this, every
 # dashboard upgrade onto the first release carrying Presidio would skip it.
-declare -gA FOLLOWS=([presidio]=intact)
-UPGRADE_ORDER=(intact presidio elk timesketch plaso iris velociraptor aws_sigma o365rc volweb portainer)
+#
+# plaso follows timesketch for a second reason: Timesketch reads the .plaso files
+# we make with ITS OWN Plaso, and from Timesketch 20261014 that is >= 20260720,
+# which cannot read a .plaso made by an older Plaso. `--only timesketch` that
+# left plaso behind would break every later import.
+declare -gA FOLLOWS=([presidio]=intact [plaso]=timesketch)
+# Plaso BEFORE Timesketch, for the same reason: the new Timesketch must never be
+# running while our log2timeline is still the old one.
+UPGRADE_ORDER=(intact presidio elk plaso timesketch iris velociraptor aws_sigma o365rc volweb portainer)
+# A module that must not move when its dependency failed or was rolled back in
+# the same run: Timesketch upgraded onto a Plaso that stayed old would reject
+# every .plaso the box makes from then on, while reporting itself healthy.
+declare -gA REQUIRES=([timesketch]=plaso)
+
+# The dependency of <module> that failed or rolled back in this run, if any.
+_u_failed_requirement() {
+    local dep="${REQUIRES[$1]:-}" e
+    [[ -n "$dep" ]] || return 1
+    for e in "${UPGRADE_FAILED[@]}" "${UPGRADE_ROLLED_BACK[@]}"; do
+        [[ "$e" == "$dep" || "$e" == "$dep "* ]] && { printf '%s\n' "$dep"; return 0; }
+    done
+    return 1
+}
 
 # module -> "<env file>:<KEY>". The pin that says what is actually RUNNING, as
 # opposed to config.yaml which says what the operator asked for. base.py:1473
