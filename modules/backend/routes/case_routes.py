@@ -555,7 +555,7 @@ def get_case_risk(case_id):
     statuses, isolated = store.host_statuses(d), store.velociraptor_isolated()
     for r in rows:
         r["host_status"] = statuses.get(r.get("client_id") or "", "")
-        m = _re.search(r"C\.[0-9a-fA-F]{16}", str(r.get("client_id") or ""))
+        m = _re.search(r"C\.[0-9a-fA-F_]{16,40}", str(r.get("client_id") or ""))
         r["vr_isolated"] = bool(m and m.group(0) in isolated)
     return jsonify({"case_id": case_id, "rows": rows, "total": len(rows),
                     "is_stale": bool(store.stale_member_runs(case_id, d))})
