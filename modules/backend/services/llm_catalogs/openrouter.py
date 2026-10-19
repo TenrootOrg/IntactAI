@@ -75,7 +75,21 @@ def load_catalog():
 
 
 def search(q: str = "", limit: int = 10, offset: int = 0) -> Dict:
-    return store.search(q=q, limit=limit, offset=offset)
+    """Catalog search; with the last catalog test, each model carries its result and
+    the matches are ordered works / untested / data policy / failed BEFORE the page is
+    cut -- sorting one page of 10 would hide the ones that work."""
+    try:
+        from . import model_probe
+        probes = model_probe.load()
+    except Exception:  # noqa: BLE001 -- the picker works without test results
+        probes = {}
+    if not probes:
+        return store.search(q=q, limit=limit, offset=offset)
+    res = store.search(q=q, limit=10 ** 6, offset=0)
+    rows = [{**m, "probe": probes[m["id"]]} if m.get("id") in probes else m for m in res["models"]]
+    rows.sort(key=model_probe.rank)            # stable: catalog order inside each group
+    offset, limit = max(0, int(offset)), max(1, int(limit))
+    return {**res, "models": rows[offset:offset + limit], "limit": limit, "offset": offset}
 
 
 def catalog_status() -> Dict:

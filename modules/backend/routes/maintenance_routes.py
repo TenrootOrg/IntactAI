@@ -92,6 +92,35 @@ def refresh_openrouter_models():
     return jsonify(body), status
 
 
+@maintenance_bp.route('/api/maintenance/test-openrouter-models', methods=['POST'])
+def test_openrouter_models():
+    """Test the big vendors' OpenRouter models (one 1-token call each) as a Settings ->
+    Actions job; the AI-model picker then marks and orders them. Needs an OpenRouter
+    key: the AI model's, or the decision model's own."""
+    import threading
+    from services.llm_catalogs import model_probe, openrouter
+    from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
+    try:
+        from services.fusion.llm_sim import _agentic_cfg
+        a = _agentic_cfg() or {}
+        ol, dmc = a.get("online_llm") or {}, a.get("decision_model") or {}
+        key = (ol.get("api_key") if (ol.get("provider") or "") == "openrouter" else "") \
+            or (dmc.get("api_key") if (dmc.get("provider") or "openrouter") == "openrouter" else "")
+        if not key:
+            return jsonify({"success": False, "error": "needs an OpenRouter API key (the AI model's or the decision model's)"}), 400
+        models = openrouter.load_catalog() or []
+        n = len(model_probe.selectable(models))
+        run_id = create_automation_run(automation_type="settings", name="Test the AI-model catalog",
+                                       details={"action": "test-openrouter-models", "models": n})
+        log = lambda m, l="info": add_log_to_run(run_id, m, l)                  # noqa: E731
+        done = lambda s, err, det: update_run_status(run_id, s, error=err, details=det)  # noqa: E731
+        threading.Thread(target=model_probe.run, args=(run_id, key, models, log, done), daemon=True).start()
+        return jsonify({"success": True, "run_id": run_id, "models": n,
+                        "message": f"Testing {n} models — follow it in Settings → Actions."})
+    except Exception as e:  # noqa: BLE001 -- a button, never a 500 page
+        return jsonify({"success": False, "error": f"{type(e).__name__}: {e}"[:300]}), 500
+
+
 @maintenance_bp.route('/api/maintenance/refresh-anthropic-models', methods=['POST'])
 def refresh_anthropic_models():
     """Refresh `data/anthropic_models.json` from Anthropic's `/v1/models`

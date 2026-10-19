@@ -732,7 +732,9 @@
                                             <template x-for="m in results" :key="m.id">
                                                 <div @mousedown.prevent="select(m)"
                                                      class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
-                                                    <div class="text-white" x-text="m.name"></div>
+                                                    <div class="text-white" x-text="$store.settings.decisionProbeMark(m) + m.name"></div>
+                                                    <div x-show="m.probe && !m.probe.ok" class="text-[11px] text-yellow-400 truncate"
+                                                         :title="(m.probe || {}).why" x-text="(m.probe || {}).why"></div>
                                                     <!-- BOTH numbers. This row used to show only
                                                          max_output_tokens under a bare 'max', which on a
                                                          model with a 1M context window and a 128K output cap
@@ -764,6 +766,11 @@
                                             <span class="text-white" x-text="$store.settings.config.agentic.online_llm.provider"></span>.
                                             Press <span class="text-blue-400">Update catalog</span> below, or check the provider's docs.
                                         </div>
+                                        <!-- The last catalog test of the chosen model (Update catalog -> Settings -> Actions) -->
+                                        <div x-show="selectedModel && selectedModel.probe" class="text-[11px] mt-1"
+                                             :class="(selectedModel && selectedModel.probe && selectedModel.probe.ok) ? 'text-green-400' : 'text-yellow-400'"
+                                             x-text="selectedModel && selectedModel.probe ? (selectedModel.probe.ok ? '✅ Answered the last catalog test'
+                                                     : $store.settings.decisionProbeMark(selectedModel) + 'Failed the last catalog test: ' + selectedModel.probe.why) : ''"></div>
                                         <!-- Currently-selected model info: context window + max output
                                              tokens + price. Pulled from the catalog entry so it stays
                                              accurate as models evolve; updates instantly when the
@@ -1183,7 +1190,9 @@
                                             <template x-for="m in results" :key="m.id">
                                                 <div @mousedown.prevent="select(m)"
                                                      class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
-                                                    <div class="text-white" x-text="m.name"></div>
+                                                    <div class="text-white" x-text="$store.settings.decisionProbeMark(m) + m.name"></div>
+                                                    <div x-show="m.probe && !m.probe.ok" class="text-[11px] text-yellow-400 truncate"
+                                                         :title="(m.probe || {}).why" x-text="(m.probe || {}).why"></div>
                                                     <!-- BOTH numbers. This row used to show only
                                                          max_output_tokens under a bare 'max', which on a
                                                          model with a 1M context window and a 128K output cap
@@ -1372,7 +1381,9 @@
                                             <template x-for="m in results" :key="m.id">
                                                 <div @mousedown.prevent="select(m)"
                                                      class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
-                                                    <div class="text-white" x-text="m.name"></div>
+                                                    <div class="text-white" x-text="$store.settings.decisionProbeMark(m) + m.name"></div>
+                                                    <div x-show="m.probe && !m.probe.ok" class="text-[11px] text-yellow-400 truncate"
+                                                         :title="(m.probe || {}).why" x-text="(m.probe || {}).why"></div>
                                                     <!-- BOTH numbers. This row used to show only
                                                          max_output_tokens under a bare 'max', which on a
                                                          model with a 1M context window and a 128K output cap

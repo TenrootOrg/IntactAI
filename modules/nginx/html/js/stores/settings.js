@@ -530,13 +530,25 @@ document.addEventListener('alpine:init', () => {
                     else failed.push(name);
                 } catch (e) { failed.push(name); }
             }
+            // Then TEST the big vendors' OpenRouter models in the background (one
+            // 1-token call each): the picker marks and orders them once it is done.
+            // Never blocks the update or fails it -- it is a separate job.
+            let testing = '';
+            if (ok.some(s => s.startsWith('OpenRouter'))) {
+                try {
+                    const t = await fetch('/api/maintenance/test-openrouter-models', { method: 'POST' });
+                    const td = await t.json().catch(() => ({}));
+                    testing = td.success ? '  ·  testing ' + td.models + ' models in Settings → Actions'
+                                         : '  ·  models not tested: ' + (td.error || 'HTTP ' + t.status);
+                } catch (e) { testing = '  ·  models not tested: ' + e.message; }
+            }
             if (ok.length) {
                 // The backend never replaces a good catalog with an empty one
                 // (CatalogStore.write), so anything that failed still has whatever
                 // it had before — say "skipped", not "lost".
                 this.showMessage('Catalogs updated — ' + ok.join(', ')
                                  + (failed.length ? '  ·  skipped: ' + failed.join(', ')
-                                                    + ' (no credential, or unreachable)' : ''),
+                                                    + ' (no credential, or unreachable)' : '') + testing,
                                  'success');
                 window.dispatchEvent(new CustomEvent('llm-catalog-refreshed',
                     { detail: { provider: this.config.agentic?.online_llm?.provider } }));
