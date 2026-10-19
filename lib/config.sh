@@ -112,6 +112,31 @@ read_config() {
 #     it points at nothing while the file sits right there under the mount;
 #   * never read $HOME. This runs under sudo, so $HOME is /root and the
 #     credential it would look for is the wrong user's every single time.
+#
+# A DASHBOARD UPGRADE RUNS THIS INSIDE THE BACKEND CONTAINER, where the
+# operator's account does not exist and the host's /home is not mounted. It used
+# to stamp the empty placeholder there -- on a box where codex worked, that
+# REPLACED the good path, and codex vanished at the next recreate; on a box
+# installed before codex, ~/.codex was never mounted, so installing codex the
+# documented way was never seen ("codex still not visible", 2026-10-19). There,
+# the home comes from the host's own /etc/passwd via docker (the socket is the
+# one thing this container does reach), and nothing resolved replaces a real
+# path stamped earlier.
+_host_codex_home_via_docker() {
+    local uid gid img home
+    command -v docker >/dev/null 2>&1 || return 1
+    uid="$(stat -c %u "$SCRIPT_DIR" 2>/dev/null)"; gid="$(stat -c %g "$SCRIPT_DIR" 2>/dev/null)"
+    [[ -n "$uid" && "$uid" != 0 ]] || return 1
+    img="$(docker inspect -f '{{.Config.Image}}' intact_backend 2>/dev/null)"
+    [[ -n "$img" ]] || return 1
+    home="$(docker run --rm --network none -v /etc/passwd:/hostpasswd:ro --entrypoint awk "$img" \
+            -F: -v u="$uid" '$3 == u { print $6; exit }' /hostpasswd 2>/dev/null)"
+    [[ "$home" == /* && "$home" != "/" ]] || return 1
+    docker run --rm --network none -v "${home}:/h" --entrypoint sh "$img" \
+        -c "mkdir -p /h/.codex && chown ${uid}:${gid} /h/.codex" >/dev/null 2>&1 || return 1
+    echo "${home}/.codex"
+}
+
 _stamp_host_codex_paths() {
     local backend_env="$1" bin dir pkg npmroot home user
 
@@ -196,9 +221,22 @@ _stamp_host_codex_paths() {
     home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"
     if [[ -n "$home" && -d "$home" ]]; then
         [[ -d "${home}/.codex" ]] || _as_operator 'mkdir -p ~/.codex'
+        [[ -d "${home}/.codex" ]] && home="${home}/.codex" || home=""
+    else
+        home="$(_host_codex_home_via_docker)" || home=""
     fi
-    [[ -n "$home" && -d "${home}/.codex" ]] && home="${home}/.codex" \
-        || home="${SCRIPT_DIR}/data/agentic_cli/host-home"
+
+    # Never downgrade: what could not be found from HERE keeps what was stamped
+    # before (see _host_codex_home_via_docker for why "here" may be a container).
+    local placeholder="${SCRIPT_DIR}/data/agentic_cli/" prev
+    _keep_stamped() {
+        prev="$(sed -n "s/^$1=//p" "$backend_env" 2>/dev/null | tail -1)"
+        [[ -n "$prev" && "$prev" != "${placeholder}"* ]] && echo "$prev"
+    }
+    [[ -z "$home" ]] && home="$(_keep_stamped INTACT_HOST_CODEX_HOME)"
+    [[ -z "$home" ]] && home="${SCRIPT_DIR}/data/agentic_cli/host-home"
+    [[ "$pkg" == "${placeholder}"* ]] && prev="$(_keep_stamped INTACT_HOST_CODEX_PKG)" && pkg="$prev"
+    [[ "$npmroot" == "${placeholder}"* ]] && prev="$(_keep_stamped INTACT_HOST_CODEX_NPM)" && npmroot="$prev"
 
     update_env_var "$backend_env" "INTACT_HOST_CODEX_PKG" "$pkg"
     update_env_var "$backend_env" "INTACT_HOST_CODEX_NPM" "$npmroot"
