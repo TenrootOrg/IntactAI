@@ -111,6 +111,19 @@ class SlowModel(unittest.TestCase):
         self.assertEqual(8, sum(1 for a in ans if a))
         self.assertEqual("", dm.unavailable(CFG))
 
+    def test_an_unexplained_400_on_a_batch_is_split_like_a_too_big_one(self):
+        # Kev 4B: 30 findings fine, 50 refused with "The parameter is invalid".
+        invalid = _R(400, {"error": {"message": 'HTTP 400: {"code":20015,"message":"The parameter is invalid."}'}})
+
+        def post(url, json=None, **kw):
+            qs = json["questions"]
+            return invalid if len(qs) > 3 else _R(200, {"answers": {k: {"type": "noul", "noul": 0.6} for k in qs}})
+        q = lambda k: {"type": "noul", "instructions": "x"}   # noqa: E731
+        with mock.patch.object(dm.requests, "post", side_effect=post):
+            ans = dm.ask_each(list(range(10)), str, q, cfg=CFG)
+        self.assertEqual(10, sum(1 for a in ans if a))
+        self.assertEqual("", dm.unavailable(CFG))
+
     def test_one_slow_item_is_an_outage(self):
         with mock.patch.object(dm.requests, "post", side_effect=ReadTimeout("read timed out")):
             self.assertIsNone(dm.ask(STATE, Q, cfg=CFG))

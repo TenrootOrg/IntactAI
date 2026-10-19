@@ -427,9 +427,15 @@ def _call(state, questions, *, run_id=None, cfg=None):
         if r.status_code != 200:
             # The model's own token count is the only exact one; ours is chars/4. A
             # request it calls too large is split and retried by _ask_chunk.
-            too_big = r.status_code in (400, 413) and any(
+            too_big = r.status_code in (400, 413) and (any(
                 w in r.text for w in ("max_tokens", "context_length", "too long", "too large",
                                       "questions per request"))   # Tev1: "at most 32 questions per request"
+                # Each classifier has its own undeclared limit and its own words for it:
+                # Kev 4B took 30 findings and refused 50 with only "The parameter is
+                # invalid" (2026-10-19) -- read as an outage, it stopped a case at 160 of
+                # 1,059 and paused every other use. A 400 on a batch is split; one
+                # question refused is still a real failure.
+                or (r.status_code == 400 and len(questions) > 1))
             _warn("decision model: HTTP %s: %s", r.status_code, r.text[:200])
             if not too_big:                          # too big is ours to split, not an outage
                 _trip(_reason(r))
