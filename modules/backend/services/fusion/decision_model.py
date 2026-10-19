@@ -366,6 +366,7 @@ def ask(state, questions, *, run_id=None, cfg=None):
     """One Decisions call. Returns the `answers` map, or None on any failure;
     _last.too_big says whether it failed for being too large (per thread: the
     after-fuse pass, a report and the relevance job can call at once)."""
+    _last.refused = False
     ans, _last.too_big = _call(state, questions, run_id=run_id, cfg=cfg)
     return ans
 
@@ -437,6 +438,12 @@ def _call(state, questions, *, run_id=None, cfg=None):
                 # question refused is still a real failure.
                 or (r.status_code == 400 and len(questions) > 1))
             _warn("decision model: HTTP %s: %s", r.status_code, r.text[:200])
+            if r.status_code == 400 and not too_big:
+                # THIS request refused -- not the provider down. Pausing every use for it
+                # left a case's phases and people with no estimate because one verdict
+                # question was refused (2026-10-19). ask_each skips the item and goes on.
+                _last.refused, _last.refused_why = True, _reason(r)
+                return None, False
             if not too_big:                          # too big is ours to split, not an outage
                 _trip(_reason(r))
             return None, too_big
@@ -515,13 +522,27 @@ def ask_each(items, render, question, *, context=None, run_id=None, cfg=None):
     Stops at the first failed call — the rest come back None.
     """
     out, base = [], approx_tokens(context) if context is not None else 0
+    _last.refusals, _last.answered = 0, 0
     for chunk in pack(items, render, max_tokens=context_tokens(cfg) - base, max_items=max_questions(cfg),
                       per_item=_question_tokens(question)):
         ans = _ask_chunk(chunk, render, question, context, run_id=run_id, cfg=cfg)
+        if ans is not None:
+            out += ans
+        if _last.refusals >= REFUSALS_BEFORE_BROKEN and not _last.answered:
+            # Refuses every item and answers none: the model or its settings are wrong,
+            # not the items. Paused like an outage, or each finding would cost a call.
+            import time
+            c = _cfg() if cfg is None else cfg
+            _down.update(until=time.monotonic() + DOWN_SECONDS, fp=_fp(c),
+                         why=getattr(_last, "refused_why", "") or "every request refused")
+            _warn("decision model: %d items refused, none answered -- paused: %s", _last.refusals, _down["why"])
+            return out + [None] * (len(items) - len(out))
         if ans is None:
             return out + [None] * (len(items) - len(out))
-        out += ans
     return out
+
+
+REFUSALS_BEFORE_BROKEN = 3     # single items refused, with nothing answered, before "broken"
 
 
 def _question_tokens(question) -> int:
@@ -544,7 +565,13 @@ def _ask_chunk(chunk, render, question, context=None, *, run_id=None, cfg=None):
         state["context"] = context
     ans = ask(state, {k: question(k) for k in keys}, run_id=run_id, cfg=cfg)
     if ans is not None:
+        _last.answered = getattr(_last, "answered", 0) + 1
         return [ans.get(k) for k in keys]
+    if len(chunk) == 1 and getattr(_last, "refused", False):
+        _last.refusals = getattr(_last, "refusals", 0) + 1
+        if _last.refusals >= REFUSALS_BEFORE_BROKEN and not getattr(_last, "answered", 0):
+            return None                  # refuses everything so far: stop splitting (ask_each pauses)
+        return [None]                    # this finding refused: skip it, the rest go on
     if not getattr(_last, "too_big", False) or len(chunk) < 2:
         return None
     mid = len(chunk) // 2
@@ -662,8 +689,14 @@ def suggest_dispositions(case_id, d, g) -> int:
             from .store import log_case_event
             log_case_event(case_id, "Decision model · no verdict suggestions this time", "info",
                            f"The decision model did not answer for {len(todo)} finding(s) — "
-                           f"{unavailable() or 'its provider returned an error or could not be reached'}"
+                           f"{unavailable() or getattr(_last, 'refused_why', '') or 'its provider returned an error or could not be reached'}"
                            " — they are asked about again on the next fuse")
+        elif None in answers:
+            from .store import log_case_event
+            log_case_event(case_id, "Decision model · some findings not answered", "info",
+                           f"{answers.count(None)} of {len(todo)} finding(s) got no verdict suggestion — "
+                           f"{getattr(_last, 'refused_why', '') or unavailable() or 'no answer'}"
+                           " — the rest were answered; these are asked about again on the next fuse")
     # No early return when nothing changed: the notice below must still be built
     # (a case suggested before the notice existed, or a changed threshold).
     live = {f.id for f in g.findings}

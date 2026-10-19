@@ -124,6 +124,34 @@ class SlowModel(unittest.TestCase):
         self.assertEqual(10, sum(1 for a in ans if a))
         self.assertEqual("", dm.unavailable(CFG))
 
+    def test_a_refused_item_is_skipped_and_nothing_else_stops(self):
+        # Kev 4B refused some single findings with "The parameter is invalid": that
+        # paused every use, so phases and people got no estimate at all.
+        invalid = _R(400, {"error": {"message": "The parameter is invalid."}})
+
+        def post(url, json=None, **kw):
+            qs = json["questions"]
+            if len(qs) == 1 and json["state"]["items"]["q0"] == "3":
+                return invalid
+            if len(qs) > 1 and any(v == "3" for v in json["state"]["items"].values()):
+                return invalid
+            return _R(200, {"answers": {k: {"type": "noul", "noul": 0.6} for k in qs}})
+        q = lambda k: {"type": "noul", "instructions": "x"}   # noqa: E731
+        with mock.patch.object(dm.requests, "post", side_effect=post):
+            ans = dm.ask_each(list(range(8)), str, q, cfg=CFG)
+            self.assertEqual([True] * 3 + [False] + [True] * 4, [a is not None for a in ans])
+            self.assertEqual("", dm.unavailable(CFG))         # the other uses still ask
+            self.assertIsNotNone(dm.ask({"items": {"q0": "ok"}}, Q, cfg=CFG))
+
+    def test_a_model_that_refuses_everything_is_paused(self):
+        invalid = _R(400, {"error": {"message": "not a valid model ID"}})
+        q = lambda k: {"type": "noul", "instructions": "x"}   # noqa: E731
+        with mock.patch.object(dm.requests, "post", return_value=invalid) as post:
+            ans = dm.ask_each(list(range(40)), str, q, cfg=CFG)
+        self.assertEqual([None] * 40, ans)
+        self.assertIn("not a valid model ID", dm.unavailable(CFG))
+        self.assertLess(post.call_count, 15)                    # not one call per item
+
     def test_one_slow_item_is_an_outage(self):
         with mock.patch.object(dm.requests, "post", side_effect=ReadTimeout("read timed out")):
             self.assertIsNone(dm.ask(STATE, Q, cfg=CFG))
