@@ -661,8 +661,12 @@ def test_decision_model():
         return jsonify({**info, "success": False, "error": why})
     dm.retry_now()                           # the operator asked for a live answer now
     started = _time.time()
-    ans, _ = dm._call({"text": "Mimikatz dumped credentials from LSASS on WS1."},
-                      {"q0": {"type": "noul", "instructions": "Is state.text attacker activity?",
+    # Shaped like a real call (a structured finding), not like the one shape every
+    # model accepts: a plain {"text": ...} passed on a model that refused every
+    # finding of every fuse, so Test said "works" while nothing did.
+    ans, _ = dm._call({"finding": {"title": "Credential dumping", "host": "WS1", "severity": "high",
+                                   "details": "Mimikatz dumped credentials from LSASS on WS1."}},
+                      {"q0": {"type": "noul", "instructions": "Is state.finding attacker activity?",
                               "criteria": {"true": "Attacker activity.", "false": "Benign."}}}, cfg=agentic)
     ms = int((_time.time() - started) * 1000)
     a = (ans or {}).get("q0") or {}

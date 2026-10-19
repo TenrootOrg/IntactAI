@@ -391,7 +391,8 @@ def _call(state, questions, *, run_id=None, cfg=None):
             return None, False
     try:
         body = (_openai_body(model, state, questions) if row["wire"] == "openai"
-                else {"model": model, "state": state, "questions": questions})
+                else {"model": model, "questions": questions,
+                      "state": {"text": json.dumps(state)} if model in _TEXT_STATE else state})
     except ValueError as e:
         log.warning("decision model: %s", e)
         return None, False
@@ -402,9 +403,16 @@ def _call(state, questions, *, run_id=None, cfg=None):
         # is still one call -- a dead provider must not cost a dozen.
         # No redirects: a "local" server must not bounce case data elsewhere, and
         # a cloud endpoint that moved should fail loudly, not follow blindly.
+        def _post():
+            return requests.post(url, timeout=row["timeout"], allow_redirects=False,
+                                 headers={"Authorization": f"Bearer {key}"} if key else {}, json=body)
         for attempt in (0, 1):
-            r = requests.post(url, timeout=row["timeout"], allow_redirects=False,
-                              headers={"Authorization": f"Bearer {key}"} if key else {}, json=body)
+            r = _post()
+            if (r.status_code == 400 and row["wire"] == "jev" and model not in _TEXT_STATE
+                    and any(w in r.text for w in _TEXT_ONLY)):
+                _TEXT_STATE.add(model)               # this model reads the state as text: from now on too
+                body = {**body, "state": {"text": json.dumps(state)}}
+                r = _post()
             if r.status_code < 500 or attempt:
                 break
             log.warning("decision model: HTTP %s — retrying once", r.status_code)
@@ -417,7 +425,7 @@ def _call(state, questions, *, run_id=None, cfg=None):
                                       "questions per request"))   # Tev1: "at most 32 questions per request"
             log.warning("decision model: HTTP %s: %s", r.status_code, r.text[:200])
             if not too_big:                          # too big is ours to split, not an outage
-                _trip(f"HTTP {r.status_code}")
+                _trip(_reason(r))
             return None, too_big
         body = r.json()
     except Exception as e:  # noqa: BLE001 — every failure means "no suggestion"
@@ -443,6 +451,24 @@ def _call(state, questions, *, run_id=None, cfg=None):
 
 
 RETRY_SECONDS = 2              # the pause before the one retry of a 5xx answer
+
+# Models that take the state only as text, learned from their own 400. ScaleDown
+# (2026-10-19): "state must be a string or an object with only text, document ...".
+# Every OpenRouter classifier read the same JSON once it came as text, so the shape
+# is adapted rather than the model refused.
+_TEXT_STATE = set()
+_TEXT_ONLY = ("state must be a string", "only text, document")
+
+
+def _reason(r) -> str:
+    """The provider's own words for a refusal: 'HTTP 404' alone hid that the account's
+    data policy excluded the model, or that the model is not served at all."""
+    try:
+        msg = (r.json().get("error") or {}).get("message") or ""
+    except Exception:  # noqa: BLE001 -- not JSON
+        msg = r.text or ""
+    msg = " ".join(str(msg).split())
+    return f"HTTP {r.status_code}" + (f": {msg[:300]}" if msg else "")
 
 
 def pack(items, render, max_tokens=None, max_items=None, per_item=0):
@@ -616,9 +642,9 @@ def suggest_dispositions(case_id, d, g) -> int:
             # Timeline with no suggestion chips looked like "nothing to suggest".
             from .store import log_case_event
             log_case_event(case_id, "Decision model · no verdict suggestions this time", "info",
-                           f"The decision model did not answer for {len(todo)} finding(s) (its provider "
-                           "returned an error or could not be reached) — they are asked "
-                           "about again on the next fuse")
+                           f"The decision model did not answer for {len(todo)} finding(s) — "
+                           f"{unavailable() or 'its provider returned an error or could not be reached'}"
+                           " — they are asked about again on the next fuse")
     # No early return when nothing changed: the notice below must still be built
     # (a case suggested before the notice existed, or a changed threshold).
     live = {f.id for f in g.findings}
