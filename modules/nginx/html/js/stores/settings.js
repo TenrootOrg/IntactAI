@@ -423,6 +423,28 @@ document.addEventListener('alpine:init', () => {
             await this.saveAgentic();
         },
 
+        // Same for the AI model: one cheap call to what is on screen before saving.
+        // Not when no AI model is set up at all -- running without one is a supported
+        // way to use the appliance, not a mistake to warn about on every save.
+        async saveLlmSettings() {
+            const a = this.config.agentic;
+            const setUp = a.llm_mode === 'offline'
+                ? !!(a.offline_llm.url || '').trim()
+                : !!(a.online_llm.api_key || this.isSubscription());
+            if (setUp) {
+                await this.testLlmConnection();
+                const t = this.llmTestResult || {};
+                if (!t.success && !confirm(
+                        'The AI model does not answer with these settings:\n\n' +
+                        (t.error || 'no answer') +
+                        '\n\nSave anyway? Until it answers, reports use the built-in template and chat has no AI.')) {
+                    this.showMessage('AI model settings not saved', 'info');
+                    return;
+                }
+            }
+            await this.saveAgentic();
+        },
+
         async saveAgentic() {
             this.saving = true;
             try {

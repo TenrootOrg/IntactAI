@@ -955,8 +955,9 @@
                                     title="Fetch the current model list, prices and context windows for the selected provider. The existing catalog is kept if the fetch fails or returns nothing.">
                                 <span x-text="$store.settings.updatingCatalog ? 'Updating…' : 'Update catalog'"></span>
                             </button>
-                            <button @click="$store.settings.saveAgentic()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
-                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save AI Model Settings'"></span>
+                            <button @click="$store.settings.saveLlmSettings()" :disabled="$store.settings.saving || $store.settings.llmTesting" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium"
+                                    title="Tests the AI model first; if it does not answer you are told why and asked before saving">
+                                <span x-text="$store.settings.llmTesting ? 'Testing…' : ($store.settings.saving ? 'Saving...' : 'Save AI Model Settings')"></span>
                             </button>
                         </div>
                     </div>
