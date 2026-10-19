@@ -323,6 +323,15 @@ document.addEventListener('alpine:init', () => {
             if (!p) return '';
             return p.ok ? '✅ ' : (p.kind === 'policy' ? '⚠️ ' : '⛔ ');
         },
+        // The picker's list for the chosen provider: works, then refused by the data
+        // policy, then failed, then never tested -- each group in catalog order.
+        decisionModelsSorted() {
+            const prov = this.config.agentic.decision_model.provider;
+            const rank = (m) => !m.probe ? 3 : m.probe.ok ? 0 : (m.probe.kind === 'policy' ? 1 : 2);
+            return (this.decisionCatalog.models || [])
+                .map((m, i) => [m, i]).filter(([m]) => m.provider === prov)
+                .sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([m]) => m);
+        },
         decisionProbeOf() {
             const d = this.config.agentic.decision_model;
             const m = (this.decisionCatalog.models || []).find(x => x.provider === d.provider && x.model === (d.model || '').trim());

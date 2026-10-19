@@ -1026,7 +1026,7 @@
                                                :placeholder="($store.settings.decisionCatalog.providers[$store.settings.config.agentic.decision_model.provider] || {}).model || 'model id'"
                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
                                         <datalist id="decision-models">
-                                            <template x-for="m in $store.settings.decisionCatalog.models.filter(m => m.provider === $store.settings.config.agentic.decision_model.provider)" :key="m.model">
+                                            <template x-for="m in $store.settings.decisionModelsSorted()" :key="m.model">
                                                 <option :value="m.model" x-text="$store.settings.decisionProbeMark(m) + m.note + (m.probe && !m.probe.ok ? ' — ' + m.probe.why : '')"></option>
                                             </template>
                                         </datalist>

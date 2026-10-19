@@ -96,6 +96,12 @@ for (const m of rows) {
   store.config = { agentic: { decision_model: { provider: 'openrouter', model: m.model } } };
   out[m.model] = [store.decisionProbeMark(m), store.decisionProbeText()];
 }
+// Picker order: works, data policy, failed, untested -- catalog order inside each group.
+store.decisionCatalog = { providers: {}, models: [rows[3], rows[2], rows[1], rows[0],
+  { provider: 'openrouter', model: 'e', note: 'E', probe: { ok: true, kind: 'ok', why: '' } },
+  { provider: 'openai', model: 'x', note: 'X' }] };
+store.config = { agentic: { decision_model: { provider: 'openrouter', model: 'a' } } };
+out.order = store.decisionModelsSorted().map(m => m.model);
 console.log(JSON.stringify(out));
 """
 
@@ -111,6 +117,7 @@ class PickerText(unittest.TestCase):
         self.assertEqual("⚠️ ", out["b"][0]); self.assertIn("openrouter.ai/settings/privacy", out["b"][1])
         self.assertEqual("⛔ ", out["c"][0]); self.assertIn("Not served by OpenRouter", out["c"][1])
         self.assertEqual(["", ""], out["d"])                    # never tested: no mark, no line
+        self.assertEqual(["a", "e", "b", "c", "d"], out["order"])   # green, yellow, red, untested
 
 
 if __name__ == "__main__":
