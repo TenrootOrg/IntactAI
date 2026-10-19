@@ -1017,21 +1017,31 @@ def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = Non
     results = {"already_exists": [], "missing": []}
     min_size = 1 * 1024 * 1024
 
-    # platform_label -> filename suffix glob
+    # platform_label -> filename suffix glob(s). Linux is the static musl build since
+    # 0.77.3 (the plain one needs GLIBC 2.38); the plain build still counts on boxes
+    # staged before that. Checking only the plain name warned "1 platform missing"
+    # on every fresh install while the collector had its binary.
     platforms = {
-        "windows": "windows-amd64.exe",
-        "linux":   "linux-amd64",
-        "darwin":  "darwin-amd64",
+        "windows": ("windows-amd64.exe",),
+        "linux":   ("linux-amd64", "linux-amd64-musl"),
+        "darwin":  ("darwin-amd64",),
     }
 
-    for label, suffix in platforms.items():
-        pattern = os.path.join(downloads_dir, f"velociraptor-v*-{suffix}")
+    try:                       # the legacy pin's binaries share this folder; they are not the collector
+        from services.legacy_velociraptor_service import _read_default_legacy_version
+        legacy = f"-v{_read_default_legacy_version()}-"
+    except Exception:          # noqa: BLE001 -- a check, never a reason to fail the install
+        legacy = "-v0.7.1-"
+
+    for label, suffixes in platforms.items():
+        suffix = " or ".join(suffixes)
         # Filter to non-empty regular files; ignore detached signatures.
         matches = [
-            p for p in _glob.glob(pattern)
+            p for s in suffixes for p in _glob.glob(os.path.join(downloads_dir, f"velociraptor-v*-{s}"))
             if os.path.isfile(p)
             and os.path.getsize(p) >= min_size
             and not p.endswith(".sig")
+            and legacy not in os.path.basename(p)
         ]
         if matches:
             # Newest by mtime is good enough here — operators who keep
