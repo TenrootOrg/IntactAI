@@ -275,8 +275,9 @@ class Catalog(unittest.TestCase):
         store = mock.Mock(write=mock.Mock(side_effect=lambda rows: {"success": True, "rows": rows}))
         resp = mock.Mock(json=lambda: body, raise_for_status=lambda: None)
         with mock.patch.object(dm, "_catalog_store", return_value=store), \
+             mock.patch.object(dm, "probe_catalog", return_value={}), \
              mock.patch.object(dm.requests, "get", return_value=resp, create=True) as get:
-            rows = dm.refresh_catalog(cfg(api_key="sk-or"))["rows"]
+            rows = dm.refresh_catalog(cfg(api_key="sk-or"))["rows"]    # probing: test_decision_catalog_probe
         self.assertIn("output_modalities=decisions", get.call_args[0][0])
         self.assertEqual(rows, [{"provider": "openrouter", "model": "liquid/d1", "name": "LiquidAI: d1",
                                  "context": 65536, "price_per_m": 0.04}])
