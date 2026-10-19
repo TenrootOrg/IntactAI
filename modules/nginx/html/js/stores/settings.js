@@ -317,12 +317,41 @@ document.addEventListener('alpine:init', () => {
             } catch (e) { /* suggestions only: typing a model still works */ }
         },
 
+        // The last Update catalog's test of each model (decision_model.probe_catalog).
+        decisionProbeMark(m) {
+            const p = m && m.probe;
+            if (!p) return '';
+            return p.ok ? '✅ ' : (p.kind === 'policy' ? '⚠️ ' : '⛔ ');
+        },
+        decisionProbeOf() {
+            const d = this.config.agentic.decision_model;
+            const m = (this.decisionCatalog.models || []).find(x => x.provider === d.provider && x.model === (d.model || '').trim());
+            return m && m.probe ? m.probe : null;
+        },
+        decisionProbeText() {
+            const p = this.decisionProbeOf();
+            if (!p) return '';
+            const when = p.at ? ' (catalog test ' + p.at.replace('T', ' ').replace('Z', ' UTC') + ')' : '';
+            if (p.ok) return '✅ Answered the last catalog test' + when;
+            const what = p.kind === 'policy' ? '⚠️ Refused by your OpenRouter data policy — change it at openrouter.ai/settings/privacy, or pick another model'
+                       : p.kind === 'not_served' ? '⛔ Not served by OpenRouter right now — pick another model'
+                       : '⛔ Did not answer the last catalog test';
+            return what + ': ' + p.why + when;
+        },
+
         async updateDecisionCatalog() {
             this.updatingDecisionCatalog = true;
             try {
                 const r = await fetch('/api/config/decision_model/refresh', { method: 'POST' });
                 const d = await r.json().catch(() => ({}));
-                if (d.success) this.showMessage('Decision-model catalog updated — ' + d.model_count + ' models from OpenRouter', 'success');
+                const p = d.probes || {};
+                const tested = Object.keys(p).length
+                    ? ' — tested: ' + (p.ok || 0) + ' work' +
+                      (p.policy ? ', ' + p.policy + ' refused by your OpenRouter data policy' : '') +
+                      (p.not_served ? ', ' + p.not_served + ' not served by OpenRouter' : '') +
+                      (p.other ? ', ' + p.other + ' failed otherwise' : '')
+                    : '';
+                if (d.success) this.showMessage('Decision-model catalog updated — ' + d.model_count + ' models from OpenRouter' + tested, 'success');
                 else this.showMessage('Decision-model catalog not updated (the previous list is kept): ' + (d.error || 'HTTP ' + r.status), 'error');
             } catch (e) {
                 this.showMessage('Decision-model catalog not updated: ' + e.message, 'error');

@@ -109,7 +109,74 @@ def refresh_catalog(cfg=None) -> dict:
             price = 0.0
         rows.append({"provider": "openrouter", "model": mid, "name": m.get("name") or mid,
                      "context": int(m.get("context_length") or 0), "price_per_m": round(price, 4)})
-    return _catalog_store().write(rows)
+    out = _catalog_store().write(rows)
+    out["probes"] = probe_catalog(key)
+    return out
+
+
+# Update catalog also TRIES every model: OpenRouter lists models this account cannot use
+# (refused by its zero-data-retention policy) and models with no endpoint at all, and
+# the picker offered all 21 alike -- one was saved, and every fuse after got nothing.
+PROBES_PATH = "/app/data/decision_model_probes.json"
+_PROBE_STATE = {"finding": {"title": "Credential dumping", "host": "WS1", "severity": "high",
+                            "details": "Mimikatz dumped credentials from LSASS on WS1."}}
+_PROBE_Q = {"q0": {"type": "noul", "instructions": "Is state.finding attacker activity?",
+                   "criteria": {"true": "Attacker activity.", "false": "Benign."}}}
+
+
+def probe_model(model, key) -> dict:
+    """One made-up question to one OpenRouter model, no case data, never a pause.
+    {"ok", "kind": ok | policy | not_served | other, "why"}."""
+    def post(as_text):
+        return requests.post(PROVIDERS["openrouter"]["url"], timeout=30, allow_redirects=False,
+                             headers={"Authorization": f"Bearer {key}"} if key else {},
+                             json={"model": model, "questions": _PROBE_Q,
+                                   "state": {"text": json.dumps(_PROBE_STATE)} if as_text else _PROBE_STATE})
+    try:
+        as_text = model in _TEXT_STATE
+        r = post(as_text)
+        if r.status_code == 400 and not as_text and any(w in r.text for w in _TEXT_ONLY):
+            _TEXT_STATE.add(model)
+            r = post(True)
+        if r.status_code == 200:
+            if isinstance((((r.json() or {}).get("answers") or {}).get("q0") or {}).get("noul"), (int, float)):
+                return {"ok": True, "kind": "ok", "why": ""}
+            return {"ok": False, "kind": "other", "why": "answered, but not in the expected shape"}
+        why = _reason(r)
+        kind = ("policy" if ("data policy" in why or "ZDR" in why) else
+                "not_served" if r.status_code == 404 else "other")
+        return {"ok": False, "kind": kind, "why": why}
+    except Exception as e:  # noqa: BLE001 -- a probe result, never an error
+        return {"ok": False, "kind": "other", "why": f"unreachable ({type(e).__name__})"}
+
+
+def probe_catalog(key) -> dict:
+    """Probe every OpenRouter model of the catalog (6 at a time); store and count."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timezone
+    models = sorted({m["model"] for m in catalog() if m.get("provider") == "openrouter"})
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = dict(zip(models, pool.map(lambda m: probe_model(m, key), models)))
+    at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for v in results.values():
+        v["at"] = at
+    try:
+        with open(PROBES_PATH, "w") as f:
+            json.dump(results, f)
+    except OSError as e:
+        _warn("decision model: probe results not saved: %s", e)
+    counts = {}
+    for v in results.values():
+        counts[v["kind"]] = counts.get(v["kind"], 0) + 1
+    return counts
+
+
+def _probes() -> dict:
+    try:
+        with open(PROBES_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 def catalog() -> list:
@@ -130,7 +197,9 @@ def catalog() -> list:
         note = f"{m.get('name')} — {ctx // 1000}k context, ${m.get('price_per_m', 0):g}/M input" if ctx \
             else f"{m.get('name')} — ${m.get('price_per_m', 0):g}/M input"
         out.append({"provider": m.get("provider"), "model": m.get("model"), "budget": budget, "note": note})
-    return out
+    probes = _probes()               # the last Update catalog's test of each model
+    return [{**m, "probe": probes[m["model"]]} if m.get("provider") == "openrouter" and m["model"] in probes
+            else m for m in out]
 
 
 USES = ("disposition", "relevance", "grounding", "identity", "chat_intent", "injection",
