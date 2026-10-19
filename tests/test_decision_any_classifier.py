@@ -88,5 +88,38 @@ class AnyClassifier(unittest.TestCase):
         self.assertNotIn(TEXT_ONLY["model"], dm._TEXT_STATE)
 
 
+class ReadTimeout(Exception):
+    """Named like requests' own: _call recognises it by name."""
+
+
+class SlowModel(unittest.TestCase):
+    """A slower classifier timed out on a full batch of a 1,059-finding case: that
+    stopped every suggestion and paused the decision model for the next Refusion."""
+
+    def setUp(self):
+        dm.retry_now()
+
+    def test_a_slow_batch_is_split_and_every_item_answered(self):
+        def post(url, json=None, **kw):
+            qs = json["questions"]
+            if len(qs) > 2:
+                raise ReadTimeout("read timed out")
+            return _R(200, {"answers": {k: {"type": "noul", "noul": 0.7} for k in qs}})
+        q = lambda k: {"type": "noul", "instructions": "x"}   # noqa: E731
+        with mock.patch.object(dm.requests, "post", side_effect=post):
+            ans = dm.ask_each(list(range(8)), str, q, cfg=CFG)
+        self.assertEqual(8, sum(1 for a in ans if a))
+        self.assertEqual("", dm.unavailable(CFG))
+
+    def test_one_slow_item_is_an_outage(self):
+        with mock.patch.object(dm.requests, "post", side_effect=ReadTimeout("read timed out")):
+            self.assertIsNone(dm.ask(STATE, Q, cfg=CFG))
+        self.assertIn("ReadTimeout", dm.unavailable(CFG))
+
+    def test_a_clicked_fuse_clears_the_pause_for_its_own_pass_too(self):
+        src = open(os.path.join(_BACKEND, "services/fusion/store.py")).read()
+        self.assertIn("dm.after_fuse(case_id, retry=trig in _OPERATOR_TRIGGERS)", src)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -182,7 +182,7 @@ class FuseHook(unittest.TestCase):
         def locked(*a, **kw):
             return "G"
 
-        def hook(cid):
+        def hook(cid, retry=False):
             # The fuse lock is an RLock (re-entrant for its holder), so only
             # ANOTHER thread can tell whether it is still held.
             import threading
@@ -199,7 +199,7 @@ class FuseHook(unittest.TestCase):
         with mock.patch.object(store, "_fuse_case_locked", locked), \
              mock.patch.object(dm, "after_fuse", side_effect=hook) as af:
             self.assertEqual(store.fuse_case("c-hook", _record=False), "G")
-        af.assert_called_once_with("c-hook")
+        af.assert_called_once_with("c-hook", retry=False)   # no trigger: not a click
         self.assertFalse(seen["locked_during_hook"])
         with mock.patch.object(store, "_fuse_case_locked", side_effect=RuntimeError("x")), \
              mock.patch.object(dm, "after_fuse") as af:

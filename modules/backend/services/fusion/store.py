@@ -2123,7 +2123,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
     # Decision-model suggestions ride on the fused graph but must never hold the fuse lock:
     # they are network calls, and the next fuse must not wait on them.
     from . import decision_model as dm
-    dm.after_fuse(case_id)
+    dm.after_fuse(case_id, retry=trig in _OPERATOR_TRIGGERS)
     return g
 
 

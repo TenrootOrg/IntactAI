@@ -28,6 +28,13 @@ from .budget import approx_tokens
 
 log = logging.getLogger(__name__)
 
+
+def _warn(fmt, *args):
+    """Printed like the backend's other [FUSION]/[GRPC] lines. As log.warning they
+    reached no handler at all: a timeout that stopped every suggestion of a
+    1,059-finding case left no trace anywhere (2026-10-19)."""
+    print("[DECISION] " + (fmt % args if args else fmt), flush=True)
+
 # Where each provider is and how it is spoken to. "jev" is the wire TypeSafe defined
 # and OpenRouter (every decision model it serves) and a local server accept; "openai" is OpenAI's own
 # Decisions API (different field names, translated below). `cloud` providers are
@@ -381,7 +388,7 @@ def _call(state, questions, *, run_id=None, cfg=None):
 
     def _trip(why):
         if not unavailable(cfg):
-            log.warning("decision model: %s -- every decision-model call is skipped for %d min (offline) or until "
+            _warn("decision model: %s -- every decision-model call is skipped for %d min (offline) or until "
                         "its settings change", why, DOWN_SECONDS // 60)
         _down.update(until=time.monotonic() + DOWN_SECONDS, fp=_fp(cfg), why=why)
     if not row["cloud"]:
@@ -394,7 +401,7 @@ def _call(state, questions, *, run_id=None, cfg=None):
                 else {"model": model, "questions": questions,
                       "state": {"text": json.dumps(state)} if model in _TEXT_STATE else state})
     except ValueError as e:
-        log.warning("decision model: %s", e)
+        _warn("decision model: %s", e)
         return None, False
     try:
         # A 5xx is the provider's own hiccup, not an outage: retried ONCE. Seen
@@ -415,7 +422,7 @@ def _call(state, questions, *, run_id=None, cfg=None):
                 r = _post()
             if r.status_code < 500 or attempt:
                 break
-            log.warning("decision model: HTTP %s — retrying once", r.status_code)
+            _warn("decision model: HTTP %s — retrying once", r.status_code)
             time.sleep(RETRY_SECONDS)
         if r.status_code != 200:
             # The model's own token count is the only exact one; ours is chars/4. A
@@ -423,20 +430,26 @@ def _call(state, questions, *, run_id=None, cfg=None):
             too_big = r.status_code in (400, 413) and any(
                 w in r.text for w in ("max_tokens", "context_length", "too long", "too large",
                                       "questions per request"))   # Tev1: "at most 32 questions per request"
-            log.warning("decision model: HTTP %s: %s", r.status_code, r.text[:200])
+            _warn("decision model: HTTP %s: %s", r.status_code, r.text[:200])
             if not too_big:                          # too big is ours to split, not an outage
                 _trip(_reason(r))
             return None, too_big
         body = r.json()
     except Exception as e:  # noqa: BLE001 — every failure means "no suggestion"
-        log.warning("decision model: call failed: %s", e)
+        if type(e).__name__ == "ReadTimeout" and len(questions) > 1:
+            # Reached, but too slow for this many: split like a too-big batch. Counted
+            # as an outage it stopped a 1,059-finding case at its first slow batch and
+            # paused the next Refusion too (2026-10-19, a slower classifier).
+            _warn("decision model: %d questions timed out -- split and asked again", len(questions))
+            return None, True
+        _warn("decision model: call failed: %s", e)
         _trip(f"unreachable ({type(e).__name__})")
         return None, False
     _down["until"] = 0.0                         # answered: not down
     u = body.get("usage") or {}
     cut = _known(cfg).get("cut_at")
     if cut and (u.get("input_tokens") or 0) >= cut:
-        log.warning("decision model: %s read only %s tokens of the request -- split and asked again", model, cut)
+        _warn("decision model: %s read only %s tokens of the request -- split and asked again", model, cut)
         return None, True
     if run_id:
         try:
@@ -551,7 +564,7 @@ def mask_for(details, graph):
     except Exception as e:  # noqa: BLE001
         # Masking was asked for and cannot be done: send nothing rather than
         # the real values.
-        log.warning("decision model: masking unavailable, skipping: %s", e)
+        _warn("decision model: masking unavailable, skipping: %s", e)
         return False
 
 
@@ -790,7 +803,7 @@ def unsupported_claims(narrative, masked_payload, mask, *, run_id=None, log_even
         answers = ask_each(claims, lambda c: masked(c, mask), _supported_question,
                            context=masked_payload, run_id=run_id)
     except Exception as e:  # noqa: BLE001
-        log.warning("decision model: grounding check failed: %s", e)
+        _warn("decision model: grounding check failed: %s", e)
         return []
     bad = [c for c, a in zip(claims, answers)
            if isinstance(a, dict) and isinstance(a.get("noul"), (int, float))
@@ -826,7 +839,7 @@ def chat_verdict(question, d, g, run_id=None):
                                           "case chat. Does it state a verdict?"}},
                    run_id=run_id) or {}).get("v")
     except Exception as e:  # noqa: BLE001
-        log.warning("decision model: chat verdict skipped: %s", e)
+        _warn("decision model: chat verdict skipped: %s", e)
         return None
     if not isinstance(ans, dict) or ans.get("choice") not in CHAT_VERDICTS:
         return None
@@ -925,7 +938,7 @@ def entity_estimates(question, d, g, run_id=None) -> str:
                          "false": "Its activity is explained as normal, or it is only a bystander."}},
             run_id=run_id)
     except Exception as e:  # noqa: BLE001
-        log.warning("decision model: entity estimate skipped: %s", e)
+        _warn("decision model: entity estimate skipped: %s", e)
         return ""
     lines = []
     for (e, fs), a in zip(pairs, answers):
@@ -1131,9 +1144,13 @@ _workers_lock = threading.Lock()
 _running, _again = set(), set()
 
 
-def after_fuse(case_id) -> None:
-    """Called by store.fuse_case once the lock is released. Never raises."""
+def after_fuse(case_id, retry=False) -> None:
+    """Called by store.fuse_case once the lock is released. Never raises. `retry`: a
+    person asked for this fuse -- clear a pause that a pass still running from an
+    earlier fuse set while this one was writing its report."""
     try:
+        if retry:
+            retry_now()
         cfg = _cfg()
         if not any(enabled(u, cfg) for u in ("disposition", "identity", "scopes", "compromise")):
             return
@@ -1145,7 +1162,7 @@ def after_fuse(case_id) -> None:
         threading.Thread(target=_work, args=(case_id,), daemon=True,
                          name=f"decision-{case_id}").start()
     except Exception as e:  # noqa: BLE001
-        log.warning("decision model: after_fuse(%s) not started: %s", case_id, e)
+        _warn("decision model: after_fuse(%s) not started: %s", case_id, e)
 
 
 def _work(case_id):
@@ -1154,7 +1171,7 @@ def _work(case_id):
             try:
                 _one_pass(case_id)
             except Exception as e:  # noqa: BLE001 — a suggestion is never worth an error
-                log.warning("decision model: pass for %s failed: %s", case_id, e)
+                _warn("decision model: pass for %s failed: %s", case_id, e)
             with _workers_lock:
                 if case_id not in _again:
                     _running.discard(case_id)
@@ -1251,7 +1268,7 @@ def report_estimates(case_id, d, g) -> dict:
             if people:
                 out["identities"] = sorted(people, key=lambda r: -r["compromise_probability"])[:30]
     except Exception as e:  # noqa: BLE001 — an estimate is never worth a failed report
-        log.warning("decision model: report estimates for %s skipped: %s", case_id, e)
+        _warn("decision model: report estimates for %s skipped: %s", case_id, e)
         return {}
     return out
 
