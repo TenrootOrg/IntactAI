@@ -1078,8 +1078,9 @@
                                     title="Fetch the decision models OpenRouter serves now (names, context, price) as suggestions for Model. The existing list is kept if the fetch fails or returns nothing.">
                                 <span x-text="$store.settings.updatingDecisionCatalog ? 'Updating…' : 'Update catalog'"></span>
                             </button>
-                            <button @click="$store.settings.saveAgentic()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
-                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save Decision Model Settings'"></span>
+                            <button @click="$store.settings.saveDecisionModel()" :disabled="$store.settings.saving || $store.settings.decisionTesting" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium"
+                                    title="Tests the model first; if it does not answer you are told why and asked before saving">
+                                <span x-text="$store.settings.decisionTesting ? 'Testing…' : ($store.settings.saving ? 'Saving...' : 'Save Decision Model Settings')"></span>
                             </button>
                         </div>
                     </div>

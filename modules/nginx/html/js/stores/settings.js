@@ -365,6 +365,26 @@ document.addEventListener('alpine:init', () => {
             this.decisionTesting = false;
         },
 
+        // Save tests first: a model that cannot answer (not served, refused by the
+        // account's data policy, no internet, key rejected) used to save silently and
+        // every fuse then got nothing. Not working -> say why, and save only if the
+        // operator confirms. Switched off -> nothing to test.
+        async saveDecisionModel() {
+            if (this.config.agentic.decision_model.enabled) {
+                await this.testDecisionModel();
+                const t = this.decisionTestResult || {};
+                if (!t.success && !confirm(
+                        'The decision model does not work with these settings:\n\n' +
+                        (t.error || 'no answer') +
+                        '\n\nModel: ' + (t.model || this.config.agentic.decision_model.model || '(default)') +
+                        '\n\nSave anyway? Until it works, cases get no decision-model suggestions.')) {
+                    this.showMessage('Decision model settings not saved', 'info');
+                    return;
+                }
+            }
+            await this.saveAgentic();
+        },
+
         async saveAgentic() {
             this.saving = true;
             try {
