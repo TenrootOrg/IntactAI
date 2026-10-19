@@ -659,7 +659,7 @@ def test_decision_model():
     why = dm.why_inactive(agentic)
     if why:
         return jsonify({**info, "success": False, "error": why})
-    dm._down["until"] = 0.0                  # the operator asked for a live answer now
+    dm.retry_now()                           # the operator asked for a live answer now
     started = _time.time()
     ans, _ = dm._call({"text": "Mimikatz dumped credentials from LSASS on WS1."},
                       {"q0": {"type": "noul", "instructions": "Is state.text attacker activity?",

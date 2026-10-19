@@ -1945,6 +1945,8 @@ TRIGGER_IDENTITY = "an identity decision"
 TRIGGER_AUTOMATIC_RUN_LANDED = "AUTOMATIC — a member run finished"
 TRIGGER_AUTOMATIC_FIRST_VIEW = "AUTOMATIC — first view of a case with no graph yet"
 TRIGGER_CATCH_UP = "AUTOMATIC — changes made while the case was fusing"
+# A person asked for this fuse: it may call the decision model even right after a failure.
+_OPERATOR_TRIGGERS = (TRIGGER_MANUAL_REFUSION, TRIGGER_MANUAL_RESCAN, TRIGGER_API_FUSE)
 _TRIGGER_UNKNOWN = "an unlabelled caller"
 
 
@@ -2088,6 +2090,12 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
         with _FUSE_LOCKS_GUARD:
             _FUSE_OWED.discard(case_id)          # this fuse reads the state as it is now
     trig = (trigger or _TRIGGER_UNKNOWN).strip()
+    if trig in _OPERATOR_TRIGGERS:
+        # Before the fuse, so its report step can ask too: fused offline, then
+        # refused online, the decision model was still skipped as "down" and the
+        # case quietly got no suggestions for ten minutes.
+        from . import decision_model as _dm
+        _dm.retry_now()
     phase = {"at": "starting", "pct": 0}
     try:
         g = _fuse_case_locked(case_id, contributions_override=contributions_override,

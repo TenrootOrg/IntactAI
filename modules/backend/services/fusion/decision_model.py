@@ -277,6 +277,13 @@ def _fp(cfg):
     return hashlib.sha1(f"{provider(cfg)}|{_url(cfg)}|{model_name(cfg)}|{_key(cfg)}".encode()).hexdigest()[:12]
 
 
+def retry_now():
+    """An operator asked for a live answer (Settings' Test, a Refusion they clicked):
+    forget the last failure. The pause is for automatic fuses on an offline box; it
+    kept a box that had just come back online silent for ten minutes."""
+    _down["until"] = 0.0
+
+
 def unavailable(cfg=None):
     """Why the decision model is being skipped right now, or "" when it may be called."""
     import time
