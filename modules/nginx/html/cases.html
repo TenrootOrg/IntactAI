@@ -1452,6 +1452,9 @@ function scopeBarHtml(info){
 // "not looking good"), so it is empty then; a case with one timeframe says since when.
 function scopeSinceHtml(info, tw){
   if(asList(info&&info.scopes).length>1) return '';
+  // An empty case still holds the wide automatic default ([creation-10y, creation]):
+  // "since 2016-10-20" under a case made today read as a date bug.
+  if(info && info.time_window_auto && !info.activity_window) return 'no evidence yet';
   return _sinceText((tw||{}).start);
 }
 function _sinceText(start){ return start ? 'since '+esc(String(start).replace('T',' ')) : 'no start date'; }
