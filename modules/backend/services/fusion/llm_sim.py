@@ -2245,6 +2245,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
             # measured live returned an empty narrative on a 258K-token payload.
             _zt, _phase_out, _mode = [], {}, (grouping or "time")
             if altitude == "macro":
+                if should_continue and not should_continue():
+                    raise GenerationStopped()     # stopped before any phase was sent
                 _zt = render.zoom_targets(graph, window=window,
                                           min_severity=min_severity, mode=_mode,
                                           force_phases=_force_ph)
@@ -2256,6 +2258,13 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     analyst=_analyst)
                 _analysable = render.analysable(_zt)
                 _failed = [z for z in _analysable if (_phase_out.get(z["n"]) or {}).get("error")]
+                _stop = next((r["exc"] for r in _phase_out.values()
+                              if isinstance(r.get("exc"), GenerationStopped)), None)
+                if _stop is not None:
+                    # Stopped (the AI settings changed): no phase was ASKED. Logging
+                    # "no phase could be analysed ... the AI model did not answer" sent
+                    # the operator looking for a model fault (2026-10-20).
+                    raise _stop
                 if _analysable and len(_failed) == len(_analysable):
                     # Nothing was analysed: a synthesis would be written from blank
                     # phases. Measured live: all 6 phases rate-limited and the synthesis

@@ -44,6 +44,36 @@ def _run(model, retries=None):
     return md, events
 
 
+class StoppedRun(unittest.TestCase):
+    """Settings saved with a new model 4 s after Regenerate (2026-10-20): the stopped run
+    went on to log "no phase could be analysed ... The AI model did not answer"."""
+
+    def _stopped(self, model, should_continue, forbidden=("synthesis skipped", "phase by phase")):
+        events = []
+        with mock.patch.object(_LLM, "_real_llm", model), mock.patch.object(_LLM, "_use_real", lambda: True), \
+             mock.patch.object(_LLM, "_agentic_cfg", lambda: {}), \
+             mock.patch.object(_LLM, "_case_event", lambda rid, a, s, d="": events.append((a, d))):
+            with self.assertRaises(_LLM.GenerationStopped):
+                _LLM.generate_report(_graph(), prefer_llm=True, altitude_mode="macro", run_id="c",
+                                     should_continue=should_continue)
+        self.assertFalse([a for a, _ in events if any(f in a for f in forbidden)], events)
+
+    def test_stopped_before_it_starts_sends_nothing_and_blames_no_model(self):
+        m = Model(lambda n, u: "**Name:** x\nbody")
+        self._stopped(m, lambda: False)
+        self.assertEqual((m.calls, m.synth), (0, []))
+
+    def test_stopped_during_the_phases_stops_the_run(self):
+        state = {"go": True}
+
+        def phase(n, u):
+            state["go"] = False                      # the settings change lands now
+            return "**Name:** x\nbody"
+        m = Model(phase)
+        self._stopped(m, lambda: state["go"], forbidden=("synthesis skipped",))
+        self.assertEqual(m.synth, [])
+
+
 class PhaseFailures(unittest.TestCase):
     def test_an_empty_answer_is_retried_once_and_the_report_is_whole(self):
         seen = set()
