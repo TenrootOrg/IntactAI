@@ -86,6 +86,38 @@ The WIP commit d12c59e7 is in main, made safe by 9d699cc6:
 The coverage figures above predate 9d699cc6; re-run `detection_harness/run_cov.py` before
 quoting new ones.
 
+## By severity: can each SigmaHQ rule fire? (branch `threshold-engine`, 2026-10-20)
+
+Worked in severity order (critical, then high, then medium). A rule counts as
+reachable when some row we read -- real data, or one row per source fixed from the
+vendor's documented shape -- gets its log source. Measured by the same script on
+both sides:
+
+| Level | main | threshold-engine |
+|---|---|---|
+| Critical | 167 / 176 (94.9%) | **176 / 176** |
+| High | 1,635 / 1,716 (95.3%) | **1,716 / 1,716** (3 Zeek smb_files: no sample here, the profile is tested) |
+| Medium | 1,361 / 1,412 (96.4%) | 1,379 / 1,412 (97.7%) |
+
+What closed the gaps: AV/EDR detections as antivirus rows; PrintService, DNS-server
+analytic, SmbClient channels and Sysmon 255/16; Bitbucket audit; OpenCanary; RPC
+Firewall; Entra PIM alerts; application and web-server error logs (and Log4j logs
+misread as two-column CSV); Cisco command accounting, IOS XE / FortiOS / PAN-OS
+indicators, Zeek rdp / x509; Winlogbeat's winlog.event_id.
+
+Reachable is not the whole story: `services/fusion/edr_telemetry.py` reads Defender
+XDR, CrowdStrike FDR, Carbon Black Cloud, Elastic Defend and SentinelOne events per
+event type, so their file (15 critical), registry (11), pipe (8), image-load, DNS,
+network and process-access events reach the rules Sysmon alone fed -- and an EDR's
+logon or connection is no longer guessed into a process creation.
+
+Every step was checked both ways on real data (all rules over the datasets, main
+vs branch): what changed was a real detection gained or a false one removed.
+
+Still open, medium tier: the 73 medium Splunk threshold detections (the correlation
+engine is built: steps 1-2), FortiGate event logs, Windows file_access, Kubernetes
+application audit, Google Workspace login, Django / Python / Rails exceptions.
+
 ## Next, in order of value
 
 1. **Benign data** for the cloud and Linux sources (see above).
