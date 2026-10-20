@@ -1823,6 +1823,47 @@ def sigma_pass(out, log=None) -> dict:
     return {"rules": len(loaded["rules"]), "rows_hit": hit_rows, "titles": titles}
 
 
+def correlation_pass(out, log=None) -> list:
+    """Sigma correlation rules -- a count over a time window ("10 failed sign-ins for
+    one account in 10 minutes", "one source against 5 accounts") -- over every row.
+    One detection row per hit, to append; its members stay as they are. Runs before
+    the behaviour rules so a low hit counts toward a host's burst like any low
+    Sigma signal."""
+    from datetime import datetime, timezone
+    from . import sigma_eval
+    log = log or (lambda m, l="info": None)
+    corrs = sigma_eval.load().get("correlations") or []
+    if not corrs:
+        return []
+    items = []
+    for r in out:
+        d = keys.to_utc_dt(r["n"].get("ts")) if r["n"].get("ts") else None
+        items.append((d.timestamp() if d else None, sigma_event(r.get("raw") or {})))
+    iso = lambda t: datetime.fromtimestamp(t, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+    found = []
+    for h in sigma_eval.correlate(items, corrs):
+        c, ms = h["rule"], [out[i]["n"] for i in h["members"]]
+        # What every member agrees on is what the hit is ABOUT (the account sprayed,
+        # the source spraying); a field that varies across members is the counted one.
+        shared = {f: ms[0].get(f) for f in ("host", "user", "src_ip", "dst_ip", "domain", "url")
+                  if ms[0].get(f) and all(m.get(f) == ms[0].get(f) for m in ms)}
+        span = c["timespan"]
+        span_text = f"{span // 3600} h" if span % 3600 == 0 else f"{span // 60} min" if span % 60 == 0 else f"{span} s"
+        what = f"{h['count']} different {c['field']}" if c["type"] == "value_count" else f"{h['count']} events"
+        grp = ", ".join(f"{k} {v}" for k, v in h["group"].items() if v)
+        summary = f"{what} within {span_text}" + (f" for {grp}" if grp else "")
+        n = {"ts": iso(h["first"]), "severity": c["level"], "rule": c["title"],
+             "detected_by": [f"sigma{'' if c['burst'] else ' (context)'}: {c['title']}"],
+             "message": summary, **({"mitre": c["mitre"]} if c["mitre"] else {}), **shared}
+        found.append({"n": n, "raw": {"correlation": c["id"], "summary": summary, "first": iso(h["first"]),
+                                      "last": iso(h["last"]), "count": h["count"],
+                                      "example_rows": h["members"][:10]}})
+    log(f"Sigma correlations: {len(corrs)} rule(s) over {len(out):,} row(s) — {len(found)} hit(s)"
+        + (": " + "; ".join(f"{f['n']['rule']} ({f['raw']['summary']})" for f in found[:5]) if found else ""),
+        "info")
+    return found
+
+
 def _free_text(lines, model, log, what):
     """Lines no structure reader took: the case's model reads them when it can
     (every value checked against its line), else every line carrying an IP,
@@ -2134,6 +2175,13 @@ def ingest(case_id, run_id, path, data_type, log) -> dict:
             except Exception as e:                         # noqa: BLE001 -- the rows are kept either way
                 log(f"the model could not describe the file ({e})", "warning")
     summary["sigma"] = {k: v for k, v in sigma_pass(out, log).items() if k != "titles"}
+    try:
+        corr = correlation_pass(out, log)
+    except Exception as e:                                 # noqa: BLE001 -- the rows are kept either way
+        corr = []
+        log(f"Sigma correlations failed: {e}", "warning")
+    out += corr
+    summary["sigma"]["correlations"] = len(corr)
     from . import behaviour
     found = behaviour.run(out, rules().get("behaviour"), log)
     out += found

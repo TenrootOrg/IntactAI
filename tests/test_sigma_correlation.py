@@ -133,5 +133,55 @@ class Correlations(unittest.TestCase):
             self.assertTrue(str(cm.exception).startswith(why), (why, str(cm.exception)))
 
 
+class IngestPass(unittest.TestCase):
+    """correlation_pass: a hit becomes ONE detection row, about what its members share."""
+
+    @classmethod
+    def setUpClass(cls):
+        from unittest import mock
+        from services.fusion import external_logs as X
+        cls.X = X
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "brute.yml"), "w") as fh:
+            fh.write(RULES)
+        S._CACHE["key"] = None
+        loaded = dict(S.load(dirs=(d,), min_level="low"))
+        cls.patch = mock.patch.object(S, "load", return_value=loaded)
+        cls.patch.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.patch.stop()
+        S._CACHE["key"] = None
+
+    def rows(self, users, ip="10.0.0.9", step=30):
+        return [{"n": {"ts": f"2026-10-20T10:{(i * step) // 60:02d}:{(i * step) % 60:02d}Z", "user": u,
+                       "src_ip": ip, "host": "DC01"}, "raw": logon(u, ip)} for i, u in enumerate(users)]
+
+    def test_spray_is_one_row_about_the_source(self):
+        found = self.X.correlation_pass(self.rows([f"user{i}" for i in range(6)]))
+        self.assertEqual(1, len(found), [f["n"]["rule"] for f in found])
+        n, raw = found[0]["n"], found[0]["raw"]
+        self.assertEqual(("One source failing against many accounts", "high"), (n["rule"], n["severity"]))
+        self.assertEqual(("10.0.0.9", "DC01"), (n["src_ip"], n["host"]))
+        self.assertNotIn("user", n, "the users vary: they are what was counted")
+        self.assertEqual(["sigma: One source failing against many accounts"], n["detected_by"])
+        self.assertEqual(["T1110.003"], n["mitre"])
+        self.assertEqual("6 different TargetUserName within 30 min for IpAddress 10.0.0.9", n["message"])
+        self.assertEqual((6, "2026-10-20T10:00:00Z", "2026-10-20T10:02:30Z", [0, 1, 2, 3, 4, 5]),
+                         (raw["count"], raw["first"], raw["last"], raw["example_rows"]))
+
+    def test_brute_force_is_about_the_account(self):
+        found = self.X.correlation_pass(self.rows(["alice"] * 10))
+        self.assertEqual(["Many failed logons for one account"], [f["n"]["rule"] for f in found])
+        self.assertEqual("alice", found[0]["n"]["user"])
+
+    def test_ingest_runs_it_before_the_behaviour_rules(self):
+        with open(self.X.__file__) as fh:
+            src = fh.read()
+        body = src[src.index("summary[\"sigma\"] = {k: v for k, v in sigma_pass("):]
+        self.assertLess(body.index("correlation_pass(out, log)"), body.index("behaviour.run(out,"))
+
+
 if __name__ == "__main__":
     unittest.main()
