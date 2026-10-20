@@ -15,7 +15,7 @@ document.addEventListener('alpine:init', () => {
                 ollama_context_size: 65536,
                 ollama_timeout: 600,
                 // The decision model — must match DEFAULTS in services/fusion/decision_model.py
-                decision_model: { enabled: false, mode: '', provider: 'openrouter', model: 'jev-latest', url: '', context_tokens: 0, min_confidence: 0.8, api_key: '', uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true, injection: true, chat_confidence: true, scopes: true, compromise: true, report: true } }
+                decision_model: { enabled: false, mode: '', provider: 'openrouter', model: 'jev-latest', url: '', context_tokens: 0, min_confidence: 0.2, api_key: '', uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true, injection: true, chat_confidence: true, scopes: true, compromise: true, report: true } }
             },
             timesketch: {
                 llm_mode: 'google',

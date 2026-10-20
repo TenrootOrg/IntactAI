@@ -210,7 +210,7 @@ DEFAULTS = {"enabled": False,
             "mode": "", "provider": "openrouter", "model": "jev-latest",
             "url": "",                 # local only
             "context_tokens": 0,       # 0 = the known model's budget, else UNKNOWN_BUDGET
-            "min_confidence": 0.8,
+            "min_confidence": 0.2,
             # The decision model's own key. Empty = the AI model's key while that runs
             # on the same provider (OpenRouter, or OpenAI with an API key).
             "api_key": "",
