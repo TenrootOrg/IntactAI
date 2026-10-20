@@ -124,7 +124,7 @@ error logs, and 10 Splunk count rules on the correlation engine.
 Then file_rename from the EDRs that log the old name (Defender FileRenamed, Elastic
 rename, SentinelOne File Rename; a rename stays a file_event too) and Sysmon 27-29.
 
-Then 25 more Splunk count rules (35 in all; 11 medium, 14 low), each fired on its own
+Then 25 more Splunk count rules (35 in all; these 25: 12 medium, 13 low), each fired on its own
 recording and checked on the benign corpus. The translator now reads tstats' `BY _time
 span=1m` as the window (it was taken for a field), drops a group-by field the search
 pins to one value, counts `dc(_raw)` as events, and has each source's raw name for the
