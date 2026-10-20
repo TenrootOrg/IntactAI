@@ -10,7 +10,7 @@ An attachment of log data is read generically (format, columns, normalized field
 then checked by three things. Only rows rated medium or higher become fusion events.
 
 1. **Vendor verdicts**: the product's own alert fields (`config/external_log_rules.yaml`, native rules).
-2. **Sigma**: SigmaHQ's public rules plus 1,158 of Splunk's detections translated to Sigma
+2. **Sigma**: SigmaHQ's public rules plus 1,174 of Splunk's detections translated to Sigma (638 medium+, 536 low)
    (`config/sigma-escu/`). Engine: `services/fusion/sigma_eval.py`.
 3. **Behaviour rules**: patterns no single event shows, such as brute force, beaconing,
    Kerberoasting, AD permission changes, M365 persistence and bursts of low signals
@@ -24,7 +24,7 @@ then checked by three things. Only rows rated medium or higher become fusion eve
 | ATT&CK techniques with a detected recording | **261 of 310 (84%)**, up from 222 (71%) |
 | Benign Windows corpus (1.24 M events) | **44 detections, 0 bursts**, mostly real admin actions |
 | Real benign web (500k Squid, 7k Apache) | 0 web-rule hits; Squid gives 2 beaconing detections in all |
-| Installed rules still firing on their own recording | 1,158 of 1,158 (after the osquery / GitHub fixes) |
+| Installed rules still firing on their own recording | 1,174 of 1,174 (9d699cc6 added 16, each proved) |
 
 Per source: see "Coverage on Splunk attack_data" in `docs/EXTERNAL_LOG_TEST_DATASETS.md`.
 
@@ -69,17 +69,22 @@ After any change to the reader (`external_logs.py`), re-run coverage
 New `_flat` columns change column detection for every product: twice a field became
 a fake severity or rule. Fields that only rules need belong in `rule_fields()`.
 
-## Parked, not finished (branch `detection-coverage`, WIP commit d12c59e7)
+## Shipped since this was parked (in main, release intact-20261020)
 
-1. **Wildcard fix** (`sigma_eval._has_wild`): `\\*` (a backslash, then a wildcard) was
-   matched literally. The fix is correct, but it makes **28 rules fire on benign Windows
-   data** (raw disk volume access 3,589, default-icon registry 1,048, script in temp
-   969, ...). Demote those to low first, then ship it.
-2. **13 rules ready to install** (Chrome / Discord credential-store access, Office loading
-   VBE7 / MSHTML / taskschd, RDP sessions, WinSCP config, product-key query). They are
-   proved; one benign hit (Office MSHTML -> low).
+The WIP commit d12c59e7 is in main, made safe by 9d699cc6:
+
+1. **Wildcard fix** (`sigma_eval._has_wild`): `\\*` (a backslash, then a wildcard) is now a
+   wildcard. The 28 rules it made fire on benign Windows data (raw disk volume access 3,589,
+   default-icon registry 1,048, script in temp 969, ...) are low and out of bursts.
+2. **The 13 parked rules are installed** (Chrome / Discord credential-store access, Office
+   loading VBE7 / MSHTML / taskschd, RDP sessions, WinSCP config, product-key query), plus
+   InstallUtil credential theft, Outlook credentials in the registry, two Socat rules and a web
+   server spawning a shell.
 3. Translator: Windows add-on field names, the OS taken from the detection's test data,
    "any OS" rules.
+
+The coverage figures above predate 9d699cc6; re-run `detection_harness/run_cov.py` before
+quoting new ones.
 
 ## Next, in order of value
 
