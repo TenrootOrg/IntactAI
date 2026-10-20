@@ -64,7 +64,8 @@ _NAMES = {
             "actorusername actorsusername useremailaddress principalemail threattargetusername "
             "originlogin csusername srcusername srcuser initiatedbyusername accountupn "
             "initiatingprocessaccountname targetuseruserid userid login loginname principal "
-            "principalname email recipientaddress recipient actor source",
+            "principalname email recipientaddress recipient actor source "
+            "authorname",            # Atlassian (Bitbucket / Jira / Confluence) audit: author.name
     "src_ip": "sourceip srcip src sourceaddress clientip cip callerip callersourceip ipaddress "
               "srcendpointip srcaddr sourceipaddress clientipaddress requestip principalip idorigh "
               "actionlocalip localaddressip4 devicelocalip deviceinternalip senderip fromip "

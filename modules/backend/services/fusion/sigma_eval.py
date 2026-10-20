@@ -917,6 +917,11 @@ def profiles(row) -> set:
         # row SHAPE and every free-text row has one shape. The ESXi rules match
         # ESXi-only text (esxcli ..., vob.user.ssh.enabled), so other lines stay quiet.
         out.add(("esxi", None, None))
+    if _has(ev, "auditType.category") and _has(ev, "auditType.action"):
+        # Atlassian Data Center audit log (Bitbucket's log/audit/*.audit.log, the REST
+        # /rest/auditing events): Sigma's Bitbucket rules -- 2 CRITICAL (unauthorized
+        # access, unauthorized full data export) -- had no row to run on.
+        out.add(("bitbucket", None, "audit"))
     if _has(ev, *_THREAT_NAMES):
         # An AV / EDR detection: the product named the threat. Sigma's antivirus rules
         # match that name whichever product wrote it (2026-10-20: 6 critical and 3 high
