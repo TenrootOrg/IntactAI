@@ -69,9 +69,11 @@ _NAMES = {
     "src_ip": "sourceip srcip src sourceaddress clientip cip callerip callersourceip ipaddress "
               "srcendpointip srcaddr sourceipaddress clientipaddress requestip principalip idorigh "
               "actionlocalip localaddressip4 devicelocalip deviceinternalip senderip fromip "
-              "useripaddress originip ipaddr accessdeviceip threattargetipv4address localipaddress ip",
+              "useripaddress originip ipaddr accessdeviceip threattargetipv4address localipaddress ip "
+              "srchost",          # OpenCanary src_host / dst_host: the shape pass had them backwards
     "dst_ip": "destinationip destip dstip dst dest destinationaddress serverip sip dstendpointip "
-              "remoteip remoteaddress remoteipaddress actionremoteip idresph dstaddr destinationipaddress targetip",
+              "remoteip remoteaddress remoteipaddress actionremoteip idresph dstaddr destinationipaddress targetip "
+              "dsthost",
     "src_port": "sourceport srcport spt clientport srcendpointport idorigp",
     "dst_port": "destinationport destport dstport dpt serverport dstendpointport idrespp port",
     "action": "action eventaction act disposition outcome eventoutcome result deviceaction "

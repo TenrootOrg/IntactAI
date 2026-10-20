@@ -917,6 +917,10 @@ def profiles(row) -> set:
         # row SHAPE and every free-text row has one shape. The ESXi rules match
         # ESXi-only text (esxcli ..., vob.user.ssh.enabled), so other lines stay quiet.
         out.add(("esxi", None, None))
+    if _has(ev, "logtype") and _has(ev, "node_id"):
+        # OpenCanary honeypot events (24 high Sigma rules, one per logtype): any touch
+        # of a canary is an intruder's.
+        out.add(("opencanary", "application", None))
     if _has(ev, "auditType.category") and _has(ev, "auditType.action"):
         # Atlassian Data Center audit log (Bitbucket's log/audit/*.audit.log, the REST
         # /rest/auditing events): Sigma's Bitbucket rules -- 2 CRITICAL (unauthorized
