@@ -57,6 +57,10 @@ class O365(unittest.TestCase):
         self.assertEqual(["PST Export Alert Using eDiscovery Alert"], titles(self.ALERT))
         self.assertEqual([], titles({**self.ALERT, "ResultStatus": "Failed"}))
 
+    def test_a_failed_result_is_failure(self):
+        row = {"Workload": "AzureActiveDirectory", "Operation": "UserLoginFailed", "ResultStatus": "Failed"}
+        self.assertEqual("failure", S.Event(row).get("status"))
+
     def test_an_exchange_cmdlet_is_the_event_name(self):
         rec = {"CreationTime": "2026-10-20T10:05:00", "Operation": "Add-FederatedDomain", "ResultStatus": "True",
                "Workload": "Exchange", "UserId": "admin@corp.example", "RecordType": 1, "OrganizationId": "o"}

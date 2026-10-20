@@ -1,0 +1,57 @@
+title: O365 Excessive SSO logon errors (counted event)
+id: 8158ccc4-6038-11eb-ae93-0242ac130002-base
+status: experimental
+description: The following analytic detects accounts experiencing a high number of Single Sign-On (SSO) logon errors. It leverages
+  data from the `o365_management_activity` dataset, focusing on failed user login attempts with SSO errors. This activity
+  is significant as it may indicate brute-force attempts or the hijacking/reuse of SSO tokens. If confirmed malicious, attackers
+  could potentially gain unauthorized access to user accounts, leading to data breaches, privilege escalation, or further
+  lateral movement within the organization.
+references:
+- https://research.splunk.com/8158ccc4-6038-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Rod Soto, Splunk
+tags:
+- attack.t1556
+logsource:
+  product: m365
+  service: audit
+detection:
+  sel1:
+    Workload: AzureActiveDirectory
+  sel2:
+    LogonError: '*Sso*'
+  sel3:
+    Operation: UserLoginFailed
+  condition: (sel1 and sel2 and sel3)
+level: informational
+name: escu_base_o365_excessive_sso_logon_errors
+---
+title: O365 Excessive SSO logon errors
+id: 8158ccc4-6038-11eb-ae93-0242ac130002
+status: experimental
+description: The following analytic detects accounts experiencing a high number of Single Sign-On (SSO) logon errors. It leverages
+  data from the `o365_management_activity` dataset, focusing on failed user login attempts with SSO errors. This activity
+  is significant as it may indicate brute-force attempts or the hijacking/reuse of SSO tokens. If confirmed malicious, attackers
+  could potentially gain unauthorized access to user accounts, leading to data breaches, privilege escalation, or further
+  lateral movement within the organization.
+references:
+- https://research.splunk.com/8158ccc4-6038-11eb-ae93-0242ac130002/
+author: Splunk Security Content (Apache-2.0), Rod Soto, Splunk
+tags:
+- attack.t1556
+correlation:
+  type: event_count
+  rules:
+  - escu_base_o365_excessive_sso_logon_errors
+  group-by:
+  - ClientIP
+  - Workload
+  - Operation
+  - UserAgent
+  timespan: 1h
+  condition:
+    gte: 5
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1556/o365_sso_logon_errors/o365_sso_logon_errors2.json

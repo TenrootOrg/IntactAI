@@ -1,0 +1,54 @@
+title: Excessive distinct processes from Windows Temp (counted event)
+id: 23587b6a-c479-11eb-b671-acde48001122-base
+status: experimental
+description: The following analytic identifies an excessive number of distinct processes executing from the Windows\Temp directory.
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process paths and counts within a 20-minute
+  window. This behavior is significant as it often indicates the presence of post-exploit frameworks like Koadic and Meterpreter,
+  which use this technique to execute malicious actions. If confirmed malicious, this activity could allow attackers to execute
+  arbitrary code, escalate privileges, and maintain persistence within the environment, posing a severe threat to system integrity
+  and security.
+references:
+- https://research.splunk.com/23587b6a-c479-11eb-b671-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Hart, Mauricio Velazco, Splunk
+tags:
+- attack.t1059
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\Windows\\Temp\\*'
+  condition: sel1
+level: informational
+name: escu_base_excessive_distinct_processes_from_windows_temp
+---
+title: Excessive distinct processes from Windows Temp
+id: 23587b6a-c479-11eb-b671-acde48001122
+status: experimental
+description: The following analytic identifies an excessive number of distinct processes executing from the Windows\Temp directory.
+  It leverages data from Endpoint Detection and Response (EDR) agents, focusing on process paths and counts within a 20-minute
+  window. This behavior is significant as it often indicates the presence of post-exploit frameworks like Koadic and Meterpreter,
+  which use this technique to execute malicious actions. If confirmed malicious, this activity could allow attackers to execute
+  arbitrary code, escalate privileges, and maintain persistence within the environment, posing a severe threat to system integrity
+  and security.
+references:
+- https://research.splunk.com/23587b6a-c479-11eb-b671-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Hart, Mauricio Velazco, Splunk
+tags:
+- attack.t1059
+correlation:
+  type: value_count
+  rules:
+  - escu_base_excessive_distinct_processes_from_windows_temp
+  group-by:
+  - Computer
+  - User
+  timespan: 20m
+  condition:
+    gt: 37
+    field: CommandLine
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1059/excessive_distinct_processes_from_windows_temp/windows-xml.log

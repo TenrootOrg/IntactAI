@@ -687,7 +687,12 @@ class Event:
             if f == "eventname":
                 return (o("Name") if str(o("Workload")) == "SecurityComplianceCenter" else None) or o("Operation")
             rs = str(o("ResultStatus") or "")
-            return "success" if rs.lower() in ("succeeded", "success", "true", "partiallysucceeded") else rs or None
+            return ("success" if rs.lower() in ("succeeded", "success", "true", "partiallysucceeded") else
+                    "failure" if rs.lower() in ("failed", "failure", "false") else rs or None)
+        if f == "status" and "keywords" in self._low and not self.own("status"):
+            st = _audit_status(self.own("Keywords"))   # Splunk's Windows add-on: status from the audit keyword
+            if st:
+                return st
         view = self.edr()
         if view:
             # An EDR export's event read per product and event type (edr_telemetry): before
@@ -1103,6 +1108,23 @@ def _applies(rule, profs) -> bool:
 
 
 _PROF_CACHE: dict = {}
+
+
+def _audit_status(kw):
+    """A Windows Security event's Keywords -> "success" / "failure": the text an export
+    writes ("Audit Success") or the raw mask (0x8020000000000000: bit 53 success, 52 failure)."""
+    k = str(kw or "").strip().lower()
+    if "audit success" in k:
+        return "success"
+    if "audit failure" in k:
+        return "failure"
+    if k.startswith("0x"):
+        try:
+            n = int(k, 16)
+        except ValueError:
+            return None
+        return "success" if n & 0x20000000000000 else "failure" if n & 0x10000000000000 else None
+    return None
 
 
 def _edr_family(ev) -> bool:

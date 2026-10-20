@@ -1,0 +1,80 @@
+title: Excessive Usage Of Cacls App (counted event)
+id: 0bdf6092-af17-11eb-939a-acde48001122-base
+status: experimental
+description: 'The following analytic identifies excessive usage of `cacls.exe`, `xcacls.exe`,
+
+  or `icacls.exe` to change file or folder permissions.
+
+  It looks for 10 or more execution of the aforementioned processes in the span of 1 minute.
+
+  It leverages data from Endpoint Detection and Response (EDR) agents,
+
+  focusing on process names and command-line executions.
+
+  This activity is significant as it may indicate an adversary attempting
+
+  to restrict access to malware components or artifacts on a compromised system.
+
+  If confirmed malicious, this behavior could prevent users from deleting or accessing
+
+  critical files, aiding in the persistence and concealment of malicious activities.'
+references:
+- https://research.splunk.com/0bdf6092-af17-11eb-939a-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1222
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image:
+    - '*\\icacls.exe'
+    - '*\\cacls.exe'
+    - '*\\xcacls.exe'
+  condition: sel1
+level: informational
+name: escu_base_excessive_usage_of_cacls_app
+---
+title: Excessive Usage Of Cacls App
+id: 0bdf6092-af17-11eb-939a-acde48001122
+status: experimental
+description: 'The following analytic identifies excessive usage of `cacls.exe`, `xcacls.exe`,
+
+  or `icacls.exe` to change file or folder permissions.
+
+  It looks for 10 or more execution of the aforementioned processes in the span of 1 minute.
+
+  It leverages data from Endpoint Detection and Response (EDR) agents,
+
+  focusing on process names and command-line executions.
+
+  This activity is significant as it may indicate an adversary attempting
+
+  to restrict access to malware components or artifacts on a compromised system.
+
+  If confirmed malicious, this behavior could prevent users from deleting or accessing
+
+  critical files, aiding in the persistence and concealment of malicious activities.'
+references:
+- https://research.splunk.com/0bdf6092-af17-11eb-939a-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1222
+correlation:
+  type: event_count
+  rules:
+  - escu_base_excessive_usage_of_cacls_app
+  group-by:
+  - ParentImage
+  - ParentCommandLine
+  - Computer
+  - User
+  timespan: 1m
+  condition:
+    gte: 10
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/xmrig_miner/windows-sysmon.log

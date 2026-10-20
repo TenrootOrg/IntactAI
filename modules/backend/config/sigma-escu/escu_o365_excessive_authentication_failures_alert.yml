@@ -1,0 +1,55 @@
+title: O365 Excessive Authentication Failures Alert (counted event)
+id: d441364c-349c-453b-b55f-12eccab67cf9-base
+status: experimental
+description: The following analytic identifies an excessive number of authentication failures, including failed attempts against
+  MFA prompt codes. It uses data from the `o365_management_activity` dataset, focusing on events where the authentication
+  status is marked as failure. This behavior is significant as it may indicate a brute force attack or an attempt to compromise
+  user accounts. If confirmed malicious, this activity could lead to unauthorized access, data breaches, or further exploitation
+  within the environment.
+references:
+- https://research.splunk.com/d441364c-349c-453b-b55f-12eccab67cf9/
+author: Splunk Security Content (Apache-2.0), Rod Soto, Splunk
+tags:
+- attack.t1110
+logsource:
+  product: m365
+  service: audit
+detection:
+  sel1:
+    Workload: AzureActiveDirectory
+  sel2:
+    UserAuthenticationMethod: '*'
+  sel3:
+    status: failure
+  condition: (sel1 and sel2 and sel3)
+level: informational
+name: escu_base_o365_excessive_authentication_failures_alert
+---
+title: O365 Excessive Authentication Failures Alert
+id: d441364c-349c-453b-b55f-12eccab67cf9
+status: experimental
+description: The following analytic identifies an excessive number of authentication failures, including failed attempts against
+  MFA prompt codes. It uses data from the `o365_management_activity` dataset, focusing on events where the authentication
+  status is marked as failure. This behavior is significant as it may indicate a brute force attack or an attempt to compromise
+  user accounts. If confirmed malicious, this activity could lead to unauthorized access, data breaches, or further exploitation
+  within the environment.
+references:
+- https://research.splunk.com/d441364c-349c-453b-b55f-12eccab67cf9/
+author: Splunk Security Content (Apache-2.0), Rod Soto, Splunk
+tags:
+- attack.t1110
+correlation:
+  type: event_count
+  rules:
+  - escu_base_o365_excessive_authentication_failures_alert
+  group-by:
+  - UserId
+  - Workload
+  timespan: 1h
+  condition:
+    gt: 10
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1110/o365_brute_force_login/o365_brute_force_login.json

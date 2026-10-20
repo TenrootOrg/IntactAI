@@ -124,8 +124,20 @@ error logs, and 10 Splunk count rules on the correlation engine.
 Then file_rename from the EDRs that log the old name (Defender FileRenamed, Elastic
 rename, SentinelOne File Rename; a rename stays a file_event too) and Sysmon 27-29.
 
-Still open, medium tier: the other 63 medium Splunk threshold detections (23 group by
-CIM field names a raw log lacks). Left out on purpose: the database keyword rule
+Then 25 more Splunk count rules (35 in all; 11 medium, 14 low), each fired on its own
+recording and checked on the benign corpus. The translator now reads tstats' `BY _time
+span=1m` as the window (it was taken for a field), drops a group-by field the search
+pins to one value, counts `dc(_raw)` as events, and has each source's raw name for the
+add-on's group-by fields (`GROUP_FIELDS_BY_SOURCE`: Windows / Sysmon signature and
+action from the EventID, O365 ClientIP / UserId, Okta, Google Workspace, Cisco). The
+engine reads Windows `status` from the audit keyword, as Splunk's add-on does.
+Not shipped: 2 Cisco intrusion counts and forfiles (by Splunk's own grouping their
+threshold is never met on the recording), an O365 count on `record_type` text (the raw
+log has a number), the /etc deletion count (grouped by vendor_product), and two mass
+file-deletion counts (they fire on the benign corpus: Explorer deleting a folder).
+
+Still open, medium tier: the remaining Splunk threshold detections ("logic after the
+filter" or a source with no reader). Left out on purpose: the database keyword rule
 ("drop" / "select *" fire on every query log), Python exceptions (too generic to tell
 from any other Python log), PAN-OS GlobalProtect file creation (no log carries it).
 

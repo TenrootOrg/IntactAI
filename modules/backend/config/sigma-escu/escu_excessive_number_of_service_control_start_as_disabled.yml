@@ -1,0 +1,57 @@
+title: Excessive number of service control start as disabled (counted event)
+id: 77592bec-d5cc-11eb-9e60-acde48001122-base
+status: experimental
+description: The following analytic detects an excessive number of `sc.exe` processes launched with the command line argument
+  `start= disabled` within a short period. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on
+  process names, command-line executions, and process GUIDs. This activity is significant as it may indicate an attempt to
+  disable critical services, potentially impairing system defenses. If confirmed malicious, this behavior could allow an attacker
+  to disrupt security mechanisms, hinder incident response, and maintain control over the compromised system.
+references:
+- https://research.splunk.com/77592bec-d5cc-11eb-9e60-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Hart, Splunk
+tags:
+- attack.t1685
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\sc.exe'
+  sel2:
+    CommandLine: '*start= disabled*'
+  condition: (sel1 and sel2)
+level: informational
+name: escu_base_excessive_number_of_service_control_start_as_disabled
+---
+title: Excessive number of service control start as disabled
+id: 77592bec-d5cc-11eb-9e60-acde48001122
+status: experimental
+description: The following analytic detects an excessive number of `sc.exe` processes launched with the command line argument
+  `start= disabled` within a short period. It leverages data from Endpoint Detection and Response (EDR) agents, focusing on
+  process names, command-line executions, and process GUIDs. This activity is significant as it may indicate an attempt to
+  disable critical services, potentially impairing system defenses. If confirmed malicious, this behavior could allow an attacker
+  to disrupt security mechanisms, hinder incident response, and maintain control over the compromised system.
+references:
+- https://research.splunk.com/77592bec-d5cc-11eb-9e60-acde48001122/
+author: Splunk Security Content (Apache-2.0), Michael Hart, Splunk
+tags:
+- attack.t1685
+correlation:
+  type: value_count
+  rules:
+  - escu_base_excessive_number_of_service_control_start_as_disabled
+  group-by:
+  - Computer
+  - User
+  - ParentCommandLine
+  - Image
+  - ParentProcessId
+  timespan: 30m
+  condition:
+    gte: 8
+    field: CommandLine
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1562.001/sc_service_start_disabled/windows-sysmon.log

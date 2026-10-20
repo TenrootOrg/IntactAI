@@ -29,7 +29,7 @@ class Translate(unittest.TestCase):
 
     def test_a_filtering_pipe_is_skipped(self):
         with self.assertRaises(T.Skip):
-            tr('`wineventlog_security` EventCode=4625 | stats count by user | where count > 5')
+            tr('`wineventlog_security` EventCode=4625 | stats count by src | where count > 5')
 
     def test_display_pipes_keep_the_filter(self):
         r = tr('`wineventlog_security` EventCode=4728 | eval x=1 | rename a as b | stats count by user')
@@ -99,7 +99,7 @@ class Translate(unittest.TestCase):
                '| stats count by user')
         self.assertEqual({"TargetSid|re": "S-1-5-21-.*-50[0-4]$"}, r["detection"]["sel2"])
         with self.assertRaises(T.Skip):        # a computed field
-            tr('`wineventlog_security` EventCode=4625 | stats count by user | where count > 5')
+            tr('`wineventlog_security` EventCode=4625 | stats count by src | where count > 5')
         with self.assertRaises(T.Skip):        # one field against another
             tr('`wineventlog_security` EventCode=4728 | where lower(user)=lower(src_user)')
 
@@ -126,6 +126,40 @@ class CountOverAWindow(unittest.TestCase):
     def test_grouped_by_an_add_on_name_the_log_lacks_is_refused(self):
         with self.assertRaises(T.Skip):
             tr('`wineventlog_security` EventCode=4625 | stats count by src, signature | where count > 5')
+
+    def test_tstats_span_is_the_window_and_a_pinned_field_no_group(self):
+        """"BY _time span=1m" was read as a field named span=1m (12 detections refused); a
+        group-by field the WHERE fixes to one value is one group, so it is dropped."""
+        _base, corr = tr('| tstats count FROM datamodel=Endpoint.Processes WHERE Processes.process_name="taskkill.exe" '
+                         'BY Processes.parent_process_name Processes.dest _time span=1m | where count >=10')
+        self.assertEqual("1m", corr["correlation"]["timespan"])
+        self.assertNotIn("span=1m", corr["correlation"]["group-by"])
+        _base, corr = tr('| tstats dc(Filesystem.file_path) as n count FROM datamodel=Endpoint.Filesystem '
+                         'WHERE Filesystem.action=deleted Filesystem.file_path="/boot/*" '
+                         'BY _time span=1h Filesystem.dest Filesystem.process_guid Filesystem.action | where n >= 200')
+        self.assertEqual(["Computer", "ProcessGuid"], corr["correlation"]["group-by"])
+        self.assertEqual("1h", corr["correlation"]["timespan"])
+
+    def test_a_sources_group_by_names(self):
+        """The add-on's group-by names, per source: only for the count, never a filter;
+        dc(_raw) is a count of events; one-value-per-export fields are no group."""
+        base, corr = tr('`o365_management_activity` Workload=AzureActiveDirectory Operation=UserLoginFailed '
+                        '| bucket span=5m _time | stats dc(_raw) AS failed BY _time, src_ip, vendor_product '
+                        '| where failed > 10')
+        self.assertEqual({"type": "event_count", "rules": [base["name"]], "group-by": ["ClientIP"],
+                          "timespan": "5m", "condition": {"gt": 10}}, corr["correlation"])
+        _base, corr = tr('`wineventlog_security` EventCode=4726 | bucket span=10m _time | stats dc(user) as n '
+                         'BY EventCode signature _time src_user | where n > 5')
+        self.assertEqual(["EventID", "SubjectUserName"], corr["correlation"]["group-by"])
+        self.assertEqual("TargetUserName", corr["correlation"]["condition"]["field"])
+        _base, corr = tr('`cisco_secure_firewall` EventType=ConnectionEvent | bin _time span=1m '
+                         '| stats count by src, dest | where count >= 10')
+        self.assertEqual(["InitiatorIP", "ResponderIP"], corr["correlation"]["group-by"], "the source's dest, not a host")
+
+    def test_a_group_by_name_is_not_a_filter_name(self):
+        base, _corr = tr('`wineventlog_security` EventCode=4625 action=failure | stats count by IpAddress '
+                         '| where count > 5')
+        self.assertEqual({"action": "failure"}, base["detection"]["sel2"], "not EventID=failure")
 
     def test_a_field_computed_before_counting_is_refused(self):
         with self.assertRaises(T.Skip):

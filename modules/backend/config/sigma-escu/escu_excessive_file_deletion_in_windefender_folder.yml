@@ -1,0 +1,54 @@
+title: Excessive File Deletion In WinDefender Folder (counted event)
+id: b5baa09a-7a05-11ec-8da4-acde48001122-base
+status: experimental
+description: The following analytic detects excessive file deletion events in the Windows Defender folder. It leverages Sysmon
+  EventCodes 23 and 26 to identify processes deleting multiple files within this directory. This behavior is significant as
+  it may indicate an attempt to corrupt or disable Windows Defender, a key security component. If confirmed malicious, this
+  activity could allow an attacker to disable endpoint protection, facilitating further malicious actions without detection.
+references:
+- https://research.splunk.com/b5baa09a-7a05-11ec-8da4-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk, Steven Dick
+tags:
+- attack.t1485
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  sel1:
+    EventID:
+    - '23'
+    - '26'
+  sel2:
+    TargetFilename: '*\\ProgramData\\Microsoft\\Windows Defender\\*'
+  condition: (sel1 and sel2)
+level: informational
+name: escu_base_excessive_file_deletion_in_windefender_folder
+---
+title: Excessive File Deletion In WinDefender Folder
+id: b5baa09a-7a05-11ec-8da4-acde48001122
+status: experimental
+description: The following analytic detects excessive file deletion events in the Windows Defender folder. It leverages Sysmon
+  EventCodes 23 and 26 to identify processes deleting multiple files within this directory. This behavior is significant as
+  it may indicate an attempt to corrupt or disable Windows Defender, a key security component. If confirmed malicious, this
+  activity could allow an attacker to disable endpoint protection, facilitating further malicious actions without detection.
+references:
+- https://research.splunk.com/b5baa09a-7a05-11ec-8da4-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk, Steven Dick
+tags:
+- attack.t1485
+correlation:
+  type: event_count
+  rules:
+  - escu_base_excessive_file_deletion_in_windefender_folder
+  group-by:
+  - EventID
+  - Computer
+  - User
+  timespan: 1h
+  condition:
+    gte: 50
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1485/excessive_file_del_in_windefender_dir/sysmon.log

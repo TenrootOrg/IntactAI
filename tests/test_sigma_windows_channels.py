@@ -80,5 +80,22 @@ class SysmonStates(unittest.TestCase):
             self.assertIn(("windows", None, svc), S.profiles(S.Event({"EventID": 1, "Channel": chan})), chan)
 
 
+
+class AuditStatus(unittest.TestCase):
+    """Splunk's Windows add-on derives status from the audit keyword; its account-change
+    counts (4724 / 4725 / 4726 with status=success) never matched a raw export (2026-10-20)."""
+
+    def test_status_from_the_keyword(self):
+        ev = {"EventID": 4726, "Channel": "Security", "TargetUserName": "bob"}
+        self.assertEqual("success", S.Event({**ev, "Keywords": "0x8020000000000000"}).get("status"))
+        self.assertEqual("failure", S.Event({**ev, "Keywords": "0x8010000000000000"}).get("status"))
+        self.assertEqual("success", S.Event({**ev, "Keywords": "Audit Success"}).get("status"))
+        self.assertIsNone(S.Event({**ev, "Keywords": "0x0"}).get("status"))
+
+    def test_an_events_own_status_wins(self):
+        ev = {"EventID": 4625, "Channel": "Security", "Keywords": "0x8010000000000000", "Status": "0xc000006d"}
+        self.assertEqual("0xc000006d", S.Event(ev).get("status"))
+
+
 if __name__ == "__main__":
     unittest.main()

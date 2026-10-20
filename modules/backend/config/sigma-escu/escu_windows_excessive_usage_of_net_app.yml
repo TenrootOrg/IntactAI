@@ -1,0 +1,56 @@
+title: Windows Excessive Usage Of Net App (counted event)
+id: 355ba810-0a20-4215-8485-9ce3f87f2e38-base
+status: experimental
+description: The following analytic detects excessive usage of `net.exe` within a one-minute interval. It leverages data from
+  Endpoint Detection and Response (EDR) agents, focusing on process names, parent processes, and command-line executions.
+  This behavior is significant as it may indicate an adversary attempting to create, delete, or disable multiple user accounts
+  rapidly, a tactic observed in Monero mining incidents. If confirmed malicious, this activity could lead to unauthorized
+  user account manipulation, potentially compromising system integrity and enabling further malicious actions.
+references:
+- https://research.splunk.com/355ba810-0a20-4215-8485-9ce3f87f2e38/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1531
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  sel1:
+    Image: '*\\net1.exe'
+  sel2:
+    OriginalFileName: net1.exe
+  condition: (sel1 or sel2)
+level: informational
+name: escu_base_windows_excessive_usage_of_net_app
+---
+title: Windows Excessive Usage Of Net App
+id: 355ba810-0a20-4215-8485-9ce3f87f2e38
+status: experimental
+description: The following analytic detects excessive usage of `net.exe` within a one-minute interval. It leverages data from
+  Endpoint Detection and Response (EDR) agents, focusing on process names, parent processes, and command-line executions.
+  This behavior is significant as it may indicate an adversary attempting to create, delete, or disable multiple user accounts
+  rapidly, a tactic observed in Monero mining incidents. If confirmed malicious, this activity could lead to unauthorized
+  user account manipulation, potentially compromising system integrity and enabling further malicious actions.
+references:
+- https://research.splunk.com/355ba810-0a20-4215-8485-9ce3f87f2e38/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1531
+correlation:
+  type: event_count
+  rules:
+  - escu_base_windows_excessive_usage_of_net_app
+  group-by:
+  - Image
+  - ParentImage
+  - OriginalFileName
+  - Computer
+  - User
+  timespan: 1m
+  condition:
+    gte: 10
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/xmrig_miner/windows-sysmon.log

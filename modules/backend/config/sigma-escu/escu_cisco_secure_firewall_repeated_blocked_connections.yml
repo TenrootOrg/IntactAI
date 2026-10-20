@@ -1,0 +1,69 @@
+title: Cisco Secure Firewall - Repeated Blocked Connections (counted event)
+id: 1f57f10e-1dc5-47ea-852c-2e85b2503d79-base
+status: experimental
+description: The following analytic detects repeated blocked connection attempts from the same initiator to the same responder
+  within a short time window. It leverages Cisco Secure Firewall Threat Defense logs and identifies connections where the
+  action is set to Block, and the number of occurrences reaches or exceeds a threshold of ten within a one-minute span. This
+  pattern may indicate a misconfigured application, unauthorized access attempts, or early stages of a brute-force or scanning
+  operation. If confirmed malicious, this behavior may represent an attacker probing the network, attempting lateral movement,
+  or testing firewall rules for weaknesses.
+references:
+- https://research.splunk.com/1f57f10e-1dc5-47ea-852c-2e85b2503d79/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1018
+- attack.t1046
+- attack.t1110
+- attack.t1203
+- attack.t1595.002
+logsource:
+  product: cisco
+  service: secure_firewall
+detection:
+  sel1:
+    EventType: ConnectionEvent
+  sel2:
+    AC_RuleAction:
+    - Block with reset
+    - Block
+    - blocked
+  condition: (sel1 and sel2)
+level: informational
+name: escu_base_cisco_secure_firewall_repeated_blocked_connections
+---
+title: Cisco Secure Firewall - Repeated Blocked Connections
+id: 1f57f10e-1dc5-47ea-852c-2e85b2503d79
+status: experimental
+description: The following analytic detects repeated blocked connection attempts from the same initiator to the same responder
+  within a short time window. It leverages Cisco Secure Firewall Threat Defense logs and identifies connections where the
+  action is set to Block, and the number of occurrences reaches or exceeds a threshold of ten within a one-minute span. This
+  pattern may indicate a misconfigured application, unauthorized access attempts, or early stages of a brute-force or scanning
+  operation. If confirmed malicious, this behavior may represent an attacker probing the network, attempting lateral movement,
+  or testing firewall rules for weaknesses.
+references:
+- https://research.splunk.com/1f57f10e-1dc5-47ea-852c-2e85b2503d79/
+author: Splunk Security Content (Apache-2.0), Nasreddine Bencherchali, Splunk
+tags:
+- attack.t1018
+- attack.t1046
+- attack.t1110
+- attack.t1203
+- attack.t1595.002
+correlation:
+  type: event_count
+  rules:
+  - escu_base_cisco_secure_firewall_repeated_blocked_connections
+  group-by:
+  - InitiatorIP
+  - ResponderIP
+  - Protocol
+  - FirewallRule
+  - AC_RuleAction
+  timespan: 1m
+  condition:
+    gte: 10
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/cisco_secure_firewall_threat_defense/connection_event/connection_events.log

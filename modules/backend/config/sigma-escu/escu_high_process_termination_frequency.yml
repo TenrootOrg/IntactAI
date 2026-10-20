@@ -1,0 +1,54 @@
+title: High Process Termination Frequency (counted event)
+id: 17cd75b2-8666-11eb-9ab4-acde48001122-base
+status: experimental
+description: The following analytic identifies a high frequency of process termination events on a computer within a short
+  period. It leverages Sysmon EventCode 5 logs to detect instances where 15 or more processes are terminated within a 3-second
+  window. This behavior is significant as it is commonly associated with ransomware attempting to avoid exceptions during
+  file encryption. If confirmed malicious, this activity could indicate an active ransomware attack, potentially leading to
+  widespread file encryption and significant data loss.
+references:
+- https://research.splunk.com/17cd75b2-8666-11eb-9ab4-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras
+tags:
+- attack.t1486
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  sel1:
+    EventID: '5'
+  condition: sel1
+level: informational
+name: escu_base_high_process_termination_frequency
+---
+title: High Process Termination Frequency
+id: 17cd75b2-8666-11eb-9ab4-acde48001122
+status: experimental
+description: The following analytic identifies a high frequency of process termination events on a computer within a short
+  period. It leverages Sysmon EventCode 5 logs to detect instances where 15 or more processes are terminated within a 3-second
+  window. This behavior is significant as it is commonly associated with ransomware attempting to avoid exceptions during
+  file encryption. If confirmed malicious, this activity could indicate an active ransomware attack, potentially leading to
+  widespread file encryption and significant data loss.
+references:
+- https://research.splunk.com/17cd75b2-8666-11eb-9ab4-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras
+tags:
+- attack.t1486
+correlation:
+  type: event_count
+  rules:
+  - escu_base_high_process_termination_frequency
+  group-by:
+  - Computer
+  - EventID
+  timespan: 3s
+  condition:
+    gte: 15
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/malware/clop/clop_a/windows-sysmon.log
+x-intact-burst: false
+x-intact: 'Fired 2 time(s) on benign Windows activity (Nextron benign workstation + DC, 1.24 M events): context only, not
+  counted toward a burst.'

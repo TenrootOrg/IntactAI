@@ -1,0 +1,72 @@
+title: Linux System Network Discovery (counted event)
+id: 535cb214-8b47-11ec-a2c7-acde48001122-base
+status: experimental
+description: 'The following analytic identifies potential enumeration of local network configuration on Linux systems.
+
+  It detects this activity by monitoring processes such as "arp," "ifconfig," "ip," "netstat," "firewall-cmd," "ufw," "iptables,"
+  "ss," and "route" within a 30-minute window.
+
+  This behavior is significant as it often indicates reconnaissance efforts by adversaries to gather network information for
+  subsequent attacks.
+
+  If confirmed malicious, this activity could enable attackers to map the network, identify vulnerabilities, and plan further
+  exploitation or lateral movement within the environment.'
+references:
+- https://research.splunk.com/535cb214-8b47-11ec-a2c7-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1016
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  sel1:
+    Image:
+    - '*/arp'
+    - '*/firewall-cmd'
+    - '*/ifconfig'
+    - '*/ip'
+    - '*/iptables'
+    - '*/netstat'
+    - '*/route'
+    - '*/ss'
+    - '*/ufw'
+  condition: sel1
+level: informational
+name: escu_base_linux_system_network_discovery
+---
+title: Linux System Network Discovery
+id: 535cb214-8b47-11ec-a2c7-acde48001122
+status: experimental
+description: 'The following analytic identifies potential enumeration of local network configuration on Linux systems.
+
+  It detects this activity by monitoring processes such as "arp," "ifconfig," "ip," "netstat," "firewall-cmd," "ufw," "iptables,"
+  "ss," and "route" within a 30-minute window.
+
+  This behavior is significant as it often indicates reconnaissance efforts by adversaries to gather network information for
+  subsequent attacks.
+
+  If confirmed malicious, this activity could enable attackers to map the network, identify vulnerabilities, and plan further
+  exploitation or lateral movement within the environment.'
+references:
+- https://research.splunk.com/535cb214-8b47-11ec-a2c7-acde48001122/
+author: Splunk Security Content (Apache-2.0), Teoderick Contreras, Splunk
+tags:
+- attack.t1016
+correlation:
+  type: value_count
+  rules:
+  - escu_base_linux_system_network_discovery
+  group-by:
+  - Computer
+  - User
+  timespan: 30m
+  condition:
+    gte: 4
+    field: Image
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1016/atomic_red_team/linux_net_discovery/sysmon_linux.log
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1016/atomic_red_team/macos_net_discovery/macos_network_discovery.log

@@ -314,6 +314,29 @@ RAW_FIELDS_BY_SOURCE = {      # names Splunk's add-on gives a field that has ano
                               "src_port": ("InitiatorPort", "raw"), "action": ("AC_RuleAction", "raw"),
                               "url": ("URL", "raw")},
 }
+# What a count groups by, per source (2026-10-20): the raw field the add-on derives the
+# group from. Only for the group-by -- never a filter (action=success is not EventID).
+# The Windows / Sysmon add-ons derive signature, signature_id and action from the
+# EventCode (+ status), so the EventCode groups the same rows or finer: a count can only
+# come out lower than Splunk's, never fire where Splunk's would not.
+GROUP_FIELDS_BY_SOURCE = {
+    "wineventlog_security": {"signature": "EventID", "signature_id": "EventID", "action": "EventID",
+                             "EventCode": "EventID", "app": "LogonType",
+                             "authentication_method": "AuthenticationPackageName", "src_user": "SubjectUserName",
+                             "user": "TargetUserName", "Logon_ID": "SubjectLogonId"},
+    "sysmon": {"signature": "EventID", "signature_id": "EventID", "action": "EventID", "EventCode": "EventID",
+               "user": "User", "user_id": "User",
+               # Splunk's ProcessID is <Execution ProcessID>, Sysmon's own pid (one per host),
+               # not the event's ProcessId -- grouping by that would put each event alone.
+               "ProcessID": "Computer"},
+    "o365_management_activity": {"user": "UserId", "src": "ClientIP", "src_ip": "ClientIP", "dest": "Workload",
+                                 "signature": "Operation", "user_agent": "UserAgent"},
+    "okta": {"src_user": "actor.alternateId"},
+    "gws_reports_login": {"src": "ipAddress", "src_ip": "ipAddress", "user": "actor.email", "app": "id.applicationName"},
+    "cisco_secure_firewall": {"src": "InitiatorIP", "dest": "ResponderIP", "transport": "Protocol",
+                              "app": "Application", "signature": "IntrusionRuleMessage",
+                              "class_desc": "Classification", "rule": "FirewallRule"},
+}
 RAW_IGNORED = {"dest", "src", "host", "sourcetype", "source", "index", "signature_id"}
 # Pipes after the filter that only shape what is shown (extract, compute, rename, count,
 # enrich): the rows they show are the rows the filter kept. Any pipe that can drop rows
@@ -433,15 +456,15 @@ CIM_FIELDS = {"src", "src_ip", "dest", "dest_ip", "user", "src_user", "dest_user
 DEFAULT_TIMESPAN = "1h"     # ponytail: Splunk schedules most detections hourly; per-rule if one proves too wide
 HOST_FIELDS = {"dest": "Computer", "host": "Computer", "dvc": "Computer", "dest_host": "Computer",
                # the add-on's names for the event's own ids (Sysmon / Security write ProcessId)
-               "process_id": "ProcessId", "parent_process_id": "ParentProcessId"}
+               "process_id": "ProcessId", "parent_process_id": "ParentProcessId", "process_guid": "ProcessGuid"}
 
 
 def _aggs(text):
     """{alias: (kind, field)} of the count / distinct counts in a stats or tstats clause."""
     out = {}
     for m in _AGG.finditer(text):
-        if m.group(1):
-            out[(m.group(3) or "count").lower()] = ("event_count", None)
+        if m.group(1) or m.group(2) == "_raw":     # dc(_raw): every event is distinct -- a count
+            out[(m.group(3) or ("count" if m.group(1) else "dc(_raw)")).lower()] = ("event_count", None)
         else:
             out[(m.group(3) or f"dc({m.group(2)})").lower()] = ("value_count", m.group(2))
     return out
@@ -477,6 +500,10 @@ def split_threshold(pipes, header=None):
         if not m:
             return pipes, None
         aggs, by, rest = _aggs(m.group(1)), m.group(2), pipes[i + 1:]
+    m = _SPAN.search(by)                            # tstats' "BY _time span=1m": the window, not a field
+    if m:
+        span = f"{m.group(1)}{m.group(2).lower()}"
+        by = re.sub(r"\bspan\s*=\s*\S+", " ", by)
     by = [b for b in re.split(r"[\s,]+", by.strip()) if b and b.lower() != "_time"]
     for p in rest:
         cmd = (p.split() or [""])[0].lower()
@@ -513,14 +540,18 @@ def translate_raw(doc, macros):
     pipes, thr = split_threshold(pipes)
     _LAST_THRESHOLD["thr"] = thr
     if thr:
-        fmap = {**RAW_FIELDS, **RAW_FIELDS_BY_SOURCE.get(m.group(1), {})}
+        fmap = {**RAW_FIELDS, **RAW_FIELDS_BY_SOURCE.get(m.group(1), {}),
+                **{k: (v, "raw") for k, v in GROUP_FIELDS_BY_SOURCE.get(m.group(1), {}).items()}}
+        # One value per export (the product, the tenant): no group of its own.
+        thr["by"] = [b for b in thr["by"] if b not in ("vendor_product", "vendor_account")]
         unmapped = [b for b in thr["by"] if b in CIM_FIELDS and b not in fmap and b not in HOST_FIELDS]
         if unmapped:
             # A Splunk add-on name the raw log does not have: every row would fall into ONE
             # empty group and the count would run across the whole log -- far wider than
             # Splunk's rule. Not translated.
             raise Skip(f"count grouped by a field with no Sigma name: {unmapped[0]}")
-        thr["by"] = [HOST_FIELDS.get(b) or fmap.get(b, (b,))[0] for b in thr["by"]]
+        grp = GROUP_FIELDS_BY_SOURCE.get(m.group(1), {})      # this source's own name wins (Cisco's dest)
+        thr["by"] = list(dict.fromkeys(grp.get(b) or HOST_FIELDS.get(b) or fmap.get(b, (b,))[0] for b in thr["by"]))
         if thr["field"]:
             thr["field"] = fmap.get(thr["field"], (thr["field"],))[0]
         if any("." in b and "{" in b for b in thr["by"]):
@@ -625,7 +656,12 @@ def _translate(doc, macros):
             if f.split(".")[-1] in HOST_FIELDS:
                 return HOST_FIELDS[f.split(".")[-1]]
             raise Skip(f"count grouped by a field with no Sigma name: {f}")
-        thr["by"] = [_f(b) for b in thr["by"]]
+        where = m.group(2)
+
+        def _pinned(f):                            # "where Filesystem.action=deleted ... by Filesystem.action":
+            v = re.findall(rf'(?<![\w.]){re.escape(f)}\s*=\s*"?([^\s"]+)"?', where)   # one group, drop it
+            return len(v) == 1 and "*" not in v[0] and not re.search(r"\b(OR|IN|NOT)\b", where, re.I)
+        thr["by"] = [_f(b) for b in thr["by"] if not _pinned(b)]
         if thr["field"]:
             thr["field"] = _f(thr["field"])
         _LAST_THRESHOLD["thr"] = thr

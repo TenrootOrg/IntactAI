@@ -1,0 +1,59 @@
+title: GCP Multiple Users Failing To Authenticate From Ip (counted event)
+id: da20828e-d6fb-4ee5-afb7-d0ac200923d5-base
+status: experimental
+description: The following analytic detects a single source IP address failing to authenticate into more than 20 unique Google
+  Workspace user accounts within a 5-minute window. It leverages Google Workspace login failure events to identify potential
+  password spraying attacks. This activity is significant as it may indicate an adversary attempting to gain unauthorized
+  access or elevate privileges within the Google Cloud Platform. If confirmed malicious, this behavior could lead to unauthorized
+  access to sensitive resources, data breaches, or further exploitation within the environment.
+references:
+- https://research.splunk.com/da20828e-d6fb-4ee5-afb7-d0ac200923d5/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Splunk
+tags:
+- attack.t1110.003
+- attack.t1110.004
+- attack.t1586.003
+logsource:
+  product: google_workspace
+  service: google_workspace.admin
+detection:
+  sel1:
+    event.type: login
+  sel2:
+    event.name: login_failure
+  condition: (sel1 and sel2)
+level: informational
+name: escu_base_gcp_multiple_users_failing_to_authenticate_from_ip
+---
+title: GCP Multiple Users Failing To Authenticate From Ip
+id: da20828e-d6fb-4ee5-afb7-d0ac200923d5
+status: experimental
+description: The following analytic detects a single source IP address failing to authenticate into more than 20 unique Google
+  Workspace user accounts within a 5-minute window. It leverages Google Workspace login failure events to identify potential
+  password spraying attacks. This activity is significant as it may indicate an adversary attempting to gain unauthorized
+  access or elevate privileges within the Google Cloud Platform. If confirmed malicious, this behavior could lead to unauthorized
+  access to sensitive resources, data breaches, or further exploitation within the environment.
+references:
+- https://research.splunk.com/da20828e-d6fb-4ee5-afb7-d0ac200923d5/
+author: Splunk Security Content (Apache-2.0), Bhavin Patel, Splunk
+tags:
+- attack.t1110.003
+- attack.t1110.004
+- attack.t1586.003
+correlation:
+  type: value_count
+  rules:
+  - escu_base_gcp_multiple_users_failing_to_authenticate_from_ip
+  group-by:
+  - event.name
+  - ipAddress
+  - id.applicationName
+  timespan: 5m
+  condition:
+    gt: 20
+    field: actor.email
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1110.003/gcp_gws_multiple_login_failure/gws_login.json

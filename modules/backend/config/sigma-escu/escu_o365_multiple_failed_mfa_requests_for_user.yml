@@ -1,0 +1,59 @@
+title: O365 Multiple Failed MFA Requests For User (counted event)
+id: fd22124e-dbac-4744-a8ce-be10d8ec3e26-base
+status: experimental
+description: The following analytic identifies potential "MFA fatigue" attacks targeting Office 365 users by detecting more
+  than nine Multi-Factor Authentication (MFA) prompts within a 10-minute timeframe. It leverages O365 management activity
+  logs, focusing on Azure Active Directory events with the UserLoginFailed operation, a Success ResultStatus, and an ErrorNumber
+  of 500121. This activity is significant as attackers may exploit MFA fatigue to gain unauthorized access by overwhelming
+  users with repeated MFA requests. If confirmed malicious, this could lead to data breaches, unauthorized data access, or
+  further compromise within the O365 environment. Immediate investigation is crucial.
+references:
+- https://research.splunk.com/fd22124e-dbac-4744-a8ce-be10d8ec3e26/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1621
+logsource:
+  product: m365
+  service: audit
+detection:
+  sel1:
+    Workload: AzureActiveDirectory
+  sel2:
+    Operation: UserLoginFailed
+  sel3:
+    ResultStatus: Success
+  sel4:
+    ErrorNumber: '500121'
+  condition: (sel1 and sel2 and sel3 and sel4)
+level: informational
+name: escu_base_o365_multiple_failed_mfa_requests_for_user
+---
+title: O365 Multiple Failed MFA Requests For User
+id: fd22124e-dbac-4744-a8ce-be10d8ec3e26
+status: experimental
+description: The following analytic identifies potential "MFA fatigue" attacks targeting Office 365 users by detecting more
+  than nine Multi-Factor Authentication (MFA) prompts within a 10-minute timeframe. It leverages O365 management activity
+  logs, focusing on Azure Active Directory events with the UserLoginFailed operation, a Success ResultStatus, and an ErrorNumber
+  of 500121. This activity is significant as attackers may exploit MFA fatigue to gain unauthorized access by overwhelming
+  users with repeated MFA requests. If confirmed malicious, this could lead to data breaches, unauthorized data access, or
+  further compromise within the O365 environment. Immediate investigation is crucial.
+references:
+- https://research.splunk.com/fd22124e-dbac-4744-a8ce-be10d8ec3e26/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1621
+correlation:
+  type: event_count
+  rules:
+  - escu_base_o365_multiple_failed_mfa_requests_for_user
+  group-by:
+  - UserId
+  - Workload
+  timespan: 10m
+  condition:
+    gt: 9
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1621/o365_multiple_failed_mfa_requests/o365_multiple_failed_mfa_requests.log
