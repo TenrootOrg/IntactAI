@@ -1415,12 +1415,13 @@ document.addEventListener('alpine:init', () => {
 
         filteredUpgradeRefs() {
             if (this.prepareModalMode !== 'online') return this.upgradeRefs;
-            // ONE HOP. An upgrade is only ever exercised a single release at a
-            // time (N -> N+1), so offering N+3 invites a jump with no test
-            // coverage behind it. "Next" is the NEAREST newer release, not the
-            // newest -- ordered by the tag's own date (intact-YYYYMMDD sorts
-            // correctly as a plain string), so it does not depend on GitHub's
-            // ordering or on releases being published in date order.
+            // EVERY NEWER RELEASE, newest first. The target release's own engine
+            // runs the upgrade, config migrations apply in order and each module
+            // moves straight to its pin, so a box several releases behind jumps
+            // directly (2026-10-20: "open current and all the future versions").
+            // Ordered by the tag's own date (intact-YYYYMMDD sorts as a plain
+            // string), not by GitHub's ordering. Older releases stay hidden: no
+            // downgrade path exists.
             //
             // The CURRENT release stays on the list deliberately: re-applying
             // it is how an operator picks up a fix or adds a module they
@@ -1432,12 +1433,12 @@ document.addEventListener('alpine:init', () => {
             const same = this.upgradeRefs.filter(r => this.classifyUpgradeRef(r) === 'same');
             const newer = this.upgradeRefs
                 .filter(r => this.classifyUpgradeRef(r) === 'newer' && dateOf(r))
-                .sort((a, b) => dateOf(a).localeCompare(dateOf(b)));
-            // Undated entries (e.g. the synthetic `development` ref) are not
-            // part of the hop sequence; pass them through untouched.
+                .sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
+            // Undated entries (e.g. the synthetic `development` ref) have no
+            // date to order by; pass them through untouched.
             const undated = this.upgradeRefs.filter(
                 r => !dateOf(r) && this.classifyUpgradeRef(r) !== 'older');
-            return [...(newer.length ? [newer[0]] : []), ...same, ...undated];
+            return [...newer, ...same, ...undated];
         },
 
         async fetchGithubQuota() {

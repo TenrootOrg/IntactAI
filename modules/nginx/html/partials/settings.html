@@ -1934,7 +1934,7 @@
                                 <p class="text-gray-500 text-xs mt-2">
                                     Releases auto-loaded when you opened this dialog. Backend caches for 30 minutes; the refresh button only spends a GitHub call if the cache is stale.
                                     <span x-show="$store.settings.prepareModalMode === 'online' && $store.settings.currentIntactVersion">
-                                        Showing <span class="font-mono text-gray-400" x-text="$store.settings.currentIntactVersion"></span> and the next release only — upgrades are applied one release at a time. Re-picking the current release is how you apply a fix or add a module you skipped. Older releases and companion variants (e.g. <span class="font-mono">-old-modules</span>) stay hidden to prevent a downgrade.
+                                        Showing <span class="font-mono text-gray-400" x-text="$store.settings.currentIntactVersion"></span> and every newer release — you can jump straight to any of them. Re-picking the current release is how you apply a fix or add a module you skipped. Older releases and companion variants (e.g. <span class="font-mono">-old-modules</span>) stay hidden to prevent a downgrade.
                                     </span>
                                 </p>
                             </div>
@@ -1956,18 +1956,6 @@
                                  (you'd have a bunch of module images and no Intact to drive
                                  them). Renders with a locked-checked indicator instead of a
                                  toggleable checkbox. -->
-                            <!-- ONE HOP. Upgrades are exercised a single release at a
-                                 time (N -> N+1); that is the only path with test coverage
-                                 behind it. Red on purpose: skipping releases is the kind of
-                                 shortcut that looks fine until it is not. -->
-                            <div class="bg-red-900/30 border border-red-700/50 rounded p-3">
-                                <p class="text-red-300 text-xs">
-                                    <strong>Upgrade one release at a time.</strong> Each upgrade is
-                                    tested only as a single hop (N&nbsp;&rarr;&nbsp;N+1). If the target
-                                    machine is several releases behind, prepare and apply each release
-                                    in turn &mdash; jumping straight to the newest is untested.
-                                </p>
-                            </div>
 
                             <!-- Step 3 (PREPARE mode): DOWNLOAD-ONLY. Nothing is built on this
                                  box, so there is no module selection — the whole CI-built package
