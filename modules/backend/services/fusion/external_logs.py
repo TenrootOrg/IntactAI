@@ -1737,6 +1737,12 @@ def sigma_event(raw):
             text = raw["_line"]
         else:                           # named fields AND a message: rules may read either
             return {**raw, "_text": raw["_line"], "text": raw["_line"]}
+    if text is None and raw and all(re.fullmatch(r"c\d+", str(c)) for c in raw):
+        # A header-less "CSV" that is really a text log: Log4j's default timestamp
+        # (10:05:00,123) splits every Java log line at the millisecond comma into c1,
+        # c2 -- no field a rule can name, and no line kept (2026-10-20: a Log4Shell
+        # JndiManager error never reached the JNDI rule). The line, rejoined, is its text.
+        text = ",".join(str(v) for v in raw.values() if v is not None)
     if text is not None:
         return {"_text": text, "text": text, **_asa_fields(text)}
     more = rule_fields(raw)

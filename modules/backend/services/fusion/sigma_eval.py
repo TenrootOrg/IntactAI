@@ -778,6 +778,12 @@ def _has(ev, *names):
     return False
 
 
+# Application and web-server error logs SigmaHQ writes keyword rules for.
+_APP_LOGS = {("jvm", "application", None), ("spring", "application", None), ("velocity", "application", None),
+             ("nodejs", "application", None), ("sql", "application", None), (None, None, "apache"),
+             (None, None, "nginx")}
+
+
 def profiles(row) -> set:
     """{(product, category, service)} this row is evidence for. Unknown parts are
     None; a rule matches when every part it names is in one of the tuples."""
@@ -925,6 +931,10 @@ def profiles(row) -> set:
         # A free-text line: the keyword rules of the syslog services it may come from.
         for svc in (None, "auth", "sshd", "syslog", "sudo", "cron", "vsftpd", "guacamole", "clamav"):
             out.add(("linux", None, svc))
+        # Application and web-server error logs: keyword rules for exploit fingerprints
+        # (JNDI / Log4Shell, OGNL, SpEL, SSTI, SQL errors, segfaults; 11 high). Only the
+        # fingerprint text matches, so other lines stay quiet.
+        out.update(_APP_LOGS)
         # ESXi syslog too. Not decided by the line's content: profiles are cached per
         # row SHAPE and every free-text row has one shape. The ESXi rules match
         # ESXi-only text (esxcli ..., vob.user.ssh.enabled), so other lines stay quiet.
@@ -933,6 +943,9 @@ def profiles(row) -> set:
         # Entra ID PIM alerts (Graph /identityGovernance/roleManagementAlerts): 7 high
         # Sigma rules -- roles assigned outside PIM, no MFA on activation, stale admins.
         out.add(("azure", None, "pim"))
+    if _has(ev, "stack_trace", "stacktrace", "exception", "logger_name", "logger", "loggername") \
+            and _has(ev, "message", "msg", "log", "stack_trace", "exception"):
+        out.update(_APP_LOGS)                              # a structured application log (JSON logging)
     if _has(ev, "logtype") and _has(ev, "node_id"):
         # OpenCanary honeypot events (24 high Sigma rules, one per logtype): any touch
         # of a canary is an intruder's.
