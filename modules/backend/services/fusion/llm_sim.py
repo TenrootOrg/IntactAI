@@ -3053,6 +3053,10 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                     system = system.replace(master_prompt.strip(), _mask_human(master_prompt.strip(), mask))
                 system = _MASK_IDENTITY_LEGEND + system
             ans = _real_llm(system, user, run_id=run_id, max_output_tokens=max_output_tokens)
+            if not (ans or "").strip():
+                # A reasoning model that spent its allowance thinking: the chat showed an
+                # empty bubble (fault-injection pass, 2026-10-20). Say so, as the report does.
+                raise LLMUnavailable("empty_reply")
             if tool_case:
                 ans, fetched = _chat_fetch_loop(tool_case, system, user, ans, mask=mask, run_id=run_id,
                                                 max_output_tokens=max_output_tokens)

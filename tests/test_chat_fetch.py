@@ -56,6 +56,12 @@ class Fetch(unittest.TestCase):
         self.assertEqual(tools, [])
         self.assertEqual(ans, "kobia, srv and nofl — here is why…")    # no footer when nothing fetched
 
+    def test_an_empty_answer_is_named_not_an_empty_bubble(self):
+        for empty in ("", "  \n", None):
+            with self.assertRaises(llm_sim.LLMUnavailable) as cm:
+                self.run_chat([empty])
+            self.assertEqual("empty_reply", cm.exception.reason)
+
     def test_the_model_fetches_then_answers(self):
         ans, sent, tools = self.run_chat(['{"tool":"search","args":{"query":"mimikatz"}}',
                                           "srv ran Mimikatz on WS1."])
