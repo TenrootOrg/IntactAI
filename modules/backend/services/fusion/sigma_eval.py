@@ -37,7 +37,7 @@ RULE_DIRS = (os.path.join(SIGMAHQ, "rules"), os.path.join(SIGMAHQ, "rules-emergi
 DEMOTE = os.path.join(os.path.dirname(BUNDLED), "sigma_demote.yaml")   # SigmaHQ rules noisy on benign data
 LEVELS = {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 MIN_LEVEL = "medium"                 # below it a rule is context, never a detection
-_CACHE = {"key": None, "rules": [], "skipped": {}}
+_CACHE = {"key": None, "rules": [], "skipped": {}, "correlations": []}
 
 
 # -- values -----------------------------------------------------------------------
@@ -375,13 +375,15 @@ def compile_rule(doc):
 
 def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
     """All usable rules (cached until a rule directory changes). Returns
-    {"rules": [...], "skipped": {reason: count}, "dirs": [...]}."""
+    {"rules": [...], "correlations": [...], "skipped": {reason: count}, "dirs": [...]}.
+    A file may hold several YAML documents: a correlation rule ships beside the
+    base rule it counts."""
     import yaml
     present = [d for d in dirs if os.path.isdir(d)]
     key = tuple((d, os.path.getmtime(d)) for d in present)
     if key == _CACHE["key"]:
         return _CACHE
-    rules, skipped = [], {}
+    rules, skipped, pending, refs = [], {}, [], {}
     try:
         with open(DEMOTE) as fh:
             demote = set((yaml.safe_load(fh) or {}).keys())
@@ -397,30 +399,182 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
                     continue
                 try:
                     with open(os.path.join(root, fn)) as fh:
-                        doc = yaml.safe_load(fh)
+                        docs = [x for x in yaml.safe_load_all(fh) if isinstance(x, dict)]
                 except Exception:                          # noqa: BLE001
                     skipped["unreadable"] = skipped.get("unreadable", 0) + 1
                     continue
-                if not isinstance(doc, dict) or "detection" not in doc:
-                    continue
-                if str(doc.get("status") or "").lower() in ("deprecated", "unsupported"):
-                    skipped["deprecated"] = skipped.get("deprecated", 0) + 1
-                    continue
-                if LEVELS.get(str(doc.get("level") or "").lower(), 0) < floor:
-                    skipped["below level"] = skipped.get("below level", 0) + 1
-                    continue
-                try:
-                    rule = compile_rule(doc)
-                    if rule["id"] in demote:              # noisy on normal systems: context only
-                        rule.update(level="low", burst=False)
-                    rules.append(rule)
-                except Unsupported as e:
-                    k = str(e).split(" ")[0]
-                    skipped[k] = skipped.get(k, 0) + 1
-                except Exception:                          # noqa: BLE001
-                    skipped["invalid"] = skipped.get("invalid", 0) + 1
-    _CACHE.update(key=key, rules=rules, skipped=skipped, dirs=present)
+                for doc in docs:
+                    if "correlation" in doc:
+                        pending.append((doc, floor))
+                    elif "detection" in doc:
+                        for ref in (doc.get("name"), doc.get("id")):
+                            if ref:
+                                refs[str(ref)] = doc
+                for doc in docs:
+                    if "detection" not in doc:
+                        continue
+                    if str(doc.get("status") or "").lower() in ("deprecated", "unsupported"):
+                        skipped["deprecated"] = skipped.get("deprecated", 0) + 1
+                        continue
+                    if LEVELS.get(str(doc.get("level") or "").lower(), 0) < floor:
+                        skipped["below level"] = skipped.get("below level", 0) + 1
+                        continue
+                    try:
+                        rule = compile_rule(doc)
+                        if rule["id"] in demote:              # noisy on normal systems: context only
+                            rule.update(level="low", burst=False)
+                        rules.append(rule)
+                    except Unsupported as e:
+                        k = str(e).split(" ")[0]
+                        skipped[k] = skipped.get(k, 0) + 1
+                    except Exception:                          # noqa: BLE001
+                        skipped["invalid"] = skipped.get("invalid", 0) + 1
+    correlations, bases = [], set()
+    for doc, floor in pending:
+        try:
+            if LEVELS.get(str(doc.get("level") or "").lower(), 0) < floor:
+                skipped["below level"] = skipped.get("below level", 0) + 1
+                continue
+            c = compile_correlation(doc, refs)
+        except Unsupported as e:
+            k = str(e).split(" ")[0]
+            skipped[k] = skipped.get(k, 0) + 1
+            continue
+        except Exception:                                  # noqa: BLE001
+            skipped["invalid"] = skipped.get("invalid", 0) + 1
+            continue
+        correlations.append(c)
+        if not c["generate"]:
+            bases |= {b["id"] for b in c["bases"]}
+    # A base rule counts toward its correlation; on its own one failed sign-in is
+    # not a detection (Sigma's `generate: false`, the default).
+    rules = [r for r in rules if r["id"] not in bases]
+    _CACHE.update(key=key, rules=rules, skipped=skipped, dirs=present, correlations=correlations)
     return _CACHE
+
+
+# -- correlation rules: a count over a time window -----------------------------------
+# Sigma's correlation spec (event_count / value_count): rows matching a base rule,
+# grouped by fields, counted -- or their distinct values of one field counted --
+# within a sliding timespan. About 190 Splunk detections are of this shape ("stats
+# count by user | where count > 10"): password spray, MFA floods, mass share access.
+_SPAN = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.I)
+_SPAN_S = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+_OPS = {"gte": lambda a, b: a >= b, "gt": lambda a, b: a > b}
+
+
+def _span_seconds(text) -> int:
+    m = _SPAN.match(str(text or ""))
+    if not m:
+        raise Unsupported(f"timespan {text!r}")
+    return int(m.group(1)) * _SPAN_S[m.group(2).lower()]
+
+
+def compile_correlation(doc, refs) -> dict:
+    """A correlation YAML -> compiled dict, or raise Unsupported. `refs` maps a base
+    rule's name / id to its YAML document."""
+    c = doc.get("correlation") or {}
+    typ = c.get("type")
+    if typ not in ("event_count", "value_count"):
+        raise Unsupported(f"correlation-{typ}")          # temporal: several rules in order
+    cond = c.get("condition") or {}
+    op = next((k for k in _OPS if k in cond), None)
+    if op is None:
+        raise Unsupported("correlation-condition")       # lt / lte / eq: "too few" is not an attack
+    field = cond.get("field") if typ == "value_count" else None
+    if typ == "value_count" and not field:
+        raise Unsupported("correlation-field")
+    names = c.get("rules") or []
+    names = [names] if isinstance(names, str) else names
+    try:
+        bases = [compile_rule(refs[str(n)]) for n in names]
+    except KeyError as e:
+        raise Unsupported(f"correlation-base-missing {e}") from None
+    if not bases:
+        raise Unsupported("correlation-no-base")
+    tags = [str(t) for t in doc.get("tags") or []] + [str(t) for b in names for t in (refs[str(b)].get("tags") or [])]
+    gb = c.get("group-by") or []
+    return {"id": str(doc.get("id") or doc.get("name") or doc.get("title")),
+            "title": str(doc.get("title") or "Sigma correlation"),
+            "level": str(doc.get("level") or "medium").lower(),
+            "mitre": sorted({t.split(".", 1)[1].upper() for t in tags if re.match(r"attack\.t\d{4}", t)}),
+            "type": typ, "op": op, "n": int(cond[op]), "field": field,
+            "group_by": [gb] if isinstance(gb, str) else list(gb),
+            "timespan": _span_seconds(c.get("timespan")),
+            "bases": bases, "generate": bool(doc.get("generate") or c.get("generate")),
+            "burst": doc.get("x-intact-burst") is not False}
+
+
+def _base_match(rule, ev, profs) -> bool:
+    if not _applies(rule, profs):
+        return False
+    try:
+        res = _Lazy(rule["searches"], ev)
+        return any(t(res) for t in rule["trees"])
+    except Exception:                                      # noqa: BLE001 -- one odd value
+        return False
+
+
+def correlate(items, correlations=None, max_members=50) -> list:
+    """items: (epoch_seconds, row) pairs. One hit per correlation and group: its
+    densest window, if that window meets the condition. A hit is {"rule", "group",
+    "count", "first", "last", "members" (item indexes, first `max_members`)}.
+    ponytail: one episode per group -- two separate floods by the same source read
+    as one hit with the larger count; split by gap if an analyst needs both."""
+    correlations = load()["correlations"] if correlations is None else correlations
+    if not correlations:
+        return []
+    events = []
+    for i, (t, row) in enumerate(items):
+        if t is None:
+            continue
+        ev = Event(row)
+        profs = _profiles_cached(ev)
+        if profs:
+            events.append((t, i, ev, profs))
+    events.sort(key=lambda e: e[0])
+    hits = []
+    for c in correlations:
+        groups: dict = {}
+        for t, i, ev, profs in events:
+            if not any(_base_match(b, ev, profs) for b in c["bases"]):
+                continue
+            key = tuple(str(ev.get(f) if ev.get(f) is not None else "") for f in c["group_by"])
+            val = None
+            if c["field"]:
+                val = ev.get(c["field"])
+                if val in (None, "", "-"):
+                    continue
+                val = str(val).lower()
+            groups.setdefault(key, []).append((t, i, val))
+        for key, seq in groups.items():
+            best = _densest_window(seq, c["timespan"], c["type"] == "value_count")
+            if best and _OPS[c["op"]](best[0], c["n"]):
+                n, lo, hi = best
+                hits.append({"rule": c, "group": dict(zip(c["group_by"], key)), "count": n,
+                             "first": seq[lo][0], "last": seq[hi][0],
+                             "members": [seq[j][1] for j in range(lo, hi + 1)][:max_members]})
+    return hits
+
+
+def _densest_window(seq, span, distinct):
+    """(metric, lo, hi) of the window of `span` seconds with the most events -- or,
+    with `distinct`, the most distinct values -- over time-sorted (t, i, value)."""
+    best, lo, vals = None, 0, {}
+    for hi, (t, _i, v) in enumerate(seq):
+        if distinct:
+            vals[v] = vals.get(v, 0) + 1
+        while t - seq[lo][0] > span:
+            if distinct:
+                ov = seq[lo][2]
+                vals[ov] -= 1
+                if not vals[ov]:
+                    del vals[ov]
+            lo += 1
+        metric = len(vals) if distinct else hi - lo + 1
+        if best is None or metric > best[0]:
+            best = (metric, lo, hi)
+    return best
 
 
 # -- events: a row seen the way Sigma rules name fields ------------------------------
