@@ -773,6 +773,7 @@ _SYSMON = {1: "process_creation", 2: "file_change", 3: "network_connection", 4: 
            14: "registry_rename", 15: "create_stream_hash", 17: "pipe_created", 18: "pipe_created",
            19: "wmi_event", 20: "wmi_event", 21: "wmi_event", 22: "dns_query", 23: "file_delete",
            24: "clipboard_capture", 25: "process_tampering", 26: "file_delete_detected",
+           27: "file_block_executable", 28: "file_block_shredding", 29: "file_executable_detected",
            16: "sysmon_status", 255: "sysmon_error"}
 _REGISTRY = {"registry_add", "registry_set", "registry_rename", "registry_delete"}
 _CHANNELS = {"security": "security", "system": "system", "application": "application",
@@ -910,6 +911,8 @@ def profiles(row) -> set:
         out.add((view["os"], view["category"], None))
         if view["category"].startswith("registry_"):
             out.add((view["os"], "registry_event", None))
+        if view["category"] == "file_rename":
+            out.add((view["os"], "file_event", None))
     cmd = ev.get("CommandLine")
     proc = ev.get("Image") or ev.get("FileName") or ev.get("process.name") or ev.get("ProcessName")
     # (An EDR's own non-process event -- a logon, a connection -- is never guessed into one.)

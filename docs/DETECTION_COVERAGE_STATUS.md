@@ -97,7 +97,7 @@ both sides:
 |---|---|---|
 | Critical | 167 / 176 (94.9%) | **176 / 176** |
 | High | 1,635 / 1,716 (95.3%) | **1,716 / 1,716** (3 Zeek smb_files: no sample here, the profile is tested) |
-| Medium | 1,361 / 1,412 (96.4%) | **1,396 / 1,412** (98.9%; 7 FortiGate + 4 Zeek smb_files: no sample here, the profiles are tested) |
+| Medium | 1,361 / 1,412 (96.4%) | **1,398 / 1,412** (99.0%; 7 FortiGate + 4 Zeek smb_files: no sample here, the profiles are tested) |
 
 What closed the gaps: AV/EDR detections as antivirus rows; PrintService, DNS-server
 analytic, SmbClient channels and Sysmon 255/16; Bitbucket audit; OpenCanary; RPC
@@ -121,9 +121,13 @@ read with SigmaHQ's eventSource / eventName / status (on 9,189 real O365 rows: 8
 became 55, all of them Microsoft's own alerts or real admin changes), Django / Rails
 error logs, and 10 Splunk count rules on the correlation engine.
 
+Then file_rename from the EDRs that log the old name (Defender FileRenamed, Elastic
+rename, SentinelOne File Rename; a rename stays a file_event too) and Sysmon 27-29.
+
 Still open, medium tier: the other 63 medium Splunk threshold detections (23 group by
-CIM field names a raw log lacks), file_rename, Sysmon 29, PAN-OS file events, database
-logs, Python exceptions (too generic to tell from any other Python log).
+CIM field names a raw log lacks). Left out on purpose: the database keyword rule
+("drop" / "select *" fire on every query log), Python exceptions (too generic to tell
+from any other Python log), PAN-OS GlobalProtect file creation (no log carries it).
 
 ## Next, in order of value
 

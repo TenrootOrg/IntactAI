@@ -81,6 +81,23 @@ def _v(category, path_for_os, **fields):
     return out
 
 
+def _renamed(view, old):
+    """A rename keeps its file_event view (the new name is a file written) and is also
+    file_rename, with the old name as Sysmon-era SourceFilename (Kernel-File ETW's names)."""
+    if view and old:
+        view.update(category="file_rename", SourceFilename=old)
+    return view
+
+
+def _join(folder, name):
+    """Defender's PreviousFolderPath may or may not end with PreviousFileName."""
+    folder, name = str(folder or ""), str(name or "")
+    if not folder or folder.lower().endswith(name.lower()):
+        return folder or name
+    sep = "\\" if "\\" in folder else "/"
+    return folder.rstrip("\\/") + sep + name
+
+
 def _defender(own):
     """Microsoft Defender XDR advanced hunting (Device*Events), raw or via Event Hub."""
     act = str(own("ActionType") or "")
@@ -94,8 +111,9 @@ def _defender(own):
                   ParentCommandLine=own("InitiatingProcessCommandLine"), User=own("AccountName"),
                   OriginalFileName=own("ProcessVersionInfoOriginalFileName"))
     if act.startswith("File") and own("FolderPath"):
-        return _v("file_delete" if act == "FileDeleted" else "file_event", own("FolderPath"),
-                  TargetFilename=own("FolderPath"), **common)
+        v = _v("file_delete" if act == "FileDeleted" else "file_event", own("FolderPath"),
+               TargetFilename=own("FolderPath"), **common)
+        return _renamed(v, _join(own("PreviousFolderPath"), own("PreviousFileName"))) if act == "FileRenamed" else v
     if act.startswith("Registry") and own("RegistryKey"):
         cat = {"RegistryValueSet": "registry_set", "RegistryKeyCreated": "registry_add",
                "RegistryKeyDeleted": "registry_delete", "RegistryValueDeleted": "registry_delete"}.get(act)
@@ -188,8 +206,9 @@ def _elastic(own):
         kind = ("file_delete" if "deletion" in et or "delet" in ea else
                 "file_event" if any(w in et or w in ea for w in ("creation", "change", "modif", "rename", "overwrite"))
                 else "file_access" if "access" in et or ea in ("open", "read") else None)
-        return _v(kind, own("file.path"), TargetFilename=own("file.path"), FileName=own("file.path"),
-                  Image=proc) if kind else None
+        v = _v(kind, own("file.path"), TargetFilename=own("file.path"), FileName=own("file.path"),
+               Image=proc) if kind else None
+        return _renamed(v, own("file.Ext.original.path")) if ea == "rename" else v
     if "registry" in cat and own("registry.path", "registry.key"):
         return _v("registry_delete" if "deletion" in et or "delet" in ea else "registry_set", "C:\\",
                   TargetObject=reg_key(own("registry.path") or "\\".join(
@@ -222,8 +241,9 @@ def _sentinelone(own):
                   CommandLine=own("tgt.process.cmdline"), ParentImage=src, ParentCommandLine=own("src.process.cmdline"),
                   User=own("tgt.process.user"))
     if low.startswith("file ") and own("tgt.file.path"):
-        return _v("file_delete" if "deletion" in low else "file_event", own("tgt.file.path"),
-                  TargetFilename=own("tgt.file.path"), Image=src)
+        v = _v("file_delete" if "deletion" in low else "file_event", own("tgt.file.path"),
+               TargetFilename=own("tgt.file.path"), Image=src)
+        return _renamed(v, own("tgt.file.oldPath")) if low == "file rename" else v
     if low.startswith("registry ") and own("registry.keyPath"):
         cat = ("registry_add" if "create" in low else "registry_delete" if "delete" in low else "registry_set")
         return _v(cat, "C:\\", TargetObject=reg_key(own("registry.keyPath")), Details=own("registry.value"), Image=src)
