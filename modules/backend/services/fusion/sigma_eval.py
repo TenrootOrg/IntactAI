@@ -597,6 +597,8 @@ ALIASES = {
     # 86 SigmaHQ rules name the event provider Provider_Name (the EVTX-to-JSON name);
     # Windows event XML, NXLog and Winlogbeat call it Provider / SourceName / provider_name.
     "provider_name": ["provider", "sourcename", "providername", "winlog.provider_name"],
+    # RPC Firewall's rules say EventLog: RPCFW -- the event's provider (source).
+    "eventlog": ["provider", "sourcename", "providername", "provider_name", "winlog.provider_name"],
     # CloudTrail in OCSF (AWS Security Lake): the CloudTrail names Sigma rules use
     "eventname": ["api.operation"], "eventsource": ["api.service.name"],
     "errorcode": ["api.response.error"], "errormessage": ["api.response.message"],
@@ -804,6 +806,10 @@ def profiles(row) -> set:
                     out.add((None, "dns", None))
         if eid == 4688:
             out.add(("windows", "process_creation", "security"))
+        if prov == "rpcfw":
+            # Zero Networks RPC Firewall audits (Application log, provider RPCFW): 17 high
+            # Sigma rules -- DCSync, remote service / task / registry lateral movement.
+            out.add(("rpc_firewall", "application", None))
         if eid == 4657 and chan == "security":                 # registry value modified (object auditing)
             out.add(("windows", "registry_set", "security"))
             out.add(("windows", "registry_event", "security"))
