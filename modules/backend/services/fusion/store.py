@@ -316,7 +316,7 @@ def _expected_llm_calls(graph, d, window, min_sev) -> int:
     plus a synthesis pass when it is segmented, else one; plus the checklist."""
     try:
         from . import render
-        mode = d.get("report_altitude") or "auto"
+        mode = report_altitude_mode(d)
         alt = render._resolve_altitude(graph, window=window, min_severity=min_sev,
                                        mode=mode)[0]
         if alt != "macro":
@@ -2706,7 +2706,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                 initial_access=d.get("initial_access_estimate"),
                 case_name=d.get("name", "Case"), run_id=case_id,
                 audience=d.get("audience", "both"), language=d.get("language", "en"),
-                altitude_mode=d.get("report_altitude") or "auto",
+                altitude_mode=report_altitude_mode(d),
                 master_prompt=d.get("master_prompt"), mask=mask,
                 dispositions=d.get("dispositions") or None,
                 validations=d.get("timeline_validations") or None,
@@ -3514,6 +3514,15 @@ def _active_scope(d) -> dict | None:
 def active_scope_window(d) -> dict | None:
     """The window every view narrows to, or None for the whole case."""
     return ((_active_scope(d) or {}).get("window")) or None
+
+
+def report_altitude_mode(d) -> str:
+    """The Report type to use. Auto with a scope selected is FOCUSED: the operator
+    zoomed into one window to get one explicit report from all of its data. Auto's
+    volume rule (>150 findings / >12 hosts) re-split a zoomed scope into "Phase 1"
+    plus a synthesis at summary depth (2026-10-20). A forced Macro or Focused wins."""
+    mode = (d or {}).get("report_altitude") or "auto"
+    return "focused" if mode == "auto" and active_scope_window(d) else mode
 
 
 def active_scope_hidden_hosts(d) -> list:
@@ -4780,7 +4789,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
             gv, estimates=_estimates, window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
             run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
-            altitude_mode=d.get("report_altitude") or "auto",
+            altitude_mode=report_altitude_mode(d),
             master_prompt=d.get("master_prompt"), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
@@ -6010,7 +6019,7 @@ def scope_cards(case_id, d=None):
     g = view_graph(case_id, d)
     win = view_window(d)
     ms = d.get("min_severity") or "informational"
-    mode = d.get("report_altitude") or "auto"
+    mode = report_altitude_mode(d)
     altitude, reason = render._resolve_altitude(g, window=win, min_severity=ms, mode=mode)
     # analysable() drops the coverage rollup and any window too small to be a scope;
     # the rollup is appended back as a non-clickable accounting row so the operator
