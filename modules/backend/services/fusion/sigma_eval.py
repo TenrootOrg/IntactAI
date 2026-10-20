@@ -597,6 +597,11 @@ ALIASES = {
     # 86 SigmaHQ rules name the event provider Provider_Name (the EVTX-to-JSON name);
     # Windows event XML, NXLog and Winlogbeat call it Provider / SourceName / provider_name.
     "provider_name": ["provider", "sourcename", "providername", "winlog.provider_name"],
+    # Windows events exported through Elastic (Winlogbeat / Elastic Agent): winlog.event_id
+    # never matched EventID (the underscore), so no such row reached its Windows category
+    # -- a PowerShell 4104 script block got no rule at all (2026-10-20 severity audit).
+    "eventid": ["winlog.event_id"],      # not event.code: other ECS logs carry it beside event.provider
+    "scriptblocktext": ["powershell.file.script_block_text"],
     # RPC Firewall's rules say EventLog: RPCFW -- the event's provider (source).
     "eventlog": ["provider", "sourcename", "providername", "provider_name", "winlog.provider_name"],
     # CloudTrail in OCSF (AWS Security Lake): the CloudTrail names Sigma rules use
@@ -757,6 +762,7 @@ _CHANNELS = {"security": "security", "system": "system", "application": "applica
              "microsoft-windows-printservice/operational": "printservice-operational",
              "microsoft-windows-printservice/admin": "printservice-admin",
              "microsoft-windows-dns-server/analytical": "dns-server-analytic",
+             "microsoft-windows-dnsserver/analytical": "dns-server-analytic",   # Windows' own spelling
              "microsoft-windows-certificateservicesclient-lifecycle-system/operational":
                  "certificateservicesclient-lifecycle-system",
              "microsoft-windows-smbclient/connectivity": "smbclient-connectivity",
