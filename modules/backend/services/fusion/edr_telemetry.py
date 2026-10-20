@@ -187,8 +187,9 @@ def _elastic(own):
     if "file" in cat and own("file.path"):
         kind = ("file_delete" if "deletion" in et or "delet" in ea else
                 "file_event" if any(w in et or w in ea for w in ("creation", "change", "modif", "rename", "overwrite"))
-                else None)
-        return _v(kind, own("file.path"), TargetFilename=own("file.path"), Image=proc) if kind else None
+                else "file_access" if "access" in et or ea in ("open", "read") else None)
+        return _v(kind, own("file.path"), TargetFilename=own("file.path"), FileName=own("file.path"),
+                  Image=proc) if kind else None
     if "registry" in cat and own("registry.path", "registry.key"):
         return _v("registry_delete" if "deletion" in et or "delet" in ea else "registry_set", "C:\\",
                   TargetObject=reg_key(own("registry.path") or "\\".join(

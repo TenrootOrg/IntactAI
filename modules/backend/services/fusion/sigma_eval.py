@@ -868,6 +868,10 @@ def profiles(row) -> set:
             # Zero Networks RPC Firewall audits (Application log, provider RPCFW): 17 high
             # Sigma rules -- DCSync, remote service / task / registry lateral movement.
             out.add(("rpc_firewall", "application", None))
+        if eid == 4663 and chan == "security":
+            # An object was accessed (file auditing): the reads Sigma's file_access rules are
+            # about -- DPAPI master keys, Credential Manager, browser and wallet files (6 medium).
+            out.add(("windows", "file_access", None))
         if eid == 4657 and chan == "security":                 # registry value modified (object auditing)
             out.add(("windows", "registry_set", "security"))
             out.add(("windows", "registry_event", "security"))
@@ -1027,6 +1031,10 @@ def profiles(row) -> set:
         # A FortiGate key=value log (FortiOS): the SSL-VPN exploit indicators (CVE-2022-42475)
         # are file paths in its values.
         out.add(("fortios", None, "sslvpnd"))
+        if _has(ev, "cfgpath"):
+            # A configuration change (logid 0100044547 "Object attribute configured"):
+            # Sigma's FortiGate rules -- new admin, firewall policy, SSL-VPN settings (7 medium).
+            out.add(("fortigate", None, "event"))
     if _has(ev, "cisco_command") or (_has(ev, "command") and str(ev.get("message_id")) in _ASA_COMMAND_IDS):
         # Cisco command accounting: the AAA rules' keywords ("username", "no logging")
         # are about the commands an admin typed -- never any other line.
