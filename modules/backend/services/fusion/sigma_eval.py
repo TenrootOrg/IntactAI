@@ -708,9 +708,18 @@ _SYSMON = {1: "process_creation", 2: "file_change", 3: "network_connection", 4: 
            10: "process_access", 11: "file_event", 12: "registry_add", 13: "registry_set",
            14: "registry_rename", 15: "create_stream_hash", 17: "pipe_created", 18: "pipe_created",
            19: "wmi_event", 20: "wmi_event", 21: "wmi_event", 22: "dns_query", 23: "file_delete",
-           24: "clipboard_capture", 25: "process_tampering", 26: "file_delete_detected"}
+           24: "clipboard_capture", 25: "process_tampering", 26: "file_delete_detected",
+           16: "sysmon_status", 255: "sysmon_error"}
 _REGISTRY = {"registry_add", "registry_set", "registry_rename", "registry_delete"}
 _CHANNELS = {"security": "security", "system": "system", "application": "application",
+             # SigmaHQ services with no channel here until the 2026-10-20 severity audit
+             # (PrintNightmare is critical): SigmaHQ's own service -> channel names.
+             "microsoft-windows-printservice/operational": "printservice-operational",
+             "microsoft-windows-printservice/admin": "printservice-admin",
+             "microsoft-windows-dns-server/analytical": "dns-server-analytic",
+             "microsoft-windows-certificateservicesclient-lifecycle-system/operational":
+                 "certificateservicesclient-lifecycle-system",
+             "microsoft-windows-smbclient/connectivity": "smbclient-connectivity",
              "microsoft-windows-powershell/operational": "powershell",
              "windows powershell": "powershell-classic", "microsoft-windows-sysmon/operational": "sysmon",
              "microsoft-windows-windows defender/operational": "windefend",
