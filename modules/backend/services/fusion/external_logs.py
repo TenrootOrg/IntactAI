@@ -1708,6 +1708,8 @@ def _model(case_id, run_id, log):
 _ASA_ID = re.compile(r"%(?:ASA|FTD)-\d-(\d{6}):")
 _ASA_CMD = re.compile(r"executed the '(.*)' command\.?\s*$|, executed '(.*)'\s*$|executed cmd: (.*?)\s*$")
 _ASA_USER = re.compile(r"\bUser '([^']+)'")
+# Cisco IOS command accounting: "%PARSER-5-CFGLOG_LOGGEDCMD: User:admin  logged command:no logging"
+_IOS_CMD = re.compile(r"%PARSER-\d-CFGLOG_LOGGEDCMD:\s*User:\s*(\S+)\s+logged command:\s*(.*?)\s*$")
 
 
 def _asa_fields(text):
@@ -1715,7 +1717,10 @@ def _asa_fields(text):
     (message_id, command, user), which the ASA rules name."""
     m = _ASA_ID.search(text)
     if not m:
-        return {}
+        ios = _IOS_CMD.search(text)
+        # The fields give the line its own row shape: the profile cache keys on shape,
+        # and only a command log may carry the AAA rules' bare keywords ("username").
+        return {"user": ios.group(1), "cisco_command": ios.group(2)} if ios else {}
     out = {"message_id": m.group(1)}
     c = _ASA_CMD.search(text)
     if c:

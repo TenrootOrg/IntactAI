@@ -784,6 +784,14 @@ _APP_LOGS = {("jvm", "application", None), ("spring", "application", None), ("ve
              (None, None, "nginx")}
 
 
+# Appliance logs SigmaHQ writes exploit-indicator keyword rules for (FortiOS SSL-VPN
+# CVE-2022-42475 files, PAN-OS GlobalProtect CVE-2024-3400, Cisco IOS XE CVE-2023-20198):
+# the indicators are specific, so any free-text line may be checked.
+_DEVICE_INDICATORS = {("fortios", None, "sslvpnd"), ("paloalto", "appliance", "globalprotect"),
+                      ("cisco", None, "syslog")}
+_ASA_COMMAND_IDS = {"111008", "111009", "111010"}             # "User 'x' executed the '...' command"
+
+
 def profiles(row) -> set:
     """{(product, category, service)} this row is evidence for. Unknown parts are
     None; a rule matches when every part it names is in one of the tuples."""
@@ -883,6 +891,8 @@ def profiles(row) -> set:
         out.add(("kubernetes", None, "audit"))              # API server audit event (audit.k8s.io)
     if _has(ev, "type") and re.match(r"audit\(", str(ev.get("msg") or "")):
         out.add(("linux", None, "auditd"))
+    if _has(ev, "certificate.serial") and _has(ev, "certificate.subject", "certificate.issuer"):
+        out.add(("zeek", None, "x509"))                     # x509.log: no connection tuple
     if _has(ev, "id.orig_h"):
         if _has(ev, "query", "qtype_name"):
             out.add(("zeek", None, "dns"))
@@ -894,6 +904,8 @@ def profiles(row) -> set:
             out.add(("zeek", None, "dce_rpc"))
         elif _has(ev, "path", "name") and _has(ev, "action") and "smb" in str(ev.row).lower()[:4000]:
             out.add(("zeek", None, "smb_files"))
+        elif _has(ev, "security_protocol", "keyboard_layout", "client_build") and _has(ev, "cookie", "result"):
+            out.add(("zeek", None, "rdp"))
         else:
             out.add(("zeek", None, "conn"))
     # A proxy log names the full destination (scheme://host/... or cs-host); a web
@@ -935,6 +947,7 @@ def profiles(row) -> set:
         # (JNDI / Log4Shell, OGNL, SpEL, SSTI, SQL errors, segfaults; 11 high). Only the
         # fingerprint text matches, so other lines stay quiet.
         out.update(_APP_LOGS)
+        out.update(_DEVICE_INDICATORS)
         # ESXi syslog too. Not decided by the line's content: profiles are cached per
         # row SHAPE and every free-text row has one shape. The ESXi rules match
         # ESXi-only text (esxcli ..., vob.user.ssh.enabled), so other lines stay quiet.
@@ -946,6 +959,12 @@ def profiles(row) -> set:
     if _has(ev, "stack_trace", "stacktrace", "exception", "logger_name", "logger", "loggername") \
             and _has(ev, "message", "msg", "log", "stack_trace", "exception"):
         out.update(_APP_LOGS)                              # a structured application log (JSON logging)
+    if _has(ev, "msg", "message") and _has(ev, "level", "severity", "syslog_header") and len(ev.row) <= 8:
+        # A small "level + message" log line (GlobalProtect gpsvc.log, a JSON app log, a
+        # syslog line carrying JSON): the keyword fingerprints may read it like free text.
+        # Not a rich event record (a Windows event also has Level and Message).
+        out.update(_APP_LOGS)
+        out.update(_DEVICE_INDICATORS)
     if _has(ev, "logtype") and _has(ev, "node_id"):
         # OpenCanary honeypot events (24 high Sigma rules, one per logtype): any touch
         # of a canary is an intruder's.
@@ -960,6 +979,14 @@ def profiles(row) -> set:
         # match that name whichever product wrote it (2026-10-20: 6 critical and 3 high
         # rules could never fire -- no row was ever an antivirus row).
         out.add((None, "antivirus", None))
+    if _has(ev, "devid", "devname") and _has(ev, "logid", "vd", "logdesc"):
+        # A FortiGate key=value log (FortiOS): the SSL-VPN exploit indicators (CVE-2022-42475)
+        # are file paths in its values.
+        out.add(("fortios", None, "sslvpnd"))
+    if _has(ev, "cisco_command") or (_has(ev, "command") and str(ev.get("message_id")) in _ASA_COMMAND_IDS):
+        # Cisco command accounting: the AAA rules' keywords ("username", "no logging")
+        # are about the commands an admin typed -- never any other line.
+        out.add(("cisco", None, "aaa"))
     if _has(ev, "_text") and _has(ev, "message_id") and re.search(r"%(ASA|FTD)-\d-", str(ev.get("_text"))):
         out.add(("cisco", None, "asa"))                     # ASA / FTD syslog (fields from sigma_event)
     return out
