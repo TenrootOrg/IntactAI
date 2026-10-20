@@ -497,6 +497,31 @@ def _json_in_line(line):
     return row
 
 
+_WINTEXT_TIME = re.compile(r"^\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d{2}(?: [AP]M)?$")
+
+
+def _wintext_rows(lines):
+    """Splunk's classic Windows event text: a timestamp line, then Key=Value lines
+    (LogName=, EventCode=, SourceName=, Message=...), the Message running on over
+    several lines. Read line by line until 2026-10-20: the cmdlet line of an Exchange
+    management log never sat with its LogName, so no Exchange rule could see it."""
+    rows, cur, key = [], None, None
+    for ln in lines:
+        if _WINTEXT_TIME.match(ln.strip()):
+            cur, key = {"SystemTime": ln.strip()}, None
+            rows.append(cur)
+            continue
+        if cur is None:
+            continue
+        m = re.match(r"^([A-Za-z][\w ]{0,40})=(.*)$", ln)
+        if m and key != "Message":
+            key = m.group(1).strip()
+            cur[key] = m.group(2).strip()
+        elif key:
+            cur[key] = f"{cur[key]}\n{ln.rstrip()}"
+    return [r for r in rows if "EventCode" in r or "LogName" in r]
+
+
 def _xml_rows(text):
     """Windows event XML (wevtutil / Get-WinEvent -> ToXml): System + EventData."""
     import xml.etree.ElementTree as ET
@@ -733,6 +758,10 @@ def read(text) -> tuple[str, list, list]:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return "", [], []
+    if _WINTEXT_TIME.match(lines[0].strip()) and len(lines) > 1 and re.match(r"^(LogName|EventCode)=", lines[1]):
+        rows = _guard(_wintext_rows, lines)
+        if rows:
+            return "wineventlog-text", rows[:MAX_ROWS], []
     # A file that names its own columns (Zeek "#fields") is read by them; a layout
     # is only for files that do not.
     if not any(re.match(r"#\s*fields:?\s", ln, re.I) for ln in lines[:20]):

@@ -136,6 +136,24 @@ threshold is never met on the recording), an O365 count on `record_type` text (t
 log has a number), the /etc deletion count (grouped by vendor_product), and two mass
 file-deletion counts (they fire on the benign corpus: Explorer deleting a folder).
 
+Low tier: 275 of 281 low rules had a row; the last six are router BGP / LDP MD5
+failures (Cisco, Huawei, Juniper syslog) and OneLogin's Events API -- tested on rows
+written from the vendors' formats only, no real sample here.
+
+Found on the way, checked on all real data (800,890 rows, every rule before vs after):
+- SigmaHQ's field-less `'|all': [...]` keywords were read as a field named "", so 17
+  rules could never fire (4 critical: ProxyLogon / ProxyShell, IIS CVE-2021-26858).
+- Splunk's classic Windows event text (a timestamp line, then Key=Value lines) was read
+  line by line. Splunk's own ProxyShell recording gave 0 rows; read as records, it gives
+  4 critical "Mailbox Export to Exchange Webserver" and 2 high hits.
+- The only other change on all real data: "Credentials In Files - Linux" 0 -> 124 high,
+  all of them the recorded attack (grep for password / secret / token keys).
+
+"Reachable" (a row gets the log source) is not "fireable": `field_audit` found 58
+SigmaHQ rules (1 critical, 16 high, 36 medium) whose fields no real row of their source
+carries -- Azure properties.message, GCP gcp.audit.method_name, Google Workspace
+eventName, ... Next step.
+
 Still open, medium tier: the remaining Splunk threshold detections ("logic after the
 filter" or a source with no reader). Left out on purpose: the database keyword rule
 ("drop" / "select *" fire on every query log), Python exceptions (too generic to tell

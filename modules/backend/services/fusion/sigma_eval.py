@@ -252,6 +252,15 @@ def _field_cond(spec, values):
 
 def _search(body):
     """A named search -> callable(event) -> bool."""
+    if isinstance(body, dict) and len(body) == 1 and str(next(iter(body))).startswith("|"):
+        # Field-less keywords with a modifier: '|all': [...] = every keyword somewhere in the
+        # event. Read as a field named "" until 2026-10-20, so it never matched: 17 SigmaHQ
+        # rules dead, ProxyLogon / ProxyShell (4 critical) among them.
+        (mod, kws), = body.items()
+        if mod.lower() != "|all":
+            raise Unsupported(f"keyword modifier {mod}")
+        parts = [_search(k) for k in (kws if isinstance(kws, list) else [kws])]
+        return lambda ev, parts=parts: all(p(ev) for p in parts)
     if isinstance(body, dict):
         conds = [_field_cond(k, v) for k, v in body.items()]
         return lambda ev, conds=conds: all(c(ev) for c in conds)
@@ -853,7 +862,11 @@ _APP_LOGS = {("jvm", "application", None), ("spring", "application", None), ("ve
 # CVE-2022-42475 files, PAN-OS GlobalProtect CVE-2024-3400, Cisco IOS XE CVE-2023-20198):
 # the indicators are specific, so any free-text line may be checked.
 _DEVICE_INDICATORS = {("fortios", None, "sslvpnd"), ("paloalto", "appliance", "globalprotect"),
-                      ("cisco", None, "syslog")}
+                      ("cisco", None, "syslog"),
+                      # router syslog: BGP / LDP MD5 authentication failures (their rules need
+                      # the router's own message: IP-TCP-3-BADAUTH, BGP_AUTH_FAILED, ...)
+                      ("cisco", None, "bgp"), ("cisco", None, "ldp"), ("huawei", None, "bgp"),
+                      ("juniper", None, "bgp")}
 _ASA_COMMAND_IDS = {"111008", "111009", "111010"}             # "User 'x' executed the '...' command"
 
 
@@ -1051,6 +1064,9 @@ def profiles(row) -> set:
         # Not a rich event record (a Windows event also has Level and Message).
         out.update(_APP_LOGS)
         out.update(_DEVICE_INDICATORS)
+    if _has(ev, "event_type_id") and _has(ev, "account_id"):
+        # OneLogin Events API (/api/1/events): account locked / suspended, user assumed.
+        out.add(("onelogin", None, "onelogin.events"))
     if _has(ev, "logtype") and _has(ev, "node_id"):
         # OpenCanary honeypot events (24 high Sigma rules, one per logtype): any touch
         # of a canary is an intruder's.
