@@ -644,7 +644,7 @@ ALIASES = {
 class Event:
     """A row with Sigma's field lookup: exact name, case-insensitive name, dotted
     suffix ("Image" finds "Event.EventData.Image"), then the taxonomy aliases."""
-    __slots__ = ("row", "_low", "_last", "_texts", "_ltexts")
+    __slots__ = ("row", "_low", "_last", "_texts", "_ltexts", "_ef")
 
     def __init__(self, row):
         self.row = row
@@ -652,6 +652,7 @@ class Event:
         self._last = None
         self._texts = None
         self._ltexts = None
+        self._ef = False                    # edr(): not worked out yet
 
     def _index(self):
         self._low, self._last = {}, {}
@@ -669,6 +670,14 @@ class Event:
         if self._low is None:
             self._index()
         f = str(field).lower().replace(" ", "")
+        view = self.edr()
+        if view:
+            # An EDR export's event read per product and event type (edr_telemetry): before
+            # the aliases, since the same column means different things -- Defender's
+            # FolderPath is the FILE in DeviceFileEvents, the process in DeviceProcessEvents.
+            v = view["_low"].get(f)
+            if v not in (None, ""):
+                return v
         for name in [f] + ALIASES.get(f, []):
             if name in self._low:
                 return self._low[name]
@@ -695,6 +704,29 @@ class Event:
             if path not in (None, "", "-"):
                 return f"{path}?{query}" if query not in (None, "", "-") else path
         return None
+
+    def own(self, *names):
+        """The first of these fields under the product's OWN name -- no aliases."""
+        if self._low is None:
+            self._index()
+        for n in names:
+            k = str(n).lower().replace(" ", "")
+            v = self._low.get(k, self._last.get(k))
+            if v not in (None, ""):
+                return v
+        return None
+
+    def edr(self):
+        """This row's Sigma view if it is an EDR export's event (edr_telemetry.view):
+        {"category", "os", <Sigma field>: value, "_low": the same keyed lower-case}."""
+        if self._ef is not False:
+            return self._ef
+        from .edr_telemetry import view
+        v = view(self.own)
+        if v:
+            v["_low"] = {k.lower(): x for k, x in v.items() if k not in ("category", "os")}
+        self._ef = v
+        return v
 
     def texts_lower(self):
         if self._ltexts is None:
@@ -842,9 +874,15 @@ def profiles(row) -> set:
         return out
     # Process telemetry from an EDR export (no Windows event envelope): a command
     # line next to an image path is a process creation, on Windows when the path is.
+    view = ev.edr()
+    if view:
+        out.add((view["os"], view["category"], None))
+        if view["category"].startswith("registry_"):
+            out.add((view["os"], "registry_event", None))
     cmd = ev.get("CommandLine")
     proc = ev.get("Image") or ev.get("FileName") or ev.get("process.name") or ev.get("ProcessName")
-    if cmd not in (None, "") and proc not in (None, ""):
+    # (An EDR's own non-process event -- a logon, a connection -- is never guessed into one.)
+    if not view and cmd not in (None, "") and proc not in (None, "") and not _edr_family(ev):
         win = "\\" in str(proc) or str(proc).lower().endswith(".exe") or ".exe" in str(cmd).lower()
         out.add(("windows" if win else "linux", "process_creation", None))
     # osquery process events: macOS EndpointSecurity (es_process_events) or the Linux
@@ -1020,6 +1058,16 @@ def _applies(rule, profs) -> bool:
 _PROF_CACHE: dict = {}
 
 
+def _edr_family(ev) -> bool:
+    from .edr_telemetry import not_a_process
+    return not_a_process(ev.own)
+
+
+def _edr_sig(ev):
+    view = ev.edr()
+    return (view["category"], view["os"]) if view else None
+
+
 def _profiles_cached(ev):
     """profiles() depends on which columns a row has, plus a few values (the
     Windows event id / channel / provider and the URL's form): rows of one export
@@ -1030,7 +1078,8 @@ def _profiles_cached(ev):
            ev.get("Provider"), ev.get("SourceName"), urls,
            bool(re.match(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?/", str(ev.get("url") or ""))),
            str(ev.get("Image") or ev.get("FileName") or "")[-4:].lower() == ".exe",
-           str(row.get("@odata.type") or "")[-20:])          # a Graph object's kind (PIM alert or not)
+           str(row.get("@odata.type") or "")[-20:],          # a Graph object's kind (PIM alert or not)
+           _edr_sig(ev))                                     # an EDR file event: its kind and OS
     got = _PROF_CACHE.get(sig)
     if got is None:
         if len(_PROF_CACHE) > 20000:
