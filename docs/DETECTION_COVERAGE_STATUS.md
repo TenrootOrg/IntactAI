@@ -97,7 +97,7 @@ both sides:
 |---|---|---|
 | Critical | 167 / 176 (94.9%) | **176 / 176** |
 | High | 1,635 / 1,716 (95.3%) | **1,716 / 1,716** (3 Zeek smb_files: no sample here, the profile is tested) |
-| Medium | 1,361 / 1,412 (96.4%) | 1,379 / 1,412 (97.7%) |
+| Medium | 1,361 / 1,412 (96.4%) | **1,396 / 1,412** (98.9%; 7 FortiGate + 4 Zeek smb_files: no sample here, the profiles are tested) |
 
 What closed the gaps: AV/EDR detections as antivirus rows; PrintService, DNS-server
 analytic, SmbClient channels and Sysmon 255/16; Bitbucket audit; OpenCanary; RPC
