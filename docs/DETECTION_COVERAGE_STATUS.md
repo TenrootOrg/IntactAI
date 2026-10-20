@@ -114,9 +114,16 @@ logon or connection is no longer guessed into a process creation.
 Every step was checked both ways on real data (all rules over the datasets, main
 vs branch): what changed was a real detection gained or a false one removed.
 
-Still open, medium tier: the 73 medium Splunk threshold detections (the correlation
-engine is built: steps 1-2), FortiGate event logs, Windows file_access, Kubernetes
-application audit, Google Workspace login, Django / Python / Rails exceptions.
+Medium tier since: FortiGate configuration events, Windows file_access (Security 4663,
+Elastic Defend), Kubernetes rules filed under `application`, Google Workspace login
+(Reports API rows read with Cloud Logging's field names), O365 Management Activity
+read with SigmaHQ's eventSource / eventName / status (on 9,189 real O365 rows: 8 hits
+became 55, all of them Microsoft's own alerts or real admin changes), Django / Rails
+error logs, and 10 Splunk count rules on the correlation engine.
+
+Still open, medium tier: the other 63 medium Splunk threshold detections (23 group by
+CIM field names a raw log lacks), file_rename, Sysmon 29, PAN-OS file events, database
+logs, Python exceptions (too generic to tell from any other Python log).
 
 ## Next, in order of value
 

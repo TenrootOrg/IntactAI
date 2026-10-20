@@ -675,6 +675,19 @@ class Event:
         if self._low is None:
             self._index()
         f = str(field).lower().replace(" ", "")
+        if f in ("eventsource", "eventname", "status") and "workload" in self._low and "operation" in self._low:
+            # An O365 Management Activity record, under SigmaHQ's names for its M365 rules:
+            # eventSource = Workload; eventName = the alert's Name (Security & Compliance) or
+            # the Operation (an Exchange cmdlet); status = success when ResultStatus says so.
+            # Before the row's own columns: an S&C alert has its own Status ("Active"), and
+            # read as-is not one of the 17 rules ever fired on a real export (2026-10-20).
+            o = self.own
+            if f == "eventsource":
+                return o("Workload")
+            if f == "eventname":
+                return (o("Name") if str(o("Workload")) == "SecurityComplianceCenter" else None) or o("Operation")
+            rs = str(o("ResultStatus") or "")
+            return "success" if rs.lower() in ("succeeded", "success", "true", "partiallysucceeded") else rs or None
         view = self.edr()
         if view:
             # An EDR export's event read per product and event type (edr_telemetry): before
@@ -694,6 +707,12 @@ class Event:
             key = re.sub(r"^\\REGISTRY\\MACHINE", "HKLM", str(self.row.get("ObjectName") or ""), flags=re.I)
             key = re.sub(r"^\\REGISTRY\\USER", "HKU", key, flags=re.I)
             return f"{key}\\{self.row['ObjectValueName']}"
+        if f in ("protopayload.servicename", "protopayload.metadata.event.eventname"):
+            # A Workspace Reports API row, read under Cloud Logging's names (the export
+            # Sigma's google_workspace.login rules are written for).
+            app = self.own("id.applicationName")
+            if app:
+                return f"{app}.googleapis.com" if f.endswith("servicename") else self.own("event.name", "events.name")
         if f == "riskeventtype":
             # Entra PIM alert incidents (Graph roleManagementAlerts) name their kind only
             # in @odata.type: "#microsoft.graph.staleSignInAlertIncident".
@@ -819,7 +838,9 @@ def _has(ev, *names):
 # Application and web-server error logs SigmaHQ writes keyword rules for.
 _APP_LOGS = {("jvm", "application", None), ("spring", "application", None), ("velocity", "application", None),
              ("nodejs", "application", None), ("sql", "application", None), (None, None, "apache"),
-             (None, None, "nginx")}
+             (None, None, "nginx"), ("django", "application", None), ("ruby_on_rails", "application", None)}
+# Not ("python", "application"): its rule's keywords are generic exception names (OperationalError,
+# IntegrityError) a normal application logs on any database hiccup -- noise without a benign set.
 
 
 # Appliance logs SigmaHQ writes exploit-indicator keyword rules for (FortiOS SSL-VPN
@@ -919,9 +940,15 @@ def profiles(row) -> set:
             ev, "RecordType", "OrganizationId", "OrganizationName"))):
         out.add(("m365", None, "threat_management"))
         out.add(("m365", None, "audit"))
+        out.add(("m365", None, "exchange"))              # Add-FederatedDomain and the like
+        out.add(("m365", None, "threat_detection"))      # S&C "Activity from suspicious IP addresses"
     if _has(ev, "protoPayload.methodName", "protoPayload.serviceName"):
         out.add(("gcp", None, "gcp.audit"))
+        out.add(("gcp", None, "google_workspace.login"))   # Workspace logs exported to Cloud Logging
     if _has(ev, "id.applicationName") or (_has(ev, "events") and _has(ev, "actor.email")):
+        # The Workspace Reports API: Sigma's login rules (suspicious login, government-backed
+        # attack warning, out-of-domain forwarding) read it under Cloud Logging's names.
+        out.add(("gcp", None, "google_workspace.login"))
         out.add(("gcp", None, "google_workspace.admin"))
         out.add(("google_workspace", None, "google_workspace.admin"))
     if _has(ev, "eventSource") and _has(ev, "eventName") and _has(ev, "awsRegion", "userIdentity.type",
@@ -937,6 +964,9 @@ def profiles(row) -> set:
         out.add(("cisco", None, "secure_firewall"))         # FTD / FMC eStreamer record
     if _has(ev, "verb") and _has(ev, "objectRef.resource") and _has(ev, "auditID"):
         out.add(("kubernetes", None, "audit"))              # API server audit event (audit.k8s.io)
+        # SigmaHQ files half its Kubernetes rules under category: application (exec into a
+        # pod, events deleted, hostPath mounts ...): the same log.
+        out.add(("kubernetes", "application", "audit"))
     if _has(ev, "type") and re.match(r"audit\(", str(ev.get("msg") or "")):
         out.add(("linux", None, "auditd"))
     if _has(ev, "certificate.serial") and _has(ev, "certificate.subject", "certificate.issuer"):
