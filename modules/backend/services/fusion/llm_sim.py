@@ -1044,6 +1044,7 @@ def _build_mask_mapping(graph, mask):
     # masked as Person/Org. Rule names only: a web page title or an installed app's
     # name CAN carry a real name, so those are deliberately not collected.
     tech: set = set()
+    tool_words: set = set()
     for e in graph.entities.values():
         if e.type == "event":
             fl, at = e.flags or [], e.attrs or {}
@@ -1051,7 +1052,12 @@ def _build_mask_mapping(graph, mask):
                 at.get("detection") if "mft_detection" in fl else None
             if name:
                 tech.add(str(name).lower())
+                # TOOL-SHAPED words (inner capitals: PAExec, HackTool, CrackMapExec),
+                # read before lowercasing: a "name" holding one is a technical phrase.
+                tool_words.update(w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9]+", str(name))
+                                  if re.search(r"[a-z][A-Z]|[A-Z]{2}[a-z]", w))
     mask._tech_phrases = frozenset(tech)
+    mask._tech_words = frozenset(tool_words)
     for e in graph.entities.values():
         lbl = (e.label or "").strip()
         if not lbl:

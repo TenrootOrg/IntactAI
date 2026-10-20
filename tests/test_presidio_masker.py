@@ -216,6 +216,40 @@ class BuiltinsAndThreatActorsAreNotPeople(unittest.TestCase):
         i = t.index("Yossi Cohen"); self.assertFalse(pm._span_rejected(t, i, i + 11, "Yossi Cohen", "PERSON"))
 
 
+class ModelPhaseTitlesAreNotPeople(unittest.TestCase):
+    """2026-10-20, a live report: the model's own phase titles "PAExec Across
+    Endpoints" and "Hacktool Staging" came back Person1/Person2, and "Domain
+    Controller" Person3. The case's rules were named "PAExec Service Installation"
+    and "HackTool - Rubeus Execution" -- a span holding one of their TOOL-shaped
+    words is a technical phrase. A real name is never tool-shaped, so it stays masked."""
+    TOOLS = frozenset({"paexec", "hacktool"})
+
+    def rej(self, text, span, tools=TOOLS):
+        i = text.index(span)
+        return pm._span_rejected(text, i, i + len(span), span, "PERSON", (), tools)
+
+    def test_tool_words_from_the_rule_names(self):
+        self.assertTrue(self.rej("Phase 3 — PAExec Across Endpoints on two hosts", "PAExec Across Endpoints"))
+        self.assertTrue(self.rej("then Hacktool Staging on ALClient06", "Hacktool Staging"))
+
+    def test_domain_controller_is_vocabulary(self):
+        self.assertTrue(all(w in pm._KEEP for w in "domain controller".split()))
+
+    def test_real_names_are_still_masked(self):
+        self.assertFalse(self.rej("escalated by Yossi Cohen at 10:00", "Yossi Cohen"))
+        self.assertFalse(self.rej("signed off by Grant Wilson", "Grant Wilson"))   # "grant" is no tool word
+
+    def test_only_tool_shaped_words_are_collected(self):
+        import re
+        names = ["PAExec Service Installation", "HackTool - Rubeus Execution 2", "Privilege Grant To Mark"]
+        words = {w.lower() for n in names for w in re.findall(r"[A-Za-z][A-Za-z0-9]+", n)
+                 if re.search(r"[a-z][A-Z]|[A-Z]{2}[a-z]", w)}
+        self.assertEqual({"paexec", "hacktool"}, words)            # never "grant" or "mark"
+        src = open(os.path.join(os.path.dirname(pm.__file__), "fusion", "llm_sim.py")).read()
+        self.assertIn('if re.search(r"[a-z][A-Z]|[A-Z]{2}[a-z]", w))', src)   # the same rule, before lowercasing
+        self.assertIn("mask._tech_words = frozenset(tool_words)", src)
+
+
 class SaysWhenItFoundNothing(unittest.TestCase):
     """The Log only listed names Presidio hid, so "checked, nothing to hide" and
     "never ran" looked identical. It now says so -- once per report, not per chunk."""

@@ -76,6 +76,7 @@ _KEEP = {
     # Built-in AD groups and accounts: "Domain Admins" came back Person1, hiding
     # from the model that a user was added to THE privileged group.
     "admins", "operators", "controllers", "computers", "enterprise", "schema", "krbtgt",
+    "controller",          # "Domain Controller" came back Person3 (2026-10-20)
     "backup",
 }
 
@@ -140,7 +141,7 @@ _ORG_DESIGNATORS = {
 
 
 def _span_rejected(det: str, start: int, end: int, surface: str, etype: str,
-                   tech_phrases=()) -> bool:
+                   tech_phrases=(), tech_words=()) -> bool:
     """Position- and context-based checks that a NER span is not a name/company."""
     if not surface[:1].isupper():                      # ioc, param, icrosoft, lter'
         return True
@@ -160,6 +161,12 @@ def _span_rejected(det: str, start: int, end: int, surface: str, etype: str,
         return True                                    # "Possiblecause: x" / "Domain Name `y`" -- a field label
     if any(low in p for p in tech_phrases):
         return True                                    # part of this case's own rule names
+    if any(w in tech_words for w in words):
+        # A tool word from this case's rule names (PAExec, HackTool): the model's own
+        # phase titles "PAExec Across Endpoints" / "Hacktool Staging" came back
+        # Person1/Person2 (2026-10-20). Only tool-SHAPED words (inner capitals) are
+        # collected, so a first or last name never is.
+        return True
     if len(words) == 1:
         rest = det[end:].split("\n", 1)[0]
         if not rest.strip() and re.search(re.escape(surface) + r"[a-z]", det):
@@ -605,7 +612,8 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
         if _glued_to_token(det, start, end):           # tail of a code identifier / cut word
             continue
         if _span_rejected(det, start, end, surface, etype,
-                          getattr(mask, "_tech_phrases", ()) if mask is not None else ()):
+                          getattr(mask, "_tech_phrases", ()) if mask is not None else (),
+                          getattr(mask, "_tech_words", ()) if mask is not None else ()):
             continue
         if any(a < end and start < b for a, b in seen_ranges):
             continue                                   # overlaps a longer span already taken
