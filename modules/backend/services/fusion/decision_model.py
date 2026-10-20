@@ -330,6 +330,18 @@ def cached(d, name, cfg=None) -> dict:
     return (d.get(f"decision_{name}") or {}) if by == current_by(cfg) else {}
 
 
+def shown(d, name, cfg=None):
+    """(answers, from_model) for DISPLAY: this model's answers; until it has answered,
+    the last model's, with its name -- switching Kev 4B -> Jev blanked every phase,
+    person and chip until a Refusion finished ("I still don't see the percentage").
+    What to ASK still uses cached(), so the new model re-asks everything."""
+    cur = cached(d, name, cfg)
+    if cur:
+        return cur, ""
+    by = (d.get("decision_by") or {}).get(name, DEFAULT_BY)
+    return (d.get(f"decision_{name}") or {}), by.split("/", 1)[-1]
+
+
 def _save(case_id, **caches):
     """Write decision_<name> caches and stamp each with the model that answered."""
     from .store import get_case, _merge_case_details
@@ -1151,11 +1163,13 @@ def attach_scope_estimates(cards, d, g):
         return
     by_id = {f.id: f for f in g.findings}
     verdicts = analyst_verdicts(d)
-    est = cached(d, "scopes")
+    est, by = shown(d, "scopes")
     for z in cards:
         p = est.get(_scope_sig(z, by_id, verdicts)) if not z.get("rollup") else None
         if p is not None:
             z["decision_p"] = p
+            if by:
+                z["decision_by"] = by
 
 
 # ---------------------------------------------------------------------------
@@ -1179,7 +1193,7 @@ def compromise_estimate(d, account_ids, fs):
     not asked yet, or the evidence changed since)."""
     if not enabled("compromise"):
         return None
-    return cached(d, "compromise").get(compromise_sig(account_ids, fs, analyst_verdicts(d)))
+    return shown(d, "compromise")[0].get(compromise_sig(account_ids, fs, analyst_verdicts(d)))
 
 
 def _person_state(g, card, fs, verdicts=None):

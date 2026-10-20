@@ -2679,6 +2679,21 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             log_case_event(case_id, "Report · written without the AI model", "info",
                            f"{_nw} — template report")
         _report_failed = False
+        # The decision model asked NOW, beside the report, not after it: it used to start
+        # only once the report was written (minutes), so phases, chips and people stayed
+        # empty that long and this report never had its estimates ("I still don't see
+        # the percentage"). The report waits for it, bounded, as Regenerate does. The
+        # pass after the fuse still runs and only asks what this one did not.
+        _d_est, _dm_waited = d, None
+        if _narrate:
+            try:
+                from . import decision_model as _dm_early
+                _dm_early.after_fuse(case_id, retry=(trigger or "").strip() in _OPERATOR_TRIGGERS)
+                if _dm_early.enabled("report"):
+                    _dm_waited = _dm_early.wait_idle(case_id, _dm_early.report_wait_seconds())
+                    _d_est = get_case(case_id) or d
+            except Exception as _e:                      # noqa: BLE001 -- never a failed report
+                print(f"[FUSION] early decision-model pass skipped for {case_id}: {_e}", flush=True)
         _hb_stop = threading.Event()
         if _narrate:
             threading.Thread(target=_report_watchdog,
@@ -2686,7 +2701,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                              kwargs={"write_off": False}, daemon=True).start()
         try:
             report = llm_sim.generate_report(
-                gr, estimates=_decision_estimates(case_id, d, gr, _narrate), window=_rwindow, min_severity=min_sev,
+                gr, estimates=_decision_estimates(case_id, _d_est, gr, _narrate, waited=_dm_waited),
+                window=_rwindow, min_severity=min_sev,
                 initial_access=d.get("initial_access_estimate"),
                 case_name=d.get("name", "Case"), run_id=case_id,
                 audience=d.get("audience", "both"), language=d.get("language", "en"),
@@ -5542,7 +5558,7 @@ def identity_view(case_id, d=None) -> dict:
     # The decision model's "same person?" probability for the pair, when it was asked (a hint
     # beside Merge/Dismiss — never a merge).
     from . import decision_model as _dm
-    dm_p = _dm.cached(d, "identity") if _dm.enabled("identity") else {}
+    dm_p, dm_by = _dm.shown(d, "identity") if _dm.enabled("identity") else ({}, "")
     for e in pairs.values():
         ca, cb = e["cards"]
         ps = [dm_p[m["id"]] for m in e["members"] if m["id"] in dm_p]
@@ -5550,7 +5566,7 @@ def identity_view(case_id, d=None) -> dict:
             src["suggestions"].append({
                 "id": e["members"][0]["id"], "other": dst["name"], "reason": e["reason"],
                 "score": e["score"], "ambiguous": e["ambiguous"], "members": e["members"],
-                "decision_p": max(ps) if ps else None})
+                "decision_p": max(ps) if ps else None, "decision_by": (dm_by or None) if ps else None})
     # Each person's findings (rows touching any of their accounts), so the page can
     # rank by risk and open them. It was sorted by suggestion count and showed none.
     from .correlate import _detection_name
@@ -5560,6 +5576,8 @@ def identity_view(case_id, d=None) -> dict:
         fs = sorted(_idf.person_findings(g, live), key=lambda f: (-_sev.rank(f.severity), f.ts or ""))
         # The decision model's "is this person compromised?" — computed after the fuse, only read here
         it["decision_compromise"] = _dm.compromise_estimate(d, live, fs)
+        if it["decision_compromise"] is not None:
+            it["decision_by"] = _dm.shown(d, "compromise")[1] or None   # an earlier model's, until this one answers
         v = _identity_verdict_for(d.get("identity_verdicts"), [a["id"] for a in it["accounts"]])
         it["verdict"] = v["verdict"] if v else None
         it["findings"] = [{"id": f.id, "title": f.title, "severity": f.severity} for f in fs[:12]]
@@ -6071,7 +6089,8 @@ def get_timeline(case_id) -> list:
     vrec = {v.get("finding_id"): v for v in (d.get("timeline_validations") or [])}
     fwm = {f.id: f.watermark() for f in g.findings}     # current occurrence watermark
     from . import decision_model as dm
-    dm_on, dm_s = dm.enabled("disposition"), dm.cached(d, "suggestions")
+    dm_on = dm.enabled("disposition")
+    dm_s, dm_by = dm.shown(d, "suggestions")
     rows = render.timeline(g, window=view_window(d))
     fmap = {f.id: f for f in g.findings}
     try:
@@ -6110,6 +6129,8 @@ def get_timeline(case_id) -> list:
         # for the occurrences it was asked about, only when it is sure enough.
         r["decision"] = (dm.suggestion_for(dm_s, fid, fwm.get(fid, ""))
                     if dm_on and not v else None)
+        if r["decision"] and dm_by:
+            r["decision"] = {**r["decision"], "by": dm_by}    # an earlier model's, until this one answers
         r["manual"] = False
     # NEW since the group's last review (see _group_news): on the group label and
     # on each new / grown row.
