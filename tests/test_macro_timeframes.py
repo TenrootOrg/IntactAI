@@ -102,6 +102,26 @@ class AltitudeFollowsTheShapeOfActivity(unittest.TestCase):
         alt, reason = render._resolve_altitude(g, window=zt[0]["window"])
         self.assertEqual(alt, "focused", reason)
 
+    def test_a_scope_holds_no_phase_outside_itself(self):
+        """Live 2026-10-20: a 2025-09..12 scope also held cross-host findings first
+        seen in May but still active inside it. Clustered at their first hit they made
+        a May "phase" outside the scope, which flipped its report to macro."""
+        inside = _burst("a", 100, 5, "high", hosts=("host000",)) + _burst("b", 101, 5, "high", hosts=("host001",))
+        early = []
+        for i in range(4):                       # first seen ~40 days before, active inside
+            f = _find(f"x{i}", day=60, hour=i, hosts=("host000", "host001"))
+            f.occ_latest = _ts(102)
+            early.append(f)
+        g = _graph(2, inside + early)
+        w = {"start": _ts(99), "end": _ts(110)}
+        zt = render.zoom_targets(g, window=w)
+        self.assertEqual(len(zt), 1, [z["window"] for z in zt])
+        self.assertGreaterEqual(zt[0]["window"]["start"], w["start"][:19], "starts inside the scope")
+        self.assertEqual(zt[0]["finding_count"], 14, "the early findings are still in the scope")
+        alt, reason = render._resolve_altitude(g, window=w)
+        self.assertEqual(alt, "focused", reason)
+        self.assertEqual(len(render.zoom_targets(g)), 2, "the whole case still maps both")
+
 
 class OneListFeedsCardsTableAndModel(unittest.TestCase):
 

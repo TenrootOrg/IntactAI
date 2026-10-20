@@ -332,6 +332,16 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
         t = keys.to_utc_dt(f.ts) if f.ts else None
         if t is not None:
             dated.append((t, f))
+    # In the window because it was still ACTIVE there (finding_in_window), but first
+    # seen before it -- a cross-host link, a rule still firing. Placed at its first
+    # hit it made a "phase" outside the scope: a 2025-09..12 scope got a May
+    # sub-window from 5 cross-host findings, which flipped its report from focused to
+    # macro (2026-10-20). It joins the scope at its earliest in-scope finding (not the
+    # bound itself: a bound without a zone parses as local time, an hour off here).
+    w_start = keys.to_utc_dt((window or {}).get("start"))
+    if w_start:
+        first_in = min((t for t, _ in dated if t >= w_start), default=w_start)
+        dated = [(max(t, first_in) if t < w_start else t, f) for t, f in dated]
     dated.sort(key=lambda x: x[0])
 
     if mode == "activity":
