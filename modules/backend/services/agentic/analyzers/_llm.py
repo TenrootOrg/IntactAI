@@ -182,6 +182,18 @@ def _wrap_decode_errors(provider_name, fn):
         ) from e
 
 
+def _no_answer(label, response):
+    """A 200 that carries no answer -- OpenRouter's upstream failure ({"error": ...,
+    "choices": null}), a captive-portal page parsed as a string, an empty object.
+    Reading it as an answer raised "'NoneType' object is not subscriptable", and that
+    is what the case Log showed the operator. Say what came back instead."""
+    err = response.get("error") if isinstance(response, dict) else (
+        getattr(response, "error", None) or (getattr(response, "model_extra", None) or {}).get("error"))
+    if isinstance(err, dict):
+        err = err.get("message") or err
+    return RuntimeError(f"{label} returned no answer: " + (str(err) if err else f"got {str(response)[:200]!r}"))
+
+
 def _call_openai_compatible(provider, prompt, system_prompt, api_key, model,
                             max_tokens, base_url=None, timeout=None, run_id=None,
                             reasoning_effort=None):
@@ -266,7 +278,10 @@ def _call_openai_compatible(provider, prompt, system_prompt, api_key, model,
     # that looked like a real result. Return the empty string the callers expect
     # -- "the model answered with nothing" is a legitimate outcome and is
     # reported as one; a None is just a crash waiting to happen.
-    return response.choices[0].message.content or ""
+    try:
+        return response.choices[0].message.content or ""
+    except (AttributeError, IndexError, TypeError) as e:
+        raise _no_answer(label, response) from e
 
 
 def _rejects_reasoning(exc) -> bool:
@@ -706,7 +721,12 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
             messages=[{"role": "user", "content": prompt}]
         ))
         _record_llm_usage(run_id, 'claude', model, response)
-        return response.content[0].text
+        # The first TEXT block: a reasoning reply that ran out of tokens holds only a
+        # thinking block, and content[0].text raised AttributeError on it.
+        try:
+            return next((b.text for b in response.content if getattr(b, "type", "") == "text"), "")
+        except (AttributeError, TypeError) as e:
+            raise _no_answer('Claude', response) from e
     elif provider in OPENAI_COMPATIBLE_BASE_URLS:
         return _call_openai_compatible(
             provider, prompt, system_prompt, api_key, model, max_tokens,
@@ -723,10 +743,17 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
                 max_output_tokens=max_tokens,
                 temperature=0.1
             ),
-            request_options={'timeout': ONLINE_LLM_TIMEOUT_SECONDS},
+            # retry=None: the SDK's default retries a 503 ("model overloaded") for up
+            # to 600 s, every attempt within our timeout -- a report looked hung for
+            # ten minutes with nothing in the Log. The report has its own retry.
+            request_options={'timeout': ONLINE_LLM_TIMEOUT_SECONDS, 'retry': None},
         ))
         _record_llm_usage(run_id, 'gemini', model, response)
-        return response.text
+        try:
+            return response.text
+        except ValueError as e:              # blocked, or no candidate at all
+            raise RuntimeError(f"Gemini returned no answer: "
+                               f"{getattr(response, 'prompt_feedback', None) or e}") from e
     elif _is_subscription:
         # Spend the operator's subscription via the vendor CLI instead of a
         # metered API key. The connection outcome is logged to the case's
@@ -756,7 +783,7 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
                   f"{result.get('in_tokens', 0):,} in / "
                   f"{result.get('out_tokens', 0):,} out tokens")
         _record_llm_usage(run_id, provider, model, result)
-        return result['text']
+        return result.get('text') or ""
     else:
         raise ValueError(f"Unsupported online provider: {provider}")
 
@@ -784,6 +811,8 @@ def _call_llm_offline(prompt, system_prompt, provider_config, context_size, time
         )
         response.raise_for_status()
         body = response.json()
+        if not isinstance(body, dict) or body.get('error'):
+            raise _no_answer('Ollama', body)
         _record_llm_usage(run_id, 'ollama', model, body)
         return body.get('response', '')
     elif provider == 'openai-compatible':
