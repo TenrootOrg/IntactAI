@@ -90,6 +90,31 @@ _TOOL_WORDS = {
 }
 _KEEP |= _TOOL_WORDS
 
+# ATT&CK tactic and technique vocabulary -- the words the report model builds its
+# phase titles from. "Tool Staging and Defense Tampering" came back Person1
+# (2026-10-20). Words that double as names (golden, silver, hunter, grant, mark)
+# are left out on purpose: a span made only of these is a phrase, never a person.
+_ATTACK_WORDS = {
+    "reconnaissance", "resource", "development", "initial", "access", "execution",
+    "escalation", "defense", "evasion", "discovery", "lateral", "movement", "collection",
+    "control", "impact", "staging", "staged", "tampering", "tamper", "dumping", "dump",
+    "injection", "hijacking", "spoofing", "brute", "force", "spraying", "phishing",
+    "masquerading", "obfuscation", "enumeration", "harvesting", "theft", "abuse", "relay",
+    "delegation", "roasting", "tool", "tools", "toolkit", "toolkits", "tooling", "stage",
+    "phase", "activity", "attack", "attacker", "compromise", "compromised", "intrusion",
+}
+_KEEP |= _ATTACK_WORDS
+
+# Joining words do not make a phrase a name: "Tool Staging AND Defense Tampering"
+# failed the all-kept-words test on "and" alone.
+_CONNECTORS = {"and", "or", "of", "the", "a", "an", "on", "in", "to", "for", "with",
+               "from", "by", "via", "across", "&", "-"}
+
+
+def _all_kept(low: str) -> bool:
+    words = [w for w in low.split() if w not in _CONNECTORS]
+    return bool(words) and all(w in _KEEP for w in words)
+
 # Public software vendors: a "company" span naming one is the vendor, not the
 # customer ("Signed by Microsoft Corporation"). Kept apart from _KEEP on purpose:
 # _KEEP is broad vocabulary matched ALL-words; this is matched ANY-word, and with
@@ -601,7 +626,7 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
         surface = det[start:end].strip().rstrip(".,;:")   # "Contoso Ltd." -> "Contoso Ltd"
         low = surface.lower()
         if not surface or _OUR_PSEUDO.match(surface) or low in _KEEP \
-                or all(w in _KEEP for w in low.split()):   # e.g. "Critical Detection"
+                or _all_kept(low):                          # e.g. "Critical Detection"
             continue
         if any(w in _TECH_ANY for w in low.split()):  # "Creating Scriptblock"
             continue

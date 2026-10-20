@@ -235,6 +235,16 @@ class ModelPhaseTitlesAreNotPeople(unittest.TestCase):
     def test_domain_controller_is_vocabulary(self):
         self.assertTrue(all(w in pm._KEEP for w in "domain controller".split()))
 
+    def test_attack_phase_phrases_with_joining_words(self):
+        # The next live report: "Tool Staging and Defense Tampering" = Person1.
+        for phrase in ("Tool Staging and Defense Tampering", "Lateral Movement via PsExec",
+                       "Credential Dumping and Privilege Escalation", "Defense Evasion"):
+            self.assertTrue(pm._all_kept(phrase.lower()), phrase)
+        for name in ("Yossi Cohen", "Dana Levi", "Grant Wilson", "Bank of Israel", "and of the"):
+            self.assertFalse(pm._all_kept(name.lower()), name)       # names, and no kept word at all
+        for w in ("golden", "silver", "hunter", "grant", "mark"):
+            self.assertNotIn(w, pm._KEEP)                            # they double as names
+
     def test_real_names_are_still_masked(self):
         self.assertFalse(self.rej("escalated by Yossi Cohen at 10:00", "Yossi Cohen"))
         self.assertFalse(self.rej("signed off by Grant Wilson", "Grant Wilson"))   # "grant" is no tool word
