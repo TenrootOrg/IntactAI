@@ -581,7 +581,19 @@ def _densest_window(seq, span, distinct):
 # Taxonomy field -> where other products keep it. Sigma rules use the Sysmon / CIM
 # style names; a Security 4688 event, a proxy export or a DNS log spells them
 # otherwise (the role pySigma's processing pipelines play).
+# The threat name an AV / EDR product gave a detection -- the field Sigma's antivirus
+# rules call Signature ("HackTool:Win32/Mimikatz"). Not a bare "signature" column:
+# Suricata and other IDS logs use that for their own rule names.
+_THREAT_NAMES = ("threatname", "threat_name", "virusname", "virus_name", "malwarename", "malware_name",
+                 "risk_name", "riskname", "detectionname", "detection_name", "infectionname", "infection_name",
+                 "threat", "virus", "malware")
+
 ALIASES = {
+    # Sigma's antivirus rules (password dumpers, ransomware, web shells: mostly
+    # CRITICAL) read Signature and Filename; each AV / EDR product names them its way.
+    "signature": list(_THREAT_NAMES),
+    "filename": ["file_name", "filepath", "file_path", "targetfilename", "path", "file.path", "file.name",
+                 "objectname", "infectedfile", "infected_file"],
     # 86 SigmaHQ rules name the event provider Provider_Name (the EVTX-to-JSON name);
     # Windows event XML, NXLog and Winlogbeat call it Provider / SourceName / provider_name.
     "provider_name": ["provider", "sourcename", "providername", "winlog.provider_name"],
@@ -790,6 +802,8 @@ def profiles(row) -> set:
             out.add(("windows", "ps_script" if eid == 4104 else "ps_module", "powershell"))
         if eid in (400, 403, 600, 800) and chan == "windows powershell":
             out.add(("windows", "ps_classic_start" if eid == 400 else "ps_classic_provider_start", "powershell-classic"))
+        if _has(ev, *_THREAT_NAMES):                       # Defender 1116 / 1117: the threat it named
+            out.add((None, "antivirus", None))
         return out
     # Process telemetry from an EDR export (no Windows event envelope): a command
     # line next to an image path is a process creation, on Windows when the path is.
@@ -894,6 +908,11 @@ def profiles(row) -> set:
         # row SHAPE and every free-text row has one shape. The ESXi rules match
         # ESXi-only text (esxcli ..., vob.user.ssh.enabled), so other lines stay quiet.
         out.add(("esxi", None, None))
+    if _has(ev, *_THREAT_NAMES):
+        # An AV / EDR detection: the product named the threat. Sigma's antivirus rules
+        # match that name whichever product wrote it (2026-10-20: 6 critical and 3 high
+        # rules could never fire -- no row was ever an antivirus row).
+        out.add((None, "antivirus", None))
     if _has(ev, "_text") and _has(ev, "message_id") and re.search(r"%(ASA|FTD)-\d-", str(ev.get("_text"))):
         out.add(("cisco", None, "asa"))                     # ASA / FTD syslog (fields from sigma_event)
     return out
