@@ -680,6 +680,12 @@ class Event:
             key = re.sub(r"^\\REGISTRY\\MACHINE", "HKLM", str(self.row.get("ObjectName") or ""), flags=re.I)
             key = re.sub(r"^\\REGISTRY\\USER", "HKU", key, flags=re.I)
             return f"{key}\\{self.row['ObjectValueName']}"
+        if f == "riskeventtype":
+            # Entra PIM alert incidents (Graph roleManagementAlerts) name their kind only
+            # in @odata.type: "#microsoft.graph.staleSignInAlertIncident".
+            t = str(self.row.get("@odata.type") or "")
+            if t.endswith(("AlertIncident", "AlertConfiguration")):
+                return t.rsplit(".", 1)[-1]
         if f == "details" and "NewValue" in self.row:
             return self.row["NewValue"]
         if f == "c-uri":
@@ -923,6 +929,10 @@ def profiles(row) -> set:
         # row SHAPE and every free-text row has one shape. The ESXi rules match
         # ESXi-only text (esxcli ..., vob.user.ssh.enabled), so other lines stay quiet.
         out.add(("esxi", None, None))
+    if str(ev.row.get("@odata.type") or "").endswith(("AlertIncident", "AlertConfiguration")):
+        # Entra ID PIM alerts (Graph /identityGovernance/roleManagementAlerts): 7 high
+        # Sigma rules -- roles assigned outside PIM, no MFA on activation, stale admins.
+        out.add(("azure", None, "pim"))
     if _has(ev, "logtype") and _has(ev, "node_id"):
         # OpenCanary honeypot events (24 high Sigma rules, one per logtype): any touch
         # of a canary is an intruder's.
@@ -979,7 +989,8 @@ def _profiles_cached(ev):
     sig = (tuple(row), ev.get("EventID"), ev.get("EventCode"), ev.get("Channel"), ev.get("LogName"),
            ev.get("Provider"), ev.get("SourceName"), urls,
            bool(re.match(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?/", str(ev.get("url") or ""))),
-           str(ev.get("Image") or ev.get("FileName") or "")[-4:].lower() == ".exe")
+           str(ev.get("Image") or ev.get("FileName") or "")[-4:].lower() == ".exe",
+           str(row.get("@odata.type") or "")[-20:])          # a Graph object's kind (PIM alert or not)
     got = _PROF_CACHE.get(sig)
     if got is None:
         if len(_PROF_CACHE) > 20000:
