@@ -123,7 +123,9 @@ OTHER_WIN = {"start": "2015-01-01T00:00:00", "end": "2018-01-01T00:00:00"}
 
 class ScopesAreLensesNotCopies(unittest.TestCase):
     """The case is fused once. Creating, switching and deleting a scope must never
-    fuse, never call the model, and never touch the evidence."""
+    fuse, never write a report, and never touch the evidence. The one model use is
+    the decision model's per-person estimate for the scope (asked in the background,
+    only for people not answered yet)."""
 
     def setUp(self):
         self.d = {"name": "QA", "report_md": MACRO_MD, "report_written_at": "2026-09-22T09:00:00",
@@ -141,8 +143,20 @@ class ScopesAreLensesNotCopies(unittest.TestCase):
             mock.patch.object(store, "fuse_case", side_effect=AssertionError("a scope must never fuse")),
             mock.patch.object(store, "load_graph", return_value=_g()),
         ]
+        from services.fusion import decision_model
+        self.asked = []
+        patches.append(mock.patch.object(decision_model, "after_fuse", side_effect=self.asked.append))
         for p in patches:
             p.start(); self.addCleanup(p.stop)
+
+    def test_a_new_or_selected_scope_asks_for_its_peoples_estimates(self):
+        # Live 2026-10-20: scopes made after the last fuse showed "—" for every person.
+        store.create_scope(CASE, "Phase 2", PHASE_WIN)
+        self.assertEqual([CASE], self.asked)
+        store.switch_scope(CASE, "full")
+        self.assertEqual([CASE, CASE], self.asked)
+        store.switch_scope(CASE, "full")                     # unchanged: nothing to ask
+        self.assertEqual([CASE, CASE], self.asked)
 
     def test_creating_a_scope_keeps_the_full_case_report(self):
         store.create_scope(CASE, "Phase 2", PHASE_WIN)

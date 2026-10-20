@@ -3693,13 +3693,25 @@ def create_scope(case_id, label, window, name=None) -> str:
                    ("selected again" if known else "created") +
                    f" — {_window_label(entry['window'])}. The case's evidence is "
                    f"unchanged; this is a view of it")
+    _ask_scope_estimates(case_id)
     return sid
 
 
+def _ask_scope_estimates(case_id) -> None:
+    """The decision model's per-person estimates are keyed by the person's findings,
+    which differ per scope, and were asked only after a FUSE: a scope made after the
+    last fuse showed "—" for every person in Identities (2026-10-20). Run the same
+    background pass now; it asks only for people not yet answered, so selecting a
+    scope it has already covered costs nothing. Never raises."""
+    from . import decision_model as _dm
+    _dm.after_fuse(case_id)
+
+
 def switch_scope(case_id, scope_id) -> dict:
-    """Select a saved scope. A VIEW CHANGE: no fuse, no model call, no evidence
-    touched — the live report and chat are swapped for that scope's, and every tab
-    re-reads the same graph through the new window."""
+    """Select a saved scope. A VIEW CHANGE: no fuse, no evidence touched — the live
+    report and chat are swapped for that scope's, and every tab re-reads the same
+    graph through the new window. The only model call is the decision model's
+    estimate for people it has not yet answered for in a scope (_ask_scope_estimates)."""
     d = get_case(case_id)
     if not d:
         raise KeyError("case not found")
@@ -3725,6 +3737,7 @@ def switch_scope(case_id, scope_id) -> dict:
     log_case_event(case_id, f"Scope · switched to {label}", "success",
                    "the case's evidence is unchanged — every tab now shows the part "
                    "of it inside this window")
+    _ask_scope_estimates(case_id)
     return {"status": "switched", "scope": scope_id,
             "has_report": bool(patch.get("report_md"))}
 
