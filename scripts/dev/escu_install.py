@@ -43,7 +43,10 @@ def main(rules_dir, benign_path, prove_paths):
         if result.get(f) != "fires":
             continue
         with open(os.path.join(rules_dir, f)) as fh:
-            doc = yaml.safe_load(fh)
+            docs = [d for d in yaml.safe_load_all(fh) if isinstance(d, dict)]
+        # A count over a window ships as two documents (base + correlation): the level and
+        # the benign verdict are the correlation's -- the base is never a detection alone.
+        doc = next((d for d in docs if "correlation" in d), docs[0])
         n = int(benign.get(f) or 0)
         if n:
             # Normal systems raise it: never a detection on its own, and not counted
@@ -55,7 +58,7 @@ def main(rules_dir, benign_path, prove_paths):
             doc["x-intact"] = (f"Fired {n} time(s) on benign Windows activity (Nextron benign workstation + DC, "
                                f"1.24 M events): context only, not counted toward a burst.")
         with open(os.path.join(OUT, f), "w") as fh:
-            yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True, width=120)
+            yaml.safe_dump_all(docs, fh, sort_keys=False, allow_unicode=True, width=120)
         kept += 1
     with open(os.path.join(OUT, "NOTICE"), "w") as fh:
         fh.write(NOTICE)

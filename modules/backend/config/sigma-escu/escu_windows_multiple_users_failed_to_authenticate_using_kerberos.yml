@@ -1,0 +1,55 @@
+title: Windows Multiple Users Failed To Authenticate Using Kerberos (counted event)
+id: 3a91a212-98a9-11eb-b86a-acde48001122-base
+status: experimental
+description: The following analytic identifies a single source endpoint failing to authenticate with 30 unique users using
+  the Kerberos protocol. It leverages EventCode 4771 with Status 0x18, indicating wrong password attempts, and aggregates
+  these events over a 5-minute window. This behavior is significant as it may indicate a Password Spraying attack, where an
+  adversary attempts to gain initial access or elevate privileges in an Active Directory environment. If confirmed malicious,
+  this activity could lead to unauthorized access, privilege escalation, and potential compromise of sensitive information.
+references:
+- https://research.splunk.com/3a91a212-98a9-11eb-b86a-acde48001122/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1110.003
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4771'
+  sel2:
+    TargetUserName: '*$'
+  sel3:
+    Status: '0x18'
+  condition: (sel1 and not sel2 and sel3)
+level: informational
+name: escu_base_windows_multiple_users_failed_to_authenticate_using_kerberos
+---
+title: Windows Multiple Users Failed To Authenticate Using Kerberos
+id: 3a91a212-98a9-11eb-b86a-acde48001122
+status: experimental
+description: The following analytic identifies a single source endpoint failing to authenticate with 30 unique users using
+  the Kerberos protocol. It leverages EventCode 4771 with Status 0x18, indicating wrong password attempts, and aggregates
+  these events over a 5-minute window. This behavior is significant as it may indicate a Password Spraying attack, where an
+  adversary attempts to gain initial access or elevate privileges in an Active Directory environment. If confirmed malicious,
+  this activity could lead to unauthorized access, privilege escalation, and potential compromise of sensitive information.
+references:
+- https://research.splunk.com/3a91a212-98a9-11eb-b86a-acde48001122/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1110.003
+correlation:
+  type: value_count
+  rules:
+  - escu_base_windows_multiple_users_failed_to_authenticate_using_kerberos
+  group-by:
+  - IpAddress
+  timespan: 5m
+  condition:
+    gt: 30
+    field: TargetUserName
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1110.003/purplesharp_valid_users_kerberos_xml/windows-security.log

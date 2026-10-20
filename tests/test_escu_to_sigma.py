@@ -108,5 +108,30 @@ class Translate(unittest.TestCase):
             tr('`o365_management_activity` ModifiedProperties{}.Name=X')
 
 
+
+class CountOverAWindow(unittest.TestCase):
+    """"stats dc(user) by src | where n > 30": a Sigma correlation beside the base rule (2026-10-20)."""
+
+    SPRAY = ('`wineventlog_security` EventCode=4776 Status=0xc000006a | bucket span=5m _time '
+             '| stats dc(TargetUserName) AS unique_accounts values(TargetUserName) as tried by _time, Workstation '
+             '| where unique_accounts > 30 | `windows_multiple_users_failed_filter`')
+
+    def test_a_spray_becomes_base_plus_correlation(self):
+        base, corr = tr(self.SPRAY, name="Windows Multiple Users Failed")
+        self.assertEqual("informational", base["level"], "the counted event alone is never a detection")
+        self.assertEqual({"type": "value_count", "rules": [base["name"]], "group-by": ["Workstation"],
+                          "timespan": "5m", "condition": {"gt": 30, "field": "TargetUserName"}}, corr["correlation"])
+        self.assertEqual("medium", corr["level"])
+
+    def test_grouped_by_an_add_on_name_the_log_lacks_is_refused(self):
+        with self.assertRaises(T.Skip):
+            tr('`wineventlog_security` EventCode=4625 | stats count by src, signature | where count > 5')
+
+    def test_a_field_computed_before_counting_is_refused(self):
+        with self.assertRaises(T.Skip):
+            tr('`wineventlog_security` EventCode=4625 | eval u=lower(TargetUserName) '
+               '| stats dc(u) as n by IpAddress | where n > 5')
+
+
 if __name__ == "__main__":
     unittest.main()

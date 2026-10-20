@@ -418,6 +418,83 @@ def with_regexes(tree, regexes, field_of):
 _AUDITD_PATH = re.compile(r'mvfilter\(match\(candidate_paths,\s*"((?:[^"\\]|\\.)+)"\)\)')
 
 
+# -- a count over a time window ("stats count by user | where count > 10") ------------
+# About 190 detections end that way; Sigma's correlation rules (event_count /
+# value_count) express it, and sigma_eval runs them. The filter part translates as any
+# other rule (the base); the count is the correlation beside it.
+_AGG = re.compile(r"\b(?:(count)\b(?!\()|(?:dc|distinct_count)\(\s*([\w.{}]+)\s*\))(?:\s+as\s+(\w+))?", re.I)
+_WHERE_GT = re.compile(r"^\s*where\s+(\w+)\s*(>=|>)\s*(\d+)\s*$", re.I)
+_SPAN = re.compile(r"\bspan\s*=\s*(\d+)\s*([smhd])", re.I)
+# Splunk CIM names (the add-on's, not the log's): a raw log has them under its own names.
+CIM_FIELDS = {"src", "src_ip", "dest", "dest_ip", "user", "src_user", "dest_user", "user_id", "app", "action",
+              "signature", "signature_id", "vendor_account", "vendor_product", "vendor_region", "user_agent",
+              "http_user_agent", "object", "object_category", "result", "reason", "status", "category",
+              "authentication_method", "src_port", "dest_port", "transport", "protocol", "process", "process_name"}
+DEFAULT_TIMESPAN = "1h"     # ponytail: Splunk schedules most detections hourly; per-rule if one proves too wide
+HOST_FIELDS = {"dest": "Computer", "host": "Computer", "dvc": "Computer", "dest_host": "Computer",
+               # the add-on's names for the event's own ids (Sysmon / Security write ProcessId)
+               "process_id": "ProcessId", "parent_process_id": "ParentProcessId"}
+
+
+def _aggs(text):
+    """{alias: (kind, field)} of the count / distinct counts in a stats or tstats clause."""
+    out = {}
+    for m in _AGG.finditer(text):
+        if m.group(1):
+            out[(m.group(3) or "count").lower()] = ("event_count", None)
+        else:
+            out[(m.group(3) or f"dc({m.group(2)})").lower()] = ("value_count", m.group(2))
+    return out
+
+
+def split_threshold(pipes, header=None):
+    """(filter pipes, threshold) for a search ending in a count over a window, else
+    (pipes, None). threshold: {"type", "field", "by", "op", "n", "timespan"}. `header` is
+    tstats' own (aggregations, by-clause) when the count sits in the tstats line."""
+    span, i = None, None
+    for j, p in enumerate(pipes):
+        cmd = (p.split() or [""])[0].lower()
+        if cmd in ("bucket", "bin"):
+            m = _SPAN.search(p)
+            span = f"{m.group(1)}{m.group(2).lower()}" if m else span
+            continue
+        if cmd == "stats" and header is None:
+            i = j
+            break
+        if header is not None:
+            i = j - 1
+            break
+        if cmd not in ("search", "regex") and not cmd.startswith("`"):
+            return pipes, None                      # a field computed or renamed before counting
+    if header is not None:
+        aggs, by = header
+        i = -1 if i is None else i
+        rest = pipes
+    else:
+        if i is None:
+            return pipes, None
+        m = re.match(r"\s*stats\b(.*?)\bby\b(.*)$", pipes[i], re.S | re.I)
+        if not m:
+            return pipes, None
+        aggs, by, rest = _aggs(m.group(1)), m.group(2), pipes[i + 1:]
+    by = [b for b in re.split(r"[\s,]+", by.strip()) if b and b.lower() != "_time"]
+    for p in rest:
+        cmd = (p.split() or [""])[0].lower()
+        if cmd == "where":
+            w = _WHERE_GT.match(p)
+            if not w or w.group(1).lower() not in aggs:
+                return pipes, None                  # a where on something else: not only a count
+            kind, field = aggs[w.group(1).lower()]
+            keep = [q for q in pipes[:max(i, 0)] if (q.split() or [""])[0].lower() not in ("bucket", "bin")] \
+                if header is None else [q for q in pipes if q is not p and (q.split() or [""])[0].lower()
+                                        not in ("bucket", "bin", "where", "stats")]
+            return keep, {"type": kind, "field": field, "by": by, "op": "gte" if w.group(2) == ">=" else "gt",
+                          "n": int(w.group(3)), "timespan": span or DEFAULT_TIMESPAN}
+        if cmd in ("stats", "eventstats", "streamstats"):
+            return pipes, None                      # counted again: not one window
+    return pipes, None
+
+
 def translate_raw(doc, macros):
     s = str(doc.get("search") or "").strip()
     # auditd path rules: PATH + CWD records joined per event, the full path matched.
@@ -433,6 +510,21 @@ def translate_raw(doc, macros):
     if not m or m.group(1) not in RAW_SOURCES:
         raise Skip("raw search on a source with no Sigma log source")
     first, *pipes = split_pipes(m.group(2))
+    pipes, thr = split_threshold(pipes)
+    _LAST_THRESHOLD["thr"] = thr
+    if thr:
+        fmap = {**RAW_FIELDS, **RAW_FIELDS_BY_SOURCE.get(m.group(1), {})}
+        unmapped = [b for b in thr["by"] if b in CIM_FIELDS and b not in fmap and b not in HOST_FIELDS]
+        if unmapped:
+            # A Splunk add-on name the raw log does not have: every row would fall into ONE
+            # empty group and the count would run across the whole log -- far wider than
+            # Splunk's rule. Not translated.
+            raise Skip(f"count grouped by a field with no Sigma name: {unmapped[0]}")
+        thr["by"] = [HOST_FIELDS.get(b) or fmap.get(b, (b,))[0] for b in thr["by"]]
+        if thr["field"]:
+            thr["field"] = fmap.get(thr["field"], (thr["field"],))[0]
+        if any("." in b and "{" in b for b in thr["by"]):
+            raise Skip("count grouped by a list element")
     searches = []
     regexes = check_pipes(pipes, searches)
     product = RAW_SOURCES[m.group(1)].get("product")
@@ -471,6 +563,9 @@ def translate_raw(doc, macros):
     return sels, condition, logsource
 
 
+_LAST_THRESHOLD = {"thr": None}
+
+
 SYSMON_CATEGORY = {"1": "process_creation", "2": "file_change", "3": "network_connection", "5": "process_termination",
                    "6": "driver_load", "7": "image_load", "8": "create_remote_thread", "9": "raw_access_thread",
                    "10": "process_access", "11": "file_event", "12": "registry_event", "13": "registry_event",
@@ -489,13 +584,52 @@ class RawParser(Parser):
 
 
 def translate(doc, macros):
+    """The Sigma rule for a detection -- or, for a count over a window, the list
+    [base rule, correlation rule] (written as one multi-document file)."""
+    _LAST_THRESHOLD["thr"] = None
+    rule = _translate(doc, macros)
+    thr = _LAST_THRESHOLD["thr"]
+    if not thr:
+        return rule
+    base_name = "escu_base_" + re.sub(r"[^a-z0-9]+", "_", str(doc["name"]).lower()).strip("_")
+    base = {**rule, "title": f"{doc['name']} (counted event)", "name": base_name, "id": f"{doc.get('id')}-base",
+            "level": "informational"}
+    base.pop("x-escu", None)
+    cond = {thr["op"]: thr["n"]}
+    if thr["type"] == "value_count":
+        cond["field"] = thr["field"]
+    corr = {"title": rule["title"], "id": rule["id"], "status": rule["status"], "description": rule["description"],
+            "references": rule["references"], "author": rule["author"], "tags": rule["tags"],
+            "correlation": {"type": thr["type"], "rules": [base_name], "group-by": thr["by"],
+                            "timespan": thr["timespan"], "condition": cond},
+            "level": rule["level"], "x-escu": rule.get("x-escu")}
+    return [base, corr]
+
+
+def _translate(doc, macros):
     s = str(doc.get("search") or "")
     m = re.match(r"\s*\|\s*tstats\b.*?FROM\s+datamodel=(Endpoint\.(?:Processes|Registry|Filesystem)|Web|Network_Resolution)"
                  r"(?:\.Web|\.DNS)?\s+where\s+(.*?)\s+by\s", s, re.I | re.S)
     if not m:
         sels, condition, logsource = translate_raw(doc, macros)
         return _rule(doc, sels, condition, logsource)
-    regexes = check_pipes(split_pipes(s[m.end():])[1:])        # [0] is the rest of the BY clause
+    tpipes = split_pipes(s[m.end():])
+    head = re.match(r"\s*\|\s*tstats\b(.*?)\bFROM\b", s, re.I | re.S)
+    tpipes_rest, thr = split_threshold(tpipes[1:], header=(_aggs(head.group(1)) if head else {}, tpipes[0]))
+    if thr:
+        obj_ = {"network_resolution": "DNS"}.get(m.group(1).lower(), m.group(1).split(".")[-1])
+        def _f(f):
+            for k in (f"{obj_}.{f}", f, f.split(".")[-1]):
+                if k in FIELDS:
+                    return FIELDS[k][0]
+            if f.split(".")[-1] in HOST_FIELDS:
+                return HOST_FIELDS[f.split(".")[-1]]
+            raise Skip(f"count grouped by a field with no Sigma name: {f}")
+        thr["by"] = [_f(b) for b in thr["by"]]
+        if thr["field"]:
+            thr["field"] = _f(thr["field"])
+        _LAST_THRESHOLD["thr"] = thr
+    regexes = check_pipes(tpipes_rest)        # [0] was the rest of the BY clause
     obj = {"network_resolution": "DNS"}.get(m.group(1).lower(), m.group(1).split(".")[-1])
 
     def field_of(f):                                 # drop_dm_object_name: "process" is Processes.process
@@ -591,7 +725,10 @@ def main(src, out_dir, types=("TTP", "Anomaly")):
             continue
         name = re.sub(r"[^a-z0-9]+", "_", d["name"].lower()).strip("_")
         with open(os.path.join(out_dir, f"escu_{name}.yml"), "w") as f:
-            yaml.safe_dump(rule, f, sort_keys=False, allow_unicode=True, width=120)
+            if isinstance(rule, list):                 # base + correlation: one file, two documents
+                yaml.safe_dump_all(rule, f, sort_keys=False, allow_unicode=True, width=120)
+            else:
+                yaml.safe_dump(rule, f, sort_keys=False, allow_unicode=True, width=120)
         made.append(name)
     print(f"{len(made)} rule(s) written, {len(skipped)} skipped")
     return made, skipped

@@ -1,0 +1,61 @@
+title: Windows Administrative Shares Accessed On Multiple Hosts (counted event)
+id: d92f2d95-05fb-48a7-910f-4d3d61ab8655-base
+status: experimental
+description: The following analytic detects a source computer accessing Windows administrative shares (C$, Admin$, IPC$) on
+  30 or more remote endpoints within a 5-minute window. It leverages Event IDs 5140 and 5145 from file share events. This
+  behavior is significant as it may indicate an adversary enumerating network shares to locate sensitive files, a common tactic
+  used by threat actors. If confirmed malicious, this activity could lead to unauthorized access to critical data, lateral
+  movement, and potential compromise of multiple systems within the network.
+references:
+- https://research.splunk.com/d92f2d95-05fb-48a7-910f-4d3d61ab8655/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1135
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '5140'
+  sel2:
+    EventID: '5145'
+  sel3:
+    ShareName: \\\\*\\ADMIN$
+  sel4:
+    ShareName: \\\\*\\IPC$
+  sel5:
+    ShareName: \\\\*\\C$
+  condition: ((sel1 or sel2) and ((sel3 or sel4) or sel5))
+level: informational
+name: escu_base_windows_administrative_shares_accessed_on_multiple_hosts
+---
+title: Windows Administrative Shares Accessed On Multiple Hosts
+id: d92f2d95-05fb-48a7-910f-4d3d61ab8655
+status: experimental
+description: The following analytic detects a source computer accessing Windows administrative shares (C$, Admin$, IPC$) on
+  30 or more remote endpoints within a 5-minute window. It leverages Event IDs 5140 and 5145 from file share events. This
+  behavior is significant as it may indicate an adversary enumerating network shares to locate sensitive files, a common tactic
+  used by threat actors. If confirmed malicious, this activity could lead to unauthorized access to critical data, lateral
+  movement, and potential compromise of multiple systems within the network.
+references:
+- https://research.splunk.com/d92f2d95-05fb-48a7-910f-4d3d61ab8655/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1135
+correlation:
+  type: value_count
+  rules:
+  - escu_base_windows_administrative_shares_accessed_on_multiple_hosts
+  group-by:
+  - IpAddress
+  - SubjectUserName
+  - EventID
+  timespan: 5m
+  condition:
+    gt: 30
+    field: Computer
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1135/ipc_share_accessed/windows-security.log

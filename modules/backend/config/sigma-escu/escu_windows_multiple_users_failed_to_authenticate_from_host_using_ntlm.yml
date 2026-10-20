@@ -1,0 +1,55 @@
+title: Windows Multiple Users Failed To Authenticate From Host Using NTLM (counted event)
+id: 7ed272a4-9c77-11eb-af22-acde48001122-base
+status: experimental
+description: The following analytic identifies a single source endpoint failing to authenticate with 30 unique valid users
+  using the NTLM protocol. It leverages EventCode 4776 from Domain Controller logs, focusing on error code 0xC000006A, which
+  indicates a bad password. This behavior is significant as it may indicate a Password Spraying attack, where an adversary
+  attempts to gain initial access or elevate privileges. If confirmed malicious, this activity could lead to unauthorized
+  access to sensitive information or further compromise of the Active Directory environment.
+references:
+- https://research.splunk.com/7ed272a4-9c77-11eb-af22-acde48001122/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1110.003
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4776'
+  sel2:
+    TargetUserName: '*$'
+  sel3:
+    Status: '0xC000006A'
+  condition: (sel1 and not sel2 and sel3)
+level: informational
+name: escu_base_windows_multiple_users_failed_to_authenticate_from_host_using_ntlm
+---
+title: Windows Multiple Users Failed To Authenticate From Host Using NTLM
+id: 7ed272a4-9c77-11eb-af22-acde48001122
+status: experimental
+description: The following analytic identifies a single source endpoint failing to authenticate with 30 unique valid users
+  using the NTLM protocol. It leverages EventCode 4776 from Domain Controller logs, focusing on error code 0xC000006A, which
+  indicates a bad password. This behavior is significant as it may indicate a Password Spraying attack, where an adversary
+  attempts to gain initial access or elevate privileges. If confirmed malicious, this activity could lead to unauthorized
+  access to sensitive information or further compromise of the Active Directory environment.
+references:
+- https://research.splunk.com/7ed272a4-9c77-11eb-af22-acde48001122/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1110.003
+correlation:
+  type: value_count
+  rules:
+  - escu_base_windows_multiple_users_failed_to_authenticate_from_host_using_ntlm
+  group-by:
+  - Workstation
+  timespan: 5m
+  condition:
+    gt: 30
+    field: TargetUserName
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1110.003/purplesharp_valid_users_ntlm_xml/windows-security.log

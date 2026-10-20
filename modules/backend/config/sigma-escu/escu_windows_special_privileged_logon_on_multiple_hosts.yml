@@ -1,0 +1,64 @@
+title: Windows Special Privileged Logon On Multiple Hosts (counted event)
+id: 4c461f5a-c2cc-4e86-b132-c262fc9edca7-base
+status: experimental
+description: The following analytic detects a user authenticating with special privileges on 30 or more remote endpoints within
+  a 5-minute window. It leverages Event ID 4672 from Windows Security logs to identify this behavior. This activity is significant
+  as it may indicate lateral movement or remote code execution by an adversary. If confirmed malicious, the attacker could
+  gain extensive control over the network, potentially leading to privilege escalation, data exfiltration, or further compromise
+  of the environment. Security teams should adjust detection thresholds based on their specific environment.
+references:
+- https://research.splunk.com/4c461f5a-c2cc-4e86-b132-c262fc9edca7/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1087
+- attack.t1021.002
+- attack.t1135
+logsource:
+  product: windows
+  service: security
+detection:
+  sel1:
+    EventID: '4672'
+  sel2:
+    Caller_User_Name:
+    - DWM-1
+    - DWM-2
+    - DWM-3
+    - LOCAL SERVICE
+    - NETWORK SERVICE
+    - SYSTEM
+    - '*$'
+  condition: (sel1 and not (sel2))
+level: informational
+name: escu_base_windows_special_privileged_logon_on_multiple_hosts
+---
+title: Windows Special Privileged Logon On Multiple Hosts
+id: 4c461f5a-c2cc-4e86-b132-c262fc9edca7
+status: experimental
+description: The following analytic detects a user authenticating with special privileges on 30 or more remote endpoints within
+  a 5-minute window. It leverages Event ID 4672 from Windows Security logs to identify this behavior. This activity is significant
+  as it may indicate lateral movement or remote code execution by an adversary. If confirmed malicious, the attacker could
+  gain extensive control over the network, potentially leading to privilege escalation, data exfiltration, or further compromise
+  of the environment. Security teams should adjust detection thresholds based on their specific environment.
+references:
+- https://research.splunk.com/4c461f5a-c2cc-4e86-b132-c262fc9edca7/
+author: Splunk Security Content (Apache-2.0), Mauricio Velazco, Splunk
+tags:
+- attack.t1087
+- attack.t1021.002
+- attack.t1135
+correlation:
+  type: value_count
+  rules:
+  - escu_base_windows_special_privileged_logon_on_multiple_hosts
+  group-by:
+  - Caller_User_Name
+  timespan: 5m
+  condition:
+    gt: 30
+    field: Computer
+level: medium
+x-escu:
+  type: TTP
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1078/special_logon_on_mulitple_hosts/windows-security.log

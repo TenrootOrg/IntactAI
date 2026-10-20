@@ -1,0 +1,55 @@
+title: ASL AWS Concurrent Sessions From Different Ips (counted event)
+id: b3424bbe-3204-4469-887b-ec144483a336-base
+status: experimental
+description: The following analytic identifies an AWS IAM account with concurrent sessions originating from more than one
+  unique IP address within a 5-minute span. This detection leverages AWS CloudTrail logs, specifically the `DescribeEventAggregates`
+  API call, to identify multiple IP addresses associated with the same user session. This behavior is significant as it may
+  indicate a session hijacking attack, where an adversary uses stolen session cookies to access AWS resources from a different
+  location. If confirmed malicious, this activity could allow unauthorized access to sensitive corporate resources, leading
+  to potential data breaches or further exploitation.
+references:
+- https://research.splunk.com/b3424bbe-3204-4469-887b-ec144483a336/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1185
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  sel1:
+    api.operation: DescribeEventAggregates
+  sel2:
+    src_endpoint.domain: AWS Internal
+  condition: (sel1 and not sel2)
+level: informational
+name: escu_base_asl_aws_concurrent_sessions_from_different_ips
+---
+title: ASL AWS Concurrent Sessions From Different Ips
+id: b3424bbe-3204-4469-887b-ec144483a336
+status: experimental
+description: The following analytic identifies an AWS IAM account with concurrent sessions originating from more than one
+  unique IP address within a 5-minute span. This detection leverages AWS CloudTrail logs, specifically the `DescribeEventAggregates`
+  API call, to identify multiple IP addresses associated with the same user session. This behavior is significant as it may
+  indicate a session hijacking attack, where an adversary uses stolen session cookies to access AWS resources from a different
+  location. If confirmed malicious, this activity could allow unauthorized access to sensitive corporate resources, leading
+  to potential data breaches or further exploitation.
+references:
+- https://research.splunk.com/b3424bbe-3204-4469-887b-ec144483a336/
+author: Splunk Security Content (Apache-2.0), Patrick Bareiss, Splunk
+tags:
+- attack.t1185
+correlation:
+  type: value_count
+  rules:
+  - escu_base_asl_aws_concurrent_sessions_from_different_ips
+  group-by:
+  - actor.user.uid
+  timespan: 5m
+  condition:
+    gt: 1
+    field: src_endpoint.ip
+level: low
+x-escu:
+  type: Anomaly
+  tests:
+  - https://media.githubusercontent.com/media/splunk/attack_data/master/datasets/attack_techniques/T1185/aws_concurrent_sessions_from_different_ips/asl_ocsf_cloudtrail.json
