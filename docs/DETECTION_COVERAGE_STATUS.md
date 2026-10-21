@@ -151,8 +151,23 @@ Found on the way, checked on all real data (800,890 rows, every rule before vs a
 
 "Reachable" (a row gets the log source) is not "fireable": `field_audit` found 58
 SigmaHQ rules (1 critical, 16 high, 36 medium) whose fields no real row of their source
-carries -- Azure properties.message, GCP gcp.audit.method_name, Google Workspace
-eventName, ... Next step.
+carries. Fixed 2026-10-21 (bb0f539b): Entra / Azure `properties.message` (the activity
+name), GCP `gcp.audit.method_name` and `data.protoPayload.*`, Google Workspace admin
+`eventService` / `eventName`, `EventID` <- `EventCode` and `Data` <- `Message` (Splunk's
+Windows text, Winlogbeat), DNS `record_type` / `answer`, sudo's `USER=` (CVE-2019-14287,
+critical). On all real data (820,942 rows) 6 rules changed, all Entra: 4 on Splunk's
+attack recordings (admin / user consent, owner added), 2 matching every routine update
+-- demoted to context in `config/sigma_demote.yaml`. Left: the Entra sign-in rules
+(their values are placeholders, e.g. `Username: 'UPN'`), Duo and aggregated fields.
+
+SigmaHQ's 287 LOW rules never ran: only the bundled Splunk set loaded below medium.
+They run now as context -- on the row, never a detection, never counted toward a burst
+(counted, they raised two bursts of routine admin work on the benign DC). The benign
+corpus gives identical alerts and behaviour before and after.
+
+The per-module examples (one log per detection module, real where one exists) ran on
+the dev box through the real upload path: 23 of 25 modules detect as intended; router
+BGP / OneLogin are low rules (context now). Report: `~/intact-reports/` on the dev box.
 
 Still open, medium tier: the remaining Splunk threshold detections ("logic after the
 filter" or a source with no reader). Left out on purpose: the database keyword rule
