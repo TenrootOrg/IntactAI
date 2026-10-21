@@ -90,7 +90,7 @@ class Job(unittest.TestCase):
     def run_job(self, models, probe):
         with mock.patch.object(mp, "probe_model", side_effect=probe):
             mp.run("r1", "k", models, lambda msg, lvl="info": self.logs.append((lvl, msg)),
-                   lambda s, err, det: self.dones.append((s, err, det)))
+                   lambda s, err, det, progress=None: self.dones.append((s, err, det)))
         return self.dones[-1]
 
     def test_results_are_saved_merged_and_counted(self):
@@ -141,10 +141,14 @@ class Job(unittest.TestCase):
     def test_one_job_at_a_time(self):
         mp._lock.acquire()
         try:
+            self.assertTrue(mp.busy(), "the route refuses a second test while one runs")
             s, err, _ = self.run_job([m("openai/a")], lambda mid, k: {"ok": True, "kind": "ok", "why": ""})
         finally:
             mp._lock.release()
+        self.assertFalse(mp.busy())
         self.assertEqual("failed", s); self.assertIn("already running", err)
+        self.assertTrue(any("already running" in msg for _lvl, msg in self.logs),
+                        "a refused run says why in its Log (it showed an empty log, 2026-10-21)")
 
     def test_a_broken_results_file_reads_as_never_tested(self):
         for bad in ("{not json", "[1, 2]"):

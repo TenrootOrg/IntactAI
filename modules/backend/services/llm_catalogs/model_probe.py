@@ -143,11 +143,18 @@ def rank(m) -> int:
     return 2 if p.get("kind") == "policy" else 3
 
 
+def busy() -> bool:
+    """A catalog test is running: the route refuses a second one instead of adding a
+    failed row with an empty log (two clicks of Update catalog, 2026-10-21)."""
+    return _lock.locked()
+
+
 def run(run_id, key, models, log, done) -> None:
     """The Settings -> Actions job. `log(msg, level)`, `done(status, error, details)`.
     Never raises: anything unexpected ends the run as failed, with the reason."""
     try:
-        if not _lock.acquire(blocking=False):
+        if not _lock.acquire(blocking=False):            # two requests at the same instant
+            log("Another catalog test is already running — follow that one in Settings → Actions.", "error")
             done("failed", "another catalog test is already running", {})
             return
         try:
@@ -177,6 +184,8 @@ def run(run_id, key, models, log, done) -> None:
                     results[mid] = res
                     if i % 25 == 0:
                         log(f"… {len(results)} of {len(todo)} tested")
+                        done("running", None, {"models": len(todo), "tested": len(results)},
+                             progress=int(len(results) * 100 / len(todo)))
                         _save_progress(results)       # the picker marks them as they come
             _save_progress(results)
             counts = {}

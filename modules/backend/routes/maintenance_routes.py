@@ -108,12 +108,17 @@ def test_openrouter_models():
             or (dmc.get("api_key") if (dmc.get("provider") or "openrouter") == "openrouter" else "")
         if not key:
             return jsonify({"success": False, "error": "needs an OpenRouter API key (the AI model's or the decision model's)"}), 400
+        if model_probe.busy():
+            return jsonify({"success": False, "error": "a catalog test is already running — "
+                            "follow it in Settings → Actions"}), 409
         models = openrouter.load_catalog() or []
         n = len(model_probe.selectable(models))
         run_id = create_automation_run(automation_type="settings", name="Test the AI-model catalog",
                                        details={"action": "test-openrouter-models", "models": n})
         log = lambda m, l="info": add_log_to_run(run_id, m, l)                  # noqa: E731
-        done = lambda s, err, det: update_run_status(run_id, s, error=err, details=det)  # noqa: E731
+        # 100% when it completes: the bar sat at 0% on a finished test (2026-10-21).
+        done = lambda s, err, det, progress=None: update_run_status(  # noqa: E731
+            run_id, s, error=err, details=det, progress=100 if s == "completed" else progress)
         threading.Thread(target=model_probe.run, args=(run_id, key, models, log, done), daemon=True).start()
         return jsonify({"success": True, "run_id": run_id, "models": n,
                         "message": f"Testing {n} models — follow it in Settings → Actions."})
