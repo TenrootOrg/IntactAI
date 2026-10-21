@@ -30,6 +30,17 @@ OUT = ("2026-10-04T07:16:24.1Z first\n"
        "2026-10-04T07:16:26.5Z admin password: hunter2xyz set\n")
 
 
+class States(unittest.TestCase):
+    def test_a_one_shot_that_finished_is_completed_not_a_red_exited(self):
+        ps = ("intact_elk_setup\texited\tExited (0) About an hour ago\n"
+              "intact_bad\texited\tExited (1) 2 minutes ago\n"
+              "intact_backend\trunning\tUp About an hour (healthy)\n")
+        with mock.patch.object(live_logs.subprocess, "run",
+                               lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=ps, stderr="")):
+            got = {x["name"]: x["state"] for x in live_logs.sources()}
+        self.assertEqual({"intact_elk_setup": "completed", "intact_bad": "exited", "intact_backend": "running"}, got)
+
+
 class Parse(unittest.TestCase):
     def test_entries_levels_and_cursor(self):
         logs, cur = live_logs.parse(OUT)
