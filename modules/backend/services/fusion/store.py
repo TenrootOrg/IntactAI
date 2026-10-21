@@ -5844,10 +5844,12 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     status = _TL_LEGACY.get(status, status)
     status = status if status in _TL_STATES else "pending"
     if str(finding_id).startswith("manual:"):
-        _report_behind(case_id)
-        log_case_event(case_id, "Timeline · validation", "info",
-                       f"{finding_id} marked {status}" + (f" — {notes}" if notes else ""))
-        return _set_manual_event_status(case_id, finding_id, status, notes)
+        res = _set_manual_event_status(case_id, finding_id, status, notes)
+        if not (res or {}).get("error"):                    # logged once saved
+            _report_behind(case_id)
+            log_case_event(case_id, "Timeline · validation", "info",
+                           f"{finding_id} marked {status}" + (f" — {notes}" if notes else ""))
+        return res
     validate_timeline_many(case_id, [finding_id], status, notes)
     return {"finding_id": finding_id, "status": status}
 
@@ -5863,11 +5865,7 @@ def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
     ids = [str(x) for x in dict.fromkeys(finding_ids or []) if x and not str(x).startswith("manual:")]
     if not ids:
         return {"finding_ids": [], "status": status}
-    _report_behind(case_id)
-    log_case_event(case_id, "Timeline · validation", "info",
-                   f"{', '.join(ids[:5])}{' …' if len(ids) > 5 else ''} marked {status}"
-                   + (f" ({len(ids)} rows)" if len(ids) > 1 else "")
-                   + (f" — {notes}" if notes else ""))
+    label = f"{', '.join(ids[:5])}{' …' if len(ids) > 5 else ''}"
     # Snapshot each finding's CURRENT occurrence watermark — the verdict covers
     # exactly this much activity; new activity later re-opens it
     # (see correlate._wm_new_activity).
@@ -5911,47 +5909,63 @@ def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
         return kept
 
     _mutate_list_field(case_id, "timeline_validations", _mutate)
-    # A verdict is a review: whatever the group shows as NEW for these rows is seen.
-    try:
-        ack_rows(case_id, ids, wms)
-    except Exception as e:                                    # noqa: BLE001
-        print(f"[FUSION] review mark skipped for {case_id}: {e}", flush=True)
+    # Logged once SAVED (2026-10-21): written before the write, a failed save still
+    # read "marked …" in the Log.
+    _report_behind(case_id)
+    log_case_event(case_id, "Timeline · validation", "info",
+                   f"{label} marked {status}" + (f" ({len(ids)} rows)" if len(ids) > 1 else "")
+                   + (f" — {notes}" if notes else ""))
 
-    # Suppression: false_positive / known add a benign disposition per row;
-    # true_positive / pending remove any. Re-fuse once, only if something changed.
-    reasons = {"false_positive": ("operator", "timeline: marked not real"),
-               "known": ("it_admin", "timeline: IT confirms expected")}
-    before = [x for x in ((get_case(case_id) or {}).get("dispositions") or [])
-              if x.get("target") in set(ids) | drop]
-    if status not in reasons and not before:
-        # Nothing to suppress or clear, so no re-fuse — but the verdict is part of
-        # what the decision model's compromise estimate is keyed on, so ask it again, or the
-        # person's likelihood blanks until some later fuse.
-        from . import decision_model as dm
-        dm.after_fuse(case_id)
+    def _apply():
+        # A verdict is a review: whatever the group shows as NEW for these rows is seen.
+        try:
+            ack_rows(case_id, ids, wms)
+        except Exception as e:                                    # noqa: BLE001
+            print(f"[FUSION] review mark skipped for {case_id}: {e}", flush=True)
+
+        # Suppression: false_positive / known add a benign disposition per row;
+        # true_positive / pending remove any. Re-fuse once, only if something changed.
+        reasons = {"false_positive": ("operator", "timeline: marked not real"),
+                   "known": ("it_admin", "timeline: IT confirms expected")}
+        before = [x for x in ((get_case(case_id) or {}).get("dispositions") or [])
+                  if x.get("target") in set(ids) | drop]
+        if status not in reasons and not before:
+            # Nothing to suppress or clear, so no re-fuse — but the verdict is part of
+            # what the decision model's compromise estimate is keyed on, so ask it again, or the
+            # person's likelihood blanks until some later fuse.
+            from . import decision_model as dm
+            dm.after_fuse(case_id)
+            return {"finding_ids": ids, "status": status}
+
+        def _disp(details):
+            rest = [x for x in (details.get("dispositions") or [])
+                    if x.get("target") not in set(ids) | drop] + push_d
+            if status in reasons:
+                attr, why = reasons[status]
+                for i in ids:
+                    d = {"target": i, "verdict": "benign", "attribution": attr,
+                         "reason": why + (f" — {notes}" if notes else ""), "scope": "case",
+                         "by": "operator"}
+                    if wms.get(i):
+                        d["watermark"] = wms[i]
+                    rest.append(d)
+            details["dispositions"] = rest
+
+        ws = _ws()
+        ws.mutate_run_details(case_id, _disp)
+        ws.update_run_status(case_id, "pending")
+        log_case_event(case_id, "Risk · disposition " + ("applied" if status in reasons else "cleared"),
+                       "info", f"{len(ids)} row(s) → {status}; re-fusing")
+        fuse_case(case_id, trigger=TRIGGER_DISPOSITION if status in reasons else TRIGGER_DISPOSITION_CLEARED)
         return {"finding_ids": ids, "status": status}
-
-    def _disp(details):
-        rest = [x for x in (details.get("dispositions") or [])
-                if x.get("target") not in set(ids) | drop] + push_d
-        if status in reasons:
-            attr, why = reasons[status]
-            for i in ids:
-                d = {"target": i, "verdict": "benign", "attribution": attr,
-                     "reason": why + (f" — {notes}" if notes else ""), "scope": "case",
-                     "by": "operator"}
-                if wms.get(i):
-                    d["watermark"] = wms[i]
-                rest.append(d)
-        details["dispositions"] = rest
-
-    ws = _ws()
-    ws.mutate_run_details(case_id, _disp)
-    ws.update_run_status(case_id, "pending")
-    log_case_event(case_id, "Risk · disposition " + ("applied" if status in reasons else "cleared"),
-                   "info", f"{len(ids)} row(s) → {status}; re-fusing")
-    fuse_case(case_id, trigger=TRIGGER_DISPOSITION if status in reasons else TRIGGER_DISPOSITION_CLEARED)
-    return {"finding_ids": ids, "status": status}
+    try:
+        return _apply()
+    except Exception as e:                                    # noqa: BLE001 -- the verdict IS saved
+        log_case_event(case_id, "Timeline · validation", "error",
+                       f"{label}: the verdict is saved, but applying it to the analysis failed "
+                       f"({type(e).__name__}: {e}) — re-fuse the case to apply it")
+        return {"finding_ids": ids, "status": status,
+                "warning": "saved, but not yet applied to the analysis — re-fuse the case"}
 
 
 def add_manual_timeline_event(case_id, event) -> dict:

@@ -2325,7 +2325,7 @@ function _tlSave(body, okMsg, refetch){
   fetch('/api/cases/'+cid+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
    .then(async r=>{ const d=await r.json().catch(()=>({}));
      if(!r.ok||d.error) throw new Error(d.error||('HTTP '+r.status));
-     toast(okMsg); })
+     toast(d.warning ? okMsg+' — '+d.warning : okMsg); })
    .catch(e=>{ toast('Not saved: '+(e&&e.message||e)+' — the timeline shows what is saved.'); refetch=true; })
    .finally(()=>{ window._tlSaving--; if(refetch && window._tlCase===cid) _tlRefetchSoon(); });
 }

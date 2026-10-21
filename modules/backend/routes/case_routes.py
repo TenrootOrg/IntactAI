@@ -1256,14 +1256,26 @@ def timeline_validate(case_id):
     # A cross-host group header sends every row it holds; each still gets its
     # own verdict record (store.validate_timeline_many).
     many = b.get("finding_ids")
-    if isinstance(many, list) and many:
-        res = store.validate_timeline_many(case_id, many, b.get("status", "true_positive"),
-                                           b.get("notes", ""))
-        return jsonify({"case_id": case_id, **res})
     fid = (b.get("finding_id") or "").strip()
-    if not fid:
+    if not (isinstance(many, list) and many) and not fid:
         return jsonify({"error": "finding_id required"}), 400
-    res = store.validate_timeline(case_id, fid, b.get("status", "true_positive"), b.get("notes", ""))
+    status = b.get("status", "true_positive")
+    try:
+        if isinstance(many, list) and many:
+            res = store.validate_timeline_many(case_id, many, status, b.get("notes", ""))
+        else:
+            res = store.validate_timeline(case_id, fid, status, b.get("notes", ""))
+    except Exception as e:                                    # noqa: BLE001
+        # A verdict that did not save is said in the case Log (2026-10-21), not only
+        # in a toast the operator may miss: the Log is the case's record of review.
+        what = ", ".join(str(x) for x in (many or [fid])[:5]) + (" …" if len(many or []) > 5 else "")
+        why = f"{type(e).__name__}: {e}"[:300]
+        store.log_case_event(case_id, "Timeline · validation", "error", f"{what} — {status} NOT saved: {why}")
+        return jsonify({"error": f"not saved: {why}"}), 500
+    if (res or {}).get("error"):
+        store.log_case_event(case_id, "Timeline · validation", "error",
+                             f"{fid} — {status} NOT saved: {res['error']}")
+        return jsonify({"case_id": case_id, **res}), 400
     return jsonify({"case_id": case_id, **res})
 
 
