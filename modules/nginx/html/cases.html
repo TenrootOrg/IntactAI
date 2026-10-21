@@ -2312,12 +2312,12 @@ function _tlEachRow(fn){ for(const r of (window._tlData||[])){ fn(r); for(const 
 // repainted the whole timeline (1,068 rows) while the next clicks were landing, so
 // rows flipped back and forth and a click could land on the row the repaint had
 // just moved under the pointer. Now: the verdict paints at once, and ONE refetch
-// runs when the clicking has stopped and every verdict is saved.
+// runs 4 s after the last click, once every verdict is saved.
 window._tlSaving=0;
 function _tlRefetchSoon(){
   clearTimeout(window._tlRefetchT);
   window._tlRefetchT=setTimeout(()=>{ if(window._tlSaving>0) return _tlRefetchSoon();
-    renderTimeline(window._tlCase); }, 1500);
+    renderTimeline(window._tlCase); }, 4000);      // 4 s with no new click (the user's choice)
 }
 function _tlSave(body, okMsg, refetch){
   const cid=window._tlCase;

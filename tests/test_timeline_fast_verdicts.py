@@ -1,5 +1,5 @@
 """Fast verdict clicks on several Timeline rows land on the rows clicked, and the
-timeline is refetched ONCE, after the clicking stops and every verdict is saved.
+timeline is refetched ONCE, 4 s after the clicking stops and every verdict is saved.
 
 2026-10-21: Known on row 1, True Positive on row 6, False Positive on row 8 in
 quick succession -- every saved verdict refetched and repainted 1,068 rows while
@@ -45,7 +45,7 @@ setTimeout(() => {
 setTimeout(() => {
   console.log(JSON.stringify({rows: Object.fromEntries(rows.map(r => [r.finding_id, r.validation])),
                               refetches, posts, toasts, saving: window._tlSaving}));
-}, 2600);
+}, 5200);
 """
 
 
