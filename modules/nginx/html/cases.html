@@ -1998,6 +1998,13 @@ function _tlLoggedAs(r){
 }
 
 function renderTimeline(id){
+  // Held or in-flight verdicts on this case first (a return to the section within
+  // 4 s, refreshOnEntry): reading the rows now would show them before the verdicts
+  // land and flip the newest clicks back. The batch's own refetch paints them.
+  if(window._tlCase===id && window._tlData){
+    if(Object.keys(window._tlQueue||{}).length){ _tlFlush(); return; }
+    if((window._tlSaving||0)>0) return;
+  }
   // Reloading the case already on screen keeps the rows until the new ones arrive.
   const reload = window._tlCase===id && window._tlData && $('#tlrows');
   window._tlCase=id;

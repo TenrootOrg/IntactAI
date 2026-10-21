@@ -89,5 +89,48 @@ class HeldVerdicts(unittest.TestCase):
         self.assertEqual(1, got["refetches"], "the refetch puts back what is saved")
 
 
+REFRESH = r"""
+const rows = [{finding_id: 'f1', title: 'Row 1', validation: 'pending'}];
+global.window = {_tlCase: 'case_1', _tlData: rows, addEventListener: () => {}};
+global.tab = 'timeline';
+let reads = 0, posts = 0;
+global.tlPaint = () => {}; global.toast = () => {};
+global._tlEachRow = fn => rows.forEach(fn);
+global.api = () => { reads++; return new Promise(() => {}); };   // a timeline read
+global.$ = () => ({});
+global.tabIsStill = () => true;
+global.fetch = () => { posts++; return new Promise(() => {}); };  // the batch, still in flight
+CODE
+tlValidate('f1', 'known');               // held
+renderTimeline('case_1');                // the section is re-entered within 4 s
+const afterHeld = {reads, posts, held: Object.keys(window._tlQueue).length};
+renderTimeline('case_1');                // again, while that batch is still saving
+console.log(JSON.stringify({afterHeld, readsWhileSaving: reads, posts}));
+"""
+
+
+class ReturningToTheSection(unittest.TestCase):
+    def test_a_refresh_sends_held_verdicts_instead_of_reading_stale_rows(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("no node on this host")
+        with open(CASES, encoding="utf-8") as fh:
+            src = fh.read()
+        code = re.search(r"window\._tlQueue=\{\}; window\._tlSaving=0;\n.*?\nfunction tlValidateMany\(.*?\n\}", src, re.S).group(0)
+        code = code.replace("window.addEventListener('pagehide',()=>_tlFlush());", "")
+        code += "\n" + re.search(r"function renderTimeline\(id\)\{.*?\n\}\n", src, re.S).group(0)
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
+            t.write(REFRESH.replace("CODE", code))
+        try:
+            out = subprocess.run([node, t.name], capture_output=True, text=True, timeout=30)
+        finally:
+            os.unlink(t.name)
+        self.assertEqual(0, out.returncode, out.stderr)
+        got = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertEqual({"reads": 0, "posts": 1, "held": 0}, got["afterHeld"], "sent now, no stale read")
+        self.assertEqual(0, got["readsWhileSaving"], "a save in flight: its own refetch paints")
+        self.assertEqual(1, got["posts"])
+
+
 if __name__ == "__main__":
     unittest.main()
