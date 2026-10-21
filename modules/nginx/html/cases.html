@@ -2000,7 +2000,10 @@ function renderTimeline(id){
   const reload = window._tlCase===id && window._tlData && $('#tlrows');
   window._tlCase=id;
   if(!reload) $('#tabc').innerHTML='<i style="color:var(--muted)">loading timeline…</i>';
+  const n0=window._tlVerdictN||0;                     // verdicts clicked before this request
   api('/api/cases/'+id+'/timeline').then(d=>{ if(!tabIsStill('timeline'))return;
+    // A verdict clicked while this was in flight: its rows are older than the screen.
+    if(reload && (window._tlVerdictN||0)!==n0){ _tlRefetchSoon(); return; }
     window._tlData=d.timeline||[];
     // A refresh of the tab already on screen repaints ONLY the rows. tlBuild()
     // replaces the whole tab (filter bar and all), which flickers on every
@@ -2305,21 +2308,41 @@ function tlToggleStatus(k){window._tlf.status[k]=!window._tlf.status[k];tlBuild(
 function tlSet(k,v){window._tlf[k]=v;tlPaint();}
 function tlAddToggle(){document.getElementById('tladd').classList.toggle('open');}
 function _tlEachRow(fn){ for(const r of (window._tlData||[])){ fn(r); for(const p of (r.parts||[])) fn(p); } }
+// Fast clicks on several rows (2026-10-21): every saved verdict refetched and
+// repainted the whole timeline (1,068 rows) while the next clicks were landing, so
+// rows flipped back and forth and a click could land on the row the repaint had
+// just moved under the pointer. Now: the verdict paints at once, and ONE refetch
+// runs when the clicking has stopped and every verdict is saved.
+window._tlSaving=0;
+function _tlRefetchSoon(){
+  clearTimeout(window._tlRefetchT);
+  window._tlRefetchT=setTimeout(()=>{ if(window._tlSaving>0) return _tlRefetchSoon();
+    renderTimeline(window._tlCase); }, 1500);
+}
+function _tlSave(body, okMsg, refetch){
+  const cid=window._tlCase;
+  window._tlSaving++;
+  fetch('/api/cases/'+cid+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+   .then(async r=>{ const d=await r.json().catch(()=>({}));
+     if(!r.ok||d.error) throw new Error(d.error||('HTTP '+r.status));
+     toast(okMsg); })
+   .catch(e=>{ toast('Not saved: '+(e&&e.message||e)+' — the timeline shows what is saved.'); refetch=true; })
+   .finally(()=>{ window._tlSaving--; if(refetch && window._tlCase===cid) _tlRefetchSoon(); });
+}
 function tlValidate(fid,status){
+  window._tlVerdictN=(window._tlVerdictN||0)+1;
   let r=null; _tlEachRow(x=>{ if(x.finding_id===fid){ x.validation=status; r=r||x; } });   // optimistic
   tlPaint();
   const lbl=(TL_STATES.find(s=>s[0]===status)||[,status])[1];
-  api('/api/cases/'+window._tlCase+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({finding_id:fid,status,title:(r&&r.title)||''})})
-   .then(_=>{toast('Marked as '+lbl+'.');
-     // suppression changes severity/risk → refetch so the row + report stay in sync
-     if(!String(fid).startsWith('manual:')) renderTimeline(window._tlCase);});
+  // suppression changes severity/risk → refetch (once, when quiet) so rows + report stay in sync
+  _tlSave({finding_id:fid,status,title:(r&&r.title)||''}, 'Marked as '+lbl+'.', !String(fid).startsWith('manual:'));
 }
 function tlValidateMany(ids,status){
+  window._tlVerdictN=(window._tlVerdictN||0)+1;
   _tlEachRow(r=>{ if(ids.includes(r.finding_id)) r.validation=status; });   // optimistic
   tlPaint();
   const lbl=(TL_STATES.find(s=>s[0]===status)||[,status])[1];
-  api('/api/cases/'+window._tlCase+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({finding_ids:ids,status})})
-   .then(_=>{toast(`Marked ${ids.length} rows as ${lbl}.`); renderTimeline(window._tlCase);});
+  _tlSave({finding_ids:ids,status}, `Marked ${ids.length} rows as ${lbl}.`, true);
 }
 function tlAddSubmit(){
   const g=id=>(document.getElementById(id)||{}).value||'';
