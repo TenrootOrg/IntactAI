@@ -550,6 +550,7 @@ function skeletonView(){
 }
 
 function openCase(id){
+  if(typeof _tlFlush==='function') _tlFlush();          // held verdicts go before the case changes
   sel=id; loadCases();
   const seq=window._openSeq=(window._openSeq||0)+1;
   // Only when switching TO this case. A re-open of the case already on screen
@@ -739,6 +740,7 @@ function render(info,md,g){
 // the Risk tab (is_stale). Nothing polls.
 
 function setTab(t){
+  if(tab==='timeline' && t!=='timeline' && typeof _tlFlush==='function') _tlFlush();   // send held verdicts
   tab=t;
   // Move the active underline to the clicked tab (the tab bar isn't re-rendered,
   // only the #tabc content is — so update the .on class here).
@@ -2003,7 +2005,7 @@ function renderTimeline(id){
   const n0=window._tlVerdictN||0;                     // verdicts clicked before this request
   api('/api/cases/'+id+'/timeline').then(d=>{ if(!tabIsStill('timeline'))return;
     // A verdict clicked while this was in flight: its rows are older than the screen.
-    if(reload && (window._tlVerdictN||0)!==n0){ _tlRefetchSoon(); return; }
+    if(reload && (window._tlVerdictN||0)!==n0) return;  // the held batch refetches when it is saved
     window._tlData=d.timeline||[];
     // A refresh of the tab already on screen repaints ONLY the rows. tlBuild()
     // replaces the whole tab (filter bar and all), which flickers on every
@@ -2308,41 +2310,49 @@ function tlToggleStatus(k){window._tlf.status[k]=!window._tlf.status[k];tlBuild(
 function tlSet(k,v){window._tlf[k]=v;tlPaint();}
 function tlAddToggle(){document.getElementById('tladd').classList.toggle('open');}
 function _tlEachRow(fn){ for(const r of (window._tlData||[])){ fn(r); for(const p of (r.parts||[])) fn(p); } }
-// Fast clicks on several rows (2026-10-21): every saved verdict refetched and
-// repainted the whole timeline (1,068 rows) while the next clicks were landing, so
-// rows flipped back and forth and a click could land on the row the repaint had
-// just moved under the pointer. Now: the verdict paints at once, and ONE refetch
-// runs 4 s after the last click, once every verdict is saved.
-window._tlSaving=0;
-function _tlRefetchSoon(){
-  clearTimeout(window._tlRefetchT);
-  window._tlRefetchT=setTimeout(()=>{ if(window._tlSaving>0) return _tlRefetchSoon();
-    renderTimeline(window._tlCase); }, 4000);      // 4 s with no new click (the user's choice)
+// Verdicts are HELD and sent together (2026-10-21). Each click used to save at once
+// and re-fuse the case, so three fast clicks were three re-fuses, and the refetches
+// that followed each one repainted 1,068 rows while the next clicks landed (rows
+// flipped back and forth, a click could hit the row moved under the pointer). Now a
+// click paints at once and joins the batch; 4 s after the last click the batch goes
+// in ONE request -- each row saved and logged, ONE re-fuse -- then ONE refetch.
+// Switching tab or case, or leaving the page, sends a held batch right away.
+window._tlQueue={}; window._tlSaving=0;
+function _tlHold(items){
+  for(const it of items) window._tlQueue[it.finding_id]=it;          // the last verdict on a row wins
+  clearTimeout(window._tlFlushT);
+  window._tlFlushT=setTimeout(_tlFlush,4000);                         // 4 s with no new click (the user's choice)
 }
-function _tlSave(body, okMsg, refetch){
-  const cid=window._tlCase;
+function _tlFlush(){
+  clearTimeout(window._tlFlushT);
+  const items=Object.values(window._tlQueue||{}); if(!items.length) return;
+  window._tlQueue={};
+  const cid=window._tlCase, n=items.length;
   window._tlSaving++;
-  fetch('/api/cases/'+cid+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  // keepalive: a batch sent as the page is closed still arrives.
+  fetch('/api/cases/'+cid+'/timeline/validate',{method:'POST',keepalive:true,
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({items})})
    .then(async r=>{ const d=await r.json().catch(()=>({}));
+     if(r.status===409 && d.busy){ toast(`Saved ${n} verdict${n>1?'s':''} — a fuse is already running; the analysis catches up after it.`); return; }
      if(!r.ok||d.error) throw new Error(d.error||('HTTP '+r.status));
-     toast(d.warning ? okMsg+' — '+d.warning : okMsg); })
-   .catch(e=>{ toast('Not saved: '+(e&&e.message||e)+' — the timeline shows what is saved.'); refetch=true; })
-   .finally(()=>{ window._tlSaving--; if(refetch && window._tlCase===cid) _tlRefetchSoon(); });
+     toast(`Saved ${n} verdict${n>1?'s':''}`+(d.warning?' — '+d.warning:'.')); })
+   .catch(e=>toast('Not saved: '+(e&&e.message||e)+' — the timeline shows what is saved.'))
+   .finally(()=>{ window._tlSaving--;
+     // refetch once, unless more clicks are already held (their batch refetches)
+     if(window._tlCase===cid && !Object.keys(window._tlQueue).length && tab==='timeline') renderTimeline(cid); });
 }
+window.addEventListener('pagehide',()=>_tlFlush());
 function tlValidate(fid,status){
   window._tlVerdictN=(window._tlVerdictN||0)+1;
-  let r=null; _tlEachRow(x=>{ if(x.finding_id===fid){ x.validation=status; r=r||x; } });   // optimistic
+  let r=null; _tlEachRow(x=>{ if(x.finding_id===fid){ x.validation=status; r=r||x; } });   // shown at once
   tlPaint();
-  const lbl=(TL_STATES.find(s=>s[0]===status)||[,status])[1];
-  // suppression changes severity/risk → refetch (once, when quiet) so rows + report stay in sync
-  _tlSave({finding_id:fid,status,title:(r&&r.title)||''}, 'Marked as '+lbl+'.', !String(fid).startsWith('manual:'));
+  _tlHold([{finding_id:fid,status,title:(r&&r.title)||''}]);
 }
 function tlValidateMany(ids,status){
   window._tlVerdictN=(window._tlVerdictN||0)+1;
-  _tlEachRow(r=>{ if(ids.includes(r.finding_id)) r.validation=status; });   // optimistic
+  const t={}; _tlEachRow(r=>{ if(ids.includes(r.finding_id)){ r.validation=status; t[r.finding_id]=r.title; } });
   tlPaint();
-  const lbl=(TL_STATES.find(s=>s[0]===status)||[,status])[1];
-  _tlSave({finding_ids:ids,status}, `Marked ${ids.length} rows as ${lbl}.`, true);
+  _tlHold(ids.map(id=>({finding_id:id,status,title:t[id]||''})));
 }
 function tlAddSubmit(){
   const g=id=>(document.getElementById(id)||{}).value||'';

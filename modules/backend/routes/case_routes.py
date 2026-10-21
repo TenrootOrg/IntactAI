@@ -103,6 +103,11 @@ def _audit_detail(action, is_err, resp):
             return f"{verb} failed — {err}" if err else f"{verb} failed ({resp.status_code})"
 
         b = request.get_json(silent=True) or {}
+        if a == "timeline" and "validate" in action and isinstance(b.get("items"), list) and b["items"]:
+            parts = [f'"{(x or {}).get("title") or (x or {}).get("finding_id")}" as '
+                     f'{_STATE_LABEL.get((x or {}).get("status"), (x or {}).get("status"))}' for x in b["items"]]
+            return (f"marked {len(parts)} row(s) together: " + "; ".join(parts[:8])
+                    + (f"; … {len(parts) - 8} more" if len(parts) > 8 else ""))
         if a == "timeline" and "validate" in action and b.get("finding_id"):
             what = b.get("title") or b.get("finding_id")
             state = _STATE_LABEL.get(b.get("status"), b.get("status", "true_positive"))
@@ -1257,11 +1262,17 @@ def timeline_validate(case_id):
     # own verdict record (store.validate_timeline_many).
     many = b.get("finding_ids")
     fid = (b.get("finding_id") or "").strip()
-    if not (isinstance(many, list) and many) and not fid:
+    batch = b.get("items")
+    if not (isinstance(batch, list) and batch) and not (isinstance(many, list) and many) and not fid:
         return jsonify({"error": "finding_id required"}), 400
     status = b.get("status", "true_positive")
+    if isinstance(batch, list) and batch:
+        # The Timeline's held burst of clicks: [{finding_id, status, title}], one re-fuse.
+        many, status = [str((x or {}).get("finding_id")) for x in batch], "(batch)"
     try:
-        if isinstance(many, list) and many:
+        if isinstance(batch, list) and batch:
+            res = store.validate_timeline_batch(case_id, batch, b.get("notes", ""))
+        elif isinstance(many, list) and many:
             res = store.validate_timeline_many(case_id, many, status, b.get("notes", ""))
         else:
             res = store.validate_timeline(case_id, fid, status, b.get("notes", ""))

@@ -5854,7 +5854,7 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     return {"finding_id": finding_id, "status": status}
 
 
-def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
+def validate_timeline_many(case_id, finding_ids, status, notes="", *, fuse=True) -> dict:
     """One verdict on several rows at once — a cross-host group's header. Each row
     still gets its OWN record with its OWN watermark (a verdict belongs to one
     host's activity), but the change is one write and at most ONE re-fuse: the
@@ -5954,18 +5954,64 @@ def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
         ws = _ws()
         ws.mutate_run_details(case_id, _disp)
         ws.update_run_status(case_id, "pending")
+        trigger = TRIGGER_DISPOSITION if status in reasons else TRIGGER_DISPOSITION_CLEARED
         log_case_event(case_id, "Risk · disposition " + ("applied" if status in reasons else "cleared"),
-                       "info", f"{len(ids)} row(s) → {status}; re-fusing")
-        fuse_case(case_id, trigger=TRIGGER_DISPOSITION if status in reasons else TRIGGER_DISPOSITION_CLEARED)
+                       "info", f"{len(ids)} row(s) → {status}; " + ("re-fusing" if fuse else "re-fused with the batch"))
+        if not fuse:                                          # validate_timeline_batch fuses once
+            return {"finding_ids": ids, "status": status, "refuse": trigger}
+        fuse_case(case_id, trigger=trigger)
         return {"finding_ids": ids, "status": status}
     try:
         return _apply()
+    except FusionBusy:
+        raise                                                 # saved; the route says "deferred" (409)
     except Exception as e:                                    # noqa: BLE001 -- the verdict IS saved
         log_case_event(case_id, "Timeline · validation", "error",
                        f"{label}: the verdict is saved, but applying it to the analysis failed "
                        f"({type(e).__name__}: {e}) — re-fuse the case to apply it")
         return {"finding_ids": ids, "status": status,
                 "warning": "saved, but not yet applied to the analysis — re-fuse the case"}
+
+
+def validate_timeline_batch(case_id, items, notes="") -> dict:
+    """Several verdicts sent together (the Timeline holds a burst of clicks and sends
+    them once the clicking stops): each row saved and logged, and ONE re-fuse for
+    all of them. One click, one re-fuse used to mean three clicks, three re-fuses
+    (2026-10-21). The last verdict sent for a row wins."""
+    last = {}
+    for it in items or []:
+        fid = str((it or {}).get("finding_id") or "").strip()
+        if fid:
+            st = _TL_LEGACY.get(it.get("status"), it.get("status"))
+            last[fid] = st if st in _TL_STATES else "pending"
+    groups = {}
+    for fid, st in last.items():
+        if not fid.startswith("manual:"):
+            groups.setdefault(st, []).append(fid)
+    for fid, st in last.items():
+        if fid.startswith("manual:"):
+            validate_timeline(case_id, fid, st, notes)
+    trigger, warnings = None, []
+    for st, ids in groups.items():
+        res = validate_timeline_many(case_id, ids, st, notes, fuse=False)
+        if res.get("warning"):
+            warnings.append(res["warning"])
+        if res.get("refuse"):                                 # suppression wins the label
+            trigger = TRIGGER_DISPOSITION if TRIGGER_DISPOSITION in (trigger, res["refuse"]) else res["refuse"]
+    out = {"saved": len(last), "statuses": {st: len(ids) for st, ids in groups.items()}}
+    if trigger:
+        try:
+            fuse_case(case_id, trigger=trigger)
+        except FusionBusy:
+            raise                                             # saved; the route says "deferred" (409)
+        except Exception as e:                                # noqa: BLE001 -- the verdicts ARE saved
+            log_case_event(case_id, "Timeline · validation", "error",
+                           f"{len(last)} verdict(s) saved, but the re-fuse failed ({type(e).__name__}: {e}) "
+                           "— re-fuse the case to apply them")
+            warnings.append("saved, but not yet applied to the analysis — re-fuse the case")
+    if warnings:
+        out["warning"] = warnings[0]
+    return out
 
 
 def add_manual_timeline_event(case_id, event) -> dict:
