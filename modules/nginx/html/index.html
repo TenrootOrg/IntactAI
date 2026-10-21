@@ -463,13 +463,6 @@
                             <input type="text" id="schedule-description" placeholder="Brief description of this scheduled job" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
                         </div>
 
-                        <!-- Case: a scheduled run has no browser of its own, so the case is chosen here -->
-                        <div>
-                            <label class="block text-sm text-gray-400 mb-1">Case</label>
-                            <select id="schedule-case" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2"></select>
-                            <p class="text-xs text-gray-500 mt-1">Every run of this schedule is filed in this case.</p>
-                        </div>
-
                         <!-- Blueprint Selection -->
                         <div class="grid grid-cols-2 gap-4">
                             <div>
@@ -671,14 +664,14 @@
     <!-- Must load before the stores/partials that call TabReset.arm(). -->
     <script src="js/components/tab-reset.js?v=1"></script>
     <script src="js/memory.js?v=25"></script>
-    <script src="js/scheduler.js?v=4"></script>
+    <script src="js/scheduler.js?v=3"></script>
     <!-- Extracted inline helpers (Phase C): downloads copy/availability,
          active-case bar, AWS/Azure flatpickr pickers. -->
     <script src="js/components/downloads.js?v=1"></script>
     <script src="js/components/workspace-bar.js?v=3"></script>
     <script src="js/components/cloud-datepickers.js?v=2"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=244"></script>
+    <script src="js/bootstrap/partial-loader.js?v=243"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

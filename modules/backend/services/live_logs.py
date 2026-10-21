@@ -32,11 +32,6 @@ def sources():
     out = []
     for line in r.stdout.splitlines():
         name, state, status = (line.split("\t") + ["", ""])[:3]
-        if state == "exited" and status.startswith("Exited (0)"):
-            # A one-shot that did its job (intact_elk_setup sets Kibana's password and
-            # exits on every start): shown as completed, not as a red "exited" that
-            # reads as a failure. Any other exit code stays "exited".
-            state = "completed"
         if name.strip():
             out.append({"id": name.strip(), "name": name.strip(), "state": state or "unknown", "status": status})
     return sorted(out, key=lambda s: s["name"])

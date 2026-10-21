@@ -39,26 +39,6 @@ def get_jobs():
         return jsonify({"error": str(e)}), 500
 
 
-def _schedule_case(value):
-    """(case_id, error) for a schedule: the case chosen in the form, else the case
-    the browser is in. A scheduled run has no browser request of its own, so this
-    is the only time the case can be known -- without it every scheduled run went
-    to Default. Module work never runs in the System workspace."""
-    from services.workflow_service import _active_case_from_request, _system_case_id
-    from services.fusion import store
-    chosen = (value or "").strip()
-    cid = chosen or _active_case_from_request()
-    if not cid:
-        return None, None
-    if cid == _system_case_id():
-        if not chosen:
-            return None, None                  # in the System workspace, nothing chosen: Default, as before
-        return None, "A schedule runs module work: choose an investigation case, not the System workspace."
-    if not store.get_case(cid):
-        return None, f"No case {cid}"
-    return cid, None
-
-
 @scheduler_bp.route('/api/scheduler/jobs', methods=['POST'])
 def create_job():
     """Create a new scheduled job."""
@@ -123,12 +103,7 @@ def create_job():
         except (ValueError, AttributeError):
             return jsonify({"error": "Invalid run_time format. Use HH:MM format."}), 400
 
-        case_id, case_err = _schedule_case(data.get('case_id'))
-        if case_err:
-            return jsonify({"error": case_err}), 400
-
         job = create_scheduled_job(
-            case_id=case_id,
             name=name,
             blueprint_id=blueprint_id,
             blueprint_type=blueprint_type,
@@ -213,11 +188,6 @@ def update_job(job_id):
             if _iv < 1:
                 return jsonify({"error": "interval_value must be at least 1"}), 400
             data['interval_value'] = _iv
-
-        if 'case_id' in data:
-            data['case_id'], case_err = _schedule_case(data['case_id'])
-            if case_err:
-                return jsonify({"error": case_err}), 400
 
         job = update_scheduled_job(job_id, data)
         if not job:
