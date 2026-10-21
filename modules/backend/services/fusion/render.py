@@ -1007,8 +1007,12 @@ def _resolve_altitude(graph, *, window=None, min_severity="informational", mode=
     substantial = sum(1 for z in zt if _substantial(z))
     reason = (f"{hosts} hosts, {nf} findings, {windows} activity window(s) "
               f"({substantial} substantial), {span}d span")
-    if hosts > EXPLICIT_MAX_HOSTS or nf > EXPLICIT_MAX_FINDINGS:
-        return "macro", reason                      # too big to narrate explicitly
+    if mode != "auto-scope" and (hosts > EXPLICIT_MAX_HOSTS or nf > EXPLICIT_MAX_FINDINGS):
+        # Too big to narrate explicitly -- for the WHOLE case. Inside a selected scope
+        # (report_altitude_mode "auto-scope") volume alone never splits it: one phase
+        # zoomed into is one explicit report; the model's budget step-down bounds a
+        # scope that is genuinely large. Distinct phases still segment it (below).
+        return "macro", reason
     # ONE MACHINE IS ONE STORY. Segmentation exists because a case is too much to
     # read as a single narrative and the analyst must triage BETWEEN episodes --
     # which needs more than one host. A single host split into phases is the

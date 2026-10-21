@@ -3542,12 +3542,18 @@ def active_scope_window(d) -> dict | None:
 
 
 def report_altitude_mode(d) -> str:
-    """The Report type to use. Auto with a scope selected is FOCUSED: the operator
-    zoomed into one window to get one explicit report from all of its data. Auto's
-    volume rule (>150 findings / >12 hosts) re-split a zoomed scope into "Phase 1"
-    plus a synthesis at summary depth (2026-10-20). A forced Macro or Focused wins."""
+    """The Report type to use. A forced Macro or Focused wins.
+
+    Auto with a scope selected is "auto-scope": the scope's OWN shape decides, without
+    the whole-case volume rule. 2026-10-20 made every scope focused -- one phase zoomed
+    into must be one explicit report, not "Phase 1" plus a synthesis (the volume rule,
+    >150 findings / >12 hosts, re-split it). But a scope is not always one phase: a
+    scope as wide as the whole case (names_test: 2024-05 -> 2026-06, several attack
+    phases on 9 hosts) then never segmented, and Auto "always chose Scope" (2026-10-21).
+    Now one phase (or one host) inside the scope is focused; distinct phases across
+    hosts are macro."""
     mode = (d or {}).get("report_altitude") or "auto"
-    return "focused" if mode == "auto" and active_scope_window(d) else mode
+    return "auto-scope" if mode == "auto" and active_scope_window(d) else mode
 
 
 def active_scope_hidden_hosts(d) -> list:
