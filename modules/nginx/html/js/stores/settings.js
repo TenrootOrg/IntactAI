@@ -193,6 +193,15 @@ document.addEventListener('alpine:init', () => {
             if (this.llmTesting) return;
             this.llmTesting = true;
             this.llmTestResult = null;
+            // Search text is not a model: "gem" typed into the picker and tested as is
+            // came back "the provider does not offer the selected model" (2026-10-21).
+            // When the catalog knows models like it but none by that exact id, say so.
+            const notAModel = await this._notACatalogModel();
+            if (notAModel) {
+                this.llmTestResult = { success: false, error: notAModel };
+                this.llmTesting = false;
+                return;
+            }
             try {
                 const r = await fetch('/api/config/llm/test', {
                     method: 'POST',
@@ -204,6 +213,25 @@ document.addEventListener('alpine:init', () => {
                 this.llmTestResult = { success: false, error: e.message };
             }
             this.llmTesting = false;
+        },
+
+        // The online model field holds text that is not a model id of the provider's
+        // catalog, while the catalog has models matching it: the operator typed a
+        // search and did not pick from the list. Returns the message, or '' when the
+        // field is a real id, blank, or the catalog cannot tell (empty, offline, error).
+        async _notACatalogModel() {
+            const a = this.config.agentic || {}, ol = a.online_llm || {};
+            const id = (ol.model || '').trim();
+            if (a.llm_mode === 'offline' || !id) return '';
+            const route = { claude: 'anthropic', 'codex-subscription': 'codex' }[ol.provider] || ol.provider;
+            try {
+                const r = await fetch('/api/config/' + encodeURIComponent(route) + '/models?limit=50&q=' + encodeURIComponent(id));
+                if (!r.ok) return '';
+                const list = (await r.json()).models || [];
+                if (!list.length || list.some(m => m.id === id || m.canonical_id === id)) return '';
+                return '"' + id + '" is not a model name — pick one from the list under the Model field. Closest: '
+                       + list.slice(0, 3).map(m => m.id).join(', ') + (list.length > 3 ? ', …' : '');
+            } catch (e) { return ''; }
         },
 
         // Settings → Velociraptor. Built for fleets of thousands: the server sends a
