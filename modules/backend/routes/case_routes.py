@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from flask import Blueprint, jsonify, request, Response, send_file
+from flask import Blueprint, g as flask_g, jsonify, request, Response, send_file
 
 from services.fusion import store, render
 from services.fusion import case_files as _case_files
@@ -104,10 +104,21 @@ def _audit_detail(action, is_err, resp):
 
         b = request.get_json(silent=True) or {}
         if a == "timeline" and "validate" in action and isinstance(b.get("items"), list) and b["items"]:
-            parts = [f'"{(x or {}).get("title") or (x or {}).get("finding_id")}" as '
-                     f'{_STATE_LABEL.get((x or {}).get("status"), (x or {}).get("status"))}' for x in b["items"]]
-            return (f"marked {len(parts)} row(s) together: " + "; ".join(parts[:8])
-                    + (f"; … {len(parts) - 8} more" if len(parts) > 8 else ""))
+            # A batch is ONE Log line: its rows by verdict, re-fused once (or why not).
+            last = {}
+            for x in b["items"]:
+                if (x or {}).get("finding_id"):
+                    last[x["finding_id"]] = x
+            by = {}
+            for x in last.values():
+                by.setdefault(_STATE_LABEL.get(x.get("status"), x.get("status")), []).append(
+                    str(x.get("title") or x.get("finding_id")))
+            r = _safe_json(resp)
+            groups = "; ".join(f'{lbl}{f" ({len(t)})" if len(t) > 1 else ""}: '
+                               + ", ".join(f'"{x[:60]}"' for x in t[:4]) + (f", … {len(t) - 4} more" if len(t) > 4 else "")
+                               for lbl, t in by.items())
+            tail = (" — " + r["warning"]) if r.get("warning") else ("; re-fused once" if r.get("refused") else "")
+            return f"saved {len(last)} verdict(s) together — {groups}{tail}"
         if a == "timeline" and "validate" in action and b.get("finding_id"):
             what = b.get("title") or b.get("finding_id")
             state = _STATE_LABEL.get(b.get("status"), b.get("status", "true_positive"))
@@ -168,11 +179,13 @@ def _audit_case_activity(resp):
             # this had broken when it was just still working.
             if resp.status_code == 409 and _safe_json(resp).get("busy"):
                 return resp
+            if getattr(flask_g, "case_logged", False):
+                return resp                    # the handler already wrote this request's line
             if request.method in ("POST", "PUT", "DELETE", "PATCH") or is_err:
                 store.log_case_event(cid, _audit_label(action),
-                                     "error" if is_err else "ok",
+                                     "error" if is_err else ("warning" if _safe_json(resp).get("warning") else "ok"),
                                      _audit_detail(action, is_err, resp),
-                                     code=resp.status_code)
+                                     code=resp.status_code, detail_max=900)
     except Exception:
         pass
     return resp
@@ -1282,6 +1295,7 @@ def timeline_validate(case_id):
         what = ", ".join(str(x) for x in (many or [fid])[:5]) + (" …" if len(many or []) > 5 else "")
         why = f"{type(e).__name__}: {e}"[:300]
         store.log_case_event(case_id, "Timeline · validation", "error", f"{what} — {status} NOT saved: {why}")
+        flask_g.case_logged = True             # one line, not a second "failed" from the audit hook
         return jsonify({"error": f"not saved: {why}"}), 500
     if (res or {}).get("error"):
         store.log_case_event(case_id, "Timeline · validation", "error",

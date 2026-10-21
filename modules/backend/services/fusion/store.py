@@ -5854,7 +5854,7 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     return {"finding_id": finding_id, "status": status}
 
 
-def validate_timeline_many(case_id, finding_ids, status, notes="", *, fuse=True) -> dict:
+def validate_timeline_many(case_id, finding_ids, status, notes="", *, fuse=True, quiet=False) -> dict:
     """One verdict on several rows at once — a cross-host group's header. Each row
     still gets its OWN record with its OWN watermark (a verdict belongs to one
     host's activity), but the change is one write and at most ONE re-fuse: the
@@ -5912,9 +5912,10 @@ def validate_timeline_many(case_id, finding_ids, status, notes="", *, fuse=True)
     # Logged once SAVED (2026-10-21): written before the write, a failed save still
     # read "marked …" in the Log.
     _report_behind(case_id)
-    log_case_event(case_id, "Timeline · validation", "info",
-                   f"{label} marked {status}" + (f" ({len(ids)} rows)" if len(ids) > 1 else "")
-                   + (f" — {notes}" if notes else ""))
+    if not quiet:                                             # a batch says it all in ONE line
+        log_case_event(case_id, "Timeline · validation", "info",
+                       f"{label} marked {status}" + (f" ({len(ids)} rows)" if len(ids) > 1 else "")
+                       + (f" — {notes}" if notes else ""))
 
     def _apply():
         # A verdict is a review: whatever the group shows as NEW for these rows is seen.
@@ -5955,8 +5956,9 @@ def validate_timeline_many(case_id, finding_ids, status, notes="", *, fuse=True)
         ws.mutate_run_details(case_id, _disp)
         ws.update_run_status(case_id, "pending")
         trigger = TRIGGER_DISPOSITION if status in reasons else TRIGGER_DISPOSITION_CLEARED
-        log_case_event(case_id, "Risk · disposition " + ("applied" if status in reasons else "cleared"),
-                       "info", f"{len(ids)} row(s) → {status}; " + ("re-fusing" if fuse else "re-fused with the batch"))
+        if not quiet:
+            log_case_event(case_id, "Risk · disposition " + ("applied" if status in reasons else "cleared"),
+                           "info", f"{len(ids)} row(s) → {status}; re-fusing")
         if not fuse:                                          # validate_timeline_batch fuses once
             return {"finding_ids": ids, "status": status, "refuse": trigger}
         fuse_case(case_id, trigger=trigger)
@@ -5966,11 +5968,13 @@ def validate_timeline_many(case_id, finding_ids, status, notes="", *, fuse=True)
     except FusionBusy:
         raise                                                 # saved; the route says "deferred" (409)
     except Exception as e:                                    # noqa: BLE001 -- the verdict IS saved
-        log_case_event(case_id, "Timeline · validation", "error",
-                       f"{label}: the verdict is saved, but applying it to the analysis failed "
-                       f"({type(e).__name__}: {e}) — re-fuse the case to apply it")
+        why = f"{type(e).__name__}: {e}"[:200]
+        if not quiet:
+            log_case_event(case_id, "Timeline · validation", "error",
+                           f"{label}: the verdict is saved, but applying it to the analysis failed "
+                           f"({why}) — re-fuse the case to apply it")
         return {"finding_ids": ids, "status": status,
-                "warning": "saved, but not yet applied to the analysis — re-fuse the case"}
+                "warning": f"saved, but not yet applied to the analysis ({why}) — re-fuse the case"}
 
 
 def validate_timeline_batch(case_id, items, notes="") -> dict:
@@ -5993,22 +5997,24 @@ def validate_timeline_batch(case_id, items, notes="") -> dict:
             validate_timeline(case_id, fid, st, notes)
     trigger, warnings = None, []
     for st, ids in groups.items():
-        res = validate_timeline_many(case_id, ids, st, notes, fuse=False)
+        res = validate_timeline_many(case_id, ids, st, notes, fuse=False, quiet=True)
         if res.get("warning"):
             warnings.append(res["warning"])
         if res.get("refuse"):                                 # suppression wins the label
             trigger = TRIGGER_DISPOSITION if TRIGGER_DISPOSITION in (trigger, res["refuse"]) else res["refuse"]
-    out = {"saved": len(last), "statuses": {st: len(ids) for st, ids in groups.items()}}
+    # The batch's ONE Log line is written by the route's audit hook from this reply
+    # (rows by verdict, re-fused or not, any warning) -- not one line per step.
+    out = {"saved": len(last), "statuses": {st: len(ids) for st, ids in groups.items()},
+           "refused": bool(trigger)}
     if trigger:
         try:
             fuse_case(case_id, trigger=trigger)
         except FusionBusy:
             raise                                             # saved; the route says "deferred" (409)
         except Exception as e:                                # noqa: BLE001 -- the verdicts ARE saved
-            log_case_event(case_id, "Timeline · validation", "error",
-                           f"{len(last)} verdict(s) saved, but the re-fuse failed ({type(e).__name__}: {e}) "
-                           "— re-fuse the case to apply them")
-            warnings.append("saved, but not yet applied to the analysis — re-fuse the case")
+            out["refused"] = False
+            warnings.append(f"saved, but the re-fuse failed ({type(e).__name__}: {e}"[:200]
+                            + ") — re-fuse the case to apply them")
     if warnings:
         out["warning"] = warnings[0]
     return out

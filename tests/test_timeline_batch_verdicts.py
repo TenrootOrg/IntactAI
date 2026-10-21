@@ -59,9 +59,9 @@ class Batch(unittest.TestCase):
         self.assertEqual({"a": "true_positive", "b": "false_positive", "c": "known"},
                          {v["finding_id"]: v["status"] for v in state["timeline_validations"]})
         self.assertEqual(sorted(d["target"] for d in state["dispositions"]), ["b", "c"])
-        marked = [d for a, s, d in logs if a == "Timeline · validation"]
-        self.assertEqual(["a marked true_positive", "b marked false_positive", "c marked known"], marked)
-        self.assertEqual({"saved": 3, "statuses": {"true_positive": 1, "false_positive": 1, "known": 1}}, res)
+        self.assertEqual([], logs, "a batch's ONE Log line is the route's, from this reply")
+        self.assertEqual({"saved": 3, "statuses": {"true_positive": 1, "false_positive": 1, "known": 1},
+                          "refused": True}, res)
 
     def test_the_last_verdict_on_a_row_wins(self):
         _, _, state, _ = self.run_it([{"finding_id": "a", "status": "known"},
@@ -83,8 +83,9 @@ class Batch(unittest.TestCase):
         res, logs, state, _ = self.run_it([{"finding_id": "b", "status": "known"}, {"finding_id": "e", "status": "known"}],
                                           fuse_side=RuntimeError("graph write failed"))
         self.assertEqual(2, len(state["timeline_validations"]))
-        self.assertIn("re-fuse the case", res["warning"])
-        self.assertTrue(any(s == "error" and "2 verdict(s) saved, but the re-fuse failed" in d for _a, s, d in logs), logs)
+        self.assertIn("saved, but the re-fuse failed (RuntimeError: graph write failed) — re-fuse the case", res["warning"])
+        self.assertFalse(res["refused"])
+        self.assertEqual([], logs, "said once, in the route's line (as a warning)")
 
 
 if __name__ == "__main__":
