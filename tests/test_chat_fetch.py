@@ -72,6 +72,18 @@ class Fetch(unittest.TestCase):
         self.assertTrue(ans.startswith("srv ran Mimikatz on WS1."))
         self.assertIn("_Looked up: search_", ans)                        # the analyst sees what it fetched
 
+    def test_an_empty_reply_after_a_lookup_gets_one_more_turn(self):
+        # 2026-10-21: the bubble showed only "---" and "Looked up: search".
+        ans, sent, _ = self.run_chat(['{"tool":"search","args":{"query":"known"}}', "",
+                                      "The known events are the IT-confirmed ones."])
+        self.assertEqual(len(sent), 3)
+        self.assertIn("Your last reply was empty", sent[-1][1])
+        self.assertTrue(ans.startswith("The known events are the IT-confirmed ones."))
+
+    def test_an_empty_reply_twice_says_so(self):
+        ans, _, _ = self.run_chat(['{"tool":"search","args":{"query":"known"}}', "", "  "])
+        self.assertTrue(ans.startswith("I looked up search but the model returned no answer"), ans)
+
     def test_a_fenced_fetch_request_is_understood(self):
         _, _, tools = self.run_chat(['```json\n{"tool":"evidence","args":{"finding_id":"f1"}}\n```', "done"])
         self.assertEqual([t[1] for t in tools], ["evidence"])

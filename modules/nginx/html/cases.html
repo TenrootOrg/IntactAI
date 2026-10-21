@@ -52,6 +52,8 @@
   .md h1{font-size:22px;border-bottom:1px solid var(--bd);padding-bottom:6px}
   .md h2{font-size:16px;color:var(--tx);text-transform:none;letter-spacing:0;margin-top:22px}
   .md h3{font-size:14px;color:var(--acc)}
+  .md h4{font-size:13px;color:var(--tx)}
+  .md hr{border:0;border-top:1px solid var(--bd);margin:10px 0}
   .md code{background:#000;padding:1px 5px;border-radius:4px;color:#79c0ff;font-size:12px}
   /* A fenced block (a command line the model quotes): one box, wrapped, never cut */
   .md pre{background:#000;border-radius:6px;padding:8px 10px;margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -112,7 +114,10 @@
   #chatwrap.chat-max{position:fixed;inset:0;z-index:9999}
   #chatwrap:fullscreen .chat, #chatwrap.chat-max .chat{flex:1;height:auto;min-height:0}
   .msgs{flex:1;overflow-y:auto;padding:6px 2px} .msg{margin:8px 0;padding:9px 12px;border-radius:8px;max-width:88%}
-  .msg.u{background:var(--acc);color:#fff;margin-left:auto} .msg.a{background:var(--panel2);border:1px solid var(--bd);white-space:pre-wrap}
+  .msg.u{background:var(--acc);color:#fff;margin-left:auto} .msg.a{background:var(--panel2);border:1px solid var(--bd)}
+  /* The answer is markdown rendered to HTML: pre-wrap made every newline BETWEEN the
+     rendered elements a blank line -- the gaping answer of 2026-10-21. */
+  .msg.a p{margin:4px 0} .msg.a h1,.msg.a h2,.msg.a h3,.msg.a h4{margin:12px 0 4px} .msg.a ul{margin:4px 0;padding-left:22px}
   .chatbar{display:flex;gap:8px;margin-top:8px}
   .empty{color:var(--muted);text-align:center;margin-top:60px}
   /* Analysis view opens the active case straight away: never flash "pick a case"
@@ -2715,7 +2720,7 @@ function _chatFsLabel(on){const b=document.getElementById('chatfsbtn');if(b)b.te
 // close the CSS-fallback maximise too.
 document.addEventListener('fullscreenchange',()=>{const w=document.getElementById('chatwrap');_chatFsLabel(!!(w&&document.fullscreenElement===w));});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){const w=document.getElementById('chatwrap');if(w&&w.classList.contains('chat-max')){w.classList.remove('chat-max');_chatFsLabel(false);}}});
-function drawMsgs(){$('#msgs').innerHTML=chatHist.map(m=>`<div class="msg ${m.role==='user'?'u':'a'}">${m.role==='user'?escape(m.content):mdToHtml(m.content)}</div>`).join('');
+function drawMsgs(){$('#msgs').innerHTML=chatHist.map(m=>`<div class="msg ${m.role==='user'?'u':'a md'}">${m.role==='user'?escape(m.content):mdToHtml(m.content)}</div>`).join('');
   const m=$('#msgs'); if(m)m.scrollTop=m.scrollHeight;}
 // A chat turn is a 10s+ round-trip to a model, so this must show that it is
 // working and, above all, must never fail silently: the previous version had no
@@ -2829,6 +2834,11 @@ function inline(s){
   return escape(s).replace(/!\[([^\]]*)\]\((\/api\/cases\/[A-Za-z0-9_]+\/files\/[0-9a-f]{12}\?inline=1)\)/g,
       (m,a,u)=>{ pics.push(`<img src="${u}" alt="${a.replace(/"/g,'&quot;')}" style="max-width:100%;max-height:480px;border:1px solid var(--bd);border-radius:6px;margin:6px 0;display:block"/>`); return `\u0000${pics.length-1}\u0000`; })
     .replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    // *italic* (the models write "*(logged as …)*"); not ** and not a lone star
+    .replace(/(^|[^*\w])\*(?![\s*])([^*\n]*[^\s*])\*(?![*\w])/g,'$1<em>$2</em>')
+    // LaTeX the models slip into prose: "chrome.exe $\rightarrow$ cmd.exe"
+    .replace(/\$\\(rightarrow|to|longrightarrow)\$/g,'→').replace(/\$\\(leftarrow|gets)\$/g,'←')
+    .replace(/\$\\Rightarrow\$/g,'⇒').replace(/\$\\leftrightarrow\$/g,'↔')
     .replace(/(^|[^A-Za-z0-9_])_([^_]+)_(?![A-Za-z0-9_])/g,'$1<em>$2</em>')
     .replace(/\u0000(\d+)\u0000/g,(m,i)=>pics[+i]);
 }
@@ -2850,7 +2860,9 @@ function mdToHtml(md){
       out.push('<tr>'+cells.map(c=>'<td>'+inline(c)+'</td>').join('')+'</tr>');return;
     } else closeTbl();
     let m;
-    if(m=line.match(/^### (.*)/)){closeUL();out.push('<h3>'+inline(m[1])+'</h3>');}
+    if(/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)){closeUL();out.push('<hr/>');}
+    else if(m=line.match(/^#{4,6} (.*)/)){closeUL();out.push('<h4>'+inline(m[1])+'</h4>');}
+    else if(m=line.match(/^### (.*)/)){closeUL();out.push('<h3>'+inline(m[1])+'</h3>');}
     else if(m=line.match(/^## (.*)/)){closeUL();out.push('<h2>'+inline(m[1])+'</h2>');}
     else if(m=line.match(/^# (.*)/)){closeUL();out.push('<h1>'+inline(m[1])+'</h1>');}
     else if(m=line.match(/^([ \t]*)[-*] (.*)/)){if(!inUL){out.push('<ul>');inUL=true;}
@@ -2870,7 +2882,11 @@ function mdToHtml(md){
       // clamped to one line like the evidence under it.
       const ev=ind<2 && /^`\d{4}-\d{2}-\d{2}/.test(m[2]);
       out.push('<li'+(ind>=2?' class="sub"':(ev?' class="ev"':''))+'>'+t+'</li>');}
-    else if(/^\s*$/.test(line)){closeUL();out.push('<br/>');}
+    else if(/^\s*$/.test(line)){closeUL();
+      // One break for a run of blank lines, none after a heading or a rule: the
+      // models pad with three or four, which stacked into gaps.
+      const last=out[out.length-1]||'';
+      if(last && last!=='<br/>' && !/^<(h\d|hr)/.test(last)) out.push('<br/>');}
     else {closeUL();out.push('<p>'+inline(line)+'</p>');}
   });
   closePre();closeUL();closeTbl();return out.join('\n');

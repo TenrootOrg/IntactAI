@@ -2916,7 +2916,7 @@ def _chat_fetch_loop(case_id, system, user, ans, *, mask=None, run_id=None, max_
     for _ in range(MAX_CHAT_FETCHES):
         call = _chat_tool_call(ans)
         if not call:
-            return ans, fetched
+            break                             # an answer (or an empty reply: checked below)
         args = _inv._revert_obj(call["args"], mask)
         res = _inv._safe_tool(case_id, call["tool"], args)
         _inv._enrich_mask_from_result(mask, res)
@@ -2935,6 +2935,16 @@ def _chat_fetch_loop(case_id, system, user, ans, *, mask=None, run_id=None, max_
         if _chat_tool_call(ans):
             ans = ("I looked up " + ", ".join(fetched) + " but could not finish an answer — "
                    "please ask again, more narrowly.")
+    if fetched and not (ans or "").strip():
+        # The reply after a lookup came back empty: the chat showed only "---" and
+        # "Looked up: search" (2026-10-21). One more turn asking for the answer, then
+        # say what happened rather than an empty bubble.
+        ans = _real_llm(system, convo + "\n\nYour last reply was empty. Answer the question "
+                        "now, in markdown, from what you have.", run_id=run_id,
+                        max_output_tokens=max_output_tokens)
+        if not (ans or "").strip() or _chat_tool_call(ans):
+            ans = ("I looked up " + ", ".join(fetched) + " but the model returned no answer — "
+                   "please ask again.")
     return ans, fetched
 
 
