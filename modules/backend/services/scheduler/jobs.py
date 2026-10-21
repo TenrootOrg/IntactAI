@@ -172,7 +172,8 @@ def create_scheduled_job(
     time_filter_mode: str = "relative",
     time_filter_relative_range: str = "7d",
     time_filter_start: str = None,
-    time_filter_end: str = None
+    time_filter_end: str = None,
+    case_id: str = None
 ) -> dict:
     """
     Create a new scheduled job.
@@ -221,8 +222,8 @@ def create_scheduled_job(
          interval_type, interval_value, interval_unit, start_at, run_time, options, next_run_at, enabled,
          report_types, anonymize_data, custom_patterns,
          time_filter_enabled, time_filter_mode, time_filter_relative_range,
-         time_filter_start, time_filter_end, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         time_filter_start, time_filter_end, created_at, updated_at, case_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         job_id,
         name,
@@ -247,7 +248,8 @@ def create_scheduled_job(
         time_filter_start,
         time_filter_end,
         now.isoformat(),
-        now.isoformat()
+        now.isoformat(),
+        case_id or None
     ))
     conn.commit()
     conn.close()
@@ -315,7 +317,7 @@ def update_scheduled_job(job_id: str, updates: dict) -> Optional[dict]:
     allowed_fields = [
         'name', 'description', 'blueprint_id', 'blueprint_type',
         'client_ids', 'interval_value', 'interval_unit', 'start_at', 'run_time', 'enabled',
-        'report_types', 'anonymize_data', 'custom_patterns', 'options'
+        'report_types', 'anonymize_data', 'custom_patterns', 'options', 'case_id'
     ]
 
     conn = get_db_connection()
