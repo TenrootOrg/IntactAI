@@ -143,5 +143,28 @@ Message=Cmdlet suceeded. Cmdlet Get-Mailbox, parameters -Identity "Administrator
         self.assertEqual([], S.evaluate(X.sigma_event(rows[1]), [self.EXPORT]))
 
 
+
+class LowRulesLoad(unittest.TestCase):
+    """SigmaHQ's low rules never ran: the loader took them from the bundled Splunk set only
+    (2026-10-20). They load as context now, and never count toward a burst."""
+
+    def test_a_low_rule_from_any_folder_loads(self):
+        import tempfile
+        import yaml
+        d = tempfile.mkdtemp()
+        for rid, title in (("11111111-0000-0000-0000-000000000001", "Some Low Rule"),
+                           ("69aeb277-f15f-4d2d-b32a-55e883609563", "Windows Event Auditing Disabled")):
+            with open(os.path.join(d, f"{rid}.yml"), "w") as f:
+                yaml.safe_dump({"title": title, "id": rid, "level": "low",
+                                "logsource": {"product": "windows", "service": "security"},
+                                "detection": {"selection": {"EventID": 4719}, "condition": "selection"}}, f)
+        S._CACHE["key"] = None
+        got = {r["title"]: r for r in S.load(dirs=(d,))["rules"]}
+        S._CACHE["key"] = None
+        self.assertEqual(("low", False), (got["Some Low Rule"]["level"], got["Some Low Rule"]["burst"]),
+                         "a SigmaHQ low rule is context: on the benign DC they made two bursts of admin work")
+        self.assertFalse(got["Windows Event Auditing Disabled"]["burst"])
+
+
 if __name__ == "__main__":
     unittest.main()

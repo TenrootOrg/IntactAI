@@ -399,9 +399,12 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
     except Exception:                                      # noqa: BLE001 -- no list = nothing demoted
         demote = set()
     for d in present:
-        # The bundled set also ships LOW rules (Splunk "Anomaly" signals): context on
-        # their own, and what the suspicious-activity burst rule counts per host.
-        floor = min(LEVELS[min_level], LEVELS["low"]) if d == BUNDLED else LEVELS[min_level]
+        # LOW rules load too: context on their own, never a detection. The bundled set's
+        # (Splunk "Anomaly" signals) are what the suspicious-activity burst rule counts
+        # per host; SigmaHQ's never count -- loaded since 2026-10-21 (before, its 287 low
+        # rules never ran), and on the benign DC they raised two bursts out of routine
+        # admin work (group member added, local user created, remote PowerShell).
+        floor = min(LEVELS[min_level], LEVELS["low"])
         for root, _dirs, files in os.walk(d):
             for fn in files:
                 if not fn.endswith((".yml", ".yaml")):
@@ -432,6 +435,8 @@ def load(dirs=RULE_DIRS, min_level=MIN_LEVEL) -> dict:
                         rule = compile_rule(doc)
                         if rule["id"] in demote:              # noisy on normal systems: context only
                             rule.update(level="low", burst=False)
+                        elif d != BUNDLED and rule["level"] in ("low", "informational"):
+                            rule["burst"] = False                 # SigmaHQ low: context, never a burst
                         rules.append(rule)
                     except Unsupported as e:
                         k = str(e).split(" ")[0]
@@ -609,10 +614,26 @@ ALIASES = {
     # Windows events exported through Elastic (Winlogbeat / Elastic Agent): winlog.event_id
     # never matched EventID (the underscore), so no such row reached its Windows category
     # -- a PowerShell 4104 script block got no rule at all (2026-10-20 severity audit).
-    "eventid": ["winlog.event_id"],      # not event.code: other ECS logs carry it beside event.provider
+    "eventid": ["winlog.event_id",      # not event.code: other ECS logs carry it beside event.provider
+                "eventcode"],           # Splunk's Windows exports (classic text, its JSON): EventCode
+    # The event's text where a rule reads the unnamed <Data> (classic PowerShell 400/800,
+    # Application-log MSSQL / MSI / ESENT, MSExchange cmdlets): Splunk's classic Windows text
+    # and Winlogbeat carry it as the Message only.
+    "data": ["message"],
     "scriptblocktext": ["powershell.file.script_block_text"],
     # RPC Firewall's rules say EventLog: RPCFW -- the event's provider (source).
     "eventlog": ["provider", "sourcename", "providername", "provider_name", "winlog.provider_name"],
+    # Entra ID audit / Azure activity rules match the activity's name as properties.message
+    # (the old Azure Monitor name, pySigma's azure pipeline maps it the same way): exports
+    # write operationName / properties.activityDisplayName. 18 rules (11 high) never
+    # matched a real row until 2026-10-21.
+    "properties.message": ["operationname", "properties.activitydisplayname", "activitydisplayname"],
+    # DNS rules (category dns): the record type and answer, as Zeek, Suricata EVE, Route 53
+    # resolver logs and ECS write them.
+    "record_type": ["qtype_name", "dns.rrtype", "query_type", "dns.question.type", "querytype"],
+    "answer": ["answers", "dns.rdata", "dns.answers.data", "rdata"],
+    # GCP audit rules written for Elastic's field names; the export is Cloud Logging's.
+    "gcp.audit.method_name": ["protopayload.methodname"],
     # CloudTrail in OCSF (AWS Security Lake): the CloudTrail names Sigma rules use
     "eventname": ["api.operation"], "eventsource": ["api.service.name"],
     "errorcode": ["api.response.error"], "errormessage": ["api.response.message"],
@@ -698,6 +719,18 @@ class Event:
             rs = str(o("ResultStatus") or "")
             return ("success" if rs.lower() in ("succeeded", "success", "true", "partiallysucceeded") else
                     "failure" if rs.lower() in ("failed", "failure", "false") else rs or None)
+        if f in ("user", "tty", "pwd", "command") and "_text" in self._low and "sudo" in str(self._low["_text"]):
+            # sudo's own line: "sudo: alice : TTY=pts/0 ; PWD=/home/alice ; USER=#-1 ; COMMAND=..."
+            # (CVE-2019-14287, critical: USER=#-1 runs as root past a "!root" rule).
+            m = re.search(rf"\b{f.upper()}=([^;]*?)\s*(?:;|$)", str(self._low["_text"]))
+            if m:
+                return m.group(1)
+        if f.startswith("data.protopayload.") and "data" not in self._low:
+            # GCP audit rules written for the Pub/Sub wrapping (data.protoPayload.x); a
+            # Cloud Logging export has protoPayload.x, and logName / resource.type at the top.
+            rest = f[len("data.protopayload."):]
+            v = self.get("protoPayload." + rest)
+            return v if v not in (None, "") else self.get(rest)
         if f == "status" and "keywords" in self._low and not self.own("status"):
             st = _audit_status(self.own("Keywords"))   # Splunk's Windows add-on: status from the audit keyword
             if st:
@@ -721,12 +754,14 @@ class Event:
             key = re.sub(r"^\\REGISTRY\\MACHINE", "HKLM", str(self.row.get("ObjectName") or ""), flags=re.I)
             key = re.sub(r"^\\REGISTRY\\USER", "HKU", key, flags=re.I)
             return f"{key}\\{self.row['ObjectValueName']}"
-        if f in ("protopayload.servicename", "protopayload.metadata.event.eventname"):
+        if f in ("protopayload.servicename", "protopayload.metadata.event.eventname", "eventservice", "eventname"):
             # A Workspace Reports API row, read under Cloud Logging's names (the export
-            # Sigma's google_workspace.login rules are written for).
+            # Sigma's google_workspace.login rules are written for) or the admin rules'
+            # eventService / eventName (7 medium, never matched until 2026-10-21).
             app = self.own("id.applicationName")
             if app:
-                return f"{app}.googleapis.com" if f.endswith("servicename") else self.own("event.name", "events.name")
+                return f"{app}.googleapis.com" if f.endswith(("servicename", "eventservice")) \
+                    else self.own("event.name", "events.name")
         if f == "riskeventtype":
             # Entra PIM alert incidents (Graph roleManagementAlerts) name their kind only
             # in @odata.type: "#microsoft.graph.staleSignInAlertIncident".
@@ -1064,6 +1099,10 @@ def profiles(row) -> set:
         # Not a rich event record (a Windows event also has Level and Message).
         out.update(_APP_LOGS)
         out.update(_DEVICE_INDICATORS)
+    if _has(ev, "COMMAND") and _has(ev, "TTY", "PWD"):
+        # A file of sudo lines only is read as key=value (TTY=, PWD=, USER=, COMMAND=):
+        # still sudo's log, for its rules (CVE-2019-14287 USER=#-1, critical).
+        out.add(("linux", None, "sudo"))
     if _has(ev, "event_type_id") and _has(ev, "account_id"):
         # OneLogin Events API (/api/1/events): account locked / suspended, user assumed.
         out.add(("onelogin", None, "onelogin.events"))

@@ -10,3 +10,7 @@ df9a0e0e-fedb-4d6c-8668-d765dfc92aa7: "Suspicious Non PowerShell WSMAN COM Provi
 # Posture, not attack: true on every normal login of a tenant without enforced MFA.
 40e17d88-87da-414e-b253-8dc1e4f9555b: "GCP Successful Single-Factor Authentication -- every login where MFA is not enforced"
 c977cb50-3dff-4a9f-b873-9290f56132f1: "AppX Located in Uncommon Directory Added to Deployment Pipeline -- 331 benign hits (AppX channel, 2026-10-15)"
+# Entra ID rules reachable since 2026-10-21 (properties.message = the activity name) that
+# match a routine activity outright -- Entra's own "Core Directory" writes it all day:
+1b45b0d1-773f-4f23-aedc-814b759563b1: "Application AppID Uri Configuration Changes -- every Update service principal / Update application (Elastic's sample tenant)"
+46530378-f9db-4af9-a9e5-889c177d3881: "Azure Device or Configuration Modified or Deleted -- every Update device (Elastic's sample tenant)"
