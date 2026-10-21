@@ -162,7 +162,7 @@
                                         <tr class="hover:bg-gray-700/40 transition-colors">
                                             <td class="px-4 py-3 font-medium text-white" x-text="l.name"></td>
                                             <td class="px-4 py-3">
-                                                <span :class="(l.state === 'running' ? 'bg-green-600' : l.state === 'exited' || l.state === 'dead' ? 'bg-red-600' : 'bg-gray-600') + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="l.state"></span>
+                                                <span :class="(l.state === 'running' ? 'bg-green-600' : l.state === 'completed' ? 'bg-blue-600' : l.state === 'exited' || l.state === 'dead' ? 'bg-red-600' : 'bg-gray-600') + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="l.state"></span>
                                             </td>
                                             <td class="px-4 py-3 text-gray-300 text-xs" x-text="l.status"></td>
                                             <td class="px-4 py-3 whitespace-nowrap">
