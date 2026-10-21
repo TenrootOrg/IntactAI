@@ -946,6 +946,31 @@ def purge_case_files_and_index(case_id) -> None:
             pass
 
 
+def case_named(name, except_id=None):
+    """(case_id, its name) of an existing case called `name` -- case and surrounding
+    spaces ignored -- other than `except_id`; else None. Two cases both called
+    "test2" could not be told apart in the case list or the selector (2026-10-21)."""
+    want = str(name or "").strip().casefold()
+    if not want:
+        return None
+    for r in _ws().get_all_automation_runs() or []:
+        if r.get("automation_type") != CASE_TYPE or r.get("run_id") == except_id:
+            continue
+        have = str((r.get("details") or {}).get("name") or "")
+        if have.strip().casefold() == want:
+            return r.get("run_id"), have
+    return None
+
+
+def duplicate_name_error(name, except_id=None):
+    """The message for a name already in use, or None."""
+    hit = case_named(name, except_id)
+    if not hit:
+        return None
+    return (f'A case named "{hit[1]}" already exists. Remove it or rename it first, '
+            "or choose another name.")
+
+
 def ensure_default_case() -> str:
     """Return the id of the Default workspace, creating it if missing. Idempotent —
     safe to call on every startup."""
@@ -4038,6 +4063,9 @@ def update_case_info(case_id, fields) -> dict:
             return {"error": "the name cannot be empty"}
         if builtin and name != d.get("name"):
             return {"error": "the built-in Default and System cases cannot be renamed"}
+        dup = duplicate_name_error(name, except_id=case_id)
+        if dup:
+            return {"error": dup}
         patch["name"] = name
     if "case_status" in fields:
         st = str(fields.get("case_status") or "").lower()

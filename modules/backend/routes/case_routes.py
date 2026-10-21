@@ -299,6 +299,9 @@ def create_case():
     name = (d.get("name") or "").strip()
     if not name:
         return jsonify({"error": "name is required"}), 400
+    dup = store.duplicate_name_error(name)
+    if dup:
+        return jsonify({"error": dup, "duplicate": True}), 409
     # Asked for at creation (the New Case pop-up): owner and an optional
     # description. A new case is always Open; its status is changed by editing it.
     info = {k: d[k] for k in ("case_owner", "case_description") if d.get(k)}
