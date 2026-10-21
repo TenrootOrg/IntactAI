@@ -31,6 +31,7 @@ async function loadSchedulerJobs() {
         }
 
         emptyState.classList.add('hidden');
+        await loadScheduleCases();
         listContainer.innerHTML = jobs.map(job => renderScheduleCard(job)).join('');
 
     } catch (error) {
@@ -39,6 +40,31 @@ async function loadSchedulerJobs() {
 }
 
 // Render a single schedule card
+// Cases a schedule can file its runs in (never the System workspace), by id.
+let scheduleCases = [], scheduleDefaultCaseId = '';
+async function loadScheduleCases() {
+    const all = (window.ActiveCase && await ActiveCase.listCases()) || [];
+    scheduleCases = all.filter(c => !c.is_system);
+    scheduleDefaultCaseId = (scheduleCases.find(c => c.is_default) || scheduleCases[0] || {}).case_id || '';
+}
+
+function scheduleCaseName(caseId) {
+    const c = scheduleCases.find(x => x.case_id === (caseId || scheduleDefaultCaseId));
+    return c ? (c.name || c.case_id) : (caseId || 'Default');
+}
+
+// The form's Case list: the job's own case when editing, else the case the
+// browser is in (unless that is the System workspace), else Default.
+async function fillScheduleCases(selected) {
+    await loadScheduleCases();
+    const sel = document.getElementById('schedule-case');
+    if (!sel) return;
+    const active = window.ActiveCase ? ActiveCase.get() : '';
+    const want = [selected, active, scheduleDefaultCaseId].find(id => id && scheduleCases.some(c => c.case_id === id)) || '';
+    sel.innerHTML = scheduleCases.map(c =>
+        `<option value="${escapeHtml(c.case_id)}"${c.case_id === want ? ' selected' : ''}>${escapeHtml(c.name || c.case_id)}</option>`).join('');
+}
+
 function renderScheduleCard(job) {
     const isEnabled = job.enabled == 1;
     let typeLabel, typeBadgeColor;
@@ -126,6 +152,7 @@ function renderScheduleCard(job) {
                     <span title="Last Run">Last: ${lastRunText}</span>
                     <span title="Run Count">Runs: ${job.run_count || 0}</span>
                     <span title="Clients">${clientCount} client(s)</span>
+                    <span title="Runs are filed in this case">Case: ${escapeHtml(scheduleCaseName(job.case_id))}</span>
                 </div>
             </div>
             <div class="flex gap-2 ml-4">
@@ -255,6 +282,7 @@ function showNewScheduleModal() {
 
     // Reset selection (new job starts with nothing selected)
     schedulerClientManager.setSelected([]);
+    fillScheduleCases(null);
 
     // Reset per-type option fields to their defaults
     document.getElementById('schedule-sketch-name').value = '';
@@ -301,6 +329,7 @@ async function editSchedule(jobId) {
         document.getElementById('schedule-start-date').value =
             (job.start_at ? String(job.start_at).slice(0, 10) : new Date().toISOString().slice(0, 10));
         document.getElementById('schedule-run-time').value = job.run_time || '02:00';
+        await fillScheduleCases(job.case_id || scheduleDefaultCaseId);
 
         // Load blueprints then set selected
         await onScheduleBlueprintTypeChange();
@@ -409,7 +438,8 @@ async function saveScheduleFromModal() {
         start_date: startDate,            // anchor the interval to this date
         run_time: runTime,
         client_ids: clientIds,
-        options: options                  // per-type run options
+        options: options,                 // per-type run options
+        case_id: (document.getElementById('schedule-case') || {}).value || ''   // where its runs are filed
     };
 
     // Agentic runs are collection-only — no LLM report at the module level.

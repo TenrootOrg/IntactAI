@@ -12,6 +12,25 @@ from datetime import datetime
 from services.file_storage_service import _get_connection as get_db_connection
 
 
+def _job_case(job_meta):
+    """The case a schedule's runs belong to. A run fired by the scheduler has no
+    browser request, so without this every scheduled run landed in Default
+    (2026-10-21). None -> Default, as before: a schedule from before case_id
+    existed, or one whose case was deleted since (said, never filed under a case
+    nobody can open)."""
+    cid = (job_meta or {}).get("case_id") or None
+    if not cid:
+        return None
+    try:
+        from services.fusion import store
+        if store.get_case(cid):
+            return cid
+    except Exception:                                      # noqa: BLE001 -- Default, as before
+        pass
+    print(f"[SCHEDULER] Job {job_meta.get('id')}: case {cid} no longer exists -- runs go to Default", flush=True)
+    return None
+
+
 def run_scheduled_blueprint(job_id: str):
     """Execute a scheduled blueprint run. This is the main APScheduler callback."""
     from services.agentic import run_agentic_pipeline
@@ -34,6 +53,7 @@ def run_scheduled_blueprint(job_id: str):
 
     blueprint_id = job_meta['blueprint_id']
     blueprint_type = job_meta.get('blueprint_type', 'velociraptor')
+    case_id = _job_case(job_meta)
     client_ids = json.loads(job_meta.get('client_ids', '[]'))
     # Per-type run options (JSON blob): CVE scan_mode/max_wait, Memory
     # include_yara/timeouts/case_name, Collection collection_minutes, Hunt
@@ -57,6 +77,7 @@ def run_scheduled_blueprint(job_id: str):
 
             # Create automation run
             run_id = create_automation_run(
+                case_id=case_id,
                 automation_type="velociraptor_collection",
                 name=f"Scheduled: {job_meta['name']}",
                 details={
@@ -91,13 +112,13 @@ def run_scheduled_blueprint(job_id: str):
         elif blueprint_type == 'aws':
             # AWS (CloudTrail) — account-based/env-wide (no clients). blueprint +
             # regions/scope_mode from options. Runs in its own thread.
-            run_aws_scheduled(job_meta['name'], blueprint_id, options)
+            run_aws_scheduled(job_meta['name'], blueprint_id, options, case_id=case_id)
             print(f"[SCHEDULER] Started AWS scan (env-wide)", flush=True)
 
         else:
             # Velociraptor Hunt (env-wide) — legacy 'velociraptor' + explicit 'hunt'.
             # include_labels / per_artifact from options.
-            run_velociraptor_hunt(job_meta['name'], blueprint_id, client_ids, options)
+            run_velociraptor_hunt(job_meta['name'], blueprint_id, client_ids, options, case_id=case_id)
             print(f"[SCHEDULER] Started velociraptor hunt: blueprint={blueprint_id}", flush=True)
 
         # Update job metadata
@@ -116,7 +137,8 @@ def run_scheduled_blueprint(job_id: str):
         traceback.print_exc()
 
 
-def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list, options: dict = None):
+def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list, options: dict = None,
+                          case_id: str = None):
     """Execute a Velociraptor hunt from a blueprint.
 
     options: {include_labels: [str] (target-label scoping — empty = all clients)}.
@@ -166,6 +188,7 @@ def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list, op
     # Create workflow run
     blueprint_name = blueprint.get('name', blueprint_id)
     run_id = create_automation_run(
+        case_id=case_id,
         automation_type="scheduled_hunt",
         name=f"Scheduled: {job_name}",
         details={
@@ -256,7 +279,7 @@ SELECT HuntId FROM collection
         print(f"[SCHEDULER] Hunt error: {e}", flush=True)
 
 
-def run_aws_scheduled(job_name: str, blueprint_id: str, options: dict = None):
+def run_aws_scheduled(job_name: str, blueprint_id: str, options: dict = None, case_id: str = None):
     """Scheduled AWS (CloudTrail) scan — account-based/env-wide (no Velociraptor
     clients). Resolves the AWS blueprint, loads AWS config, and runs
     run_aws_pipeline in a daemon thread. Mirrors routes/aws_routes.start_scan.
@@ -284,6 +307,7 @@ def run_aws_scheduled(job_name: str, blueprint_id: str, options: dict = None):
     blueprint = next((b for b in get_aws_blueprints() if b.get('id') == blueprint_id), None)
 
     run_id = create_automation_run(
+        case_id=case_id,
         automation_type='aws_scan',
         name=f"Scheduled: {job_name}",
         details={"source": "scheduler", "blueprint": blueprint_id,
@@ -409,6 +433,7 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
     label = (f"{len(clients)} clients ({', '.join(c['client_name'] for c in clients)})"
              if 0 < len(clients) <= 3 else f"{len(clients)} clients")
     run_id = create_automation_run(
+        case_id=_job_case(job_meta),
         automation_type="timesketch",
         name=f"Scheduled: {job_name} - {label}",
         details={
@@ -515,7 +540,9 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
 
     from services.workflow_service import register_cancel_event, unregister_cancel
 
+    case_id = _job_case(job_meta)
     batch_id = create_automation_run(
+        case_id=case_id,
         automation_type="memory_batch",
         name=f"Memory ({mode}) — scheduled: {len(client_ids)} host(s), one after another",
         details={
@@ -539,6 +566,7 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
                     update_run_status(batch_id, "cancelled", progress=(n - 1) * 100 // total)
                     return
                 run_id = create_automation_run(
+                    case_id=case_id,
                     automation_type="memory",
                     name=f"Memory ({mode}) — scheduled: {cid}",
                     details={
