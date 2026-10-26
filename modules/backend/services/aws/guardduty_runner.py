@@ -100,7 +100,7 @@ def collect_guardduty(
         log(f"[guardduty] not available: {avail['message']}", "warning")
         return []
 
-    regions_to_scan = regions or [aws_config.get("region", "us-east-1")]
+    regions_to_scan = regions or boto_client.default_regions(aws_config)
     out: List[Dict] = []
     total_detectors = 0
     # A region we could not read is NOT a region with no findings. Tracked so
@@ -152,5 +152,9 @@ def collect_guardduty(
         log(f"[guardduty] {len(unread)} of {len(regions_to_scan)} region(s)/detector(s) "
             f"could not be read ({', '.join(unread[:10])}) — a zero-finding result "
             f"here does NOT mean the account is clean", "error")
-    log(f"[guardduty] {len(out)} active findings across {total_detectors} detector(s) in {len(regions_to_scan)} region(s)", "info")
+    if not total_detectors and not unread:
+        log(f"[guardduty] GuardDuty is not enabled in {', '.join(regions_to_scan)} (no detector), so it has "
+            f"no findings to give — enable it in the AWS console to get them", "info")
+    else:
+        log(f"[guardduty] {len(out)} active findings across {total_detectors} detector(s) in {len(regions_to_scan)} region(s)", "info")
     return out

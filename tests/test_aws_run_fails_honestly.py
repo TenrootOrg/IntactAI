@@ -293,15 +293,16 @@ class PartialCollectionSurvivesAFailure(_PipelineHarness):
                     {"errors": [], "sources_attempted": ["iam_principals"],
                      "sources_with_data": ["iam_principals"], "sources_failed": []})
 
-        saved = pipeline.run_sigma_rules
-        pipeline.run_sigma_rules = lambda **kw: (_ for _ in ()).throw(RuntimeError("detector exploded"))
+        from services.aws import detections
+        saved = detections.detect
+        detections.detect = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("detector exploded"))
         try:
             res = self.run_pipeline(
                 preflight_result={"ok": True, "kind": "", "message": "", "account": "1", "arn": "a"},
                 collect=collect,
             )
         finally:
-            pipeline.run_sigma_rules = saved
+            detections.detect = saved
         self.assertEqual(res["status"], "error")
         self.assertIn("detector exploded", res["error"])
         # The whole point: re-running analysis must be possible without
@@ -406,7 +407,7 @@ class NoSilentDegradation(_PipelineHarness):
             blueprint=bp, options={"cloudtrail_mode": "light"}, collect=collect,
         )
         self.assertEqual(seen["cloudtrail_mode"], "light")
-        self.assertTrue(any("cloudtrail_full source is not collected" in d for d in res["degraded"]),
+        self.assertTrue(any("not the read calls some rules look at" in d for d in res["degraded"]),
                         res.get("degraded"))
 
     def test_the_blueprints_own_cloudtrail_mode_applies_when_none_is_requested(self):

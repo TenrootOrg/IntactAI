@@ -55,6 +55,52 @@ LIGHT_EVENT_NAMES_IAM = (
     "UpdateUser",
 )
 
+# FULL mode = every CHANGE plus only the reads that matter. It used to page through
+# EVERY event, reads included: on a quiet account (28 writes in 30 days) a security
+# integration's polling filled the 10,000 cap in each of 3 regions in ~7 minutes, so
+# the 30-day window was never covered and real changes could be pushed out
+# (2026-10-26). The reads below are the ones the AWS SigmaHQ rules match on.
+FULL_READ_EVENT_NAMES = (
+    "GetCallerIdentity", "GetSigninToken", "GetSessionToken", "DescribeTaskDefinition",
+    # the reads our own rules watch (config/sigma-aws): without these passes the rules for
+    # secrets read, startup scripts read, SES / Bedrock probing, API keys read ... never fired
+    # in a live scan -- they only worked on uploaded logs (2026-10-26)
+    "GetSecretValue", "BatchGetSecretValue", "GetParameter", "GetParameters", "GetParametersByPath",
+    "DescribeInstanceAttribute", "GetPasswordData", "GetFederationToken",
+    "GetInstanceAccessDetails", "DownloadDefaultKeyPair",
+    "GetApiKeys", "GetApiKey", "GetLogEvents", "FilterLogEvents",
+    "GetSendQuota", "ListIdentities", "GetAccountSendingEnabled", "ListEmailIdentities", "GetSendStatistics",
+    "GetFoundationModelAvailability", "ListFoundationModels", "InvokeModel", "Converse",
+)
+# Not ListBuckets: its rule (bucket enumeration) excludes assumed roles, and nearly every
+# ListBuckets on a real account is a security integration's role polling -- 344 of them,
+# each one an "AssumeRole Misuse" row, and not one could match (2026-10-26).
+# Not GetLoginProfile: the console's IAM page calls it per user (55 "Root Credentials"
+# findings from one visit), and its only rule also matches CreateLoginProfile, a write.
+FULL_READ_PASS_CAP = 500        # per read pass: an integration's polling must not fill the region cap
+# Reads whose rules judge PEOPLE only: a role's copies are an integration polling (a
+# security tool read 1,500 SES identity lists and 500 startup scripts in one scan,
+# 2026-10-26) and would only crowd the person's reads out of the pass cap.
+PERSON_ONLY_READS = {"ListIdentities", "GetSendQuota", "GetAccountSendingEnabled", "ListEmailIdentities",
+                     "GetSendStatistics", "DescribeInstanceAttribute", "GetApiKeys", "GetApiKey"}
+# A discovery sweep is many DIFFERENT reads by one person, so it cannot be fetched by name.
+# Instead: every read of each person who changed something in the window (Username pass).
+# Not root (its console page loads were 1,141 false findings) and not roles (integrations
+# poll all day). People are what attackers with a stolen key or password look like.
+PERSON_READ_MAX_PEOPLE = 25
+PERSON_READ_CAP = 1000          # per person, newest first
+
+
+def _person_lookup_name(ev: Dict[str, Any]) -> Optional[str]:
+    """The LookupEvents Username of a person (IAM user, SSO or federated session), else None."""
+    ui = ev.get("userIdentity") if isinstance(ev.get("userIdentity"), dict) else {}
+    t, arn = str(ui.get("type") or ""), str(ui.get("arn") or "")
+    if t == "IAMUser":
+        return ui.get("userName") or None
+    if (t == "AssumedRole" and ":assumed-role/AWSReservedSSO_" in arn) or t == "FederatedUser":
+        return arn.rsplit("/", 1)[-1] or None
+    return None
+
 # Hard caps so a busy account can't burn the whole rate budget.
 DEFAULT_MAX_EVENTS_PER_REGION = 500
 DEFAULT_LOOKBACK_HOURS = 24
@@ -194,6 +240,7 @@ def _collect_for_region(
     max_events: int,
     log,
     is_cancelled_func: Optional[Callable[[], bool]],
+    include_reads: bool = True,
 ) -> List[Dict[str, Any]]:
     """LookupEvents loop for one region."""
     out: List[Dict] = []
@@ -226,19 +273,33 @@ def _collect_for_region(
     elif event_names:
         attr_passes = [[{"AttributeKey": "EventName", "AttributeValue": en}] for en in event_names]
     else:
-        attr_passes = [None]   # full sweep — no filter
+        # full: every write first (so it can never be crowded out), then the few reads
+        # the rules look at (each capped). Not root's reads: one console visit is
+        # hundreds of List/Get page loads -- 1,141 "Root Credentials" findings on a quiet
+        # account (2026-10-26). Root's changes and sign-ins are writes, so they are in.
+        attr_passes = ([[{"AttributeKey": "ReadOnly", "AttributeValue": "false"}]]
+                       + ([[{"AttributeKey": "EventName", "AttributeValue": en}] for en in FULL_READ_EVENT_NAMES]
+                          if include_reads else []))
 
     # A pass that fails is a HOLE in the evidence, not a detail. Counted here
     # and reported once per region below: "0 events" and "we were denied 25
     # times" have to look different to the operator.
     failed_passes: Dict[str, int] = {}
 
+    seen_ids: set = set()
+    person_passes = not username_filters and not event_names and include_reads
+    person_set = set()
     for attrs in attr_passes:
         if is_cancelled_func and is_cancelled_func():
             log(f"[cloudtrail] cancelled in region={region}", "warning")
             return out
         next_token = None
         page = 0
+        read_pass = bool(attrs) and attrs[0].get("AttributeKey") == "EventName" and \
+            attrs[0].get("AttributeValue") in FULL_READ_EVENT_NAMES and not event_names
+        person_pass = person_passes and attrs[0].get("AttributeKey") == "Username"
+        pass_cap = PERSON_READ_CAP if person_pass else FULL_READ_PASS_CAP
+        pass_n = scanned = 0
         while True:
             try:
                 resp = _lookup_one_page(
@@ -263,10 +324,24 @@ def _collect_for_region(
                 break_region = (kind == "denied")
                 break
             for raw in resp.get("Events", []) or []:
-                out.append(_normalize_event(raw))
+                eid = raw.get("EventId")
+                if eid and eid in seen_ids:          # a write that is also a rule read comes back twice
+                    continue
+                if eid:
+                    seen_ids.add(eid)
+                ev = _normalize_event(raw)
+                scanned += 1
+                if read_pass and attrs[0]["AttributeValue"] in PERSON_ONLY_READS and not _person_lookup_name(ev):
+                    continue
+                pass_n += 1
+                out.append(ev)
                 if len(out) >= max_events:
                     log(f"[cloudtrail] region={region} hit cap {max_events}", "warning")
                     return out
+            if (read_pass or person_pass) and (pass_n >= pass_cap or scanned >= pass_cap * 5):
+                log(f"[cloudtrail] region={region}: {'reads by a person' if person_pass else attrs[0]['AttributeValue']} "
+                    f"capped at {pass_cap} (the newest are kept)", "info")
+                break
             next_token = resp.get("NextToken")
             page += 1
             if not next_token:
@@ -282,6 +357,16 @@ def _collect_for_region(
                 break
         if break_region:
             break
+        if person_passes and attrs and attrs[0].get("AttributeValue") == "false" and attrs[0].get("AttributeKey") == "ReadOnly":
+            # the change pass is done: now each person's reads (attr_passes grows while we walk it)
+            for ev in out:                                            # LookupEvents: newest first
+                n = _person_lookup_name(ev)
+                if n and n not in person_set and len(person_set) < PERSON_READ_MAX_PEOPLE:
+                    person_set.add(n)
+                    attr_passes.append([{"AttributeKey": "Username", "AttributeValue": n}])
+            if person_set:
+                log(f"[cloudtrail] region={region}: also reading the reads of {len(person_set)} "
+                    f"person(s) who made changes (discovery sweeps)", "info")
 
     if failed_passes:
         detail = ", ".join(f"{k}x{n}" for k, n in sorted(failed_passes.items()))
@@ -319,8 +404,8 @@ def collect_cloudtrail(
         event_names = list(LIGHT_EVENT_NAMES_IAM)
     elif mode == "console_only":
         event_names = list(LIGHT_EVENT_NAMES_CONSOLE)
-    elif mode == "full":
-        event_names = None  # no filter — paginate everything
+    elif mode in ("full", "writes"):
+        event_names = None  # every write (+ the reads the rules use, in full)
     else:  # light (default)
         event_names = list(LIGHT_EVENT_NAMES_CONSOLE) + list(LIGHT_EVENT_NAMES_IAM)
 
@@ -338,7 +423,7 @@ def collect_cloudtrail(
     start_dt, end_dt = _resolve_time_window(time_filter)
     log(f"[cloudtrail] mode={mode} window={start_dt.isoformat()} → {end_dt.isoformat()}", "info")
 
-    regions_to_scan = regions or [aws_config.get("region", "us-east-1")]
+    regions_to_scan = regions or boto_client.default_regions(aws_config)
     all_events: List[Dict] = []
     regions_done: List[str] = []
     for region in regions_to_scan:
@@ -361,6 +446,7 @@ def collect_cloudtrail(
                 event_names=event_names,
                 username_filters=username_filters,
                 max_events=max_events_per_region,
+                include_reads=(mode == "full"),
                 log=log,
                 is_cancelled_func=is_cancelled_func,
             )

@@ -33,7 +33,8 @@ CLOUD_RULE_DIRS = {
 # upgrade, so anything written there would be both unwritable and at risk
 # of being wiped by the next rule-pack update.
 CUSTOM_RULES_DIR = os.getenv('CUSTOM_SIGMA_RULES_DIR', '/app/data/custom_sigma_rules')
-CUSTOM_RULE_CATEGORIES = ('aws', 'azure')
+# AWS had an upload panel too; removed 2026-10-26 (the AWS page has no custom rules).
+CUSTOM_RULE_CATEGORIES = ('azure',)
 
 
 # =============================================================================

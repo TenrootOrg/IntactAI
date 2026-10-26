@@ -33,7 +33,7 @@ module imports (and is testable) with no boto3 installed.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, List
 
 # Short on purpose — see (1) above. A LookupEvents page that has not answered
 # in 20s on a healthy account is not going to; the retry gives one recovery
@@ -130,6 +130,20 @@ def classify(exc: BaseException) -> Tuple[str, str]:
     return "unknown", f"{cls}: {detail}"
 
 
+import re as _re
+
+# us-east-1, eu-central-2, us-gov-west-1, cn-north-1, ap-southeast-3 ...
+REGION_RE = _re.compile(r"^[a-z]{2}(-gov|-iso[a-z]?)?-[a-z]+-\d{1,2}$")
+
+
+def default_regions(aws_config: Dict[str, Any]) -> List[str]:
+    """The regions a scan covers when it names none: the ones the AWS page last
+    scanned (remembered by POST /api/aws/scan), else the old single Settings
+    region, else us-east-1. Settings no longer has a region field -- the page
+    is the only place to choose, and a scheduled scan follows it."""
+    return list(aws_config.get("regions") or []) or [aws_config.get("region") or "us-east-1"]
+
+
 def client(service: str, aws_config: Dict[str, Any], region: Optional[str] = None):
     """A boto3 client with the bounded timeouts above.
 
@@ -143,7 +157,7 @@ def client(service: str, aws_config: Dict[str, Any], region: Optional[str] = Non
     kwargs: Dict[str, Any] = {
         "aws_access_key_id": aws_config["access_key_id"],
         "aws_secret_access_key": aws_config["secret_access_key"],
-        "region_name": region or aws_config.get("region", "us-east-1"),
+        "region_name": region or default_regions(aws_config)[0],
         "config": Config(
             connect_timeout=CONNECT_TIMEOUT,
             read_timeout=READ_TIMEOUT,

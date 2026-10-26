@@ -97,12 +97,36 @@ LOG_SOURCES: Dict[str, Dict[str, Any]] = {
         'tier': 3,
         'fixture': 'fake_cloudtrail_full.json',
     },
+    # Data events (S3 objects, Lambda invokes) from the trail's own bucket -- LookupEvents
+    # never returns them. Full mode only; nothing when no trail records data events.
+    'cloudtrail_data': {
+        'name': 'CloudTrail — Data Events (trail bucket)',
+        'sigma_prefix': 'AWS.CloudTrail',
+        'tier': 3,
+        'fixture': None,
+    },
+    # VPC flow logs, DNS query logs, EKS audit logs -- from wherever the account sends
+    # them (netlogs_runner). Full mode only; nothing when none is switched on.
+    'network_logs': {
+        'name': 'Network + Kubernetes Logs (flow, DNS, EKS audit)',
+        'sigma_prefix': 'AWS.Network',
+        'tier': 3,
+        'fixture': None,
+    },
     # Tier 4: State / posture snapshots (no event timeline)
     'iam_principals': {
         'name': 'IAM Principals + Keys (CloudFox-equivalent)',
         'sigma_prefix': 'AWS.IAM',
         'tier': 4,
         'fixture': 'fake_iam_principals.json',
+    },
+    # What the internet can reach right now: EC2 security groups, Lightsail ports,
+    # public RDS, public S3 (exposure_runner). State, not events -- outlives CloudTrail's 90 days.
+    'exposure': {
+        'name': 'Internet Exposure (network, storage, images, functions, clusters)',
+        'sigma_prefix': 'AWS.Exposure',
+        'tier': 4,
+        'fixture': None,
     },
 }
 
@@ -130,6 +154,15 @@ def _load_fixture(filename: str) -> List[Dict]:
         return []
 
 
+def _answered_empty(cfg, log, what):
+    """The source answered and had nothing -- a correct result for a clean account,
+    not a problem. It used to fall through to the demo-fixture fallback and log a
+    WARNING ("no live data and demo fixtures are off ...") for every empty source,
+    so a clean scan showed several warnings that meant nothing (2026-10-26)."""
+    log(f"[AWS] {cfg['name']}: {what} — nothing to analyse from this source", "info")
+    return []
+
+
 def _stub_collect(
     source: str,
     log: Callable[[str, str], None],
@@ -141,6 +174,7 @@ def _stub_collect(
     is_cancelled_func: Optional[Callable[[], bool]] = None,
     freshness_window_days: Optional[float] = None,
     max_events_per_region: Optional[int] = None,
+    cloudtrail_mode: str = 'full',
 ) -> List[Dict]:
     """Collect records for one source. If a real runner exists for this
     source AND `aws_config` is provided, run it; on empty/failure fall
@@ -170,7 +204,8 @@ def _stub_collect(
                 ct_mode = {
                     'cloudtrail_console': 'console_only',
                     'cloudtrail_iam':     'iam_only',
-                    'cloudtrail_full':    'full',
+                    # light = every change (no reads); full = every change + the rule reads
+                    'cloudtrail_full':    'full' if cloudtrail_mode == 'full' else 'writes',
                 }[source]
                 ct_kwargs = dict(
                     mode=ct_mode,
@@ -189,7 +224,9 @@ def _stub_collect(
                         r.setdefault('EventSource', sigma_prefix)
                     log(f"[AWS] {cfg['name']}: {len(records)} live events (CloudTrail)", "info")
                     return records
-                log(f"[AWS] {cfg['name']}: 0 live events in window — using fixture as backstop", "info")
+                if not demo_fixtures_enabled():
+                    return _answered_empty(cfg, log, "no events in the time window")
+                log(f"[AWS] {cfg['name']}: 0 live events in window — demo mode, using the fixture", "info")
             else:
                 log(f"[AWS] {cfg['name']}: CloudTrail runner unavailable ({avail.get('message')}) — using fixture", "warning")
         except AwsFatal:
@@ -219,7 +256,9 @@ def _stub_collect(
                         r.setdefault('EventSource', sigma_prefix)
                     log(f"[AWS] {cfg['name']}: {len(records)} live findings (GuardDuty)", "info")
                     return records
-                log(f"[AWS] {cfg['name']}: GuardDuty has 0 active findings or no detectors — using fixture as backstop", "info")
+                if not demo_fixtures_enabled():
+                    return _answered_empty(cfg, log, "no active GuardDuty findings")
+                log(f"[AWS] {cfg['name']}: GuardDuty has 0 active findings or no detectors — demo mode, using the fixture", "info")
             else:
                 log(f"[AWS] {cfg['name']}: GuardDuty runner unavailable ({avail.get('message')}) — using fixture", "warning")
         except AwsFatal:
@@ -249,7 +288,9 @@ def _stub_collect(
                         r.setdefault('EventSource', sigma_prefix)
                     log(f"[AWS] {cfg['name']}: {len(records)} live findings (Access Analyzer)", "info")
                     return records
-                log(f"[AWS] {cfg['name']}: 0 Access Analyzer findings or no analyzer configured — using fixture as backstop", "info")
+                if not demo_fixtures_enabled():
+                    return _answered_empty(cfg, log, "no Access Analyzer findings")
+                log(f"[AWS] {cfg['name']}: 0 Access Analyzer findings or no analyzer configured — demo mode, using the fixture", "info")
             else:
                 log(f"[AWS] {cfg['name']}: Access Analyzer runner unavailable ({avail.get('message')}) — using fixture", "warning")
         except AwsFatal:
@@ -260,6 +301,54 @@ def _stub_collect(
             raise
         except Exception as e:
             log(f"[AWS] {cfg['name']}: Access Analyzer call raised {e!r} — using fixture", "error")
+
+    # --- Real-runner path (data events from the trail bucket, read-only) --
+    if source == 'cloudtrail_data' and aws_config:
+        try:
+            from . import logbucket_runner
+            return logbucket_runner.collect_trail_data_events(
+                aws_config, regions=regions, time_filter=time_filter, log_func=log,
+                is_cancelled_func=is_cancelled_func)
+        except AwsFatal:
+            raise
+        except Exception as e:
+            log(f"[AWS] {cfg['name']}: raised {e!r}", "error")
+        return []
+
+    # --- Real-runner path (network + Kubernetes logs, read-only) ---------
+    if source == 'network_logs' and aws_config:
+        try:
+            from . import netlogs_runner
+            return netlogs_runner.collect_network_logs(
+                aws_config, regions=regions, time_filter=time_filter, log_func=log,
+                is_cancelled_func=is_cancelled_func)
+        except AwsFatal:
+            raise
+        except Exception as e:
+            log(f"[AWS] {cfg['name']}: raised {e!r}", "error")
+        return []
+
+    # --- Real-runner path (internet exposure, read-only) ----------------
+    if source == 'exposure' and aws_config:
+        try:
+            from . import exposure_runner
+            avail = exposure_runner.is_available(aws_config)
+            if avail.get('available'):
+                records = exposure_runner.collect_exposure(aws_config, regions=regions, log_func=log,
+                                                          is_cancelled_func=is_cancelled_func)
+                for r in records:
+                    r.setdefault('_source', source)
+                    r.setdefault('EventSource', sigma_prefix)
+                if records:
+                    log(f"[AWS] {cfg['name']}: {len(records)} internet-facing resource(s)", "info")
+                    return records
+                return _answered_empty(cfg, log, "nothing reachable from the internet")
+            log(f"[AWS] {cfg['name']}: unavailable ({avail.get('message')})", "warning")
+        except AwsFatal:
+            raise
+        except Exception as e:
+            log(f"[AWS] {cfg['name']}: exposure check raised {e!r}", "error")
+        return []
 
     # --- Real-runner path (IAM principals — CloudFox-equivalent) ------
     if source == 'iam_principals' and aws_config:
@@ -280,7 +369,9 @@ def _stub_collect(
                         r.setdefault('EventSource', sigma_prefix)
                     log(f"[AWS] {cfg['name']}: {len(records)} live principals (boto3)", "info")
                     return records
-                log(f"[AWS] {cfg['name']}: boto3 enumeration returned no principals — falling back to fixture", "warning")
+                if not demo_fixtures_enabled():
+                    return _answered_empty(cfg, log, "no IAM users (an SSO-only account has none)")
+                log(f"[AWS] {cfg['name']}: boto3 enumeration returned no principals — demo mode, using the fixture", "info")
             else:
                 log(f"[AWS] {cfg['name']}: iam_runner unavailable ({avail.get('message')}) — using fixture", "warning")
         except AwsFatal:
@@ -380,13 +471,21 @@ def collect_aws_logs(
     # cloudtrail_mode = 'light' downgrades cloudtrail_full to its filtered
     # siblings, matching how the Azure UAL light/full toggle works. This
     # keeps run times sane on real accounts later.
+    # CloudTrail is collected ONCE, whatever slices a blueprint names: every change
+    # (ReadOnly=false) in both modes; Full also reads the few read calls the rules use.
+    # Light used to mean "console sign-ins + ~20 IAM event names", so a port opened to the
+    # internet, a public snapshot or a disabled detector never reached a rule in Quick
+    # Triage (2026-10-26). Console sign-ins and IAM changes are writes -- still in.
     effective_sources = list(sources)
-    if cloudtrail_mode == 'light' and 'cloudtrail_full' in effective_sources:
-        effective_sources = [s for s in effective_sources if s != 'cloudtrail_full']
-        for s in ('cloudtrail_console', 'cloudtrail_iam'):
-            if s not in effective_sources:
-                effective_sources.append(s)
-        log("[AWS] cloudtrail_mode=light — replaced cloudtrail_full with console+iam slices", "info")
+    ct = [s for s in effective_sources if s in ('cloudtrail_console', 'cloudtrail_iam', 'cloudtrail_full')]
+    if ct:
+        first = effective_sources.index(ct[0])
+        effective_sources = [s for s in effective_sources if s not in ct]
+        effective_sources.insert(first, 'cloudtrail_full')
+        if cloudtrail_mode == 'full' and 'cloudtrail_data' not in effective_sources:
+            effective_sources.insert(first + 1, 'cloudtrail_data')
+        if cloudtrail_mode == 'full' and 'network_logs' not in effective_sources:
+            effective_sources.insert(first + 2, 'network_logs')
 
     # If we have a single target principal, keep its ARN for scan-time
     # scoping (Mode 1 in the data-eval doc). Currently unused by the
@@ -424,6 +523,7 @@ def collect_aws_logs(
                 is_cancelled_func=_is_cancelled_for_runner,
                 freshness_window_days=freshness_window_days,
                 max_events_per_region=max_events_per_region,
+                cloudtrail_mode=cloudtrail_mode,
             )
         except AwsFatal as fatal:
             # A fatal runner error carries the records it had already read.

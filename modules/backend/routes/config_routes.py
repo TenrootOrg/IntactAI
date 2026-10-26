@@ -821,6 +821,12 @@ def save_cloud_config_endpoint():
             config['aws']['session_token'] = existing.get('aws', {}).get('session_token', '')
         if config.get('azure', {}).get('client_secret') == '••••••••':
             config['azure']['client_secret'] = existing.get('azure', {}).get('client_secret', '')
+        # The AWS region is chosen on the AWS page and remembered by the scan --
+        # a Settings save (maybe from a page opened before that scan) keeps it.
+        if isinstance(config.get('aws'), dict):
+            for k in ('region', 'regions', 'time_window', 'member_accounts', 'member_role'):
+                if k in existing.get('aws', {}):
+                    config['aws'][k] = existing['aws'][k]
 
         _save_cloud_config(config)
         print(f"[CLOUD] Saved cloud config for provider: {config.get('provider', 'unknown')}", flush=True)

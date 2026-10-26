@@ -81,7 +81,7 @@ def collect_accessanalyzer(
         log(f"[accessanalyzer] not available: {avail['message']}", "warning")
         return []
 
-    regions_to_scan = regions or [aws_config.get("region", "us-east-1")]
+    regions_to_scan = regions or boto_client.default_regions(aws_config)
     out: List[Dict] = []
     total_analyzers = 0
     # Unreadable != nothing found. See guardduty_runner for the same rule.
@@ -121,5 +121,9 @@ def collect_accessanalyzer(
         log(f"[accessanalyzer] {len(unread)} of {len(regions_to_scan)} region(s)/analyzer(s) "
             f"could not be read ({', '.join(unread[:10])}) — a zero-finding result "
             f"here does NOT mean nothing is publicly exposed", "error")
-    log(f"[accessanalyzer] {len(out)} findings across {total_analyzers} analyzer(s) in {len(regions_to_scan)} region(s)", "info")
+    if not total_analyzers and not unread:
+        log(f"[accessanalyzer] IAM Access Analyzer is not enabled in {', '.join(regions_to_scan)} (no analyzer), "
+            f"so it has no findings to give — create an analyzer in the AWS console to get them", "info")
+    else:
+        log(f"[accessanalyzer] {len(out)} findings across {total_analyzers} analyzer(s) in {len(regions_to_scan)} region(s)", "info")
     return out

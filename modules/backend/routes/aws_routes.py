@@ -23,6 +23,7 @@ from flask import Blueprint, Response, jsonify, request
 from werkzeug.utils import secure_filename
 
 from routes.config_routes import _load_cloud_config
+from services.aws.boto_client import default_regions
 from services.aws.pipeline import (
     get_available_sources,
     get_aws_blueprints,
@@ -31,12 +32,7 @@ from services.aws.pipeline import (
 )
 from services.aws.collectors import demo_fixtures_enabled, parse_uploaded_logs
 from services.azure.sigma_runner import AWS_RULES_PATH
-from services.aws.sigma_runner import (
-    validate_rules_directory,
-    list_custom_rules,
-    save_custom_rule,
-    delete_custom_rule,
-)
+from services.aws.sigma_runner import validate_rules_directory
 from services.workflow_logger import add_log_to_run
 from services.workflow_service import update_run_status, get_automation_run
 import threading
@@ -66,7 +62,7 @@ def _safe_run_dir(run_id: str) -> str | None:
     Returns None if run_id doesn't match the format run_ids are actually
     generated in, or if the resolved path would (still) escape
     UPLOAD_FOLDER — mirroring the containment check already used by
-    services/aws/sigma_runner.py's delete_custom_rule()."""
+    services/azure/sigma_runner.py's delete_custom_rule()."""
     if not run_id or not _RUN_ID_RE.match(run_id):
         return None
     base = os.path.realpath(UPLOAD_FOLDER)
@@ -105,7 +101,15 @@ def get_aws_status():
             'aws_credentials': {
                 'configured': has_credentials,
                 'region': aws_config.get('region') or 'us-east-1',
+                # what the AWS page opens with: the regions last scanned
+                # what the page opens with: what was last picked there (may be empty)
+                'regions': (aws_config['regions'] if isinstance(aws_config.get('regions'), list)
+                            else default_regions(aws_config)),
+                'time_window': (aws_config['time_window'] if isinstance(aws_config.get('time_window'), dict)
+                                else AWS_TIME_WINDOW_DEFAULT),
                 'access_key_id': (aws_config.get('access_key_id', '')[:6] + '...') if aws_config.get('access_key_id') else None,
+                'member_accounts': aws_config.get('member_accounts') or [],
+                'member_role': aws_config.get('member_role') or '',
             },
             'capabilities': {
                 'online_mode': has_credentials,
@@ -155,64 +159,113 @@ def get_rules_info():
                 for fn in files:
                     if fn.endswith(('.yml', '.yaml')):
                         count += 1
-        custom_count = len(list_custom_rules('aws'))
         return jsonify({
             'available': rules_valid,
             'message': rules_msg,
             'aws_rules_count': count,
-            'custom_rules_count': custom_count,
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
-@aws_bp.route('/api/aws/rules/custom', methods=['GET'])
-def list_custom_aws_rules():
-    """List operator-added custom SIGMA rules for AWS."""
-    try:
-        return jsonify({'rules': list_custom_rules('aws')})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+def _clean_regions(raw):
+    """(regions, error): de-duplicated, lower-cased; a typo is an error, never remembered."""
+    from services.aws.boto_client import REGION_RE
+    if isinstance(raw, str):
+        raw = raw.split(',')
+    regions = list(dict.fromkeys(str(r).strip().lower() for r in (raw or []) if str(r).strip()))
+    bad = [r for r in regions if not REGION_RE.match(r)]
+    return regions, (f"Not an AWS region: {', '.join(bad)} (e.g. us-east-1, eu-west-2)" if bad else None)
 
 
-@aws_bp.route('/api/aws/rules/custom', methods=['POST'])
-def upload_custom_aws_rule():
-    """Upload a custom SIGMA rule for AWS. Accepts either a multipart file
-    upload (field 'file') or a JSON body {"filename": ..., "content": ...}."""
-    try:
-        if 'file' in request.files:
-            f = request.files['file']
-            filename = f.filename or 'custom_rule.yml'
-            content = f.read().decode('utf-8', errors='replace')
-        else:
-            data = request.get_json(silent=True) or {}
-            filename = data.get('filename') or 'custom_rule.yml'
-            content = data.get('content') or ''
-        if not content.strip():
-            return jsonify({'error': 'No rule content provided'}), 400
-        success, msg = save_custom_rule('aws', filename, content)
-        if not success:
-            return jsonify({'error': msg}), 400
-        return jsonify({'success': True, 'filename': msg})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+def _remember_regions(regions):
+    """Regions are chosen on the AWS page only (Settings has none) and kept on the
+    box -- any browser, scheduled scans included. An empty list is kept too: the
+    page then opens with nothing picked."""
+    import copy
+    from routes.config_routes import _save_cloud_config
+    cloud = copy.deepcopy(_load_cloud_config())   # a shallow copy of the defaults otherwise
+    aws = cloud.setdefault('aws', {})
+    if aws.get('regions') != regions:
+        aws['regions'] = regions
+        if regions:
+            aws['region'] = regions[0]
+        _save_cloud_config(cloud)
 
 
-@aws_bp.route('/api/aws/rules/custom/<filename>', methods=['DELETE'])
-def delete_custom_aws_rule(filename):
-    """Delete an operator-added custom SIGMA rule for AWS."""
-    try:
-        success, msg = delete_custom_rule('aws', filename)
-        if not success:
-            return jsonify({'error': msg}), 404
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+@aws_bp.route('/api/aws/regions', methods=['PUT'])
+def save_aws_regions():
+    """The AWS page saves the picked regions on every change, so a refresh shows
+    what the operator left -- not only what the last scan used."""
+    regions, err = _clean_regions((request.json or {}).get('regions'))
+    if err:
+        return jsonify({"error": err}), 400
+    _remember_regions(regions)
+    return jsonify({"regions": regions})
 
 
-# =============================================================================
-# Online Mode — POST /api/aws/scan
-# =============================================================================
+@aws_bp.route('/api/aws/members', methods=['PUT'])
+def save_aws_members():
+    """Other accounts to scan through a role in each (services/aws/members.py):
+    {"accounts": "111122223333, ..." | "all" | [], "role": "<role name>"}."""
+    from services.aws import members as _m
+    d = request.json or {}
+    accounts, err = _m.clean(d.get('accounts'))
+    role = str(d.get('role') or '').strip()
+    if err:
+        return jsonify({"error": err}), 400
+    if role and not _m._ROLE.match(role):
+        return jsonify({"error": f"invalid role name {role!r}"}), 400
+    import copy
+    from routes.config_routes import _save_cloud_config
+    cloud = copy.deepcopy(_load_cloud_config())
+    aws = cloud.setdefault('aws', {})
+    if aws.get('member_accounts') != accounts or (aws.get('member_role') or '') != role:
+        aws['member_accounts'], aws['member_role'] = accounts, role
+        _save_cloud_config(cloud)
+    return jsonify({"accounts": accounts, "role": role or _m.DEFAULT_ROLE})
+
+
+AWS_TIME_WINDOW_DEFAULT = {"hours": 30 * 24}      # a month, until the operator changes it
+_TW_TS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z?$")
+
+
+def _clean_time_window(raw):
+    """(window, error). {"hours": N} = the last N hours, rolling (the untouched default);
+    {"start", "end"} = what the operator set, kept as set; an empty end = up to now."""
+    if not isinstance(raw, dict):
+        return None, "time_window must be an object"
+    if "hours" in raw:
+        try:
+            h = int(raw["hours"])
+        except (TypeError, ValueError):
+            return None, "hours must be a whole number"
+        if not 1 <= h <= 24 * 366:
+            return None, "hours must be between 1 and 8784 (a year)"
+        return {"hours": h}, None
+    s, e = str(raw.get("start") or "").strip(), str(raw.get("end") or "").strip()
+    if not _TW_TS.match(s) or (e and not _TW_TS.match(e)):
+        return None, "start (and end, if set) must be YYYY-MM-DDTHH:MM UTC"
+    if e and e.rstrip("Z") <= s.rstrip("Z"):
+        return None, "end must be after start"
+    return {"start": s, "end": e}, None
+
+
+@aws_bp.route('/api/aws/time-window', methods=['PUT'])
+def save_aws_time_window():
+    """The AWS page saves its time window on every change (one month until then),
+    so the next scan -- any browser -- starts from what the operator last set."""
+    tw, err = _clean_time_window(request.json or {})
+    if err:
+        return jsonify({"error": err}), 400
+    import copy
+    from routes.config_routes import _save_cloud_config
+    cloud = copy.deepcopy(_load_cloud_config())
+    aws = cloud.setdefault('aws', {})
+    if aws.get('time_window') != tw:
+        aws['time_window'] = tw
+        _save_cloud_config(cloud)
+    return jsonify({"time_window": tw})
 
 
 @aws_bp.route('/api/aws/scan', methods=['POST'])
@@ -264,6 +317,13 @@ def start_scan():
     cloudtrail_mode = (data.get('cloudtrail_mode') or 'light').lower()
     if cloudtrail_mode not in ('light', 'full'):
         return jsonify({"error": f"Invalid cloudtrail_mode: {cloudtrail_mode!r}. Use 'light' or 'full'."}), 400
+
+    regions, err = _clean_regions(data.get('regions'))
+    if err:
+        return jsonify({"error": err}), 400
+    data['regions'] = regions
+    if regions:
+        _remember_regions(regions)
 
     run_id = create_automation_run(
         automation_type='aws_scan',

@@ -17,8 +17,9 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from .collectors import LOG_SOURCES, collect_aws_logs, parse_uploaded_logs
-from .sigma_runner import load_aws_rules, run_sigma_rules, validate_rules_directory
+from . import boto_client, members
+from .collectors import LOG_SOURCES, collect_aws_logs, demo_fixtures_enabled, parse_uploaded_logs
+from .sigma_runner import load_aws_rules, validate_rules_directory
 
 from services.agentic.utils import (
     filter_results_by_time,
@@ -52,7 +53,19 @@ SEVERITY_RANK = {
 STATE_SOURCE_MAP = {
     'AWS.AccessAnalyzer': 'INV.access_analyzer',
     'AWS.IAM':            'INV.iam_principals',
+    'AWS.Exposure':       'INV.exposure',
 }
+
+
+def _state_technique(src_key, record) -> str:
+    """The ATT&CK technique an account-setup finding exposes."""
+    if src_key == 'AWS.Exposure':
+        rt = str(record.get('ResourceType') or '')
+        # data anyone can read or copy (a bucket, a disk, an image, a repository) vs a way in
+        return 'T1530' if any(k in rt for k in ('S3', 'Snapshot', 'Image', 'ECR', 'OpenSearch')) else 'T1133'
+    if src_key == 'AWS.AccessAnalyzer':
+        return 'T1098'
+    return 'T1078.004'                  # IAM: a cloud account's keys / admin rights / MFA
 
 
 # =============================================================================
@@ -195,13 +208,13 @@ def _run_post_collection_phases(
             "no AWS SIGMA rules could be loaded — detection ran ZERO rules, so a "
             "0-finding result means nothing was looked for, not that the account is clean",
         )
-    findings, detection_status = run_sigma_rules(
-        logs=collected_data,
-        rules=aws_rules,
-        min_level=min_severity,
-    )
+    # The main Sigma engine (SigmaHQ + our AWS rules + count rules), GuardDuty's own
+    # findings and sequence detections -- services/aws/detections.py.
+    from .detections import detect
+    findings, detection_status = detect(collected_data, min_level=min_severity,
+                                        log=lambda m, l="info": add_log_to_run(run_id, m, l))
     result['phases']['detection'] = {
-        'status': 'complete' if aws_rules else 'degraded',
+        'status': 'complete' if (aws_rules and detection_status.get('rules_count')) else 'degraded',
         'rules_executed': detection_status.get('rules_count', 0),
         'total_findings': detection_status.get('total_findings', 0),
         'findings_by_severity': detection_status.get('matches_by_severity', {}),
@@ -247,6 +260,8 @@ def _run_post_collection_phases(
                 'matched_record': r,
                 '_finding_time': datetime.utcnow().isoformat(),
                 '_state_snapshot': True,
+                # an ATT&CK technique, so the timeline places it (it read "[Unclassified]")
+                'mitre_attack': [{'type': 'technique', 'id': _state_technique(src_key, r)}],
             }
             for r in filtered
         ]
@@ -326,6 +341,15 @@ def run_aws_pipeline(
                        + (f" (last {time_filter['relative_range']})" if isinstance(time_filter, dict)
                           and time_filter.get('mode', 'relative') == 'relative' and time_filter.get('relative_range') else ""),
                        "info")
+        # CloudTrail's event history (LookupEvents) keeps 90 days. A window reaching
+        # further back is searched only from there -- said once, so a quiet result for
+        # "since 2025" is not read as "nothing happened since 2025".
+        _floor = datetime.utcnow() - timedelta(days=90)
+        if _start.replace(tzinfo=None) < _floor:
+            add_log_to_run(run_id, f"CloudTrail keeps 90 days of event history: events before "
+                           f"{_floor:%Y-%m-%d} cannot be read this way (they need the account's "
+                           f"CloudTrail trail in S3), so CloudTrail is searched from {_floor:%Y-%m-%d}",
+                           "warning")
         # An unreadable custom date silently became "last 24 h" once -- say so.
         if isinstance(time_filter, dict) and time_filter.get('mode') == 'between':
             for _k in ('start_datetime', 'end_datetime'):
@@ -337,7 +361,7 @@ def run_aws_pipeline(
                     add_log_to_run(run_id, f"Custom {_k.split('_')[0]} date {_v!r} could not be read — "
                                    f"using {'24 h ago' if _k == 'start_datetime' else 'now'} instead", "warning")
         add_log_to_run(run_id, f"Sources: {', '.join(bp_settings.get('sources', ['all']))}", "info")
-        add_log_to_run(run_id, f"Regions: {', '.join(options.get('regions') or [aws_config.get('region', 'us-east-1')])}", "info")
+        add_log_to_run(run_id, f"Regions: {', '.join(options.get('regions') or boto_client.default_regions(aws_config))}", "info")
         if options.get('target_principals'):
             add_log_to_run(run_id, f"Target principals: {', '.join(options['target_principals'])}", "info")
         _eff_sev, _decl_sev = _resolve_min_severity(options, blueprint, bp_settings)
@@ -362,7 +386,8 @@ def run_aws_pipeline(
                 run_id,
                 f"[AWS] Live collectors: CloudTrail={ct_a.get('available')}, "
                 f"GuardDuty={gd_a.get('available')}, AccessAnalyzer={aa_a.get('available')} "
-                "(all via boto3; falls back to fixture per-source when unavailable / empty)",
+                "(all via boto3" + ("; DEMO MODE: bundled fixtures stand in for empty sources)"
+                                    if demo_fixtures_enabled() else ")"),
                 "info",
             )
         except Exception as e:
@@ -420,8 +445,10 @@ def run_aws_pipeline(
             _note_degraded(
                 result, run_id,
                 f"blueprint '{blueprint.get('name', 'Custom')}' collects FULL CloudTrail; "
-                f"this run was launched with cloudtrail_mode={ct_mode}, so the "
-                f"cloudtrail_full source is not collected",
+                f"this run was launched with cloudtrail_mode={ct_mode}: every change is "
+                f"collected, but not the read calls some rules look at (secrets, passwords, "
+                f"startup scripts, sign-in tokens, and the reads of the people who made "
+                f"changes -- discovery sweeps)",
             )
 
         collected_data, collection_status = collect_aws_logs(
@@ -442,6 +469,33 @@ def run_aws_pipeline(
             # blueprint default → hard fallback in cloudtrail_runner.
             max_events_per_region=options.get('max_events_per_region') or bp_settings.get('max_events_per_region'),
         )
+        # Other accounts (Settings: member accounts + a role to assume in each): the same
+        # collection per account, merged. One account failing costs only that account.
+        _members = members.member_accounts(aws_config, log=lambda m, l="info": add_log_to_run(run_id, m, l))
+        for _acct, _cfg, _err in members.member_configs(aws_config, _members, preflight_account=result.get('aws_account')):
+            if is_cancelled(run_id):
+                break
+            if _err:
+                collection_status.setdefault('errors', []).append(f"account {_acct}: {_err}")
+                add_log_to_run(run_id, f"[AWS] account {_acct}: skipped — {_err}", "warning")
+                continue
+            add_log_to_run(run_id, f"[AWS] account {_acct}: collecting with the member role", "info")
+            try:
+                _data, _st = collect_aws_logs(
+                    run_id=run_id, aws_config=_cfg, sources=sources,
+                    time_filter=time_filter if isinstance(time_filter, dict) else None,
+                    regions=options.get('regions'), target_principals=options.get('target_principals'),
+                    scope_mode=options.get('scope_mode', 'targeted'), cloudtrail_mode=ct_mode,
+                    freshness_window_days=bp_settings.get('time_range_days'),
+                    max_events_per_region=options.get('max_events_per_region') or bp_settings.get('max_events_per_region'))
+            except Exception as _e:                                # noqa: BLE001
+                collection_status.setdefault('errors', []).append(f"account {_acct}: {_e}")
+                add_log_to_run(run_id, f"[AWS] account {_acct}: collection failed — {_e}", "error")
+                continue
+            members.merge(collected_data, _data, _acct)
+            collection_status['errors'] = collection_status.get('errors', []) + [f"account {_acct}: {e}" for e in _st.get('errors', [])]
+            for k in ('sources_attempted', 'sources_with_data', 'sources_failed'):
+                collection_status[k] = sorted(set(collection_status.get(k, [])) | set(_st.get(k, [])))
         total_records = sum(len(v) for v in collected_data.values())
         collection_errors = collection_status.get('errors', [])
         # Attach the evidence to the result NOW, before anything that can
@@ -577,7 +631,7 @@ def get_aws_blueprints() -> List[Dict]:
             'duration': '~30 sec - 1 min (stub: instant)',
             'volume': 'Low',
             'settings': {
-                'sources': ['cloudtrail_console', 'cloudtrail_iam', 'guardduty_findings', 'iam_principals'],
+                'sources': ['cloudtrail_console', 'cloudtrail_iam', 'guardduty_findings', 'iam_principals', 'exposure'],
                 'time_range_days': 1,
                 'cloudtrail_mode': 'light',
                 'max_events_per_region': 500,
@@ -592,7 +646,7 @@ def get_aws_blueprints() -> List[Dict]:
             'duration': '~1-2 min',
             'volume': 'Medium',
             'settings': {
-                'sources': ['cloudtrail_console', 'cloudtrail_iam', 'cloudtrail_full', 'guardduty_findings', 'accessanalyzer_findings', 'iam_principals'],
+                'sources': ['cloudtrail_console', 'cloudtrail_iam', 'cloudtrail_full', 'guardduty_findings', 'accessanalyzer_findings', 'iam_principals', 'exposure'],
                 'time_range_days': 2,
                 'cloudtrail_mode': 'full',
                 'max_events_per_region': 2000,
@@ -608,7 +662,7 @@ def get_aws_blueprints() -> List[Dict]:
             'duration': '~1-2 min',
             'volume': 'Medium',
             'settings': {
-                'sources': ['cloudtrail_iam', 'accessanalyzer_findings', 'iam_principals'],
+                'sources': ['cloudtrail_iam', 'accessanalyzer_findings', 'iam_principals', 'exposure'],
                 'time_range_days': 7,
                 'cloudtrail_mode': 'light',
                 'max_events_per_region': 2000,

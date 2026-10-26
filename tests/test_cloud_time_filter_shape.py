@@ -40,7 +40,7 @@ class PagesUseTheCaseAnalysisTimeWindow(unittest.TestCase):
     def test_both_pages_build_the_filter_from_the_shared_fields(self):
         for page, rel in PAGES.items():
             html = _read(rel)
-            self.assertIn(f"initCloudTimeWindow('{page}')", html, page)
+            self.assertIn(f"initCloudTimeWindow('{page}'", html, page)
             self.assertIn(f"cloudTimeFilter('{page}')", html, page)
             self.assertIn(f'id="{page}-tw-start"', html, page)
             self.assertIn(f'id="{page}-tw-end"', html, page)
