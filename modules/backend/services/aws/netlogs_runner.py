@@ -30,8 +30,6 @@ MAX_SECONDS = 120            # per destination
 MAX_EKS_EVENTS = 50_000
 DEFAULT_FLOW_FIELDS = ["version", "account-id", "interface-id", "srcaddr", "dstaddr", "srcport", "dstport",
                        "protocol", "packets", "bytes", "start", "end", "action", "log-status"]
-# ponytail: CloudWatch filter_log_events walks oldest-first, so a capped source keeps
-# the OLDEST part of the window; read newest-first per stream if real accounts hit MAX_LINES.
 
 
 def _iso(epoch) -> Optional[str]:
@@ -42,13 +40,20 @@ def _iso(epoch) -> Optional[str]:
 
 
 def _cw_lines(aws_config, region, group, start_dt, end_dt, prefix=None) -> Iterator[str]:
+    """CloudWatch returns events oldest-first, so the window is read one DAY at a time,
+    newest day first: a source that hits MAX_LINES keeps the most recent days."""
+    from datetime import timedelta
     logs = boto_client.client("logs", aws_config, region)
-    kw = {"logGroupName": group, "startTime": int(start_dt.timestamp() * 1000), "endTime": int(end_dt.timestamp() * 1000)}
-    if prefix:
-        kw["logStreamNamePrefix"] = prefix
-    for page in logs.get_paginator("filter_log_events").paginate(**kw):
-        for e in page.get("events", []):
-            yield e.get("message") or ""
+    hi = end_dt
+    while hi > start_dt:
+        lo = max(start_dt, hi - timedelta(days=1))
+        kw = {"logGroupName": group, "startTime": int(lo.timestamp() * 1000), "endTime": int(hi.timestamp() * 1000)}
+        if prefix:
+            kw["logStreamNamePrefix"] = prefix
+        for page in logs.get_paginator("filter_log_events").paginate(**kw):
+            for e in page.get("events", []):
+                yield e.get("message") or ""
+        hi = lo
 
 
 def _s3_lines(aws_config, bucket_arn, kind, account, start_dt, end_dt) -> Iterator[str]:

@@ -26,7 +26,7 @@ def flow(src, dst, port, action="ACCEPT", nbytes=500):
 
 class Fake:
     def __init__(self, groups):
-        self.groups = groups
+        self.groups, self.calls = groups, []
 
     def get_caller_identity(self):
         return {"Account": "111122223333"}
@@ -44,11 +44,14 @@ class Fake:
         return {"cluster": {"logging": {"clusterLogging": [{"types": ["audit"], "enabled": name == "prod"}]}}}
 
     def get_paginator(self, name):
-        groups = self.groups
+        groups, calls = self.groups, self.calls
 
         class P:
             def paginate(self, logGroupName, **kw):
-                return [{"events": [{"message": m} for m in groups.get(logGroupName, [])]}]
+                calls.append(kw.get("startTime"))
+                # every line belongs to the newest day of the window (one chunk only)
+                newest = len([c for c in calls if c is not None]) == 1 or kw.get("startTime") == max(c for c in calls if c)
+                return [{"events": [{"message": m} for m in groups.get(logGroupName, [])]}] if newest else [{"events": []}]
         return P()
 
 
@@ -127,13 +130,31 @@ class NetworkLogs(unittest.TestCase):
     def test_the_kubernetes_rules_run_on_eks_audit_events(self):
         from services.aws.detections import detect
         from services.fusion import sigma_eval as s
-        if not [r for r in s.load()["rules"] if r.get("product") == "kubernetes"]:
-            self.skipTest("SigmaHQ rules are not on this machine (they are in the backend image)")
+        want = "Potential Remote Command Execution In Pod Container"
+        if not [r for r in s.load()["rules"] if r.get("product") == "kubernetes" and r.get("title") == want]:
+            # CI's SigmaHQ copy differs from the backend image's (2026-10-26: it has
+            # Kubernetes rules, not this one)
+            self.skipTest(f"SigmaHQ rule {want!r} is not on this machine (it is in the backend image)")
         ev = {"EventSource": "AWS.EKSAudit", "auditID": "a1", "verb": "create", "objectRef": {"resource": "pods", "subresource": "exec"},
               "eventTime": "2026-10-21T10:00:00Z", "user": {"username": "x"}}
         f, _ = detect({"AWS.Network": [ev]}, min_level="low")
-        self.assertIn("Potential Remote Command Execution In Pod Container", {x["rule_title"] for v in f.values() for x in v})
+        self.assertIn(want, {x["rule_title"] for v in f.values() for x in v})
 
+
+
+class CloudWatchIsReadNewestDayFirst(unittest.TestCase):
+    def test_it(self):
+        fake = Fake({"g": ["a", "b"]})
+        orig = boto_client.client
+        boto_client.client = lambda *a, **k: fake
+        try:
+            from datetime import datetime, timezone
+            got = list(nl._cw_lines({}, "r", "g", datetime(2026, 10, 20, tzinfo=timezone.utc), datetime(2026, 10, 23, tzinfo=timezone.utc)))
+        finally:
+            boto_client.client = orig
+        self.assertEqual(len(fake.calls), 3, "one call per day")
+        self.assertEqual(fake.calls, sorted(fake.calls, reverse=True), "newest day first")
+        self.assertEqual(got, ["a", "b"])
 
 if __name__ == "__main__":
     unittest.main()
