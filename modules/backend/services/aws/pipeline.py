@@ -326,6 +326,16 @@ def run_aws_pipeline(
                        + (f" (last {time_filter['relative_range']})" if isinstance(time_filter, dict)
                           and time_filter.get('mode', 'relative') == 'relative' and time_filter.get('relative_range') else ""),
                        "info")
+        # An unreadable custom date silently became "last 24 h" once -- say so.
+        if isinstance(time_filter, dict) and time_filter.get('mode') == 'between':
+            for _k in ('start_datetime', 'end_datetime'):
+                _v = time_filter.get(_k) or ''
+                try:
+                    if _v:
+                        datetime.fromisoformat(_v.replace('Z', '+00:00'))
+                except ValueError:
+                    add_log_to_run(run_id, f"Custom {_k.split('_')[0]} date {_v!r} could not be read — "
+                                   f"using {'24 h ago' if _k == 'start_datetime' else 'now'} instead", "warning")
         add_log_to_run(run_id, f"Sources: {', '.join(bp_settings.get('sources', ['all']))}", "info")
         add_log_to_run(run_id, f"Regions: {', '.join(options.get('regions') or [aws_config.get('region', 'us-east-1')])}", "info")
         if options.get('target_principals'):

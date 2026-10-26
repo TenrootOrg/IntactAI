@@ -1,113 +1,40 @@
-/* AWS + Azure date-range pickers (flatpickr) — extracted from inline <script>
- * in index.html. These stay window-global: the cloud tabs call the init,
- * update and getAzureCustomDates functions from x-init / @change / their
- * Alpine startScan methods.
+/* AWS + Azure scan time window: the same two date+time fields as Case Analysis
+ * (Configuration -> Time window). Values are UTC, "YYYY-MM-DDTHH:MM:SS"; an empty
+ * end means "up to now". The pages call initCloudTimeWindow(prefix) from x-init
+ * and cloudTimeFilter(prefix) when the scan starts.
+ *
+ * Before 2026-10-26 these pages had a preset dropdown + date box + hour box and
+ * sent {type, value}, a shape no backend reader understood: the picker did nothing.
  */
 
-// ---- Azure date pickers --------------------------------------------------
-let azureFpStart = null, azureFpEnd = null;
+const CLOUD_TW_DEFAULT_HOURS = 24;   // the window a fresh page starts with
 
-function initAzureDatePickers() {
-    if (typeof flatpickr === 'undefined') return;
-    const startEl = document.getElementById('azure-date-start');
-    const endEl = document.getElementById('azure-date-end');
-    if (!startEl || !endEl) return;
-
-    if (azureFpStart) { azureFpStart.destroy(); azureFpStart = null; }
-    if (azureFpEnd) { azureFpEnd.destroy(); azureFpEnd = null; }
-
-    const config = {
-        dateFormat: 'Y-m-d',
-        disableMobile: true,
-        allowInput: false,
-        clickOpens: true,
-        appendTo: document.body,
-    };
-
-    setTimeout(() => {
-        azureFpStart = flatpickr(startEl, {
-            ...config,
-            onChange: (dates) => {
-                updateAzureStartDateTime();
-                if (azureFpEnd && dates[0]) azureFpEnd.set('minDate', dates[0]);
-            },
-        });
-        azureFpEnd = flatpickr(endEl, {
-            ...config,
-            onChange: (dates) => {
-                updateAzureEndDateTime();
-                if (azureFpStart && dates[0]) azureFpStart.set('maxDate', dates[0]);
-            },
-        });
-    }, 50);
+function _cloudTwUtc(ms) {
+    return new Date(ms).toISOString().slice(0, 16) + ':00';
 }
 
-function updateAzureStartDateTime() {
-    const dateEl = document.getElementById('azure-date-start');
-    const hourEl = document.getElementById('azure-time-start-hour');
-    const hiddenEl = document.getElementById('azure-time-start');
-    if (dateEl?.value && hourEl && hiddenEl) {
-        hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-    }
+function initCloudTimeWindow(prefix) {
+    const start = document.getElementById(prefix + '-tw-start');
+    const end = document.getElementById(prefix + '-tw-end');
+    if (!start || !end) return;
+    if (!start.value) start.value = _cloudTwUtc(Date.now() - CLOUD_TW_DEFAULT_HOURS * 3600e3);
+    if (typeof flatpickr === 'undefined' || start._flatpickr) return;
+    // Same options as the Case Analysis time window.
+    const fp = { enableTime: true, time_24hr: true, dateFormat: 'Y-m-d\\TH:i:S', minuteIncrement: 5, allowInput: true };
+    flatpickr(start, fp);
+    flatpickr(end, fp);
 }
 
-function updateAzureEndDateTime() {
-    const dateEl = document.getElementById('azure-date-end');
-    const hourEl = document.getElementById('azure-time-end-hour');
-    const hiddenEl = document.getElementById('azure-time-end');
-    if (dateEl?.value && hourEl && hiddenEl) {
-        hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-    }
-}
+const _CLOUD_TW_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/;
 
-function getAzureCustomDates() {
-    return {
-        start: document.getElementById('azure-time-start')?.value || '',
-        end: document.getElementById('azure-time-end')?.value || '',
-    };
-}
-
-// ---- AWS date pickers (mirror of the Azure pair) -------------------------
-let awsFpStart = null, awsFpEnd = null;
-
-function initAwsDatePickers() {
-    const startEl = document.getElementById('aws-date-start');
-    const endEl = document.getElementById('aws-date-end');
-    if (!startEl || !endEl || typeof flatpickr === 'undefined') return;
-    if (awsFpStart && awsFpEnd) return; // already initialised
-
-    const config = {
-        dateFormat: 'Y-m-d',
-        allowInput: false,
-        maxDate: 'today',
-        theme: 'dark',
-    };
-    setTimeout(() => {
-        awsFpStart = flatpickr(startEl, {
-            ...config,
-            onChange: (dates) => { updateAwsStartDateTime(); if (awsFpEnd && dates[0]) awsFpEnd.set('minDate', dates[0]); },
-        });
-        awsFpEnd = flatpickr(endEl, {
-            ...config,
-            onChange: (dates) => { updateAwsEndDateTime(); if (awsFpStart && dates[0]) awsFpStart.set('maxDate', dates[0]); },
-        });
-    }, 50);
-}
-
-function updateAwsStartDateTime() {
-    const dateEl = document.getElementById('aws-date-start');
-    const hourEl = document.getElementById('aws-time-start-hour');
-    const hiddenEl = document.getElementById('aws-time-start');
-    if (dateEl?.value && hourEl && hiddenEl) {
-        hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-    }
-}
-
-function updateAwsEndDateTime() {
-    const dateEl = document.getElementById('aws-date-end');
-    const hourEl = document.getElementById('aws-time-end-hour');
-    const hiddenEl = document.getElementById('aws-time-end');
-    if (dateEl?.value && hourEl && hiddenEl) {
-        hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-    }
+/* {filter} for the scan request, or {error} to show the operator. */
+function cloudTimeFilter(prefix) {
+    const v = id => ((document.getElementById(prefix + id) || {}).value || '').trim().replace(/Z$/, '');
+    const start = v('-tw-start'), end = v('-tw-end');
+    if (!start) return { error: 'Pick the start of the time window.' };
+    if (!_CLOUD_TW_RE.test(start)) return { error: 'The start "' + start + '" is not a date and time (YYYY-MM-DDTHH:MM).' };
+    if (end && !_CLOUD_TW_RE.test(end)) return { error: 'The end "' + end + '" is not a date and time (YYYY-MM-DDTHH:MM).' };
+    const z = s => (s.length === 16 ? s + ':00' : s) + 'Z';
+    if (end && z(end) <= z(start)) return { error: 'The end of the time window must be after the start.' };
+    return { filter: { enabled: true, mode: 'between', start_datetime: z(start), end_datetime: end ? z(end) : '' } };
 }

@@ -4,7 +4,6 @@
                      azureStatus: null,
                      azureBlueprints: [],
                      azureBlueprint: 'azure_account_investigation',
-                     azureTimeFilter: '24h',
                      azureCustomStart: '',
                      azureCustomEnd: '',
                      azureMinSeverity: 'high',
@@ -86,14 +85,10 @@
                          this.azureRunning = true;
                          this.azureResults = null;
                          try {
-                             let timeFilter;
-                             if (this.azureTimeFilter === 'custom') {
-                                 const customDates = getAzureCustomDates();
-                                 // Same shape as every other time filter (backend: mode / relative_range).
-                                 timeFilter = { enabled: true, mode: 'between', start_datetime: customDates.start ? customDates.start + 'T00:00:00Z' : '', end_datetime: customDates.end ? customDates.end + 'T23:59:59Z' : '' };
-                             } else {
-                                 timeFilter = { enabled: true, mode: 'relative', relative_range: this.azureTimeFilter };
-                             }
+                             // Time window: the Case Analysis-style start/end fields (UTC).
+                             const tw = cloudTimeFilter('azure');
+                             if (tw.error) { alert(tw.error); this.azureRunning = false; return; }
+                             const timeFilter = tw.filter;
                              const targetUsers = this.azureTargetUsers.split(',').map(u => u.trim()).filter(u => u);
                              const targetIps = this.azureTargetIPs.split(',').map(ip => ip.trim()).filter(ip => ip);
                              // Targeted scope without picks is a no-op the
@@ -351,71 +346,14 @@
                             </template>
                         </div>
 
-                        <!-- Time Filter -->
-                        <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Time Filter</label>
-                            <select x-model="azureTimeFilter" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
-                                <option value="24h">Last 24 hours</option>
-                                <option value="7d">Last 7 days</option>
-                                <option value="14d">Last 14 days</option>
-                                <option value="30d">Last 30 days</option>
-                                <option value="custom">Custom range</option>
-                            </select>
-                        </div>
-
-                        <!-- Custom Date Range -->
-                        <div x-show="azureTimeFilter === 'custom'" x-init="$watch('azureTimeFilter', val => val === 'custom' && initAzureDatePickers())" class="space-y-4">
-                            <!-- From Date/Time -->
-                            <div>
-                                <label class="block text-xs text-gray-400 mb-2">From (UTC)</label>
-                                <div class="flex items-center gap-2">
-                                    <div class="flex-1 relative">
-                                        <input type="text" id="azure-date-start" placeholder="Select date..."
-                                            class="azure-flatpickr w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
-                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                        </span>
-                                    </div>
-                                    <select id="azure-time-start-hour" onchange="updateAzureStartDateTime()"
-                                        class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none text-center">
-                                        <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
-                                        <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
-                                        <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
-                                        <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
-                                        <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
-                                        <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <!-- Arrow -->
-                            <div class="flex justify-center text-blue-400">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
-                            </div>
-                            <!-- To Date/Time -->
-                            <div>
-                                <label class="block text-xs text-gray-400 mb-2">To (UTC) <span class="text-gray-500">- empty = now</span></label>
-                                <div class="flex items-center gap-2">
-                                    <div class="flex-1 relative">
-                                        <input type="text" id="azure-date-end" placeholder="Select date..."
-                                            class="azure-flatpickr w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
-                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                        </span>
-                                    </div>
-                                    <select id="azure-time-end-hour" onchange="updateAzureEndDateTime()"
-                                        class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none text-center">
-                                        <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
-                                        <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
-                                        <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
-                                        <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
-                                        <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
-                                        <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <!-- Hidden combined fields -->
-                            <input type="hidden" id="azure-time-start">
-                            <input type="hidden" id="azure-time-end">
+                        <!-- Time window: the same two date+time fields as Case Analysis (UTC) -->
+                        <div x-init="$nextTick(() => initCloudTimeWindow('azure'))" class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-300">Time window — start <span class="text-xs text-gray-500">(UTC)</span></label>
+                            <input type="text" id="azure-tw-start" placeholder="pick date + time…"
+                                   class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono">
+                            <label class="block text-sm font-medium text-gray-300">Time window — end <span class="text-xs text-gray-500">(UTC, empty = up to now)</span></label>
+                            <input type="text" id="azure-tw-end" placeholder="empty = now"
+                                   class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono">
                         </div>
 
                         <!-- Minimum Severity -->
