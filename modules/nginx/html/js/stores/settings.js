@@ -37,8 +37,7 @@ document.addEventListener('alpine:init', () => {
                 aws: {
                     access_key_id: '',
                     secret_access_key: '',
-                    region: 'us-east-1',
-                    session_token: ''
+                    session_token: ''          // region: chosen on the AWS page, remembered by the scan
                 },
                 azure: {
                     tenant_id: '',

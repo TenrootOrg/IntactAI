@@ -4,7 +4,79 @@
                      awsStatus: null,
                      awsBlueprints: [],
                      awsBlueprint: 'aws_quick_triage',
-                     awsRegions: 'us-east-1',
+                     // Regions: picked here only (Settings has none) and saved on the box on
+                     // every change, so a refresh (any browser) shows what was left -- even none.
+                     awsRegions: [],
+                     awsRegionsLoaded: false,
+                     awsTimeWindowLoaded: false,
+                     awsTimeWindowSaved: '',     // the last window sent to the box
+                     async saveAwsTimeWindow() {
+                         // the operator changed the window: remember it on the box
+                         const tw = cloudTimeWindowToSave('aws');
+                         if (!tw || !this.awsTimeWindowLoaded) return;    // not before the saved one is shown
+                         const key = JSON.stringify(tw);
+                         if (key === this.awsTimeWindowSaved) return;      // blur + close fire for one edit
+                         this.awsTimeWindowSaved = key;
+                         try {
+                             const r = await fetch('/api/aws/time-window', { method: 'PUT',
+                                 headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tw) });
+                             if (!r.ok) console.warn('time window not saved', (await r.json()).error);
+                         } catch (e) { console.error(e); }
+                     },
+                     awsRegionsOpen: false,
+                     // Other accounts, scanned through a role in each (kept on the box).
+                     awsMembers: '',
+                     awsMemberRole: '',
+                     awsMembersLoaded: false,
+                     async saveAwsMembers() {
+                         if (!this.awsMembersLoaded) return;
+                         try {
+                             const r = await fetch('/api/aws/members', { method: 'PUT',
+                                 headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({ accounts: this.awsMembers, role: this.awsMemberRole }) });
+                             if (!r.ok) alert('Could not save the other accounts: ' + ((await r.json()).error || r.status));
+                         } catch (e) { console.error(e); }
+                     },
+                     async saveAwsRegions(regions) {
+                         try {
+                             const r = await fetch('/api/aws/regions', { method: 'PUT',
+                                 headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({ regions }) });
+                             if (!r.ok) alert('Could not save the regions: ' + ((await r.json()).error || r.status));
+                         } catch (e) { console.error(e); }
+                     },
+                     awsRegionList: [
+                         ['us-east-1', 'N. Virginia'],
+                         ['us-east-2', 'Ohio'],
+                         ['us-west-1', 'N. California'],
+                         ['us-west-2', 'Oregon'],
+                         ['ca-central-1', 'Canada (Central)'],
+                         ['sa-east-1', 'São Paulo'],
+                         ['eu-north-1', 'Stockholm'],
+                         ['eu-west-1', 'Ireland'],
+                         ['eu-west-2', 'London'],
+                         ['eu-west-3', 'Paris'],
+                         ['eu-central-1', 'Frankfurt'],
+                         ['eu-central-2', 'Zurich'],
+                         ['eu-south-1', 'Milan'],
+                         ['eu-south-2', 'Spain'],
+                         ['ap-south-1', 'Mumbai'],
+                         ['ap-southeast-1', 'Singapore'],
+                         ['ap-southeast-2', 'Sydney'],
+                         ['ap-southeast-3', 'Jakarta'],
+                         ['ap-northeast-1', 'Tokyo'],
+                         ['ap-northeast-2', 'Seoul'],
+                         ['ap-northeast-3', 'Osaka'],
+                         ['ap-east-1', 'Hong Kong'],
+                         ['me-south-1', 'Bahrain'],
+                         ['me-central-1', 'UAE'],
+                         ['af-south-1', 'Cape Town'],
+                         ['il-central-1', 'Tel Aviv']
+                     ],
+                     get awsRegionChoices() {        // a remembered region not in the list still shows
+                         const known = new Set(this.awsRegionList.map(r => r[0]));
+                         return this.awsRegionList.concat(this.awsRegions.filter(r => !known.has(r)).map(r => [r, '']));
+                     },
                      awsMinSeverity: 'medium',
                      awsRunning: false,
                      awsRunId: null,
@@ -17,6 +89,25 @@
                          try {
                              const r = await fetch('/api/aws/status');
                              this.awsStatus = await r.json();
+                             // The regions saved on the box (Settings has none); [] = nothing picked.
+                             if (!this.awsRegionsLoaded) {
+                                 const saved = (this.awsStatus.aws_credentials || {}).regions;
+                                 this.awsRegions = Array.isArray(saved) ? [...saved] : ['us-east-1'];
+                                 this.awsRegionsLoaded = true;
+                             }
+                             if (!this.awsMembersLoaded) {
+                                 const c = this.awsStatus.aws_credentials || {};
+                                 const m = c.member_accounts;
+                                 this.awsMembers = Array.isArray(m) ? m.join(', ') : (m || '');
+                                 this.awsMemberRole = c.member_role || '';
+                                 this.awsMembersLoaded = true;
+                             }
+                             // The time window saved on the box (a month until the operator changes it).
+                             if (!this.awsTimeWindowLoaded) {
+                                 setCloudTimeWindow('aws', (this.awsStatus.aws_credentials || {}).time_window || { hours: 720 });
+                                 this.awsTimeWindowSaved = JSON.stringify(cloudTimeWindowToSave('aws'));
+                                 this.awsTimeWindowLoaded = true;
+                             }
                          } catch(e) { console.error(e); }
                          try {
                              const r = await fetch('/api/aws/blueprints');
@@ -26,57 +117,22 @@
                              this.$nextTick(() => this.applyBlueprintDefaults());
                          } catch(e) { console.error(e); }
                      },
-                     customRules: [],
-                     customRulesOpen: false,
-                     customRulesUploading: false,
-                     async loadCustomRules() {
-                         try {
-                             const r = await fetch('/api/aws/rules/custom');
-                             const d = await r.json();
-                             this.customRules = d.rules || [];
-                         } catch(e) { console.error(e); }
-                     },
-                     async uploadCustomRule(event) {
-                         const file = event.target.files[0];
-                         if (!file) return;
-                         this.customRulesUploading = true;
-                         const formData = new FormData();
-                         formData.append('file', file);
-                         try {
-                             const r = await fetch('/api/aws/rules/custom', { method: 'POST', body: formData });
-                             const d = await r.json();
-                             if (!r.ok) {
-                                 alert('Rule upload failed: ' + (d.error || 'unknown error'));
-                             } else {
-                                 await this.loadCustomRules();
-                                 this.checkAwsStatus();
-                             }
-                         } catch(e) { console.error(e); alert('Rule upload failed: ' + e.message); }
-                         this.customRulesUploading = false;
-                         event.target.value = '';
-                     },
-                     async deleteCustomRule(filename) {
-                         if (!confirm(`Delete custom rule '${filename}'?`)) return;
-                         try {
-                             const r = await fetch(`/api/aws/rules/custom/${encodeURIComponent(filename)}`, { method: 'DELETE' });
-                             const d = await r.json();
-                             if (!r.ok) {
-                                 alert('Delete failed: ' + (d.error || 'unknown error'));
-                             } else {
-                                 await this.loadCustomRules();
-                                 this.checkAwsStatus();
-                             }
-                         } catch(e) { console.error(e); alert('Delete failed: ' + e.message); }
-                     },
                      get selectedAwsBlueprint() {
                          return this.awsBlueprints.find(b => b.id === this.awsBlueprint) || null;
                      },
                      applyBlueprintDefaults() {
-                         // When the user picks a new blueprint, replace the cap
-                         // with that blueprint's default — unless the user has
-                         // already overridden it in this session.
-                         if (this.awsMaxEventsUserEdited) return;
+                         // Picking a blueprint takes its CloudTrail mode and severity floor (not
+                         // the time window: that is the operator's, remembered on the box).
+                         // The page used to keep its own (light / medium),
+                         // so Full Investigation ran as light and every run logged two
+                         // DEGRADED warnings (2026-10-26). Changing a field after picking
+                         // is still allowed -- then the warning is the truth.
                          const bp = this.selectedAwsBlueprint;
+                         const st = bp?.settings || {};
+                         if (st.cloudtrail_mode) this.awsCloudTrailMode = st.cloudtrail_mode;
+                         if (bp?.min_severity) this.awsMinSeverity = bp.min_severity;
+                         // The cap: the blueprint's, unless the user already overrode it.
+                         if (this.awsMaxEventsUserEdited) return;
                          const def = bp?.settings?.max_events_per_region;
                          this.awsMaxEventsPerRegion = (def != null) ? String(def) : '';
                      },
@@ -88,7 +144,7 @@
                      get awsScanTimeEstimate() {
                          // LookupEvents = 50 events/page, ~2 pages/sec → events/100 = seconds.
                          const events = this.awsEffectiveMaxEvents;
-                         const regions = this.awsRegions.split(',').map(r => r.trim()).filter(r => r).length || 1;
+                         const regions = this.awsRegions.length || 1;
                          const perRegionSec = Math.max(2, Math.round(events / 100));
                          const totalSec = perRegionSec * regions;
                          const fmt = s => s < 60 ? `${s} sec` : `${Math.round(s / 60)} min`;
@@ -103,7 +159,8 @@
                              const tw = cloudTimeFilter('aws');
                              if (tw.error) { alert(tw.error); this.awsRunning = false; return; }
                              const timeFilter = tw.filter;
-                             const regions = this.awsRegions.split(',').map(r => r.trim()).filter(r => r);
+                             if (!this.awsRegions.length) { alert('Pick at least one region.'); this.awsRunning = false; return; }
+                             const regions = [...this.awsRegions];
                              const principals = this.awsTargetPrincipals.split(',').map(p => p.trim()).filter(p => p);
                              // Age-filter knobs — empty / non-numeric disables the filter.
                              const parseDays = v => {
@@ -162,7 +219,7 @@
                          this.$store.app.switchTab('workflows');
                      }
                  }"
-                 x-init="TabReset.arm($data, 'cloud-aws', { keep: ['awsBlueprints', 'awsStatus', 'awsRunning'] }); checkAwsStatus(); loadCustomRules()">
+                 x-init="TabReset.arm($data, 'cloud-aws', { keep: ['awsBlueprints', 'awsStatus', 'awsRunning', 'awsRegions', 'awsRegionList', 'awsRegionsLoaded', 'awsTimeWindowLoaded', 'awsTimeWindowSaved', 'awsMembers', 'awsMemberRole', 'awsMembersLoaded'] }); checkAwsStatus(); $watch('awsRegions', v => awsRegionsLoaded && saveAwsRegions([...v])); window.addEventListener('automation-tab-entered', e => e.detail === 'cloud-aws' && $nextTick(() => applyBlueprintDefaults()))">
 
                 <h2 class="text-3xl font-bold text-white mb-2">AWS Security Automation</h2>
                 <p class="text-gray-400 mb-6">Collect AWS events &amp; state (CloudTrail, IAM principals, GuardDuty, AccessAnalyzer) and run SIGMA detection. Findings feed the case for analysis.</p>
@@ -183,49 +240,6 @@
                             <span :class="awsStatus?.aws_credentials?.configured ? 'text-green-400' : 'text-yellow-400'"
                                   x-text="awsStatus?.aws_credentials?.configured ? 'Configured' : 'Not Set'"></span>
                         </span>
-                        <span class="text-gray-400">|</span>
-                        <span class="text-gray-400">Default region:
-                            <span class="text-white font-mono" x-text="awsStatus?.aws_credentials?.region || '?'"></span>
-                        </span>
-                    </div>
-                </div>
-
-                <!-- Custom SIGMA Rules -->
-                <div class="bg-gray-800 rounded-lg border border-gray-700 mb-6">
-                    <button type="button" @click="customRulesOpen = !customRulesOpen"
-                            class="w-full flex items-center justify-between p-4 text-left">
-                        <span class="text-white font-medium">
-                            Custom SIGMA Rules
-                            <span class="text-xs text-gray-400 font-normal" x-text="`(${customRules.length} uploaded)`"></span>
-                        </span>
-                        <span class="text-gray-400" x-text="customRulesOpen ? '▲' : '▼'"></span>
-                    </button>
-                    <div x-show="customRulesOpen" x-transition class="p-4 pt-0 border-t border-gray-700">
-                        <p class="text-sm text-gray-400 mb-3">
-                            Add your own SIGMA detection rules for AWS (YAML). These run alongside the bundled rule pack
-                            and are never overwritten by rule-pack updates.
-                        </p>
-                        <label class="inline-flex items-center gap-2 mb-4 px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg cursor-pointer hover:border-orange-500 transition-colors">
-                            <span class="text-sm text-white" x-text="customRulesUploading ? 'Uploading…' : 'Upload rule (.yml/.yaml)'"></span>
-                            <input type="file" accept=".yml,.yaml" class="hidden" @change="uploadCustomRule($event)" :disabled="customRulesUploading">
-                        </label>
-                        <div x-show="!customRules.length" class="text-sm text-gray-500">No custom rules uploaded yet.</div>
-                        <div class="space-y-2">
-                            <template x-for="rule in customRules" :key="rule.filename">
-                                <div class="flex items-center justify-between bg-gray-900/60 rounded-lg px-3 py-2 border border-gray-700">
-                                    <div class="min-w-0">
-                                        <div class="text-sm text-white truncate" x-text="rule.title || rule.filename"></div>
-                                        <div class="text-xs text-gray-500 font-mono truncate">
-                                            <span x-text="rule.filename"></span>
-                                            <span x-show="rule.level"> · </span><span x-text="rule.level"></span>
-                                            <span x-show="rule.error" class="text-red-400"> · parse error: </span><span x-show="rule.error" class="text-red-400" x-text="rule.error"></span>
-                                        </div>
-                                    </div>
-                                    <button @click="deleteCustomRule(rule.filename)"
-                                            class="text-red-400 hover:text-red-300 text-sm ml-3 flex-shrink-0">Delete</button>
-                                </div>
-                            </template>
-                        </div>
                     </div>
                 </div>
 
@@ -272,14 +286,49 @@
 
                         <!-- Regions -->
                         <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Regions <span class="text-xs text-gray-500">(comma-separated)</span></label>
-                            <input type="text" x-model="awsRegions" placeholder="us-east-1, eu-west-1"
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Regions <span class="text-xs text-gray-500">(pick one or more — remembered for the next scan)</span></label>
+                            <div class="relative" id="aws-regions-dd" @click.outside="awsRegionsOpen = false" @keydown.escape="awsRegionsOpen = false">
+                                <div role="button" tabindex="0" aria-haspopup="listbox" :aria-expanded="awsRegionsOpen"
+                                     @click="awsRegionsOpen = !awsRegionsOpen" @keydown.enter.prevent="awsRegionsOpen = !awsRegionsOpen"
+                                     class="w-full flex flex-wrap items-center gap-1 bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 cursor-pointer" style="min-height:42px">
+                                    <template x-for="r in awsRegions" :key="r">
+                                        <span class="inline-flex items-center gap-1 bg-blue-900 text-blue-100 text-sm font-mono rounded pl-2 py-0.5">
+                                            <span x-text="r"></span>
+                                            <!-- a real target: 24x24, not a glyph-sized one -->
+                                            <button type="button" class="inline-flex items-center justify-center rounded text-blue-200 hover:text-white hover:bg-gray-600 leading-none"
+                                                    style="width:24px;height:24px;font-size:18px" :title="'Remove ' + r" :aria-label="'Remove ' + r"
+                                                    @click.stop="awsRegions = awsRegions.filter(x => x !== r)">&times;</button>
+                                        </span>
+                                    </template>
+                                    <span x-show="!awsRegions.length" class="text-gray-500 text-sm px-1">Select regions…</span>
+                                    <svg class="w-4 h-4 text-gray-400 flex-shrink-0 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                                </div>
+                                <div x-show="awsRegionsOpen" x-transition role="listbox" aria-multiselectable="true"
+                                     class="absolute mt-1 w-full max-h-48 overflow-y-auto bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-1" style="z-index:30">
+                                    <template x-for="r in awsRegionChoices" :key="r[0]">
+                                        <label class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-700 cursor-pointer text-sm">
+                                            <input type="checkbox" :value="r[0]" x-model="awsRegions" class="w-4 h-4 rounded border-gray-700 bg-gray-800 text-blue-600">
+                                            <span class="font-mono text-white" x-text="r[0]"></span>
+                                            <span class="text-gray-400" x-text="r[1]"></span>
+                                        </label>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Other accounts: the same scan in each, through a role there -->
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-300">Other accounts <span class="text-xs text-gray-500">(optional — account IDs, comma-separated, or <span class="font-mono">all</span> for the whole organization · remembered)</span></label>
+                            <input type="text" x-model="awsMembers" @change="saveAwsMembers()" placeholder="none — only the account of the configured keys"
+                                   class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono">
+                            <label class="block text-sm font-medium text-gray-300">Role to use in each <span class="text-xs text-gray-500">(a read-only role is enough)</span></label>
+                            <input type="text" x-model="awsMemberRole" @change="saveAwsMembers()" placeholder="OrganizationAccountAccessRole"
                                    class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono">
                         </div>
 
                         <!-- Time window: the same two date+time fields as Case Analysis (UTC) -->
-                        <div x-init="$nextTick(() => initCloudTimeWindow('aws'))" class="space-y-2">
-                            <label class="block text-sm font-medium text-gray-300">Time window — start <span class="text-xs text-gray-500">(UTC — applies to CloudTrail)</span></label>
+                        <div x-init="$nextTick(() => initCloudTimeWindow('aws', 720, () => saveAwsTimeWindow()))" class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-300">Time window — start <span class="text-xs text-gray-500">(UTC — applies to CloudTrail · remembered for the next scan)</span></label>
                             <input type="text" id="aws-tw-start" placeholder="pick date + time…"
                                    class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono">
                             <label class="block text-sm font-medium text-gray-300">Time window — end <span class="text-xs text-gray-500">(UTC, empty = up to now)</span></label>
@@ -311,7 +360,7 @@
                                 <span>Identity-scoped scan: CloudTrail collection is filtered to just the listed IAM principals — fast and low-volume regardless of account size. Use this when you already know the compromised user (alert, leaked key).</span>
                             </div>
                             <label class="block text-sm font-medium text-gray-300">Target IAM principal ARNs <span class="text-xs text-gray-500">(comma-separated)</span></label>
-                            <input type="text" x-model="awsTargetPrincipals" placeholder="arn:aws:iam::137050702114:user/intactai-test-victim"
+                            <input type="text" x-model="awsTargetPrincipals" placeholder="arn:aws:iam::123456789012:user/temp-user"
                                    class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono text-xs">
                         </div>
 

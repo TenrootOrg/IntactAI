@@ -13,16 +13,51 @@ function _cloudTwUtc(ms) {
     return new Date(ms).toISOString().slice(0, 16) + ':00';
 }
 
-function initCloudTimeWindow(prefix) {
+/* defaultHours: the window a fresh page shows. onUserChange: called when the OPERATOR
+   changes either field (picked, typed or cleared) -- never for a value set in code. */
+function initCloudTimeWindow(prefix, defaultHours, onUserChange) {
     const start = document.getElementById(prefix + '-tw-start');
     const end = document.getElementById(prefix + '-tw-end');
     if (!start || !end) return;
-    if (!start.value) start.value = _cloudTwUtc(Date.now() - CLOUD_TW_DEFAULT_HOURS * 3600e3);
+    const hours = defaultHours > 0 ? defaultHours : CLOUD_TW_DEFAULT_HOURS;
+    if (!start.value) start.value = _cloudTwUtc(Date.now() - hours * 3600e3);   // local-clock-ok: an editable default, not a duration
     if (typeof flatpickr === 'undefined' || start._flatpickr) return;
     // Same options as the Case Analysis time window.
-    const fp = { enableTime: true, time_24hr: true, dateFormat: 'Y-m-d\\TH:i:S', minuteIncrement: 5, allowInput: true };
+    // Saved on every way the operator can change it. onChange alone missed TYPED edits:
+    // a typed date is committed when the calendar closes, silently (no onChange), so
+    // it was never saved and came back as the old window on the next load (2026-10-26,
+    // reproduced in Chromium). The callback dedupes, so firing twice is harmless.
+    const changed = () => { if (typeof onUserChange === 'function') setTimeout(onUserChange, 0); };
+    const fp = { enableTime: true, time_24hr: true, dateFormat: 'Y-m-d\\TH:i:S', minuteIncrement: 5, allowInput: true,
+                 onChange: changed, onClose: changed };
     flatpickr(start, fp);
     flatpickr(end, fp);
+    start.addEventListener('blur', changed);
+    end.addEventListener('blur', changed);
+}
+
+/* Show a saved window: {hours} = the last N hours (end open), {start, end} = fixed. */
+function setCloudTimeWindow(prefix, tw) {
+    const start = document.getElementById(prefix + '-tw-start');
+    const end = document.getElementById(prefix + '-tw-end');
+    if (!start || !end || !tw) return;
+    const s = tw.hours > 0 ? _cloudTwUtc(Date.now() - tw.hours * 3600e3)   // local-clock-ok: a rolling window's start, not a duration
+            : String(tw.start || '').replace(/Z$/, '');
+    const e = tw.hours > 0 ? '' : String(tw.end || '').replace(/Z$/, '');   // '' = up to now
+    if (!s) return;
+    if (start._flatpickr) start._flatpickr.setDate(s, false); else start.value = s;
+    if (end._flatpickr) { if (e) end._flatpickr.setDate(e, false); else end._flatpickr.clear(false); } else end.value = e;
+}
+
+/* What to remember: exactly what the operator set (an empty end stays "up to now").
+   Only the untouched default rolls ({hours}). Turning a typed start into "the last N
+   hours" moved it forward every day -- not what was typed (2026-10-26).
+   null while the fields do not hold a valid window. */
+function cloudTimeWindowToSave(prefix) {
+    const tw = cloudTimeFilter(prefix);
+    if (tw.error) return null;
+    const f = tw.filter;
+    return { start: f.start_datetime.replace(/Z$/, ''), end: f.end_datetime.replace(/Z$/, '') };
 }
 
 const _CLOUD_TW_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/;
