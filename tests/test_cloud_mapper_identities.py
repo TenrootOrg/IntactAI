@@ -520,5 +520,28 @@ class APollingRoleIsOneRowAndTiesDoNotCrash(unittest.TestCase):
         self.assertEqual(len(ev), 1)
         self.assertIn("Around it", ev[0].attrs.get("summary_extra", ""))
 
+
+class ASetupRowInsideALaterWindow(unittest.TestCase):
+    """2026-10-26: a 2026 timeframe showed "At 2025-02-12 ... admin + active key" -- the
+    setup row is in the window (still true), but dated by when it began."""
+
+    def test_it(self):
+        import types
+        from services.fusion.correlate import date_state_in_window
+        from services.fusion.schema import Finding
+        ents = {"st": types.SimpleNamespace(attrs={"state_span": True}), "ev": types.SimpleNamespace(attrs={})}
+        state = Finding(id="f1", title="State: admin + key", severity="critical", confidence="high", summary="Admin.",
+                        entity_ids=["st"], ts="2025-02-12T22:04:21")
+        event = Finding(id="f2", title="Root login", severity="medium", confidence="high", summary="Login.",
+                        entity_ids=["ev"], ts="2025-03-01T10:00:00")
+        win = {"start": "2026-02-01T00:00:00", "end": None}
+        a, b = date_state_in_window([state, event], ents, win)
+        self.assertEqual(a.ts, "2026-02-01T00:00:00")
+        self.assertIn("true since 2025-02-12 22:04 UTC", a.summary)
+        self.assertEqual((a.id, b.ts, b.summary), ("f1", "2025-03-01T10:00:00", "Login."), "only setup rows move")
+        self.assertEqual(state.ts, "2025-02-12T22:04:21", "the stored finding is not changed")
+        self.assertEqual(date_state_in_window([state], ents, {"start": "2025-01-01T00:00:00"})[0].ts, state.ts)
+        self.assertEqual(date_state_in_window([state], ents, None)[0].ts, state.ts)
+
 if __name__ == "__main__":
     unittest.main()

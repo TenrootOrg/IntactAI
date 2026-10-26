@@ -3352,6 +3352,8 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
     gv.host_status = getattr(g, "host_status", None)
     gv.case_status = getattr(g, "case_status", None)
     findings = [f for f in g.findings if finding_in_window(f, window)]
+    from .correlate import date_state_in_window
+    findings = date_state_in_window(findings, g.entities, window)      # a 2025 setup row in a 2026 scope
     cited = {eid for f in findings for eid in (f.entity_ids or [])}
 
     # 1. The window's own evidence: everything that is not a pivot and was active

@@ -323,6 +323,8 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_apply_dispositions", lambda: _apply_dispositions(g, dispositions))      # operator triage — before severity rollup
     _guarded(_errs, "_rollup_asset_severity", lambda: _rollup_asset_severity(g))
     _guarded(_errs, "_score_assets", lambda: _score_assets(g))
+    _guarded(_errs, "date_state_in_window",
+             lambda: setattr(g, "findings", date_state_in_window(g.findings, g.entities, window)))
     try:
         # Activity under an EARLIER name of the machine goes after current activity.
         # Severity is untouched: a rename can also be an attacker's, so nothing hides.
@@ -2744,6 +2746,29 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
 
 
 # ------------------------------------------------------------------ scope
+def date_state_in_window(findings, entities, window) -> list:
+    """An account-setup finding ("admin + active key since 2025-02-12, still true at the
+    scan") is in every window its span overlaps -- but dated by when it BEGAN it read as
+    a 2025 event inside a 2026 timeframe (2026-10-26, AWS case). In a window that starts
+    after it began, it is dated at the window's start and says since when it was true.
+    Only state rows (attrs.state_span); every other finding keeps its own time."""
+    import dataclasses
+    start = (window or {}).get("start")
+    s_dt = keys.to_utc_dt(start)
+    if not s_dt:
+        return findings
+    out = []
+    for f in findings:
+        t = keys.to_utc_dt(f.ts)
+        if t and t < s_dt and any(((getattr(entities.get(eid), "attrs", None) or {}).get("state_span"))
+                                  for eid in (f.entity_ids or [])):
+            since = str(f.ts)[:16].replace("T", " ")
+            f = dataclasses.replace(f, ts=start, summary=(f"{f.summary or ''} (true since {since} UTC, "
+                                                          f"before this timeframe; still true at the scan)").strip())
+        out.append(f)
+    return out
+
+
 def _span_overlaps(first, last, window) -> bool:
     if not window:
         return True
