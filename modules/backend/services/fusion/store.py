@@ -667,6 +667,17 @@ def _window_is_auto(d) -> bool:
     return abs((e - s).total_seconds() - 10 * 365.25 * 86400) < 2 * 86400
 
 
+def _fuse_bound(d) -> dict | None:
+    """The window a fuse reads. An auto (unchosen) window runs UP TO NOW: its stored end
+    is the case's creation time, so a run attached later -- a new AWS scan, whose events
+    are all newer than the case -- had every one of them cut by the next fuse
+    (2026-10-26). A window the operator chose keeps both its bounds."""
+    tw = dict(d.get("time_window") or {})
+    if tw and _window_is_auto(d):
+        tw["end"] = None
+    return tw or None
+
+
 def _activity_window_from_graph(g, *, pad_seconds=120) -> dict | None:
     """The span the DETECTED activity occupies — first finding hit to last, padded
     a little so a boundary row is never clipped. This is the VIEW a case with an
@@ -2482,7 +2493,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # generator and len() on it raises. The count is the same either way, and it
         # is known before a single byte of evidence is read.
         _n_contrib = len(kept_runs)
-    window = d.get("time_window") or None
+    window = _fuse_bound(d)
     min_sev = d.get("min_severity", "informational")
     _plog("Refusion · building case graph", "info",
           f"window {(window or {}).get('start') or 'open'}…{(window or {}).get('end') or 'now'}, "
@@ -5250,8 +5261,8 @@ def _scope_from_rescan(case_id, cfg) -> tuple:
     if not (tw or {}).get("start"):
         return cfg, None, False
     d = get_case(case_id) or {}
-    bound = d.get("time_window") or {}
-    cur = active_scope_window(d) or bound
+    bound = _fuse_bound(d) or {}
+    cur = active_scope_window(d) or d.get("time_window") or {}
     # Checked FIRST: the dates on screen, untouched, mean "apply my other edits".
     # Checked second, a module change made inside a scope older than the case
     # (a leftover from before this rule) grew the case to that scope and lost the
@@ -5260,8 +5271,15 @@ def _scope_from_rescan(case_id, cfg) -> tuple:
             and str(cur.get("end") or "") == str(tw.get("end") or "")):
         return cfg, None, False
     if _reaches_outside(tw, bound):
-        cfg["time_window"] = _union_window(bound, tw)     # the case itself grows
-        return cfg, None, True
+        union = _union_window(d.get("time_window") or bound, tw)
+        cfg["time_window"] = union                       # the case itself grows
+        # ... and when the picked window is narrower than the grown case on its other
+        # side ("from 25 Oct to the end of today" on a case reaching back years), it is
+        # ALSO a scope: growing used to drop the 25 Oct start, so nothing was filtered
+        # (2026-10-26, AWS case).
+        narrower = (str(tw.get("start") or "") != str(union.get("start") or "")
+                    or (tw.get("end") or None) != (union.get("end") or None))
+        return cfg, (tw if narrower else None), True
     return cfg, tw, False
 
 
@@ -5332,9 +5350,11 @@ def rescan(case_id, cfg=None, trigger=None) -> dict:
         log_case_event(case_id, "Scope · the case grew", "info",
                        f"the window you picked reaches past what the case held, so the "
                        f"case now covers {_window_label(_bound)} and is being re-fused "
-                       f"to pull in that evidence. You are on the whole case; "
-                       f"{_window_label(_old_bound)} is kept as a scope with its report.")
-    elif _new_window:
+                       f"to pull in that evidence. "
+                       + (f"You are on {_window_label(_new_window)}, the window you picked; "
+                          if _new_window else "You are on the whole case; ")
+                       + f"{_window_label(_old_bound)} is kept as a scope with its report.")
+    if _new_window:
         # A timeframe inside the case the operator has not read before: make it a
         # scope and select it, so the re-fused case comes back with that window on
         # screen.

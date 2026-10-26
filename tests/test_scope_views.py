@@ -609,6 +609,35 @@ class AWindowPastTheCaseGrowsTheCase(unittest.TestCase):
                          d["time_window"], "and the case now covers the wider window")
 
 
+class AnAwsCaseKeepsItsNewestEvidenceAndItsPickedWindow(unittest.TestCase):
+    """2026-10-26, AWS case: (1) an unchosen window ended at the case's creation, so a
+    scan attached later had every newer event cut; (2) picking "25 Oct -> end of today"
+    grew the case and dropped the 25 Oct start, so nothing was filtered."""
+
+    AUTO = {"start": "2016-10-26T13:41:35", "end": "2026-10-26T13:43:16"}
+    PICK = {"start": "2026-10-25T00:00:00", "end": "2026-10-26T23:59:59"}
+
+    def test_an_unchosen_window_runs_up_to_now(self):
+        self.assertEqual({"start": self.AUTO["start"], "end": None},
+                         store._fuse_bound({"time_window": dict(self.AUTO), "time_window_auto": True}))
+        chosen = {"time_window": dict(self.AUTO), "time_window_auto": False}
+        self.assertEqual(self.AUTO, store._fuse_bound(chosen), "a chosen window keeps its end")
+        self.assertIsNone(store._fuse_bound({}))
+
+    def test_the_picked_window_is_a_scope_on_an_unchosen_case(self):
+        with mock.patch.object(store, "get_case", return_value={"time_window": dict(self.AUTO), "time_window_auto": True}):
+            cfg, win, grew = store._scope_from_rescan(CASE, {"time_window": dict(self.PICK)})
+        self.assertFalse(grew)
+        self.assertEqual(self.PICK, win)
+
+    def test_growing_still_shows_the_picked_window(self):
+        with mock.patch.object(store, "get_case", return_value={"time_window": dict(self.AUTO), "time_window_auto": False}):
+            cfg, win, grew = store._scope_from_rescan(CASE, {"time_window": dict(self.PICK)})
+        self.assertTrue(grew)
+        self.assertEqual({"start": self.AUTO["start"], "end": self.PICK["end"]}, cfg["time_window"])
+        self.assertEqual(self.PICK, win, "the 25 Oct start must not be lost")
+
+
 class EachTimeframeHasItsOwnHosts(unittest.TestCase):
     """Hiding a host in one timeframe hides it there only. Excluding ALCA01 in
     Configuration moved every scope's [N hosts] — the operator asked for each
