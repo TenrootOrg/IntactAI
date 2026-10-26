@@ -90,22 +90,31 @@ _PHASES = ["Initial Access", "Execution", "Persistence", "Privilege Escalation",
 # one an analyst reading a timeline would expect.
 _TECH_TACTIC = {
     **{t: "Initial Access" for t in ("T1566", "T1190", "T1133", "T1189", "T1195", "T1199")},
-    **{t: "Execution" for t in ("T1059", "T1204", "T1047", "T1106", "T1569", "T1203", "T1129")},
+    **{t: "Execution" for t in ("T1059", "T1204", "T1047", "T1106", "T1569", "T1203", "T1129", "T1648")},
     **{t: "Persistence" for t in ("T1543", "T1547", "T1546", "T1053", "T1136", "T1098", "T1505",
-                                  "T1574", "T1037", "T1197")},
-    **{t: "Privilege Escalation" for t in ("T1068", "T1548", "T1134", "T1484")},
+                                  "T1574", "T1037", "T1197", "T1525")},
+    **{t: "Privilege Escalation" for t in ("T1068", "T1548", "T1134", "T1484", "T1611")},
     **{t: "Defense Evasion" for t in ("T1562", "T1070", "T1036", "T1027", "T1112", "T1140", "T1218",
-                                      "T1564", "T1497", "T1202", "T1055", "T1620", "T1553", "T1222")},
+                                      "T1564", "T1497", "T1202", "T1055", "T1620", "T1553", "T1222", "T1666",
+                                      "T1685", "T1686", "T1535")},  # ATT&CK v18 ids for disabling tools / cloud firewalls,
     **{t: "Credential Access" for t in ("T1003", "T1558", "T1110", "T1555", "T1552", "T1557",
-                                        "T1212", "T1528", "T1539", "T1556")},
+                                        "T1212", "T1528", "T1539", "T1556", "T1040",
+                                        "T1621", "T1185")},  # MFA fatigue; a hijacked session,
     **{t: "Discovery" for t in ("T1087", "T1018", "T1082", "T1016", "T1049", "T1057", "T1069",
                                 "T1482", "T1083", "T1135", "T1046", "T1033", "T1007", "T1012",
-                                "T1518", "T1615")},
+                                "T1518", "T1615", "T1526", "T1580")},
     **{t: "Lateral Movement" for t in ("T1021", "T1570", "T1210", "T1550", "T1563", "T1078")},
     **{t: "Command & Control" for t in ("T1071", "T1105", "T1219", "T1572", "T1090", "T1095",
-                                        "T1102", "T1573", "T1571", "T1132")},
-    **{t: "Exfiltration" for t in ("T1041", "T1048", "T1567", "T1537", "T1020", "T1030")},
-    **{t: "Impact" for t in ("T1486", "T1490", "T1489", "T1485", "T1491", "T1529", "T1496")},
+                                        "T1102", "T1573", "T1571", "T1132", "T1568")},
+    **{t: "Exfiltration" for t in ("T1041", "T1048", "T1567", "T1537", "T1020", "T1030",
+                                   "T1530")},  # T1530: data taken from cloud storage
+    **{t: "Impact" for t in ("T1486", "T1490", "T1489", "T1485", "T1491", "T1529", "T1496",
+                                  "T1565", "T1531")},
+    # Sub-techniques whose tactic differs from their parent's entry above (exact id first).
+    # T1078 is "Lateral Movement" for a domain account reused host to host; T1078.004 is a
+    # CLOUD account -- the way into an AWS/Azure/GCP tenant (2026-10-26: root console
+    # sign-ins read "[Lateral Movement]").
+    "T1078.004": "Initial Access",
 }
 # Fallback keywords, matched as WHOLE words on the detection name only.
 _KW_TACTIC = (
@@ -138,7 +147,7 @@ def _phase(f) -> str:
     techs = list(f.mitre or []) + _techniques_for_title(f.title or "") \
         + _re.findall(r"\b(T\d{4})(?:\.\d{3})?\b", f.title or "", _re.I)
     for t in techs:
-        tactic = _TECH_TACTIC.get(str(t).upper().split(".")[0])
+        tactic = _TECH_TACTIC.get(str(t).upper()) or _TECH_TACTIC.get(str(t).upper().split(".")[0])
         if tactic:
             return tactic
     for tactic, pat in _KW_TACTIC:

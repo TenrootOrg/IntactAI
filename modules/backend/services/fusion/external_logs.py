@@ -1780,7 +1780,16 @@ def sigma_event(raw):
     if text is not None:
         return {"_text": text, "text": text, **_asa_fields(text)}
     more = rule_fields(raw)
-    return {**raw, **more} if more else raw
+    row = {**raw, **more} if more else raw
+    if "eventName" in row and "eventSource" in row:
+        # CloudTrail: the request's facts (port open to the internet, policy granting "*",
+        # role trusting another account ...) as intact.* fields the AWS rules read.
+        try:
+            from services.aws.cloudtrail_enrich import enrich
+            row = enrich(dict(row))
+        except Exception:                                  # noqa: BLE001 -- the row as it was
+            pass
+    return row
 
 
 def rule_fields(raw, depth=0) -> dict:

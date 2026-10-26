@@ -33,7 +33,11 @@ BUNDLED = os.path.join(_APP, "config", "sigma-escu")
 # there offline too), else an older box's /opt/sigma-rules clone.
 SIGMAHQ = next((d for d in (os.getenv("SIGMA_RULES_DIR"), "/opt/sigma-rules")
                 if d and os.path.isdir(os.path.join(d, "rules"))), "/opt/sigma-rules")
-RULE_DIRS = (os.path.join(SIGMAHQ, "rules"), os.path.join(SIGMAHQ, "rules-emerging-threats"), BUNDLED)
+# Our own AWS CloudTrail rules (exposure, privilege escalation, persistence, exfiltration,
+# tampering + count rules), scored on real attack recordings; their intact.* fields come
+# from services/aws/cloudtrail_enrich.py (2026-10-26).
+AWS_BUNDLED = os.path.join(_APP, "config", "sigma-aws")
+RULE_DIRS = (os.path.join(SIGMAHQ, "rules"), os.path.join(SIGMAHQ, "rules-emerging-threats"), BUNDLED, AWS_BUNDLED)
 DEMOTE = os.path.join(os.path.dirname(BUNDLED), "sigma_demote.yaml")   # SigmaHQ rules noisy on benign data
 LEVELS = {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 MIN_LEVEL = "medium"                 # below it a rule is context, never a detection
@@ -372,6 +376,7 @@ def compile_rule(doc):
     tags = [str(t) for t in doc.get("tags") or []]
     return {"id": str(doc.get("id") or doc.get("title")), "title": str(doc.get("title") or "Sigma rule"),
             "level": str(doc.get("level") or "medium").lower(),
+            "description": str(doc.get("description") or "")[:600],     # the AWS scan's finding text
             "product": (ls.get("product") or "").lower() or None,
             "category": (ls.get("category") or "").lower() or None,
             "service": (ls.get("service") or "").lower() or None,
@@ -691,13 +696,29 @@ class Event:
 
     def _index(self):
         self._low, self._last = {}, {}
-        for k, v in self.row.items():
-            # Defender writes "Threat Name", the rules say ThreatName: spaces never count.
-            lk = str(k).lower().replace(" ", "")
-            self._low.setdefault(lk, v)
-            parts = lk.split(".")
-            for i in range(1, len(parts)):
-                self._last.setdefault(".".join(parts[i:]), v)
+        # Nested JSON (CloudTrail's userIdentity: {type: Root}) is read under its dotted
+        # path, as if the file had been flattened. Only the top level used to be indexed:
+        # a raw CloudTrail export never matched userIdentity.type, so "AWS Root
+        # Credentials" missed every root event and an "is not an assumed role" filter
+        # never applied (2026-10-26). Top-level names win; depth and size are bounded.
+        todo = [("", self.row, 0)]
+        seen = 0
+        while todo:
+            pre, obj, depth = todo.pop()
+            for k, v in obj.items():
+                seen += 1
+                if seen > 4000:
+                    break
+                # Defender writes "Threat Name", the rules say ThreatName: spaces never count.
+                lk = pre + str(k).lower().replace(" ", "")
+                if isinstance(v, dict) and depth < 6:
+                    todo.append((lk + ".", v, depth + 1))
+                    if pre:
+                        continue                  # a nested object is reached by its fields
+                self._low.setdefault(lk, v)
+                parts = lk.split(".")
+                for i in range(1, len(parts)):
+                    self._last.setdefault(".".join(parts[i:]), v)
 
     def get(self, field):
         if field in self.row:

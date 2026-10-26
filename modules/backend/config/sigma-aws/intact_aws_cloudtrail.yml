@@ -1,0 +1,3416 @@
+# Intact.AI AWS CloudTrail rules (2026-10-26). Generic (no account, vendor or resource names),
+# built and scored on real attack recordings (Splunk attack_data, Stratus Red Team) and kept
+# quiet on a real account. intact.* fields come from services/aws/cloudtrail_enrich.py.
+title: AWS Admin Port Opened To The Internet
+id: 837ed0a3-968e-5f37-a904-55160470ab39
+status: experimental
+description: A security group, Lightsail firewall or network ACL now lets the whole internet (0.0.0.0/0 or ::/0) reach an administrative port
+  (SSH, RDP, databases, WinRM...) or every port.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.initial-access
+- attack.t1190
+- attack.defense-evasion
+- attack.t1562.007
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - AuthorizeSecurityGroupIngress
+    - ModifySecurityGroupRules
+    - PutInstancePublicPorts
+    - OpenInstancePublicPorts
+    - CreateNetworkAclEntry
+    - ReplaceNetworkAclEntry
+    intact.admin_port_open: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS Port Opened To The Internet
+id: aa1257d3-e2dd-5e69-ac83-89e4ba5e3f0d
+status: experimental
+description: A security group, Lightsail firewall or network ACL now lets the whole internet reach a port.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1562.007
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - AuthorizeSecurityGroupIngress
+    - ModifySecurityGroupRules
+    - PutInstancePublicPorts
+    - OpenInstancePublicPorts
+    - CreateNetworkAclEntry
+    - ReplaceNetworkAclEntry
+    intact.open_to_internet: 'true'
+  admin:
+    intact.admin_port_open: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not admin and not filter
+falsepositives:
+- A public web server (80/443) opened on purpose
+level: medium
+---
+title: AWS IAM Policy Grants Full Admin Rights
+id: acc53cff-ac9d-5295-b0e7-fdf7589fa3ea
+status: experimental
+description: An inline policy, a new policy (version) or an attached managed policy grants every action ("*", "iam:*", AdministratorAccess, IAMFullAccess).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1098
+- attack.persistence
+- attack.t1078.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - PutUserPolicy
+    - PutRolePolicy
+    - PutGroupPolicy
+    - CreatePolicy
+    - CreatePolicyVersion
+    - AttachUserPolicy
+    - AttachRolePolicy
+    - AttachGroupPolicy
+    intact.policy_admin: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS IAM Policy Grants Every Action Of A Service
+id: 60beeec9-4b9e-5a3d-8e97-fa36fd5bf027
+status: experimental
+description: A policy grants all actions of a service ("lightsail:*", "s3:*", PowerUserAccess ...).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1098
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - PutUserPolicy
+    - PutRolePolicy
+    - PutGroupPolicy
+    - CreatePolicy
+    - CreatePolicyVersion
+    - AttachUserPolicy
+    - AttachRolePolicy
+    - AttachGroupPolicy
+    intact.policy_wildcard: 'true'
+  admin:
+    intact.policy_admin: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not admin and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS IAM Policy Version Set As Default
+id: b104f9c3-a9c1-5aca-b043-d96432ef16a6
+status: experimental
+description: A managed policy was switched to another version -- a known privilege-escalation path when the caller can rewrite a policy attached
+  to itself.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1078.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  version:
+    eventName: CreatePolicyVersion
+    requestParameters.setAsDefault: 'true'
+  setdefault:
+    eventName: SetDefaultPolicyVersion
+  condition: version or setdefault
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS IAM Role Trusts Another Account Or Anyone
+id: a686f179-bb58-506d-b8cd-0d28b84b0510
+status: experimental
+description: A role can now be assumed from another AWS account, or by any principal -- a backdoor that survives key rotation.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1098.003
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - CreateRole
+    - UpdateAssumeRolePolicy
+  trust:
+  - intact.trust_external: 'true'
+  - intact.trust_anyone: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and trust and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS IAM Login Profile Created For Another User
+id: 9b9282cd-ebde-5cc3-95a2-7a6db60a0d47
+status: experimental
+description: Console access (a password) was given to another IAM user.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1098
+- attack.initial-access
+- attack.t1078.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: CreateLoginProfile
+    intact.acts_on_other_user: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS IAM Access Key Created For The Root User
+id: 1ee391a8-4034-5be8-9ec8-517fc4fbf9df
+status: experimental
+description: 'An access key for the root user: unlimited, long-lived programmatic access to the whole account.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1098.001
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: CreateAccessKey
+    userIdentity.type: Root
+  user:
+    requestParameters.userName|exists: true
+  filter:
+    errorCode|exists: true
+  condition: selection and not user and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: critical
+---
+title: AWS IAM User Created
+id: 77011833-eba5-5f54-8a62-48ab7ca4df6a
+status: experimental
+description: A new IAM user. Context for what that user does next.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1136.003
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: CreateUser
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: low
+---
+title: AWS IAM MFA Removed
+id: f6157fdf-0efd-5055-95e0-db92b0eaae1e
+status: experimental
+description: Multi-factor authentication was removed from a user.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1556.006
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - DeactivateMFADevice
+    - DeleteVirtualMFADevice
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS Image Or Snapshot Shared Publicly
+id: 5520730e-c783-52a8-bcf1-df0368587231
+status: experimental
+description: 'An AMI or a disk / database snapshot was made public: anyone can copy the data.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1537
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - ModifyImageAttribute
+    - ModifySnapshotAttribute
+    - ModifyDBSnapshotAttribute
+    - ModifyDBClusterSnapshotAttribute
+    intact.shared_public: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS Image Or Snapshot Shared With Another Account
+id: 48d6a39e-5e33-576d-93a7-47043b1f068e
+status: experimental
+description: An AMI or snapshot was shared with another AWS account.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1537
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - ModifyImageAttribute
+    - ModifySnapshotAttribute
+    - ModifyDBSnapshotAttribute
+    - ModifyDBClusterSnapshotAttribute
+    intact.shared_external: 'true'
+  public:
+    intact.shared_public: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not public and not filter
+falsepositives:
+- Sharing with your own other accounts (organisation, backup account)
+level: medium
+---
+title: AWS S3 Bucket Or Object Made Public
+id: 06e55877-4038-55bf-b533-ed8a915ad67d
+status: experimental
+description: A bucket or object ACL/policy grants everyone (AllUsers, AuthenticatedUsers, Principal "*"), or the public-access block was removed.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1530
+- attack.collection
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.bucket_public: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS S3 Lifecycle Deletes Data Within A Week
+id: 97352d44-c84a-56b4-8775-13c3ee399d9a
+status: experimental
+description: A lifecycle rule now deletes objects within 7 days -- a quiet way to destroy logs or data.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1485
+- attack.defense-evasion
+- attack.t1562.008
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - PutBucketLifecycle
+    - PutBucketLifecycleConfiguration
+    intact.short_expiry: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS S3 Objects Re-encrypted In Place With KMS
+id: 75e94b30-e6a8-50c6-9d3b-9ee3033daf2e
+status: experimental
+description: Objects copied onto themselves with a KMS key -- the S3 ransomware pattern (re-encrypt, then remove access to the key).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1486
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: CopyObject
+    intact.reencrypt_in_place: 'true'
+  condition: selection
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS KMS Key Scheduled For Deletion Or Disabled
+id: 791376b1-7c22-5295-aa81-5cffa478b6a6
+status: experimental
+description: 'A KMS key is being disabled or deleted: everything encrypted with it becomes unreadable.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1485
+- attack.t1486
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - ScheduleKeyDeletion
+    - DisableKey
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS EC2 Windows Password Retrieved
+id: 8c4fd77a-7de1-50a9-a3a5-c1403aeedfba
+status: experimental
+description: Someone asked for a Windows instance's administrator password (attempts included).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: GetPasswordData
+  condition: selection
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS Secrets Manager Batch Retrieval
+id: 4164219a-2c6a-5844-9e33-84de4c3607ee
+status: experimental
+description: Several secrets read in one call.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1555.006
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: BatchGetSecretValue
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS EC2 Instance Connect SSH Key Pushed
+id: f96c0566-d9b9-5087-a347-4881c4a13285
+status: experimental
+description: An SSH key was pushed to an instance for a login (EC2 Instance Connect / serial console).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.lateral-movement
+- attack.t1021.008
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - SendSSHPublicKey
+    - SendSerialConsoleSSHPublicKey
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS Lambda Code Changed By A Person
+id: 6654fc22-dc28-5879-adf6-9168526c5bdb
+status: experimental
+description: A Lambda function's code was replaced by a user or root rather than a deployment pipeline (role).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.execution
+- attack.t1204
+- attack.persistence
+- attack.t1525
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName|startswith: UpdateFunctionCode
+    intact.person: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- Manual deployments
+level: medium
+---
+title: AWS ECR Image Pushed By A Person
+id: 73ffb9cb-0d1e-5cd7-9f58-d5ed4c57f1d5
+status: experimental
+description: A container image was pushed by a user or root rather than a build pipeline.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.execution
+- attack.t1204.003
+- attack.persistence
+- attack.t1525
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: PutImage
+    intact.person: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- Manual image pushes
+level: medium
+---
+title: AWS Security Or Logging Service Disabled
+id: fe4e20d7-624c-53fc-999b-997f57a94eab
+status: experimental
+description: A detector, firewall rule set, log group, config recorder or alerting rule was removed (attempts included).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1562.008
+- attack.t1562.001
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - DeleteDetector
+    - DisassociateFromMasterAccount
+    - StopMonitoringMembers
+    - DisableSecurityHub
+    - DeleteAnalyzer
+    - DisableMacie
+    - DeleteWebACL
+    - DeleteRuleGroup
+    - DeleteIPSet
+    - DeleteLogGroup
+    - DeleteLogStream
+    - DeleteConfigRule
+    - DeleteConfigurationRecorder
+    - DeleteDeliveryChannel
+    - DisableRule
+    - DeleteRule
+    - DeleteFlowLogs
+    - DisableOrganizationAdminAccount
+    - DeleteMembers
+    - DisableAWSServiceAccess
+  source:
+    eventSource:
+    - guardduty.amazonaws.com
+    - securityhub.amazonaws.com
+    - access-analyzer.amazonaws.com
+    - macie2.amazonaws.com
+    - macie.amazonaws.com
+    - waf.amazonaws.com
+    - wafv2.amazonaws.com
+    - waf-regional.amazonaws.com
+    - logs.amazonaws.com
+    - config.amazonaws.com
+    - events.amazonaws.com
+    - ec2.amazonaws.com
+    - organizations.amazonaws.com
+    - inspector2.amazonaws.com
+    - detective.amazonaws.com
+  condition: selection and source
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS Lightsail Instance Credentials Retrieved By A Person
+id: a7b195cb-acc7-52c5-b0b9-f02b25256802
+status: experimental
+description: A user or root downloaded a Lightsail instance's SSH key / password or the region's default key pair. Roles doing it (integrations
+  polling) are a separate, low rule.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - GetInstanceAccessDetails
+    - DownloadDefaultKeyPair
+    intact.person: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS Key Pair Created Or Imported
+id: 4e61fa92-8a5b-5030-b559-10acf58aad94
+status: experimental
+description: A new SSH key pair. Context for the instances launched with it.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1098.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - CreateKeyPair
+    - ImportKeyPair
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: low
+---
+title: AWS Offensive Tool Used
+id: ff25e58d-6f72-5c4d-bf1b-07bff3b53915
+status: experimental
+description: The caller identifies as an AWS attack framework or an attacker distribution (user agent).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1526
+- attack.execution
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.tool:
+    - pacu
+    - stratus-red-team
+    - stratus red team
+    - cloudgoat
+    - weirdaal
+    - aws_pwn
+    - nimbostratus
+    - endgame
+    - kali
+    - parrot os
+    - parrotos
+  condition: selection
+falsepositives:
+- Your own red-team exercise
+level: high
+---
+title: AWS Cloud Audit Tool Used
+id: e66a39af-8ba1-5a36-8745-844a7b75f3f3
+status: experimental
+description: A cloud audit / enumeration tool ran against the account (user agent).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1526
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.tool:
+    - scoutsuite
+    - scout suite
+    - prowler
+    - cloudsploit
+    - pmapper
+    - principalmapper
+    - cloudmapper
+    - cloudfox
+    - enumerate-iam
+    - cloudbrute
+    - s3scanner
+  condition: selection
+falsepositives:
+- Your own security assessment
+level: medium
+---
+title: AWS Organizations Account Left
+id: cc3fc7b5-eec5-50fe-869b-1961ce5aaadb
+status: experimental
+description: The account left its AWS Organization -- and with it the organisation's guardrails and central logging.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1666
+- attack.impact
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: LeaveOrganization
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS Call Denied For A User Or Key
+id: f6f2b978-ebe1-55c8-bfd2-5705b853a892
+status: experimental
+description: 'Counted by: AWS Burst Of Denied Calls'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1580
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.denied: 'true'
+    intact.person: 'true'
+  console:
+    intact.console: 'true'
+  condition: selection and not console
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_denied_call
+---
+title: AWS Burst Of Denied Calls
+id: b1ea59b7-cb75-5728-8438-84217946c250
+status: experimental
+description: 'A user or long-lived key was refused 20+ times within 10 minutes outside the console -- probing what a stolen credential can do.
+  Roles: a separate, low rule.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1580
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_denied_call
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 20
+falsepositives:
+- A security tool or an administrator script running under a user rather than a role
+level: medium
+---
+title: AWS Discovery Call By A User
+id: 77974d2d-f33a-5711-9154-3fe663b6eb28
+status: experimental
+description: 'Counted by: AWS Discovery Sweep By A User Or Key'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1580
+- attack.t1526
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName|startswith:
+    - List
+    - Describe
+    - Get
+    intact.person: 'true'
+  console:
+    intact.console: 'true'
+  condition: selection and not console
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_discovery_call_by_person
+---
+title: AWS Discovery Sweep By A User Or Key
+id: 91bcf908-7270-5e59-9081-5f865f3d2516
+status: experimental
+description: 'A user or long-lived key called 25+ different List/Describe/Get APIs within 10 minutes -- an enumeration sweep. Roles are left out:
+  security integrations poll through roles.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1580
+- attack.t1526
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_discovery_call_by_person
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 25
+    field: eventName
+falsepositives:
+- A security tool or an administrator script running under a user rather than a role
+level: medium
+---
+title: AWS Log Events Read
+id: b37a4895-cb72-50ee-887e-70cd0b7d34ce
+status: experimental
+description: 'Counted by: AWS CloudWatch Logs Mass Retrieval'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.collection
+- attack.t1530
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - GetLogEvents
+    - FilterLogEvents
+    - StartQuery
+  condition: selection
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_log_read
+---
+title: AWS CloudWatch Logs Mass Retrieval
+id: b0360cd1-3854-58f4-bc56-abc4947b9e9a
+status: experimental
+description: One principal read log events 100+ times in 10 minutes -- harvesting logs.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.collection
+- attack.t1530
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_log_read
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 100
+falsepositives:
+- A security tool or an administrator script running under a user rather than a role
+level: medium
+---
+title: AWS Secret Read
+id: 0b495218-3d37-5727-88f7-c198e216901d
+status: experimental
+description: 'Counted by: AWS Many Secrets Read'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1555.006
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: GetSecretValue
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_secret_read
+---
+title: AWS Many Secrets Read
+id: 402ba047-0943-59ff-9880-60f8e79ade97
+status: experimental
+description: One principal read 10+ different secrets within 10 minutes.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1555.006
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_secret_read
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 10
+    field: requestParameters.secretId
+falsepositives:
+- A security tool or an administrator script running under a user rather than a role
+level: medium
+---
+title: AWS IAM Object Deleted
+id: 78bce686-b860-56bf-9402-bbcd0632fee4
+status: experimental
+description: 'Counted by: AWS Mass IAM Deletion'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1531
+- attack.persistence
+- attack.t1098
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - DeleteUser
+    - DeleteGroup
+    - DeletePolicy
+    - DeleteRole
+    - DeleteAccessKey
+    - DeleteLoginProfile
+    - DeletePolicyVersion
+  console:
+    intact.console: 'true'
+  condition: selection and not console
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_iam_delete
+---
+title: AWS Mass IAM Deletion
+id: 2b27fa40-deb4-5cc4-9837-354f7abf9ede
+status: experimental
+description: One principal deleted 20+ IAM objects within 10 minutes outside the console -- removing access, or covering tracks.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1531
+- attack.persistence
+- attack.t1098
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_iam_delete
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 20
+falsepositives:
+- A security tool or an administrator script running under a user rather than a role
+level: medium
+---
+title: AWS Malformed Policy Rejected
+id: cd872c26-b68e-5905-b4f5-45284a4d66ac
+status: experimental
+description: 'Counted by: AWS Policy Brute Force'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1580
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - CreatePolicy
+    - CreatePolicyVersion
+    - UpdateAssumeRolePolicy
+    - PutUserPolicy
+    - PutRolePolicy
+    errorCode: MalformedPolicyDocumentException
+  condition: selection
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_bad_policy
+---
+title: AWS Policy Brute Force
+id: bb4fe6ef-a0f1-53d5-b29d-65b7e9222e95
+status: experimental
+description: 5+ policies rejected as malformed within 10 minutes -- an attacker guessing at account and role names through policy errors.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1580
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_bad_policy
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 5
+falsepositives:
+- A security tool or an administrator script running under a user rather than a role
+level: medium
+---
+title: AWS Instances Launched
+id: 8579f93b-81d0-53f5-a1c5-a77b47db2392
+status: experimental
+description: 'Counted by: AWS Burst Of Instance Launches'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1496
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - RunInstances
+    - CreateInstances
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_instance_launch
+---
+title: AWS Burst Of Instance Launches
+id: 6c241e2e-8ffd-5ea6-bc41-9b853a65b8e5
+status: experimental
+description: One principal launched instances 10+ times in 30 minutes -- the cryptomining pattern.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1496
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_instance_launch
+  group-by:
+  - userIdentity.arn
+  timespan: 30m
+  condition:
+    gte: 10
+falsepositives:
+- A security tool or an administrator script running under a user rather than a role
+level: medium
+---
+title: AWS Lightsail Instance Credentials Retrieved By A Role
+id: 14402d8d-0853-58a3-8895-acc915443d5d
+status: experimental
+description: 'A role (an integration, an instance, a pipeline) retrieved Lightsail instance credentials -- context: who can reach your servers''
+  keys.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - GetInstanceAccessDetails
+    - DownloadDefaultKeyPair
+  person:
+    intact.person: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not person and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: low
+---
+title: AWS Call Denied For A Role
+id: c4707f92-0e8b-5000-90fd-891bb2745521
+status: experimental
+description: 'Counted by: AWS Burst Of Denied Calls By A Role'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1580
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.denied: 'true'
+  person:
+    intact.person: 'true'
+  condition: selection and not person
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_denied_call_role
+---
+title: AWS Burst Of Denied Calls By A Role
+id: 97885913-6e40-5bc7-a5b9-1157b9ef458e
+status: experimental
+description: 'A role was refused 20+ times in 10 minutes: an integration hitting its limits -- or stolen instance / workload credentials being
+  tried.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1580
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_denied_call_role
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 20
+falsepositives:
+- Automation or a migration running under one identity
+level: low
+---
+title: AWS IAM Federation Provider Created Or Changed
+id: e637e255-b19c-57ca-98bf-f5398efd92fe
+status: experimental
+description: 'A SAML or OIDC identity provider was added or changed: whoever controls it can sign in as any role that trusts it.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1484.002
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - CreateSAMLProvider
+    - UpdateSAMLProvider
+    - CreateOpenIDConnectProvider
+    - UpdateOpenIDConnectProviderThumbprint
+    - AddClientIDToOpenIDConnectProvider
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS IAM User Added To An Admin Group
+id: d1ac25f4-f554-5a58-9b0b-71733f18ed19
+status: experimental
+description: A user was added to a group whose name says administrator / power user.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1098
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: AddUserToGroup
+    requestParameters.groupName|contains:
+    - admin
+    - Admin
+    - ADMIN
+    - root
+    - power
+    - Power
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS IAM Password Policy Weakened Or Removed
+id: bddeca6f-8a11-5d29-aaae-fe5fe9f8efa5
+status: experimental
+description: The account password policy was removed or changed.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1556
+- attack.credential-access
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - DeleteAccountPasswordPolicy
+    - UpdateAccountPasswordPolicy
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- A planned policy update (check the new values)
+level: medium
+---
+title: AWS STS Federation Token Issued To A User
+id: defa134d-0807-5aad-88f0-bd43ecbd7f90
+status: experimental
+description: A long-lived user key minted federated credentials -- console access that keeps working after the key is deleted.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1550.001
+- attack.defense-evasion
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: GetFederationToken
+    userIdentity.type: IAMUser
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS Resource Policy Open To Anyone
+id: e7d15e40-6cc6-5658-8eea-2b6121305c6e
+status: experimental
+description: A KMS key, Lambda function, secret, queue or topic policy now allows any principal ("*").
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1537
+- attack.persistence
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.resource_policy_anyone: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS Resource Policy Grants Another Account
+id: f2e4b668-e7e9-5b16-aab0-b1ea1d180e8b
+status: experimental
+description: A KMS key, Lambda function, secret, queue or topic policy grants another AWS account.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1537
+- attack.persistence
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.resource_policy_external: 'true'
+  anyone:
+    intact.resource_policy_anyone: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not anyone and not filter
+falsepositives:
+- Your own other accounts
+level: medium
+---
+title: AWS Lambda Function URL Without Authentication
+id: f97c549d-008e-515b-acf3-d8d28db0771a
+status: experimental
+description: A Lambda function got a public URL anyone can call without signing in.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.initial-access
+- attack.t1190
+- attack.persistence
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName|startswith:
+    - CreateFunctionUrlConfig
+    - UpdateFunctionUrlConfig
+    requestParameters.authType: NONE
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS RDS Database Made Publicly Accessible
+id: 71e1c369-3f0b-58f9-8f17-9c15b8764ae8
+status: experimental
+description: A database instance is now reachable from the internet.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.initial-access
+- attack.t1190
+- attack.exfiltration
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - ModifyDBInstance
+    - CreateDBInstance
+    - RestoreDBInstanceFromDBSnapshot
+    - RestoreDBInstanceToPointInTime
+    requestParameters.publiclyAccessible: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS VPC Traffic Mirroring Created
+id: 0a41c673-9e8e-5e99-8174-2538ae6a2c83
+status: experimental
+description: A copy of network traffic is being sent somewhere -- the cloud equivalent of a network tap.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.collection
+- attack.t1040
+- attack.exfiltration
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - CreateTrafficMirrorSession
+    - CreateTrafficMirrorTarget
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS EKS Cluster API Made Public
+id: 26596728-1dd3-5ad0-b069-bd700e9a9ddc
+status: experimental
+description: A Kubernetes cluster's control plane is reachable from the whole internet.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.initial-access
+- attack.t1190
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: eks.amazonaws.com
+    eventName:
+    - CreateCluster
+    - UpdateClusterConfig
+    intact.k8s_api_public: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+---
+title: AWS ECS Task Runs A Privileged Container
+id: 861f3c12-fb96-54b0-99c7-ccfa8a158d53
+status: experimental
+description: A container task definition runs privileged -- it can take over its host.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1611
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: RegisterTaskDefinition
+    intact.privileged_container: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS SSM Session Started By A Person
+id: 64e59f3d-2cb6-5fe5-9a0c-b82747ed3f71
+status: experimental
+description: An interactive shell on an instance through Systems Manager. Context for what happened on that host.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.execution
+- attack.t1059
+- attack.lateral-movement
+- attack.t1021
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: StartSession
+    eventSource: ssm.amazonaws.com
+    intact.person: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: low
+---
+title: AWS CloudFormation Stack From An Outside Template
+id: 29913b45-ae2d-5646-adb7-27122b011851
+status: experimental
+description: A stack was built from a template outside S3 -- whatever that template defines runs with the deployer's rights.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.execution
+- attack.t1648
+- attack.persistence
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - CreateStack
+    - UpdateStack
+    - CreateStackSet
+    requestParameters.templateURL|contains: http
+  ownbucket:
+    requestParameters.templateURL|contains:
+    - .s3.
+    - s3.amazonaws.com
+    - s3-
+    - cloudformation-templates
+  filter:
+    errorCode|exists: true
+  condition: selection and not ownbucket and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS DynamoDB Table Exported Or Backups Disabled
+id: 25d870fb-b751-56cb-8182-c841eb7b2640
+status: experimental
+description: A DynamoDB table was exported to S3, a backup deleted, or point-in-time recovery turned off.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1537
+- attack.impact
+- attack.t1490
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - ExportTableToPointInTime
+    - DeleteBackup
+  pitr:
+    eventName: UpdateContinuousBackups
+    requestParameters.pointInTimeRecoverySpecification.pointInTimeRecoveryEnabled: 'false'
+  filter:
+    errorCode|exists: true
+  condition: (selection or pitr) and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS Route 53 Hosted Zone Deleted
+id: 83f6396f-1f67-5f9f-891f-bae0aa420719
+status: experimental
+description: A DNS zone was deleted -- the domain's names stop resolving.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1485
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: DeleteHostedZone
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS EC2 Serial Console Access Enabled
+id: 76ab60ba-ccb7-5b26-b67a-b4fe833f810d
+status: experimental
+description: Serial console access to instances was enabled -- a way in that bypasses the network.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1021
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: EnableSerialConsoleAccess
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS EC2 Instance Launched With A Startup Script By A Person
+id: a9888a84-d9dc-5bb4-947e-943ba711ecf5
+status: experimental
+description: A user launched an instance with user data (a script that runs at boot). Context for what that instance does.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.execution
+- attack.t1059
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: RunInstances
+    requestParameters.userData|exists: true
+    intact.person: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: low
+---
+title: AWS Backup Or Recovery Point Deleted
+id: 44778a54-a838-5ee4-8bfe-36d48f78efb9
+status: experimental
+description: A backup, recovery point or database / Lightsail snapshot was deleted -- removing the way back before an impact attack.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1490
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - DeleteRecoveryPoint
+    - DeleteBackupVault
+    - DeleteBackupPlan
+    - DeleteDBClusterSnapshot
+    - DeleteDBSnapshot
+    - DeleteInstanceSnapshot
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- Retention clean-up jobs
+level: medium
+---
+title: AWS Access Key Created
+id: da939023-b586-5633-abf8-da37d74da3d5
+status: experimental
+description: 'Counted by: AWS Access Keys Created For Many Users'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1098.001
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: CreateAccessKey
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_key_created
+---
+title: AWS Access Keys Created For Many Users
+id: d820055b-96d8-556f-91e6-5e48214880d2
+status: experimental
+description: One principal created access keys for 5+ different users within 30 minutes -- backdooring the account.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1098.001
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_key_created
+  group-by:
+  - userIdentity.arn
+  timespan: 30m
+  condition:
+    gte: 5
+    field: requestParameters.userName
+falsepositives:
+- Automation or a migration running under one identity
+level: high
+---
+title: AWS Resource Destroyed
+id: 0d88acfc-6653-504e-9ead-648deb1e2ec4
+status: experimental
+description: 'Counted by: AWS Mass Resource Destruction'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1485
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - DeleteSnapshot
+    - DeleteVolume
+    - TerminateInstances
+    - DeleteDBInstance
+    - DeleteDBCluster
+    - DeleteBucket
+    - DeleteTable
+    - DeleteInstance
+    - DeleteFileSystem
+  filter:
+    errorCode|exists: true
+  console:
+    intact.console: 'true'
+  condition: selection and not filter and not console
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_destroy
+---
+title: AWS Mass Resource Destruction
+id: c605c191-843b-5f9c-b1d4-ca1e2b124106
+status: experimental
+description: One principal destroyed 15+ instances, volumes, snapshots, databases, buckets or tables within 30 minutes outside the console.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1485
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_destroy
+  group-by:
+  - userIdentity.arn
+  timespan: 30m
+  condition:
+    gte: 15
+falsepositives:
+- Automation or a migration running under one identity
+level: high
+---
+title: AWS S3 Object Deleted
+id: 75c7bf3a-ba62-5315-932a-9096504d5e2a
+status: experimental
+description: 'Counted by: AWS Mass S3 Object Deletion'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1485
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - DeleteObject
+    - DeleteObjects
+  condition: selection
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_s3_delete
+---
+title: AWS Mass S3 Object Deletion
+id: b004f9b6-ed6f-5bf8-8736-6b38470676d6
+status: experimental
+description: One principal deleted objects 200+ times within 10 minutes (needs S3 data events in the trail).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1485
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_s3_delete
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 200
+falsepositives:
+- Automation or a migration running under one identity
+level: high
+---
+title: AWS S3 Object Read By A User
+id: 8e7ec1c6-eac0-5353-8286-bd74fecba454
+status: experimental
+description: 'Counted by: AWS Mass S3 Download By A User Or Key'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1530
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: GetObject
+    intact.person: 'true'
+  condition: selection
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_s3_read
+---
+title: AWS Mass S3 Download By A User Or Key
+id: 130425db-2d64-51a5-89a7-8191d3fbeaa3
+status: experimental
+description: A user or long-lived key downloaded 500+ objects within 10 minutes (needs S3 data events in the trail).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1530
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_s3_read
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 500
+falsepositives:
+- Automation or a migration running under one identity
+level: medium
+---
+title: AWS SSM Parameter Read
+id: 2e96849a-d13b-5a02-b5a6-f08ac7ae9a13
+status: experimental
+description: 'Counted by: AWS Many Secure Parameters Decrypted'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - GetParameter
+    - GetParameters
+    - GetParametersByPath
+    requestParameters.withDecryption: 'true'
+  condition: selection
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_ssm_param
+---
+title: AWS Many Secure Parameters Decrypted
+id: 1f967c7e-26e3-5621-bea5-0cc3b087d2a7
+status: experimental
+description: One principal decrypted Systems Manager parameters 20+ times within 10 minutes -- harvesting stored passwords and keys.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_ssm_param
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 20
+falsepositives:
+- Automation or a migration running under one identity
+level: medium
+---
+title: AWS DNS Record Changed
+id: d2781e28-1acd-5128-afbd-885e088fb44a
+status: experimental
+description: 'Counted by: AWS Burst Of DNS Changes'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1565
+- attack.defense-evasion
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: ChangeResourceRecordSets
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_dns_change
+---
+title: AWS Burst Of DNS Changes
+id: d4600435-67de-530d-a27e-8180d4a93e2f
+status: experimental
+description: One principal changed DNS records 10+ times within 10 minutes -- possible hijack of traffic or mail.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1565
+- attack.defense-evasion
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_dns_change
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 10
+falsepositives:
+- Automation or a migration running under one identity
+level: medium
+---
+title: AWS Console Sign-in Failed
+id: 00714421-3135-5f9e-b780-d6c4ad8e2fc7
+status: experimental
+description: 'Counted by: AWS Console Password Spray'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1110.003
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: ConsoleLogin
+    responseElements.ConsoleLogin: Failure
+  condition: selection
+falsepositives:
+- A shared office address where several people mistype at once
+level: informational
+name: intact_aws_console_login_failed
+---
+title: AWS Console Password Spray
+id: b7ac5e35-73b0-50a6-9832-b182564b22b6
+status: experimental
+description: Failed console sign-ins for 5+ different users from one address within 30 minutes -- password spraying.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1110.003
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_console_login_failed
+  group-by:
+  - sourceIPAddress
+  timespan: 30m
+  condition:
+    gte: 5
+    field: userIdentity.userName
+falsepositives:
+- A shared office address where several people mistype at once
+level: medium
+---
+title: AWS Console Sign-in Succeeded
+id: 4cec41eb-35fa-5a9b-80ee-da82826c829b
+status: experimental
+description: 'Counted by: AWS User Signed In From Many Addresses'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.initial-access
+- attack.t1078.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: ConsoleLogin
+    responseElements.ConsoleLogin: Success
+  condition: selection
+falsepositives:
+- Mobile users switching networks; a VPN changing exit address
+level: informational
+name: intact_aws_console_login_ok
+---
+title: AWS User Signed In From Many Addresses
+id: 7abc8ae3-883d-5e75-9aa3-5862edfe874e
+status: experimental
+description: One identity signed in to the console from 3+ different addresses within an hour -- shared or stolen credentials.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.initial-access
+- attack.t1078.004
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_console_login_ok
+  group-by:
+  - userIdentity.arn
+  timespan: 1h
+  condition:
+    gte: 3
+    field: sourceIPAddress
+falsepositives:
+- Mobile users switching networks; a VPN changing exit address
+level: medium
+---
+title: AWS CloudTrail Stops Recording Management Events
+id: f6169a36-2d29-5a90-b839-5eca3f69acc2
+status: experimental
+description: A trail's event selectors were changed so management events (who changed what) are no longer recorded, or only reads are -- the trail
+  looks on but is blind.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1562.008
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: PutEventSelectors
+    intact.mgmt_logging_off: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS Security Monitoring Weakened
+id: 18f0fec1-70bc-5266-8d7f-c23d12ffff50
+status: experimental
+description: 'A monitoring control was turned off without deleting it: Inspector or Detective disabled, DNS query logging removed, a WAF taken
+  off a resource, Security Hub standards disabled, model-invocation logging removed, a log subscription removed, or Kubernetes audit logging switched
+  off.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1562.001
+- attack.t1562.008
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - Disable
+    - DeleteGraph
+    - DeleteResolverQueryLogConfig
+    - DisassociateResolverQueryLogConfig
+    - DisassociateWebACL
+    - BatchDisableStandards
+    - DeleteModelInvocationLoggingConfiguration
+    - DeleteSubscriptionFilter
+    - DeleteFindingsFilter
+    - DisableImportFindingsForProduct
+  source:
+    eventSource:
+    - inspector2.amazonaws.com
+    - detective.amazonaws.com
+    - route53resolver.amazonaws.com
+    - wafv2.amazonaws.com
+    - waf-regional.amazonaws.com
+    - securityhub.amazonaws.com
+    - bedrock.amazonaws.com
+    - logs.amazonaws.com
+    - macie2.amazonaws.com
+  k8s:
+    intact.k8s_logging_off: 'true'
+  filter:
+    errorCode|exists: true
+  condition: ((selection and source) or k8s) and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS GuardDuty Told To Ignore Activity
+id: 542d37c3-82ee-5254-b9bf-69d2c78c3389
+status: experimental
+description: A trusted IP list or threat list was added or changed, findings stopped being exported, a filter now archives findings automatically, or the detector was paused --
+  GuardDuty keeps running but stops reporting.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1562.001
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: guardduty.amazonaws.com
+    eventName:
+    - CreateIPSet
+    - UpdateIPSet
+    - CreateThreatIntelSet
+    - UpdateThreatIntelSet
+    - DeletePublishingDestination
+  archive:
+    eventSource: guardduty.amazonaws.com
+    eventName:
+    - CreateFilter
+    - UpdateFilter
+    requestParameters.action: ARCHIVE
+  paused:
+    eventSource: guardduty.amazonaws.com
+    eventName: UpdateDetector
+    requestParameters.enable: 'false'
+  filter:
+    errorCode|exists: true
+  condition: (selection or archive or paused) and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS Leaked Access Key Quarantined
+id: e996d12a-6392-5112-a5d2-ea5844b10ee8
+status: experimental
+description: 'AWS attached its quarantine policy to a user: AWS found the user''s access key exposed (on a public repository or paste site). Treat
+  the key as stolen and check what it did before and after.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552.001
+- attack.initial-access
+- attack.t1078.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - AttachUserPolicy
+    - AttachRolePolicy
+    - AttachGroupPolicy
+    requestParameters.policyArn|contains: AWSCompromisedKeyQuarantine
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- 'None known: AWS applies this policy only after finding the key exposed'
+level: high
+
+---
+title: AWS Root Session Taken From Another Account
+id: 8bc8c171-d015-53c3-b840-01bdecabf814
+status: experimental
+description: Someone opened a root session on a member account (AssumeRoot) -- privileged by design, rare in day-to-day work.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1078.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: sts.amazonaws.com
+    eventName: AssumeRoot
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS Root Password Recovery
+id: a9a9d7c1-38d7-5dea-87b0-3a284c954d05
+status: experimental
+description: The root user's password reset was requested or completed -- the classic step after taking over the root mailbox.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1098
+- attack.credential-access
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - PasswordRecoveryRequested
+    - PasswordRecoveryCompleted
+  condition: selection
+falsepositives:
+- The owner resetting a forgotten root password; confirm with them
+level: high
+
+---
+title: AWS Console Opened With A Workload's Credentials
+id: 2dc33098-1a8e-56b2-990d-bfe9cd1f15d1
+status: experimental
+description: A console session was made from an EC2 instance's or Lambda function's role credentials -- people sign in as themselves; stolen workload
+  credentials are turned into a console session this way.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1550.001
+- attack.lateral-movement
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - GetSigninToken
+    - ConsoleLogin
+    - GetFederationToken
+  workload:
+  - intact.instance_role: 'true'
+  - intact.lambda_role: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and workload and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS IAM Change Made With An Instance's Credentials
+id: 0140088f-5474-566d-b781-fa0c333ff25d
+status: experimental
+description: An EC2 instance's role created or changed users, roles, keys or policies (successful or refused) -- a server rarely manages IAM;
+  stolen instance credentials (SSRF, a compromised host) often try.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1098
+- attack.persistence
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: iam.amazonaws.com
+    eventName|startswith:
+    - Create
+    - Put
+    - Attach
+    - Add
+    - Update
+    - Delete
+    - Detach
+    - Upload
+    intact.instance_role: 'true'
+  condition: selection
+falsepositives:
+- Infrastructure-as-code runners on EC2 that manage IAM; check the instance
+level: medium
+
+---
+title: AWS IAM Read By An Instance
+id: 76d904e3-a488-5794-ab95-30cd7a4c3d14
+status: experimental
+description: An EC2 instance's role listed IAM users, roles or policies.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1087.004
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: iam.amazonaws.com
+    eventName|startswith:
+    - List
+    - Get
+    intact.instance_role: 'true'
+  condition: selection
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_iam_read_by_instance
+
+---
+title: AWS IAM Enumerated With An Instance's Credentials
+id: d1e214ba-1c0d-51a7-b4d7-465bf79ee174
+status: experimental
+description: An EC2 instance's role called 5+ different IAM read APIs within 10 minutes -- servers do not map IAM; an attacker holding the instance's
+  credentials does.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1087.004
+- attack.t1069.003
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_iam_read_by_instance
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 5
+    field: eventName
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS Call Made With Instance Credentials
+id: 6813b5fd-1c24-5512-b5e1-1c75b485b2cd
+status: experimental
+description: A call signed with an EC2 instance's role credentials, from an address outside AWS's own services.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552.005
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.instance_role: 'true'
+  aws:
+  - sourceIPAddress|endswith: .amazonaws.com
+  - sourceIPAddress: AWS Internal
+  condition: selection and not aws
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_instance_cred_call
+
+---
+title: AWS Instance Credentials Used From Many Addresses
+id: 3c0a73c0-bfd9-5347-b67b-2368099b2f72
+status: experimental
+description: One instance's role credentials were used from 3+ different addresses within an hour -- an instance calls from its own address; the
+  extra ones are usually a copy of its credentials somewhere else.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552.005
+- attack.defense-evasion
+- attack.t1550.001
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_instance_cred_call
+  group-by:
+  - userIdentity.arn
+  timespan: 1h
+  condition:
+    gte: 3
+    field: sourceIPAddress
+falsepositives:
+- Instances behind changing NAT addresses or using both IPv4 and IPv6
+level: medium
+
+---
+title: AWS S3 Object Written With A Customer-Supplied Key
+id: 04012f15-6da8-54bf-bbc2-feffca08a160
+status: experimental
+description: An object was written or copied with a key the caller supplied (SSE-C) -- AWS keeps no copy of that key, so only the caller can read
+  the data back.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1486
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - PutObject
+    - CopyObject
+    - CreateMultipartUpload
+    - UploadPart
+    requestParameters.x-amz-server-side-encryption-customer-algorithm|exists: true
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_s3_ssec_write
+
+---
+title: AWS S3 Data Encrypted With Customer-Supplied Keys
+id: 867e172f-efe3-510a-b4b3-4c522c5b082a
+status: experimental
+description: '20+ objects re-written with a caller-supplied key within 10 minutes -- the ransomware pattern: AWS cannot decrypt them for you.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1486
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_s3_ssec_write
+  group-by:
+  - userIdentity.arn
+  timespan: 10m
+  condition:
+    gte: 20
+falsepositives:
+- An application that encrypts with its own keys by design
+level: high
+
+---
+title: AWS Data Encrypted With Another Account's KMS Key
+id: 494ed8af-ba08-5bdc-9cfb-9353de7ebc59
+status: experimental
+description: A bucket's default encryption or an object write now uses a KMS key owned by another account -- the other account can revoke the
+  key and lock the data.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1486
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.kms_foreign_key: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS Resources Shared Outside The Account
+id: 4a3bbdc7-5dd2-5df9-b3c4-dbe7bd7b6d39
+status: experimental
+description: A Resource Access Manager share or a Systems Manager document was shared with another account or opened to outside principals.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1537
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.shared_external: 'true'
+    eventSource:
+    - ram.amazonaws.com
+    - ssm.amazonaws.com
+  public:
+    intact.shared_public: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not public and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS Systems Manager Document Made Public
+id: e1a393d8-e97d-585c-87db-cbd01e227ddc
+status: experimental
+description: A Systems Manager document was shared with every AWS account -- its commands, and any secrets in them, are public.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1537
+- attack.collection
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: ModifyDocumentPermission
+    intact.shared_public: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS IAM Roles Anywhere Trust Anchor Added
+id: e2d97477-b5f4-5bd6-b166-238cc93682ac
+status: experimental
+description: A certificate authority was trusted or changed for IAM Roles Anywhere -- anyone holding a certificate it signed can take the linked
+  roles from outside AWS.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1098
+- attack.t1556
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: rolesanywhere.amazonaws.com
+    eventName:
+    - CreateTrustAnchor
+    - UpdateTrustAnchor
+    - EnableTrustAnchor
+    - CreateProfile
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS EKS Cluster Admin Access Granted
+id: 5ed65b7a-0cda-540f-9dcd-c44ac93c09de
+status: experimental
+description: An identity was given cluster-admin (or admin) access to a Kubernetes cluster through an access entry.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1098
+- attack.persistence
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: eks.amazonaws.com
+    eventName: AssociateAccessPolicy
+    requestParameters.policyArn|endswith:
+    - AmazonEKSClusterAdminPolicy
+    - AmazonEKSAdminPolicy
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS Database Protection Removed
+id: d674e50c-d56c-5e4e-8731-bce87feef8b1
+status: experimental
+description: A database lost its deletion protection or its automatic backups (retention set to 0) -- the step before deleting it for good.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1490
+- attack.t1485
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - ModifyDBInstance
+    - ModifyDBCluster
+  unprotect:
+  - requestParameters.deletionProtection: 'false'
+  - requestParameters.backupRetentionPeriod: '0'
+  filter:
+    errorCode|exists: true
+  condition: selection and unprotect and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS Backup Vault Lock Or Policy Removed
+id: 8551647d-77d6-5ee0-8e59-5c0e2b6be9bf
+status: experimental
+description: A backup vault's lock or access policy was removed, or recovery points were set to expire -- backups become deletable.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1490
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: backup.amazonaws.com
+    eventName:
+    - DeleteBackupVaultLockConfiguration
+    - DeleteBackupVaultAccessPolicy
+    - DeleteBackupPlan
+    - DeleteBackupSelection
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS Database Or Disk Exported
+id: 5037ad23-e205-52e4-9e62-6611b4301cf8
+status: experimental
+description: A database snapshot, instance or image was exported out of its service (to S3 or as a file), or copied to another region.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1537
+- attack.collection
+- attack.t1530
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - StartExportTask
+    - CreateInstanceExportTask
+    - ExportImage
+    - StartDBClusterExport
+  copy:
+    intact.copied_cross_region: 'true'
+  filter:
+    errorCode|exists: true
+  condition: (selection or copy) and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS Console Brute Force On One User
+id: 8cf49986-8039-53d2-999e-09f75b8c1616
+status: experimental
+description: 5+ failed console sign-ins for one user from one address within 10 minutes.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1110.001
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_console_login_failed
+  group-by:
+  - userIdentity.userName
+  - sourceIPAddress
+  timespan: 10m
+  condition:
+    gte: 5
+falsepositives:
+- A user who forgot a changed password
+level: medium
+
+---
+title: AWS Bedrock Model Access Enabled
+id: 3bb44111-d4b8-56c2-a4fd-55970e65c180
+status: experimental
+description: Access to a foundation model was granted or a model agreement accepted, or an API key was made for Bedrock -- the first steps when
+  stolen keys are used to run paid AI models (LLMjacking).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1496
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: bedrock.amazonaws.com
+    eventName:
+    - PutFoundationModelEntitlement
+    - CreateFoundationModelAgreement
+    - PutUseCaseForModelAccess
+  apikey:
+    eventName: CreateServiceSpecificCredential
+    requestParameters.serviceName: bedrock.amazonaws.com
+  filter:
+    errorCode|exists: true
+  condition: (selection or apikey) and not filter
+falsepositives:
+- A team starting to use Bedrock; confirm it was planned
+level: medium
+
+---
+title: AWS Bedrock Model Use
+id: f5afb4cc-14e9-5164-b0bb-89b7a9fc70fa
+status: experimental
+description: A call that lists, checks or invokes Bedrock models.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1496
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: bedrock.amazonaws.com
+    eventName:
+    - InvokeModel
+    - InvokeModelWithResponseStream
+    - Converse
+    - ConverseStream
+    - GetFoundationModelAvailability
+    - ListFoundationModels
+  condition: selection
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_bedrock_use
+
+---
+title: AWS Bedrock Probed In Many Regions
+id: 4f008c29-c684-5d81-92fe-f43ee0f481d9
+status: experimental
+description: One identity used or checked Bedrock models in 3+ regions within an hour -- stolen keys are tested region by region for model access.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1496
+- attack.discovery
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_bedrock_use
+  group-by:
+  - userIdentity.arn
+  timespan: 1h
+  condition:
+    gte: 3
+    field: awsRegion
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS Email Sending Enabled Or Expanded
+id: cc463435-f3ba-5f1c-88b2-5ce283deb228
+status: experimental
+description: SES sending was switched on, production access requested, or a sending identity verified -- stolen keys are often used to send spam
+  or phishing from a trusted domain.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1496
+- attack.resource-development
+- attack.t1585.002
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource:
+    - ses.amazonaws.com
+    - email.amazonaws.com
+    eventName:
+    - UpdateAccountSendingEnabled
+    - PutAccountDetails
+    - PutAccountSendingAttributes
+    - CreateEmailIdentity
+    - VerifyEmailIdentity
+    - VerifyDomainIdentity
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- Setting up email sending on purpose; confirm with the owner
+level: medium
+
+---
+title: AWS Email Service Checked By A Person
+id: 044ad9f2-70f1-5e7b-b464-655be2b40e6a
+status: experimental
+description: A person read SES sending quotas, identities or account status.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1526
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource:
+    - ses.amazonaws.com
+    - email.amazonaws.com
+    eventName:
+    - GetSendQuota
+    - GetAccount
+    - ListIdentities
+    - ListEmailIdentities
+    - GetAccountSendingEnabled
+    - GetSendStatistics
+    intact.person: 'true'
+  console:
+    intact.console: 'true'
+  condition: selection and not console
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_ses_check
+
+---
+title: AWS Email Service Enumerated
+id: 2e35ade3-7be2-51d5-9f36-6c6f8a1ec612
+status: experimental
+description: One identity checked 3+ different SES settings within an hour outside the console -- how stolen keys are tested for spam sending.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.discovery
+- attack.t1526
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_ses_check
+  group-by:
+  - userIdentity.arn
+  timespan: 1h
+  condition:
+    gte: 3
+    field: eventName
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS EC2 Startup Script Read By A Person
+id: c40b7c00-63be-55d3-a5b1-6d91e8468775
+status: experimental
+description: A person read an instance's user data (startup script) outside the console -- startup scripts often hold passwords and keys.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552.005
+- attack.discovery
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: DescribeInstanceAttribute
+    requestParameters.attribute: userData
+    intact.person: 'true'
+  console:
+    intact.console: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not console and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: low
+name: intact_aws_userdata_read
+
+---
+title: AWS Startup Scripts Read From Many Instances
+id: 1a79a84c-c757-547b-94a4-abef4e3fea4f
+status: experimental
+description: One identity read the startup script of 5+ instances within an hour -- a hunt for secrets in startup scripts.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552.005
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_userdata_read
+  group-by:
+  - userIdentity.arn
+  timespan: 1h
+  condition:
+    gte: 5
+    field: requestParameters.instanceId
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS GPU Or Very Large Instance Launched
+id: dfeec3c4-7875-52c1-93f7-39d8c33ab911
+status: experimental
+description: A GPU, accelerator or very large instance was launched -- the usual target when stolen keys are used for crypto mining or paid AI.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1496
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - RunInstances
+    - CreateFleet
+    - RequestSpotInstances
+    intact.large_instance: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- Teams that run machine learning or large databases; check whether the size is usual here
+level: medium
+
+---
+title: AWS Instances Launched In Many Regions
+id: 52458cad-6f2b-5f30-9a4d-b9f1c7947635
+status: experimental
+description: One identity launched instances in 3+ regions within an hour -- mining operations spread across regions to beat per-region quotas.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1496
+correlation:
+  type: value_count
+  rules:
+  - intact_aws_instance_launch
+  group-by:
+  - userIdentity.arn
+  timespan: 1h
+  condition:
+    gte: 3
+    field: awsRegion
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS Service Quota Increase Requested
+id: a98a6dc0-978e-5b54-88d3-e23cedd62cce
+status: experimental
+description: A service limit increase was requested (more instances, GPUs, sending volume ...).
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.impact
+- attack.t1496
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: RequestServiceQuotaIncrease
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- Normal growth; worth a look next to new users or keys
+level: low
+
+---
+title: AWS SageMaker Startup Script Created Or Changed
+id: dc956c0c-5db2-5ad7-9c5b-e7081dda80b6
+status: experimental
+description: A notebook or studio lifecycle configuration (a script that runs at every start) was created or changed.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1546
+- attack.execution
+- attack.t1059
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: sagemaker.amazonaws.com
+    eventName:
+    - CreateNotebookInstanceLifecycleConfig
+    - UpdateNotebookInstanceLifecycleConfig
+    - CreateStudioLifecycleConfig
+    - UpdateNotebookInstance
+    intact.person: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS Instance Role Swapped
+id: b29d8076-a2ac-585e-93bd-6184ddb16c96
+status: experimental
+description: A different IAM role was attached to a running instance outside the console -- gives whatever runs on it new permissions.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1098
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - AssociateIamInstanceProfile
+    - ReplaceIamInstanceProfileAssociation
+  console:
+    intact.console: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not console and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS Permissions Boundary Removed
+id: 7660cee0-08cb-51d7-a79f-8de04571f496
+status: experimental
+description: A user's or role's permissions boundary (its upper limit) was removed.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1548
+- attack.defense-evasion
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - DeleteUserPermissionsBoundary
+    - DeleteRolePermissionsBoundary
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS Organization Guard Rail Removed
+id: d0fa2900-31ed-54d2-ad04-fde389c4afc5
+status: experimental
+description: A service control policy was detached, deleted or a policy type turned off for the organization -- account-wide limits stop applying.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1562.001
+- attack.privilege-escalation
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: organizations.amazonaws.com
+    eventName:
+    - DetachPolicy
+    - DeletePolicy
+    - DisablePolicyType
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS Account-Wide Public Access Guard Removed
+id: 7134d128-c1a2-5d9f-b56d-a8812dbca767
+status: experimental
+description: The account-wide block on public buckets, public AMIs or public snapshots was removed, or default disk encryption turned off.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1562.001
+- attack.exfiltration
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - DisableImageBlockPublicAccess
+    - DisableSnapshotBlockPublicAccess
+    - DisableEbsEncryptionByDefault
+  s3acct:
+    eventName:
+    - DeletePublicAccessBlock
+    - DeleteAccountPublicAccessBlock
+    requestParameters.bucketName|exists: false
+  filter:
+    errorCode|exists: true
+  condition: (selection or s3acct) and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS IAM Identity Center Admin Access Assigned
+id: c004e050-71e2-56ae-b151-65ce74dd478d
+status: experimental
+description: An IAM Identity Center permission set was given full admin rights.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1098.003
+- attack.persistence
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: sso.amazonaws.com
+    eventName:
+    - AttachManagedPolicyToPermissionSet
+    - PutInlinePolicyToPermissionSet
+    intact.policy_admin: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: high
+
+---
+title: AWS Alternative Credentials Added To A User
+id: 17973be4-4c94-5413-8186-04cad7af844e
+status: experimental
+description: A user got a credential besides the console password and access key (service-specific credential, SSH key, signing certificate),
+  or a disabled access key was turned back on.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1098.001
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - CreateServiceSpecificCredential
+    - UploadSSHPublicKey
+    - UploadSigningCertificate
+  reactivate:
+    eventName: UpdateAccessKey
+    requestParameters.status: Active
+  filter:
+    errorCode|exists: true
+  condition: (selection or reactivate) and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS Account Contact Details Changed
+id: cc50270b-fe86-5cb8-be61-e18035ac47c2
+status: experimental
+description: The account's primary email, contact details or alternate (billing, operations, security) contacts were changed -- takes AWS's warnings
+  and the recovery path away from the owner.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1098
+- attack.impact
+- attack.t1531
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: account.amazonaws.com
+    eventName:
+    - PutAlternateContact
+    - DeleteAlternateContact
+    - PutContactInformation
+    - StartPrimaryEmailUpdate
+    - AcceptPrimaryEmailUpdate
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS CodeBuild Project Made Public
+id: 70d157c5-318f-5e76-8eb6-fe483e5033ee
+status: experimental
+description: A build project's results and logs were made public -- build logs often show secrets.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1567
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: UpdateProjectVisibility
+    requestParameters.projectVisibility: PUBLIC_READ
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS Data Stream Redirected
+id: 77ec9d39-1a13-599d-8b27-928924bab477
+status: experimental
+description: A Firehose delivery stream's destination was changed -- the data now flows somewhere else.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.exfiltration
+- attack.t1537
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: firehose.amazonaws.com
+    eventName: UpdateDestination
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS IAM Policy Written Without A Recorded Document
+id: 9722157d-c816-50a7-ba67-7fe882470d1b
+status: experimental
+description: A policy was written but CloudTrail did not record its text (the request was too large, or the field is missing) -- an oversized
+  policy is a known way to hide what it grants.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1562.008
+- attack.privilege-escalation
+- attack.t1098
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: iam.amazonaws.com
+    eventName:
+    - PutUserPolicy
+    - PutRolePolicy
+    - PutGroupPolicy
+    - CreatePolicy
+    - CreatePolicyVersion
+  omitted:
+    requestParameters.omitted|exists: true
+  doc:
+    requestParameters.policyDocument|exists: true
+  filter:
+    errorCode|exists: true
+  condition: selection and (omitted or not doc) and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+---
+title: AWS IAM Policy Opens A Privilege Escalation Path
+id: 7e439461-d9e8-539f-bb61-c2f12e248b0a
+status: experimental
+description: 'A policy was written that lets its holder raise its own rights: rewrite or attach policies, make keys or passwords for others, or
+  pass a role to something it can create (an instance, a function, a stack ...). Published escalation paths; full admin is reported by its own
+  rule.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.privilege-escalation
+- attack.t1098
+- attack.t1548
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - PutUserPolicy
+    - PutRolePolicy
+    - PutGroupPolicy
+    - CreatePolicy
+    - CreatePolicyVersion
+    intact.policy_privesc: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- Deployment or administration roles that need these rights; check who receives the policy
+level: medium
+
+---
+title: AWS ECR Image Scanning Turned Off
+id: 348be0ca-348b-5e37-931a-cd41b8cd7407
+status: experimental
+description: Scan-on-push was switched off for a container repository -- new images are no longer checked for known vulnerabilities.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1562.001
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName: PutImageScanningConfiguration
+    requestParameters.imageScanningConfiguration.scanOnPush: 'false'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- Repositories scanned by another tool instead
+level: low
+
+---
+title: AWS Region Enabled Or Disabled
+id: 415a4993-3ada-5d54-a5f7-ce39a7454762
+status: experimental
+description: An opt-in region was switched on or off for the account -- attackers enable a region nobody watches to run resources there.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1535
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: account.amazonaws.com
+    eventName:
+    - EnableRegion
+    - DisableRegion
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: medium
+
+---
+title: AWS API Gateway Keys Read
+id: 147a5ac9-c349-5367-85c8-637c539958d1
+status: experimental
+description: API keys were listed with their values -- keys that let a caller use the account's APIs.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventSource: apigateway.amazonaws.com
+    eventName:
+    - GetApiKeys
+    - GetApiKey
+    requestParameters.includeValue: 'true'
+  console:
+    intact.console: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not console and not filter
+falsepositives:
+- Developers fetching a key for testing outside the console
+level: medium
+
+---
+title: AWS MFA Device Registered For Another User
+id: 897050c6-6e83-5ac9-8234-7f351312d327
+status: experimental
+description: An MFA device was registered on someone else's user -- whoever holds it now controls that user's second factor.
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.persistence
+- attack.t1556.006
+- attack.t1098
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    eventName:
+    - EnableMFADevice
+    - ResyncMFADevice
+    intact.acts_on_other_user: 'true'
+  filter:
+    errorCode|exists: true
+  condition: selection and not filter
+falsepositives:
+- An administrator enrolling a user's device for them
+level: medium
