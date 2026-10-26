@@ -973,6 +973,9 @@ def _build_mask_mapping(graph, mask):
                                                   # (it was USER8, unrelated to Hostname2)
         if stem in _MASK_STOPWORDS:
             return                                # generic word (user/null/root/...), not an identity
+        if stem == "aws-root":
+            return                                # AWS's root user (mappers/cloud.py): a role, not a
+                                                  # person -- "SAM1 deleted two users" hid that it was root
         root = _norm_domain(dom).split(".", 1)[0]
         if form == "sam" and not root and len(stem_nums.get(stem, set())) == 1:
             n = next(iter(stem_nums[stem]))       # unambiguous stem -> same identity
@@ -1059,6 +1062,13 @@ def _build_mask_mapping(graph, mask):
     mask._tech_phrases = frozenset(tech)
     mask._tech_words = frozenset(tool_words)
     for e in graph.entities.values():
+        # AWS resource names (instances, snapshots, key pairs ... mappers/cloud.py) name the
+        # customer's servers the way hostnames do -- masked as hostnames.
+        _res = (e.attrs or {}).get("cloud_resources")
+        if isinstance(_res, list):
+            for nm in _res:
+                if isinstance(nm, str) and nm.strip():
+                    _host(nm.strip())
         lbl = (e.label or "").strip()
         if not lbl:
             continue

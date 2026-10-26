@@ -371,7 +371,10 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
     idmap = {e.id: e for e in accounts}
 
     def _hostset(e):
-        return {aid for aid in (e.assets() or []) if _bucket_of_asset(aid) == "endpoint"}
+        # Endpoints, and the cloud ACCOUNT an AWS/Azure principal acted in: without it
+        # every cloud card read "Seen on —" and the Risk tab listed no identities on
+        # the account (2026-10-26). An endpoint account never carries a cloud asset.
+        return {aid for aid in (e.assets() or []) if _bucket_of_asset(aid) in ("endpoint", "aws", "azure")}
 
     # ---- connected-components resolution over SAFE edges (union-find on account ids) ----
     parent = {e.id: e.id for e in accounts}

@@ -233,7 +233,11 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
                     _whits[_wr["rule"]] = _whits.get(_wr["rule"], 0) + 1
                 if e.type not in _STRUCTURAL_TYPES and e.first_seen:
                     eff = sev.max_level(e.severity, sev.from_anomaly(e.anomaly))
-                    if not in_window(e.first_seen, window):
+                    # A cloud account-SETUP row (mappers/cloud.py: "admin + key since <key
+                    # date>, still true at the scan") is in a window its span overlaps.
+                    # Only rows marked state_span; every other event keeps first_seen.
+                    if not in_window(e.first_seen, window) and not (
+                            (e.attrs or {}).get("state_span") and _span_overlaps(e.first_seen, e.last_seen, window)):
                         continue
                     if not sev.at_least(eff, min_severity):
                         _held.setdefault(e.id, e)
@@ -1699,13 +1703,24 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
         if not e.attrs.get("cloud_finding"):
             continue
         prov = e.attrs.get("provider", "cloud")
+        # An AWS row grouped from one session (mappers/cloud.py): its count, its span,
+        # the context line, and the ids of the rows it replaced -- so a verdict given on
+        # any of them still applies. A lone event has none of these: same finding as ever.
+        try:
+            hits = max(1, int(e.attrs.get("hits") or 1))
+        except (TypeError, ValueError):
+            hits = 1
+        extra = e.attrs.get("summary_extra")
         g.add_finding(Finding(
             id=_fid("cloud", e.id), title=f"{prov.upper()}: {e.attrs.get('rule')}",
             severity=e.severity, confidence="high",
-            summary=f"{prov.upper()} detection — {e.attrs.get('rule')}.",
+            summary=f"{prov.upper()} detection — {e.attrs.get('rule')}."
+                    + (f" {extra}" if isinstance(extra, str) and extra else ""),
             entity_ids=[e.id], asset_ids=_assets_of(e), sources=e.sources,
             evidence=list(e.evidence), mitre=list(e.attrs.get("mitre") or []),
-            ts=e.first_seen, kind="single"))
+            ts=e.first_seen, kind="single",
+            occ_count=hits, occ_latest=e.last_seen if hits > 1 else None,
+            aliases=[_fid("cloud", m) for m in (e.attrs.get("member_eids") or []) if isinstance(m, str)]))
 
     # vulnerabilities
     for e in g.by_type("vuln"):
@@ -2729,6 +2744,16 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
 
 
 # ------------------------------------------------------------------ scope
+def _span_overlaps(first, last, window) -> bool:
+    if not window:
+        return True
+    t0, t1 = keys.to_utc_dt(first), keys.to_utc_dt(last or first)
+    s_dt, e_dt = keys.to_utc_dt(window.get("start")), keys.to_utc_dt(window.get("end"))
+    if not t0 or not t1:
+        return True
+    return (not e_dt or t0 <= e_dt) and (not s_dt or t1 >= s_dt)
+
+
 def finding_in_window(f, window) -> bool:
     """A finding belongs to a window when it was ACTIVE in it at any point — from
     its first hit (ts) to its last (occ_latest). Judging by first hit alone hid a
