@@ -89,9 +89,10 @@
                              let timeFilter;
                              if (this.azureTimeFilter === 'custom') {
                                  const customDates = getAzureCustomDates();
-                                 timeFilter = { type: 'between', start: customDates.start, end: customDates.end };
+                                 // Same shape as every other time filter (backend: mode / relative_range).
+                                 timeFilter = { enabled: true, mode: 'between', start_datetime: customDates.start ? customDates.start + 'T00:00:00Z' : '', end_datetime: customDates.end ? customDates.end + 'T23:59:59Z' : '' };
                              } else {
-                                 timeFilter = { type: 'relative', value: this.azureTimeFilter };
+                                 timeFilter = { enabled: true, mode: 'relative', relative_range: this.azureTimeFilter };
                              }
                              const targetUsers = this.azureTargetUsers.split(',').map(u => u.trim()).filter(u => u);
                              const targetIps = this.azureTargetIPs.split(',').map(ip => ip.trim()).filter(ip => ip);

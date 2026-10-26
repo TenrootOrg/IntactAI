@@ -110,9 +110,10 @@
                                      this.awsRunning = false;
                                      return;
                                  }
-                                 timeFilter = { type: 'between', start, end };
+                                 // Same shape as every other time filter (backend: mode / relative_range).
+                                 timeFilter = { enabled: true, mode: 'between', start_datetime: start + 'T00:00:00Z', end_datetime: end ? end + 'T23:59:59Z' : '' };
                              } else {
-                                 timeFilter = { type: 'relative', value: this.awsTimeFilter };
+                                 timeFilter = { enabled: true, mode: 'relative', relative_range: this.awsTimeFilter };
                              }
                              const regions = this.awsRegions.split(',').map(r => r.trim()).filter(r => r);
                              const principals = this.awsTargetPrincipals.split(',').map(p => p.trim()).filter(p => p);

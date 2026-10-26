@@ -318,11 +318,14 @@ def run_aws_pipeline(
 
         add_log_to_run(run_id, "=" * 50, "info")
         add_log_to_run(run_id, f"Blueprint: {blueprint.get('name', 'Custom')}", "info")
-        if isinstance(time_filter, dict):
-            if time_filter.get('mode') == 'between':
-                add_log_to_run(run_id, f"Time Range: {time_filter.get('start_datetime', '?')} → {time_filter.get('end_datetime', 'now')}", "info")
-            else:
-                add_log_to_run(run_id, f"Time Range: Last {time_filter.get('relative_range', '7d')}", "info")
+        # The window CloudTrail will really search -- this line once said "Last 7d"
+        # while the search ran 24 h (the page sent a shape the backend never read).
+        from .cloudtrail_runner import _resolve_time_window
+        _start, _end = _resolve_time_window(time_filter)
+        add_log_to_run(run_id, f"Time Range: {_start:%Y-%m-%d %H:%M} → {_end:%Y-%m-%d %H:%M} UTC"
+                       + (f" (last {time_filter['relative_range']})" if isinstance(time_filter, dict)
+                          and time_filter.get('mode', 'relative') == 'relative' and time_filter.get('relative_range') else ""),
+                       "info")
         add_log_to_run(run_id, f"Sources: {', '.join(bp_settings.get('sources', ['all']))}", "info")
         add_log_to_run(run_id, f"Regions: {', '.join(options.get('regions') or [aws_config.get('region', 'us-east-1')])}", "info")
         if options.get('target_principals'):
