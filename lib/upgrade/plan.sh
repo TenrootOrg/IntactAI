@@ -522,6 +522,21 @@ for img in sorted(owner):
 }
 
 # ---------------------------------------------------------------------------
+# _plan_scratch_gb — whole GiB this run's scratch dirs (UPKG_SCRATCH) hold
+# right now. GiB, not GB, to match _free_gb's `df -B1G` in the same message.
+# Prints 0 when there is nothing to measure.
+# ---------------------------------------------------------------------------
+_plan_scratch_gb() {
+    local d bytes=0 sz
+    for d in ${UPKG_SCRATCH:-}; do
+        [[ -n "$d" && -d "$d" ]] || continue
+        sz="$(du -sb -- "$d" 2>/dev/null | cut -f1)"
+        [[ "$sz" =~ ^[0-9]+$ ]] && bytes=$((bytes + sz))
+    done
+    printf '%d' $(( bytes / 1073741824 ))
+}
+
+# ---------------------------------------------------------------------------
 # plan_check_disk — enough headroom for the images this package will load.
 #
 # Sized on the image tars because that is what doubles: each tar's layers are
@@ -556,6 +571,17 @@ plan_check_disk() {
 
     if (( free_gb < need_gb )); then
         log_error "Not enough disk: ${free_gb}G free on ${SCRIPT_DIR}, this package needs about ${need_gb}G"
+        # This runs after extraction, so the run's own scratch is already off
+        # the free figure -- and the EXIT trap deletes it, so the operator's
+        # `df` straight afterwards shows far more than was reported here.
+        # Without this line the refusal reads as a miscount.
+        local scratch_gb
+        scratch_gb="$(_plan_scratch_gb)"
+        if (( scratch_gb > 0 )); then
+            log_error "  ${scratch_gb}G of the used space is this upgrade's own extracted package."
+            log_error "  It is deleted when the run exits, so 'df' then shows more free space"
+            log_error "  than this check saw. The package still needs that space during the run."
+        fi
         log_error "  Free space and re-run. 'docker image prune -a' on images no module"
         log_error "  pins is usually the biggest win."
         return 1
