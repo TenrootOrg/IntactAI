@@ -407,6 +407,28 @@ PY
     return $rc
 }
 
+# _upkg_free_unwrapped_asset <asset> — delete one asset that upkg_extract has
+# just unpacked, when it is our own unwrap copy.
+#
+# upkg_release_unwrap frees the unwrap dir only after ALL assets are out, so
+# during extraction the whole 7.3G copy and the growing ~15G tree were on disk
+# together. On 2026-10-28 that peak filled a 61G box mid-way through presidio.
+# Freeing each asset as it lands caps the copy's share at the assets not yet
+# extracted.
+#
+# Only a file inside a dir upkg_expand_args unwrapped. A directory --package
+# is the operator's own media and may be the only copy, so it is never
+# touched. Deferred (lazy) assets never reach here: they are not in `now`.
+_upkg_free_unwrapped_asset() {
+    local a="$1" d
+    for d in ${UPKG_UNWRAP:-}; do
+        [[ -n "$d" && "$a" == "$d"/* && -f "$a" ]] || continue
+        rm -f -- "$a"
+        return 0
+    done
+    return 0
+}
+
 upkg_extract() {
     local assets=("$@")
     mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
@@ -462,6 +484,7 @@ upkg_extract() {
             return 1
         fi
         log_info "  [${i}/${#now[@]}] $(basename "$a") extracted in ${RUN_HEARTBEAT_ELAPSED:-?}s"
+        _upkg_free_unwrapped_asset "$a"
     done
 
     local roots root_count

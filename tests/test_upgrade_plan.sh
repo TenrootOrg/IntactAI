@@ -577,6 +577,37 @@ test_unwrap_release_is_a_noop_without_a_wrapper() {
     _unwrap_teardown
 }
 
+# _upkg_free_unwrapped_asset -- each unwrapped asset goes as soon as it is
+# extracted. Freeing them only at the end left the whole copy on disk beside
+# the growing tree, and that peak filled a 61G box mid-extraction.
+
+test_an_extracted_unwrapped_asset_is_deleted() {
+    _unwrap_setup
+    _upkg_free_unwrapped_asset "${UNWRAP}/intact-test-elk.tar.gz"
+    assert_false test -e "${UNWRAP}/intact-test-elk.tar.gz"
+    assert_true  test -f "${UNWRAP}/intact-test.manifest.json"
+    _unwrap_teardown
+}
+
+test_an_asset_outside_the_unwrap_dir_is_never_deleted() {
+    # A directory --package is the operator's media, often the only copy.
+    _unwrap_setup
+    local media; media="$(mktemp -d)"
+    : > "${media}/intact-test-elk.tar.gz"
+    _upkg_free_unwrapped_asset "${media}/intact-test-elk.tar.gz"
+    assert_true test -f "${media}/intact-test-elk.tar.gz"
+    rm -rf "$media"
+    _unwrap_teardown
+}
+
+test_no_asset_is_deleted_without_a_wrapper() {
+    _unwrap_setup
+    UPKG_UNWRAP=""
+    _upkg_free_unwrapped_asset "${UNWRAP}/intact-test-elk.tar.gz"
+    assert_true test -f "${UNWRAP}/intact-test-elk.tar.gz"
+    _unwrap_teardown
+}
+
 run_all_tests; _rc=$?
 rm -f "$LOG_FILE"; rm -rf "$SCRIPT_DIR"
 exit $_rc
