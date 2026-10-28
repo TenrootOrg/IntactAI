@@ -421,6 +421,25 @@ test_an_unreadable_extracted_manifest_does_not_hand_over_precedence() {
 }
 
 # ---------------------------------------------------------------------------
+# A single-file wrapper's unwrap copy is gone once acquire has extracted it
+# (lib/upgrade/package.sh:upkg_release_unwrap). The unit cases live in
+# test_upgrade_plan.sh; this one drives the real expand -> acquire path.
+# ---------------------------------------------------------------------------
+
+test_a_wrapper_unwrap_copy_is_freed_by_acquire() {
+    _setup; _make_pkg intact-test-intact.tar
+    ( cd "$WORK" && tar -cf wrapper.tar intact-test-intact.tar )
+    assert_true upkg_expand_args "${WORK}/wrapper.tar"
+    local unwrap="${UPKG_UNWRAP# }"
+    assert_true test -d "$unwrap"
+    assert_true upkg_acquire "${UPKG_ASSETS[@]}"
+    assert_false test -e "$unwrap"
+    assert_true test -f "${UPKG_DIR}/source/intact/README"
+    assert_not_contains "$UPKG_SCRATCH" "$unwrap"
+    _teardown
+}
+
+# ---------------------------------------------------------------------------
 # upkg_acquire with a partial (--only) fetch
 # ---------------------------------------------------------------------------
 

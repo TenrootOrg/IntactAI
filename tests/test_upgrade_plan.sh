@@ -20,6 +20,7 @@ source ../lib/common.sh
 source ../lib/upgrade/core.sh
 source ../lib/upgrade/health/core.sh
 source ../lib/upgrade/plan.sh
+source ../lib/upgrade/package.sh
 
 log_info()    { echo "[INFO] $*" >> "$LOG_FILE"; }
 log_success() { echo "[SUCCESS] $*" >> "$LOG_FILE"; }
@@ -468,6 +469,112 @@ test_memory_preflight_names_a_stack_worth_stopping() {
     local log; log="$(cat "$LOG_FILE")"
     assert_contains "$log" "timesketch" "name the heaviest stack"
     assert_contains "$log" "docker compose" "and give a runnable command"
+}
+
+# ---------------------------------------------------------------------------
+# Disk refusal after extraction. plan_check_disk measures with the run's own
+# scratch on disk, and the EXIT trap deletes that scratch, so `df` afterwards
+# showed 24G on a box the check had just called 1G. Observed 2026-10-26.
+# ---------------------------------------------------------------------------
+
+# The stubs below replace real functions in this one shell, so every other
+# test would inherit them. Keep the real ones to put back.
+eval "$(declare -f _free_gb        | sed '1s/^_free_gb/_real_free_gb/')"
+eval "$(declare -f plan_image_tars | sed '1s/^plan_image_tars/_real_plan_image_tars/')"
+_disk_teardown() {
+    eval "$(declare -f _real_free_gb        | sed '1s/^_real_free_gb/_free_gb/')"
+    eval "$(declare -f _real_plan_image_tars | sed '1s/^_real_plan_image_tars/plan_image_tars/')"
+    DOCKER_BIN=docker
+}
+
+_disk_setup() {   # a refusal: 1G free, one 4G tar to load
+    _setup
+    _free_gb() { echo 1; }
+    plan_image_tars() { printf '/x/elk.tar\t4000000000\n'; }
+    DOCKER_BIN=false
+    UPKG_SCRATCH=""; UPKG_UNWRAP=""; UPKG_DEFERRED=""
+}
+
+test_disk_refusal_names_the_space_its_own_scratch_holds() {
+    _disk_setup
+    local work; work="$(mktemp -d -p "${SCRIPT_DIR}")"
+    # Sparse: du -b counts the apparent size, so no real 2G is written.
+    truncate -s 2G "${work}/big.tar"
+    UPKG_SCRATCH=" ${work}"
+    assert_false plan_check_disk
+    local log; log="$(cat "$LOG_FILE")"
+    assert_contains "$log" "Not enough disk: 1G free"
+    assert_contains "$log" "2G of the used space is this upgrade's own extracted package" \
+        "the operator must learn why df later disagrees"
+    rm -rf "$work"
+    _disk_teardown
+}
+
+test_disk_refusal_without_scratch_does_not_mention_it() {
+    # An already-extracted --package-dir run has no scratch of its own.
+    _disk_setup
+    assert_false plan_check_disk
+    assert_not_contains "$(cat "$LOG_FILE")" "own extracted package" \
+        "zero scratch is not worth a line"
+    _disk_teardown
+}
+
+test_scratch_size_ignores_paths_that_are_gone() {
+    _setup
+    UPKG_SCRATCH=" ${SCRIPT_DIR}/data/tmp/upgrade-pkg-gone"
+    assert_eq "$(_plan_scratch_gb)" "0"
+}
+
+# ---------------------------------------------------------------------------
+# upkg_release_unwrap -- the unwrap copy duplicates the operator's wrapper
+# tar, so it goes as soon as extraction is done. That copy was 7.3G of the
+# 23G the run above held when it refused.
+# ---------------------------------------------------------------------------
+
+_unwrap_setup() {
+    _setup
+    UPKG_DEFERRED=""; UPKG_LOOSE_MANIFEST=""
+    mkdir -p "${SCRIPT_DIR}/data/tmp"
+    UNWRAP="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" upgrade-unwrap-XXXXXX)"
+    PKG="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" upgrade-pkg-XXXXXX)"
+    : > "${UNWRAP}/intact-test-elk.tar.gz"
+    printf '{}' > "${UNWRAP}/intact-test.manifest.json"
+    UPKG_UNWRAP=" ${UNWRAP}"
+    UPKG_SCRATCH=" ${UNWRAP} ${PKG}"
+}
+_unwrap_teardown() { rm -rf "$UNWRAP" "$PKG"; UPKG_DEFERRED=""; }
+
+test_unwrap_dir_is_deleted_after_extraction() {
+    _unwrap_setup
+    UPKG_LOOSE_MANIFEST="${UNWRAP}/intact-test.manifest.json"
+    upkg_release_unwrap
+    assert_false test -e "$UNWRAP"
+    assert_true  test -d "$PKG"           # the extracted tree is what the run uses
+    assert_not_contains "$UPKG_SCRATCH" "$UNWRAP" "a deleted dir is no longer scratch"
+    assert_contains     "$UPKG_SCRATCH" "$PKG"   "the extracted tree is still cleaned up at exit"
+    assert_eq "$UPKG_UNWRAP" ""
+    assert_eq "$UPKG_LOOSE_MANIFEST" "" "must not point at a deleted file"
+    _unwrap_teardown
+}
+
+test_unwrap_dir_is_kept_in_lazy_mode() {
+    # Deferred modules extract from the unwrap dir at their own turn.
+    _unwrap_setup
+    UPKG_DEFERRED="elk=${UNWRAP}/intact-test-elk.tar.gz"
+    upkg_release_unwrap
+    assert_true test -f "${UNWRAP}/intact-test-elk.tar.gz"
+    assert_contains "$UPKG_SCRATCH" "$UNWRAP" "upkg_cleanup still removes it at exit"
+    _unwrap_teardown
+}
+
+test_unwrap_release_is_a_noop_without_a_wrapper() {
+    # A directory --package has no unwrap dir; nothing may be touched.
+    _unwrap_setup
+    UPKG_UNWRAP=""
+    upkg_release_unwrap
+    assert_true test -d "$UNWRAP"
+    assert_contains "$UPKG_SCRATCH" "$UNWRAP"
+    _unwrap_teardown
 }
 
 run_all_tests; _rc=$?

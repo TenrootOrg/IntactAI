@@ -30,6 +30,7 @@ SUPPORTED_PACKAGE_FORMAT=1
 UPKG_DIR=""          # the extracted, merged package tree
 UPKG_MANIFEST=""     # $UPKG_DIR/manifest.json
 UPKG_LOOSE_MANIFEST="" # a manifest.json found beside the assets, not inside one
+UPKG_UNWRAP=""       # unwrap dirs upkg_expand_args made; freed by upkg_release_unwrap
 # "<module>=<asset path>" entries whose extraction is deferred to that module's
 # turn. Exported across the stage-0 hop for the same reason UPKG_SCRATCH is --
 # the process that runs the module loop is not the one that acquired.
@@ -68,6 +69,7 @@ declare -gA _U_TAR_FREED 2>/dev/null || true
 upkg_expand_args() {
     UPKG_ASSETS=()
     UPKG_LOOSE_MANIFEST=""
+    UPKG_UNWRAP=""
     # Not a module asset, but not nothing either: lib/upgrade/hostdeps.sh reads
     # its apt index to report whether the host's Docker matches this release.
     UPKG_SYSTEM_BUNDLE=""
@@ -141,6 +143,7 @@ upkg_expand_args() {
             unwrap="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" upgrade-unwrap-XXXXXX 2>/dev/null)" \
                 || unwrap="$(mktemp -d)"
             UPKG_SCRATCH="${UPKG_SCRATCH} ${unwrap}"
+            UPKG_UNWRAP="${UPKG_UNWRAP} ${unwrap}"
             log_info "$(basename "$p") is a single-file package — unwrapping"
             # Extract the module tarballs AND the merged <tag>.manifest.json
             # that prepare_package.sh wraps beside them. Extracting only
@@ -751,6 +754,7 @@ upkg_acquire() {
     done
 
     upkg_extract "${assets[@]}" || return 1
+    upkg_release_unwrap
     upkg_read_manifest || return 1
 
     if [[ -n "${INTACT_RELEASE_ONLY_MODULES:-}" || -n "${UPKG_DEFERRED:-}" ]]; then
@@ -764,6 +768,41 @@ upkg_acquire() {
     else
         upkg_verify_file_checksums || return 1
     fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# upkg_release_unwrap — free the unwrapped copy of a single-file package as
+# soon as upkg_extract has unpacked it.
+#
+# The unwrap dir holds the same compressed assets the operator's wrapper tar
+# already holds -- 7.3 GB for a full release -- and nothing reads it once the
+# merged tree exists. Kept until the run ended, it was still on disk when
+# plan_check_disk measured: a box with 24G free reported "1G free, needs
+# about 9G" and refused, and the EXIT cleanup then deleted the scratch, so
+# `df` showed 24G and the refusal looked like a bug. Observed 2026-10-26.
+#
+# Lazy mode keeps it: UPKG_DEFERRED points into it, and each deferred module
+# extracts from there at its own turn. upkg_cleanup removes it at the end.
+# ---------------------------------------------------------------------------
+upkg_release_unwrap() {
+    [[ -n "${UPKG_DEFERRED:-}" ]] && return 0
+    local d s keep
+    for d in ${UPKG_UNWRAP:-}; do
+        [[ -n "$d" && -d "$d" ]] || continue
+        case "$d" in
+            "${SCRIPT_DIR}/data/tmp/"*|/tmp/*) ;;
+            *) log_warn "refusing to remove unexpected unwrap path: $d"; continue ;;
+        esac
+        rm -rf "$d"
+        [[ "${UPKG_LOOSE_MANIFEST:-}" == "$d"/* ]] && UPKG_LOOSE_MANIFEST=""
+        keep=""
+        for s in ${UPKG_SCRATCH}; do
+            [[ "$s" == "$d" ]] || keep="${keep} ${s}"
+        done
+        UPKG_SCRATCH="$keep"
+    done
+    UPKG_UNWRAP=""
     return 0
 }
 
