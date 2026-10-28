@@ -112,7 +112,8 @@ def load_id_helpers():
 
 
 def run_worker(*, rows=None, artifacts=None, client_info=None, kind="flow",
-               ident="F.ABC", fetch_raises=None, persist_raises=None):
+               ident="F.ABC", fetch_raises=None, persist_raises=None,
+               empty_reads=None):
     """EXECUTE _adopt_worker against fakes and report what it did.
 
     The rest of this file asserts on source text, which is the house style and
@@ -132,6 +133,8 @@ def run_worker(*, rows=None, artifacts=None, client_info=None, kind="flow",
         calls.setdefault("fetch_kwargs", []).append(kw)
         if fetch_raises:
             raise fetch_raises
+        if kw.get("empty_reads") is not None:
+            kw["empty_reads"].extend(empty_reads or [])
         return (rows or {}), (artifacts or []), (client_info or {})
 
     def persist_pipeline_artifacts(rid, res):
@@ -418,6 +421,28 @@ class TestTheWorkerAlwaysReachesATerminalState(unittest.TestCase):
         self.assertIn("none of its artifacts", c["error"])
         self.assertIn("HOST1", c["error"])
         self.assertNotIn("not found on the Velociraptor server", c["error"])
+
+    def test_supported_sources_that_read_empty_are_not_blamed_on_the_allowlist(self):
+        # F.DB1MDRE9ATTNA: ten supported sources, every read 0 rows, and the run
+        # said "none of its artifacts are ones fusion maps". The allowlist had
+        # admitted all ten; the reads came back empty.
+        c = run_worker(rows={}, artifacts=[], client_info={"C.1": {"hostname": "HOST1"}},
+                       empty_reads=[("Windows.Hayabusa.Rules", ["source: file not found"]),
+                                    ("Windows.Forensics.SAM/Parsed", [])])
+        self.assertEqual(c["final"], "failed")
+        self.assertNotIn("none of its artifacts", c["error"])
+        self.assertIn("2 supported artifact source(s)", c["error"])
+        self.assertIn("HOST1", c["error"])
+        self.assertIn("source: file not found", c["error"])
+
+    def test_a_really_empty_flow_says_it_is_empty(self):
+        # What F.DB1MDRE9ATTNA turned out to be: no server log, just no rows.
+        c = run_worker(rows={}, artifacts=[], client_info={"C.1": {"hostname": "HOST1"}},
+                       empty_reads=[("Windows.Hayabusa.Rules", [])])
+        self.assertIn("returned 0 rows", c["error"])
+        self.assertIn("holds nothing", c["error"])
+        self.assertNotIn("logged", c["error"])
+        self.assertNotIn("none of its artifacts", c["error"])
 
     def test_a_fetch_that_raises_marks_the_run_failed(self):
         c = run_worker(fetch_raises=RuntimeError("velociraptor is down"))
