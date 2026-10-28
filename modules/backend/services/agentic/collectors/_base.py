@@ -834,6 +834,16 @@ def _hunt_source_rows(stub, flows_vql, flows, source):
     return out
 
 
+# Enough of a source()'s log to name the reason, not a page of query noise.
+_VQL_LOG_KEEP = 5
+
+
+def _vql_log_lines(response):
+    """The non-blank lines of a VQLResponse's `log` field."""
+    return [ln.strip() for ln in str(getattr(response, "log", "") or "").splitlines()
+            if ln.strip()]
+
+
 def _wanted_source(source_name, only_artifacts):
     """Should this result source be fetched at all?
 
@@ -852,7 +862,7 @@ def _wanted_source(source_name, only_artifacts):
 
 def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_filter=None,
                                     client_ids=None, only_artifacts=None,
-                                    progress_log=False, errors=None):
+                                    progress_log=False, errors=None, empty_reads=None):
     """Fetch results from an existing Velociraptor flow or hunt with optional time filtering.
 
     Args:
@@ -877,6 +887,15 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
             appended as "<source>: <error>". The results are then PARTIAL -- an
             import used to report "Added N rows ... success" over a source that
             never arrived.
+        empty_reads: Optional list; on the flow path, every wanted source whose
+            read returned no rows is appended as (source, [VQL log lines]).
+
+            artifacts_with_results lists a source even when it holds no rows.
+            F.DB1MDRE9ATTNA read ten such sources at 0 rows each, and adopt
+            reported "none of its artifacts are ones fusion maps" although the
+            filter had admitted all ten. The caller needs these to say what
+            actually happened, and the log lines to tell an empty source from a
+            read the server refused.
         progress_log: Log a line per source as it lands.
 
             Off for fusion, which fetches quietly inside a fuse that has its own
@@ -1054,8 +1073,13 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     )
 
                     rows = []
+                    vql_log = []
                     try:
                         for response in stub.Query(src_req, timeout=VELO_QUERY_TIMEOUT_SECONDS):
+                            # A failing source() plugin answers with an empty
+                            # Response and its reason here. Dropping it made an
+                            # unreadable source look like an empty one.
+                            vql_log.extend(_vql_log_lines(response))
                             if response.Response:
                                 try:
                                     resp_data = json.loads(response.Response)
@@ -1079,6 +1103,13 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                             f"{source} — {len(rows or []):,} row(s)",
                             "info")
                     if not rows:
+                        if empty_reads is not None:
+                            empty_reads.append((source, vql_log[:_VQL_LOG_KEEP]))
+                        if vql_log:
+                            add_log_to_run(run_id, f"[Velociraptor] {source} (flow {fid}) "
+                                                   f"returned no rows. Velociraptor said: "
+                                                   f"{' | '.join(vql_log[:_VQL_LOG_KEEP])}",
+                                           "warning")
                         continue
 
                     # Tag every row with `_client_id` + `_hostname` — the
