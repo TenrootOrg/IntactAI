@@ -393,6 +393,15 @@ main() {
         log_warn "  own upgrade.sh instead."
     fi
 
+    # Past the bootstrap `exec` above, so the scratch this process registers
+    # belongs to this process. BEFORE acquire, not after it: the trap used to
+    # sit below acquire, so a failure there -- an unwrap, a verify, or an
+    # extraction that ran out of disk -- returned with no trap set and left the
+    # unwrap copy and the half-extracted tree behind. Two such runs filled a
+    # 61G test box to 100% on 2026-10-28. Before the plan as well, so every
+    # refusal there reclaims its extraction too.
+    u_install_exit_cleanup_trap
+
     # ---------------------------------------------------------- acquire -----
     local assets=()
     if [[ -n "${UPGRADE_PACKAGE_DIR:-}" ]]; then
@@ -500,12 +509,6 @@ main() {
     # only because this hop forwarded argv -- a cross-release contract that
     # changed. The bootstrap passes a versioned --handoff file instead.
 
-
-    # Past the hop, so `exec` cannot have skipped it and the scratch this
-    # process is about to read belongs to this process. Before the plan, so
-    # every refusal below reclaims its extraction instead of leaving it on a
-    # disk it may just have called too small.
-    u_install_exit_cleanup_trap
 
     # ------------------------------------------------------------- plan -----
     plan_current_versions
