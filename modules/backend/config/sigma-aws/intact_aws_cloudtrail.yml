@@ -3414,3 +3414,59 @@ detection:
 falsepositives:
 - An administrator enrolling a user's device for them
 level: medium
+
+---
+title: AWS High-Impact Change Attempted And Refused
+id: c89d82fb-5d45-5896-920b-f6d219b1e098
+status: experimental
+description: 'Someone tried a change that silences logging, escalates rights, opens a backdoor or leaves the organization, and AWS refused it.
+  A refusal is not a non-event: the credentials were used to TRY -- stolen keys are tested exactly like this.'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.defense-evasion
+- attack.t1562.008
+- attack.privilege-escalation
+- attack.t1098
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection:
+    intact.denied: 'true'
+    eventName:
+    - LeaveOrganization
+    - StopLogging
+    - DeleteTrail
+    - UpdateTrail
+    - PutEventSelectors
+    - DeleteDetector
+    - DisableSecurityHub
+    - DeleteFlowLogs
+    - DeleteLogGroup
+    - CreateLoginProfile
+    - UpdateLoginProfile
+    - CreateAccessKey
+    - CreateUser
+    - AddUserToGroup
+    - AttachUserPolicy
+    - AttachRolePolicy
+    - AttachGroupPolicy
+    - PutUserPolicy
+    - PutRolePolicy
+    - PutGroupPolicy
+    - CreatePolicyVersion
+    - SetDefaultPolicyVersion
+    - UpdateAssumeRolePolicy
+    - ScheduleKeyDeletion
+    - PutKeyPolicy
+    - ModifySnapshotAttribute
+    - ModifyImageAttribute
+    - ModifyDBSnapshotAttribute
+    - PutBucketPolicy
+    - DeleteBucketPolicy
+    - PutBucketAcl
+  condition: selection
+falsepositives:
+- A person or tool trying a change it is not allowed to make by mistake; check who and from where
+level: medium

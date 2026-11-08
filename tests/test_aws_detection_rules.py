@@ -200,6 +200,8 @@ CASES = [  # (rule, firing event, near miss)
     ("AWS API Gateway Keys Read", ev("GetApiKeys", "apigateway", rp={"includeValue": True}), ev("GetApiKeys", "apigateway", rp={"includeValue": False})),
     ("AWS MFA Device Registered For Another User", ev("EnableMFADevice", rp={"userName": "bob", "serialNumber": "arn:mfa"}),
      ev("EnableMFADevice", rp={"userName": "alice", "serialNumber": "arn:mfa"})),
+    ("AWS High-Impact Change Attempted And Refused", ev("LeaveOrganization", "organizations", who="AssumedRole", errorCode="AccessDenied"),
+     ev("LeaveOrganization", "organizations", who="AssumedRole", errorCode="AWSOrganizationsNotInUseException")),
     # helper-field fixes: each service keeps its policy in its own field; SSO people are people
     ("AWS Resource Policy Grants Another Account", ev("SetQueueAttributes", "sqs", rp={"attributes": {"Policy": trust(f"arn:aws:iam::{OTHER}:root")}}),
      ev("SetQueueAttributes", "sqs", rp={"attributes": {"Policy": trust(f"arn:aws:iam::{ACCT}:root")}})),
@@ -366,6 +368,17 @@ class CountAndSequenceRules(unittest.TestCase):
                                           "Severity": "high", "SeverityScore": 8.0, "_timestamp": "2026-10-25T10:00:00Z"}]}, min_level="low")
         rows = [x for v in f.values() for x in v]
         self.assertEqual([(x["rule_title"], x["severity"]) for x in rows], [("GuardDuty: API from a known bad IP", "high")])
+
+    def test_the_garbage_collector_is_always_switched_back_on(self):
+        import gc
+        from unittest import mock
+        from services.aws import detections
+        self.assertTrue(gc.isenabled())
+        self._detect([ev("GetPasswordData", "ec2")])
+        self.assertTrue(gc.isenabled(), "after a normal run")
+        with mock.patch("services.fusion.external_logs.sigma_event", side_effect=RuntimeError("boom")):
+            detections.detect({"AWS.CloudTrail": [ev("GetPasswordData", "ec2")]}, min_level="low")
+        self.assertTrue(gc.isenabled(), "after the matching loop raised")
 
     def test_a_broken_record_costs_only_itself(self):
         recs = [None, "x", {}, {"eventName": "PutInstancePublicPorts"}, ev("GetPasswordData", "ec2")]
