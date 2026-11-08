@@ -94,7 +94,10 @@ class Endpoints(unittest.TestCase):
     def test_wiring(self):
         self.assertIn("config['cloud'] = _mask_cloud(config['cloud'])", self.body("get_config"))
         self.assertIn("_keep_masked_cloud(config['cloud'], _load_cloud_config())", self.body("save_config"))
-        self.assertIn("_mask_cloud(_load_cloud_config())", self.body("get_cloud_config"))
+        get_cloud = self.body("get_cloud_config")
+        self.assertIn("cfg = _load_cloud_config()", get_cloud)
+        self.assertIn("out = _mask_cloud(cfg)", get_cloud)
+        self.assertIn("return jsonify(out)", get_cloud)
         self.assertIn("_keep_masked_cloud(config, existing)", self.body("save_cloud_config_endpoint"))
 
 

@@ -38,6 +38,9 @@ document.addEventListener('alpine:init', () => {
             },
             cloud: {
                 provider: 'aws',
+                // Credentials are deleted this many days after they are saved
+                // (0 = never); the dates come from GET /api/config/cloud.
+                credentials_ttl_days: 30, credentials_saved_at: '', credentials_expire_at: '', credentials_expired_at: '',
                 aws: {
                     access_key_id: '',
                     secret_access_key: '',
@@ -143,7 +146,8 @@ document.addEventListener('alpine:init', () => {
                     this.config.cloud = {
                         provider: cloudData.provider || 'aws',
                         aws: { ...this.config.cloud.aws, ...cloudData.aws },
-                        azure: { ...this.config.cloud.azure, ...cloudData.azure }
+                        azure: { ...this.config.cloud.azure, ...cloudData.azure },
+                        ...this._cloudDates(cloudData)
                     };
                 }
 
@@ -735,6 +739,16 @@ document.addEventListener('alpine:init', () => {
             } catch (e) { /* services store not registered yet */ }
         },
 
+        // The credential dates GET /api/config/cloud reports (no credential).
+        _cloudDates(d) {
+            d = d || {};
+            const n = parseInt(d.credentials_ttl_days, 10);
+            return { credentials_ttl_days: Number.isFinite(n) ? n : 30,
+                     credentials_saved_at: d.credentials_saved_at || '',
+                     credentials_expire_at: d.credentials_expire_at || '',
+                     credentials_expired_at: d.credentials_expired_at || '' };
+        },
+
         async saveCloud() {
             this.saving = true;
             try {
@@ -746,6 +760,9 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Cloud settings saved', 'success');
+                    // the save restarted or cleared the credential clock: show it
+                    try { const r = await fetch('/api/config/cloud');
+                          if (r.ok) Object.assign(this.config.cloud, this._cloudDates(await r.json())); } catch (e) { /* dates only */ }
                 } else {
                     this.showMessage('Failed to save Cloud config', 'error');
                 }

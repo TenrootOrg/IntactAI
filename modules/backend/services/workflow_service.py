@@ -1015,6 +1015,13 @@ def start_housekeeping(every=60.0, purge_every=3600.0):
         while True:
             time.sleep(every)
             try:
+                # Expired cloud credentials are deleted on read; reading once a
+                # minute deletes them on time even when nothing uses them.
+                from services.storage.config_store import load_cloud_config
+                load_cloud_config()
+            except Exception as e:      # noqa: BLE001 -- keep the loop alive
+                print(f"[CLOUD] credential expiry check failed: {e}", flush=True)
+            try:
                 cleanup_orphan_workflows(force=True)
                 if time.time() - last_purge >= purge_every:
                     last_purge = time.time()

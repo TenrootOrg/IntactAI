@@ -155,7 +155,10 @@ def _stored_online_key(incoming, stored):
 def _save_cloud_config(config):
     """Save cloud configuration to database."""
     from services.file_storage_service import save_cloud_config
-    save_cloud_config(config)
+    # A failed save (e.g. the credentials could not be encrypted) must not read
+    # as "saved": the caller's error handler turns this into a 500.
+    if not save_cloud_config(config):
+        raise RuntimeError("the cloud settings could not be saved (see the backend log)")
 
 
 # =============================================================================
@@ -868,7 +871,11 @@ def save_config():
 def get_cloud_config():
     """Get cloud provider configuration."""
     try:
-        return jsonify(_mask_cloud(_load_cloud_config()))
+        from services.storage import cloud_secrets
+        cfg = _load_cloud_config()
+        out = _mask_cloud(cfg)
+        out.update(cloud_secrets.status(cfg))      # dates for Settings -> Cloud, never a credential
+        return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -886,6 +893,8 @@ def save_cloud_config_endpoint():
 
         # Don't overwrite with masked values
         _keep_masked_cloud(config, existing)
+        # Shown, not stored: the expiry date is derived from saved-at + days.
+        config.pop('credentials_expire_at', None)
         # The AWS region is chosen on the AWS page and remembered by the scan --
         # a Settings save (maybe from a page opened before that scan) keeps it.
         if isinstance(config.get('aws'), dict):

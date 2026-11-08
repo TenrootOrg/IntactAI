@@ -1778,10 +1778,39 @@
                             </div>
                         </div>
 
-                        <p class="text-xs text-gray-500 mt-4">
-                            <svg class="w-3.5 h-3.5 inline mr-1 text-yellow-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
-                            Credentials are stored locally and used for cloud-based threat hunting integrations.
-                        </p>
+                        <!-- Credentials: encrypted at rest, deleted after N days (services/storage/cloud_secrets.py) -->
+
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+
+                            <label class="block text-sm text-gray-400 mb-1">Delete the credentials after</label>
+
+                            <div class="flex items-center gap-2">
+
+                                <input type="number" min="0" max="3650" x-model.number="$store.settings.config.cloud.credentials_ttl_days"
+
+                                       class="w-28 bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
+
+                                <span class="text-sm text-gray-400">days after they are saved (0 = never)</span>
+
+                            </div>
+
+                            <p class="text-xs mt-2" :class="$store.settings.config.cloud.credentials_expired_at && !$store.settings.config.cloud.credentials_saved_at ? 'text-yellow-500' : 'text-gray-500'"
+
+                               x-text="(() => { const c = $store.settings.config.cloud, d = v => (v || '').slice(0, 10);
+
+                                   if (c.credentials_saved_at) return 'Saved ' + d(c.credentials_saved_at) + (c.credentials_expire_at ? ' · deleted automatically on ' + d(c.credentials_expire_at) : ' · kept until removed');
+
+                                   if (c.credentials_expired_at) return 'The credentials were deleted on ' + d(c.credentials_expired_at) + ' (older than the limit): enter them again to use the cloud scans.';
+
+                                   return 'No credentials saved.'; })()"></p>
+
+                            <p class="text-xs text-gray-500 mt-2">
+
+                                Stored encrypted on this appliance. The key is a separate file only the appliance can read (data/state/backend), never in the database, an export, a backup download or a support bundle.
+
+                            </p>
+
+                        </div>
 
                         <!-- Save Button -->
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
