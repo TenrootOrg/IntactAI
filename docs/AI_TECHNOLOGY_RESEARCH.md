@@ -33,6 +33,23 @@ Related: [DECISION_MODEL.md](DECISION_MODEL.md) (the decision model Intact uses 
 
 ---
 
+## Shortlist to decide on (2026-11-08)
+
+Local / offline models (#1 below, and Foundation-Sec-8B, #5) are **parked**: there is no
+way to test them on hand yet. These four work with the hosted models Intact already uses.
+
+| Item | What it changes | Why it matters for Intact | Effort | Evidence |
+|---|---|---|---|---|
+| **A. Structured output for report and chat** (#2) | The LLM can only return JSON that matches our schema — the provider's own structured-output / JSON-schema mode for cloud models, Guidance / llguidance for any local one later | A malformed or half-written section is a lost report section, a retry (time + tokens) or a chat tool call that fails silently. A schema guarantees the shape; the study also saw up to ~4 points better task accuracy and faster output | Low — define schemas for the existing report sections and chat tools; support varies by provider, so keep the current parse-and-retry as the fallback | Medium (one ICML 2025 paper, partly by Guidance's authors; provider modes are documented features) |
+| **B. Measure the AI layer on SecAlertBench** (#3) | Run the decision-model features (verdict chips, compromise estimates) over 8,322 real labelled SOC alerts | Today the decision model's accuracy is measured only on our own data. A third-party set gives an honest false-positive / miss rate and calibration — the number that says whether a chip can be trusted, and the baseline any future change (or model) must beat | Low–medium — a script around the existing `scripts/dev/decision_eval.py`; internal use only (the data has no licence) | High (dataset recounted by the verifier) |
+| **C. Evidence-first verdicts** (#4) | Before asking the decision model about a finding, code gathers its context from the case graph (the actor's surrounding events, the target, the host, related findings); then one typed question | A model asked about a bare alert guesses; one given the right evidence decides. The study cut false positives from ~25–30% to 14.2%. In Intact the gathering is deterministic code (no agent), so it stays reproducible and cheap | Medium — a context builder per finding type, then re-measure with B | Low–medium (one preprint, no error bars) |
+| **D. Retrieval + reranking for free-text evidence in chat** (from the graph-RAG finding) | Index report text, attachments and notes; chat retrieves the best passages (rerank) instead of reading everything | Long cases overflow the model's context; retrieval lets chat answer from the right paragraph of a 200-page attachment. For structured events (CloudTrail, EDR) the existing exact queries stay — plain retrieval + rerank beat graph RAG on lookups | Medium — needs an embedding model (a hosted one over masked text, or local later) | Medium (two papers agree on lookups; not tested on logs) |
+
+Not on the shortlist on purpose: LLM log-anomaly detection, graph RAG for large cases and
+small LLMs as free-form investigators (see *Not a fit for this appliance*).
+
+---
+
 ## Ranked by value for effort
 
 ### 1. Local decision models via llama.cpp `/v1/systemone` — high value, low effort
