@@ -106,6 +106,30 @@ class AddAsExternalData(unittest.TestCase):
         self.assertIn("Velociraptor offline collection · 1,200 row(s) from 7 artifact(s)", md)
 
 
+class BigCollectionsUploadedStraightIn(unittest.TestCase):
+    """Over 100 MB a collection goes through the Velociraptor page's resumable
+    upload; the tus hook lists it under External data with no stored copy."""
+    def test_listed_with_its_run_and_no_file(self):
+        d = {"name": "qa"}
+
+        def mut(cid, field, fn):
+            d[field] = fn(d.get(field) or [])
+        with mock.patch.object(store, "get_case", lambda cid: d), \
+                mock.patch.object(store, "_mutate_list_field", mut), \
+                mock.patch.object(store, "log_case_event", mock.Mock()), \
+                mock.patch.object(store, "_report_behind", mock.Mock()):
+            case_files.add_velociraptor_upload("c1", "velociraptor_upload_9", "HOST2", "big one",
+                                               "Collection-HOST2.zip", 3_000_000_000)
+        it = case_files.listing(d)[0]
+        self.assertEqual(("velociraptor", "velociraptor_upload_9", False, True, "velociraptor"),
+                         (it["data_type"], it["run_id"], it["stored"], it["ai"], it["source"]))
+        self.assertIsNone(case_files.path_of("c1", it["id"]))
+
+    def test_stored_items_say_so(self):
+        it = case_files.listing({"case_files": [{"id": "0123456789ab", "name": "x"}]})[0]
+        self.assertTrue(it["stored"])
+
+
 class ImportKeepsTheEvidenceFile(unittest.TestCase):
     def test_the_importer_gets_a_link_and_the_case_keeps_the_file(self):
         tmp = tempfile.mkdtemp()

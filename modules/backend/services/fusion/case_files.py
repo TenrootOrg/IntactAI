@@ -56,6 +56,51 @@ def is_velociraptor_collection(path) -> bool:
     return "data.zip" in names or any(n.rsplit("/", 1)[-1] == "collection_context.json" for n in names)
 
 
+UPLOADS_DIR = "/data/uploads"   # tusd's filestore, as the backend sees it
+
+
+def finished_upload(upload_id):
+    """Path of a chunked case-file upload tusd has fully received, else None.
+    Complete means the file on disk is the announced size (tusd's filestore leaves
+    .info's Offset at 0). The id is tusd's own hex name, checked so it can never
+    point outside the upload dir; the purpose must be "case_file"."""
+    import json
+    if not re.fullmatch(r"[0-9a-f]{16,64}", str(upload_id or "")):
+        return None
+    path = os.path.join(UPLOADS_DIR, upload_id)
+    try:
+        with open(path + ".info") as fh:
+            info = json.load(fh)
+        if (info.get("MetaData") or {}).get("purpose") == "case_file" \
+                and os.path.getsize(path) == int(info.get("Size", -1)):
+            return path
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def add_velociraptor_upload(case_id, run_id, name, description, file_name, size) -> dict:
+    """List a collection uploaded from External data through the resumable
+    Velociraptor upload (no 100 MB cap; the tus hook calls this when it opens the
+    run). The import keeps no copy of the zip, so the item has no file of its own:
+    it is the run, shown and switched like any External data item."""
+    st = _store()
+    if not st.get_case(case_id):
+        return {"error": "case not found"}
+    fname = _clean_file_name(file_name)
+    item = {"id": uuid.uuid4().hex[:12], "name": _s(name, 200) or fname, "description": _s(description, 1000),
+            "file_name": fname, "size": int(size or 0), "sha256": "", "kind": "other", "ai": True,
+            "host": "", "time": "", "source": "velociraptor", "source_other": "", "finding_id": "",
+            "finding_title": "", "added_at": st._now_iso(), "data_type": VELOCIRAPTOR, "run_id": run_id,
+            "stored": False}
+    st._mutate_list_field(case_id, "case_files", lambda v: (v if isinstance(v, list) else []) + [item])
+    st._report_behind(case_id)
+    st.log_case_event(case_id, "Evidence added", "info",
+                      f"{item['name']} — {fname} ({item['size']:,} bytes) · Velociraptor offline collection, "
+                      f"uploading and importing in run {run_id}")
+    return item
+
+
 def _start_velociraptor_import(case_id, item, path) -> str:
     """Import the collection like Velociraptor -> Offline collection -> Import, in
     the background, on a velociraptor_upload run of this case."""
@@ -128,7 +173,9 @@ def listing(d) -> list:
                     or x.get("source") == "other" else "",
                     "finding_id": _s(x.get("finding_id"), 100), "finding_title": _s(x.get("finding_title"), 300),
                     "added_at": x.get("added_at"),
-                    "data_type": x.get("data_type") or "", "run_id": _s(x.get("run_id"), 100)})
+                    "data_type": x.get("data_type") or "", "run_id": _s(x.get("run_id"), 100),
+                    # False: a collection uploaded straight into Velociraptor; no copy here.
+                    "stored": x.get("stored") is not False})
     return out
 
 
@@ -173,9 +220,13 @@ def _event(case_id, finding_id) -> dict | None:
 
 
 def add(case_id, stream, file_name, *, name, description, host="", time="", source="", finding_id="",
-        source_other="", data_type="") -> dict:
+        source_other="", data_type="", src_path=None) -> dict:
     """Save one evidence file; its SHA-256 is computed while it is written. With a
-    `data_type` it is log data: parsed in the background and used in the analysis."""
+    `data_type` it is log data: parsed in the background and used in the analysis.
+
+    `src_path` instead of `stream`: a file the chunked (tus) upload already wrote,
+    moved in rather than copied. That path has no MAX_BYTES cap -- it is how files
+    over 100 MB arrive (upload_routes, purpose "case_file")."""
     from . import external_logs
     st = _store()
     if not st.get_case(case_id):
@@ -209,16 +260,24 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
     dest, tmp = os.path.join(_dir(case_id), fid), os.path.join(_dir(case_id), fid + ".part")
     h, size = hashlib.sha256(), 0
     try:
-        with open(tmp, "wb") as out:
-            while True:
-                chunk = stream.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > MAX_BYTES:
-                    raise ValueError(f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB")
-                h.update(chunk)
-                out.write(chunk)
+        if src_path:
+            shutil.move(src_path, tmp)
+            with open(tmp, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    size += len(chunk)
+                    h.update(chunk)
+        else:
+            with open(tmp, "wb") as out:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        raise ValueError(f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB "
+                                         f"-- larger files are sent in chunks")
+                    h.update(chunk)
+                    out.write(chunk)
         if not size:
             raise ValueError("the file is empty")
         os.replace(tmp, dest)

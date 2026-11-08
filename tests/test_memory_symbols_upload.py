@@ -413,7 +413,8 @@ class TheSharedUploadHook(unittest.TestCase):
         # Live: a 0.3 MB upload's post-finish arrived before post-create had opened
         # the run -- installed with run_id None, and the run sat at "running 0%".
         fin = self.SRC[self.SRC.index("elif event_type == 'post-finish':"):self.SRC.index("elif event_type == 'post-terminate':")]
-        wait = fin[fin.index("run_id = _resolve_upload_run(upload_id, pop=True)"):fin.index("_mark_upload_finished(upload_id)")]
+        start = fin.index("run_id = _resolve_upload_run(upload_id, pop=True)")
+        wait = fin[start:fin.index("_mark_upload_finished(upload_id)", start)]
         self.assertIn("if not run_id:", wait)
         self.assertIn("for _ in range(POST_CREATE_WAIT_TRIES):", wait)
         self.assertIn("time.sleep(POST_CREATE_WAIT_STEP)", wait)

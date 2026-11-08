@@ -364,7 +364,7 @@ def handle_tus_hook():
             filename = metadata.get('filename', '')
 
             if purpose not in ['velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', 'case_import', 'memory',
-                               'memory_symbols']:
+                               'case_file', 'memory_symbols']:
                 print(f"[TUS HOOK] Rejected: Invalid purpose '{purpose}'", flush=True)
                 return jsonify({
                     "RejectUpload": True,
@@ -425,6 +425,11 @@ def handle_tus_hook():
                             "Body": json.dumps({"error": "Symbol files must be a .zip symbol pack, a .pdb, or a .json.xz / .json table"})
                         }
                     }), 200
+            elif purpose == 'case_file':
+                # Case Analysis evidence / External data over 100 MB, sent in chunks:
+                # any file type, like the form's own 100 MB path. Nothing runs from
+                # this hook; the page adds it to the case once it is complete.
+                pass
             elif purpose == 'agentic_external':
                 # Accept text-based log files for external log data
                 allowed_extensions = ['.csv', '.json', '.jsonl', '.log', '.txt', '.xml', '.tsv', '.evtx', '.syslog']
@@ -451,7 +456,8 @@ def handle_tus_hook():
             # Case work into a Closed case is refused HERE, before a byte is sent.
             # Left to post-create, the run would fail to open and the whole file
             # would still upload with nothing to receive it.
-            if purpose in ('velociraptor', 'timesketch', 'agentic_external', 'memory'):
+            if purpose in ('velociraptor', 'timesketch', 'agentic_external', 'memory') \
+                    or (purpose == 'case_file' and metadata.get('data_type')):
                 from services.workflow_service import closed_case_error
                 closed = closed_case_error((metadata.get('case_id') or '').strip())
                 if closed:
@@ -482,6 +488,8 @@ def handle_tus_hook():
             # that said COMPLETED and an "Import case" that never moved off PENDING
             # (with a Stop button that did nothing) whenever the browser's run id
             # failed to reach this hook. One operation, one row.
+            if purpose == 'case_file':
+                return jsonify({"ok": True})          # no run: the page adds it when complete
             if purpose == 'case_import':
                 workflow_type = 'case_import'
                 workflow_name = f"Import case: {filename}"
@@ -574,6 +582,17 @@ def handle_tus_hook():
             add_log_to_run(run_id, f"Upload ID: {upload_id}")
             update_run_status(run_id, "running", progress=0)
 
+            # A collection added under Case Analysis -> External data comes this way
+            # (no 100 MB cap); it is listed there too, tied to this run.
+            if purpose == 'velociraptor' and metadata.get('external_data') == '1' and case_id:
+                try:
+                    from services.fusion import case_files
+                    case_files.add_velociraptor_upload(
+                        case_id, run_id, metadata.get('ext_name') or filename,
+                        metadata.get('ext_description') or '', filename, upload_size)
+                except Exception as _ce:                   # noqa: BLE001 — never block an upload
+                    add_log_to_run(run_id, f"Not listed under External data: {_ce}", "warning")
+
             print(f"[TUS HOOK] Created workflow for upload: {upload_id} -> run_id: {run_id}", flush=True)
             return jsonify({"ok": True})
 
@@ -649,6 +668,9 @@ def handle_tus_hook():
 
             # Get workflow run_id from pre-create (recover from storage if the
             # in-memory map was lost to a restart — keeps this ONE workflow).
+            if purpose == 'case_file':
+                _mark_upload_finished(upload_id)
+                return jsonify({"ok": True})          # the page adds it (case_routes, upload_id)
             run_id = _resolve_upload_run(upload_id, pop=True)
             if not run_id:
                 # tusd sends post-create and post-finish as two separate requests,

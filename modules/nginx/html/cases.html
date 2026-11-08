@@ -1198,7 +1198,9 @@ function _evItem(x){
     </div>
     <div style="font-size:12.5px;margin:3px 0">${esc(x.description||'')||'<span style="color:var(--muted)">no description</span>'}</div>
     ${_evLog(x)}
-    <div style="font-size:11px;color:var(--muted)"><a href="/api/cases/${esc(curInfo.case_id)}/files/${esc(x.id)}">${esc(x.file_name||x.name)}</a> · ${x.kind==='image'?'picture':x.kind==='text'?'text':'file'} · ${_evSize(x.size)} · <span title="SHA-256 ${esc(x.sha256||'')}">SHA-256 ${esc(String(x.sha256||'').slice(0,16))}…</span></div>
+    <div style="font-size:11px;color:var(--muted)">${x.stored===false
+      ?`${esc(x.file_name||x.name)} · ${_evSize(x.size)} · uploaded straight into Velociraptor; no copy is kept here`
+      :`<a href="/api/cases/${esc(curInfo.case_id)}/files/${esc(x.id)}">${esc(x.file_name||x.name)}</a> · ${x.kind==='image'?'picture':x.kind==='text'?'text':'file'} · ${_evSize(x.size)} · <span title="SHA-256 ${esc(x.sha256||'')}">SHA-256 ${esc(String(x.sha256||'').slice(0,16))}…</span>`}</div>
     ${edit?`<div class="cfgcol" style="margin-top:6px">${_evFields('eve',x,false,!!x.finding_id)}
       ${x.finding_id?`<label style="margin-top:6px"><input type="checkbox" id="eve-unlink" style="width:auto"/> Unlink from the Timeline event</label>`:''}
       <div class="row" style="gap:6px;margin-top:6px"><button onclick="evSaveEdit('${esc(x.id)}')">Save</button><button class="ghost" onclick="evEditToggle('${esc(x.id)}')">Cancel</button></div></div>`:''}
@@ -1231,12 +1233,13 @@ function renderData(info){
   $('#tabc').innerHTML=`<p class="ent-cap">What the analysis reads besides the collections. <b>Log data</b> — a SIEM, firewall, EDR, identity-provider or proxy export, any vendor and format — is read into the case: only its detections reach the Timeline, the hosts, accounts and addresses it shares with the case are joined, and chat can search every row; run <b>Refusion</b> after adding one.
     <b>Incident notes</b> — the customer's own account: a chat with them, interview notes, an e-mail thread — are condensed by the case's model into short facts (impact, what they did, what they saw), each tied to its line, and chat and the report read those as <i>reported, not verified</i>; never a detection. Both are listed in the report under <b>External data</b>.</p>
     <div class="row" style="gap:8px;margin:6px 0"><button onclick="window._dtAdd=!window._dtAdd;renderData(curInfo)">${window._dtAdd?'Close':'+ Add external data'}</button>
-      <span style="color:var(--muted);font-size:12px">${L.length} file(s) · up to 100 MB each</span></div>
+      <span style="color:var(--muted);font-size:12px">${L.length} file(s) · over 100 MB is sent in chunks</span></div>
     ${_dtWindow(info)}
+    <div id="dt-upload">${_dtUpHtml()}</div>
     ${window._dtAdd?`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:640px">
       <label>File</label><input type="file" id="dtn-file"/>
       <label>What is it</label><select id="dtn-dtype">${o('auto','Log data — any kind: detect it automatically')}${EV_LOGTYPES.map(([k,l])=>o(k,'Log data — '+l)).join('')}${o(EV_NOTES,"Incident notes — the customer's account (chat, interview notes, e-mails)")}</select>
-      <div class="cfghint">Log data is read whatever its format (CSV, JSON, CEF, syslog…); the type only names its findings. A Velociraptor offline collection (.zip) is recognised and imported like Velociraptor → Offline collection → Import; one over 100 MB, or with a password, goes through that page. Notes: text files (.txt, .md, .eml, a chat export).</div>
+      <div class="cfghint">Log data is read whatever its format (CSV, JSON, CEF, syslog…); the type only names its findings. A Velociraptor offline collection (.zip, any size) is recognised and imported like Velociraptor → Offline collection → Import; one with a password goes through that page. Notes: text files (.txt, .md, .eml, a chat export).</div>
       <label>Name <span style="color:var(--crit)">*</span></label><input id="dtn-name" maxlength="200" placeholder="e.g. FortiGate export Oct 1–3 / Call with the customer's IT"/>
       <label>Description <span style="color:var(--crit)">*</span></label><textarea id="dtn-desc" maxlength="1000" style="min-height:44px" placeholder="where it came from and what it covers"></textarea>
       <div class="row" style="margin-top:6px"><button onclick="evSubmit('dtn','')">Add</button></div></div>`:''}
@@ -1260,7 +1263,8 @@ function renderEvidence(info){
     Log exports and the customer's own account (a chat, interview notes) are not evidence — add them on the <span class="elink" onclick="setTab('data')">External data</span> tab.</p>
     ${f?`<div class="agnote">Evidence for: <b>${esc(fl)}</b> · <span class="elink" onclick="window._evFilter='';renderEvidence(curInfo)">show all</span></div>`:''}
     <div class="row" style="gap:8px;margin:6px 0"><button onclick="window._evAdd=!window._evAdd;renderEvidence(curInfo)">${window._evAdd?'Close':'+ Add evidence'}</button>
-      <span style="color:var(--muted);font-size:12px">${all.length} item(s) · up to 100 MB each</span></div>
+      <span style="color:var(--muted);font-size:12px">${all.length} item(s) · over 100 MB is sent in chunks</span></div>
+    <div id="dt-upload">${_dtUpHtml()}</div>
     ${window._evAdd?`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:640px">${_evFields('evn',{},true,false)}
       <div class="row" style="margin-top:6px"><button onclick="evSubmit('evn','')">Add</button></div></div>`:''}
     ${body||'<div class="empty">No evidence yet.</div>'}`;
@@ -1301,12 +1305,98 @@ function evSubmit(pre, findingId){
   const v=k=>(document.getElementById(pre+'-'+k)||{}).value||'';
   const fe=document.getElementById(pre+'-file'), file=(fe&&fe.files&&fe.files[0])||(pre==='evn'&&window._evPasted)||null;
   if(!file){ toast('Choose a file or paste a picture.'); return; }
-  if(file.size>100*1024*1024){ toast('The file is larger than 100 MB.'); return; }
   if(!findingId && (!v('name').trim()||!v('desc').trim())){ toast('Give it a name and a description.'); return; }
+  // External data: a Velociraptor offline collection goes through the Velociraptor
+  // import's own resumable upload, which has no 100 MB cap.
+  if(pre==='dtn' && v('dtype')!==EV_NOTES && /\.zip$/i.test(file.name) && !window._dtUp){
+    _isVeloZip(file).then(yes=>{ if(yes) _dtVeloUpload(file, v('name').trim(), v('desc').trim()); else _evPost(pre, findingId, file); });
+    return;
+  }
+  _evPost(pre, findingId, file);
+}
+// A Velociraptor offline collection names collection_context.json in its zip
+// directory (an encrypted one: data.zip). The directory sits at the END of the
+// file, so only the last 16 MB are read, in the browser; nothing is sent.
+function _isVeloZip(file){
+  return file.slice(Math.max(0, file.size-16*1024*1024)).arrayBuffer().then(b=>{
+    const t=new TextDecoder('latin1').decode(b);
+    return t.includes('collection_context.json')||t.includes('data.zip');
+  }).catch(()=>false);
+}
+function _dtVeloUpload(file, name, desc){
+  const cid=curInfo.case_id, fmt=n=>_evSize(n);
+  window._dtUp={file:file.name, pct:0, line:'starting…'}; window._dtAdd=false; renderData(curInfo);
+  let listed=false;
+  const draw=()=>{ const el=document.getElementById('dt-upload'); if(el) el.innerHTML=_dtUpHtml(); };
+  new TusUploader({purpose:'velociraptor', metadata:{external_data:'1', ext_name:name, ext_description:desc},
+    onProgress:i=>{ window._dtUp.pct=i.percentage; window._dtUp.line=`${fmt(i.bytesUploaded)} of ${fmt(i.bytesTotal)} · ${i.speedFormatted||''}${i.etaFormatted?' · '+i.etaFormatted+' left':''}`; draw();
+      if(!listed){ listed=true; _dtReload(cid); } },
+    onSuccess:()=>{ window._dtUp=null; toast('Uploaded — importing it into Velociraptor and the case now.'); _dtReload(cid); },
+    onError:e=>{ window._dtUp=null; toast('Upload failed: '+(e&&e.message||e)); _dtReload(cid); }
+  }).upload(file);
+  toast('Recognised as a Velociraptor offline collection — uploading it through the Velociraptor import (no size limit). Keep this page open until it is uploaded.', 6000);
+}
+function _dtUpHtml(){
+  const u=window._dtUp; if(!u) return '';
+  return `<div class="agnote" style="max-width:640px">Uploading <b>${esc(u.file)}</b> ${esc(u.what||'as a Velociraptor offline collection')} — ${(+u.pct||0).toFixed(1)}% · ${esc(u.line)}
+    <div style="height:4px;background:var(--bd);border-radius:2px;margin-top:4px"><div style="height:4px;width:${(+u.pct||0)}%;background:var(--ok);border-radius:2px"></div></div></div>`;
+}
+function _dtReload(cid){
+  api('/api/cases/'+cid).then(info=>{
+    if(!curInfo||curInfo.case_id!==cid||!info) return;
+    curInfo.case_files=info.case_files||[];
+    if(tab==='data' && !window._dtAdd && !window._evEdit) renderData(curInfo);
+  }).catch(()=>{});
+}
+// Over 100 MB a file is sent in chunks (the resumable upload every module uses)
+// and then added by its upload id: same checks and answer, no size cap.
+const EV_CHUNKED=100*1024*1024;
+function _evPost(pre, findingId, file){
+  const v=k=>(document.getElementById(pre+'-'+k)||{}).value||'';
   if(!findingId && !v('dtype') && v('src')==='other' && !v('srcother').trim()){ toast('Say which source it came from.'); return; }
-  const fd=new FormData(); fd.append('file',file); fd.append('name',v('name')); fd.append('description',v('desc'));
+  const fd=new FormData(); fd.append('name',v('name')); fd.append('description',v('desc'));
   if(findingId) fd.append('finding_id',findingId); else { fd.append('host',v('host')); fd.append('time',v('time')); fd.append('source',v('src')); fd.append('source_other',v('srcother').trim()); if(v('dtype')) fd.append('data_type',v('dtype')); }
-  toast('Uploading '+file.name+'…');
+  if(file.size<=EV_CHUNKED){ fd.append('file',file); toast('Uploading '+file.name+'…'); _evAdd(fd); return; }
+  if(v('dtype') && !confirm(_evBigWarning(file, v('dtype')))) return;
+  window._dtAdd=false; window._evAdd=false;
+  _evSendChunked(fd, file, v('dtype'), _evAdd);
+}
+// Send `file` in chunks, then hand `fd` (now carrying upload_id + file_name) to
+// `then`, which adds it like the small path does. Progress shows on the tab.
+function _evSendChunked(fd, file, dtype, then){
+  const cid=curInfo.case_id;
+  window._dtUp={file:file.name, pct:0, line:'starting…', what:'in chunks'};
+  if(tab==='data') renderData(curInfo); else if(tab==='evidence') renderEvidence(curInfo);
+  const draw=()=>{ const el=document.getElementById('dt-upload'); if(el) el.innerHTML=_dtUpHtml(); };
+  new TusUploader({purpose:'case_file', metadata:{data_type:dtype||''},
+    onProgress:i=>{ window._dtUp.pct=i.percentage; window._dtUp.line=`${_evSize(i.bytesUploaded)} of ${_evSize(i.bytesTotal)} · ${i.speedFormatted||''}${i.etaFormatted?' · '+i.etaFormatted+' left':''}`; draw(); },
+    onSuccess:up=>{ window._dtUp=null; draw(); if(!curInfo||curInfo.case_id!==cid) return;
+      fd.append('upload_id', String(up&&up.url||'').split('/').pop()); fd.append('file_name', file.name); then(fd); },
+    onError:e=>{ window._dtUp=null; draw(); toast('Upload failed: '+(e&&e.message||e)); }
+  }).upload(file);
+  toast('Sending '+file.name+' in chunks — keep this page open until it is uploaded.', 5000);
+}
+// What a file over 100 MB means for the model, before it is sent. The model is
+// never given a whole big file: log data is capped (an unrecognised file once, up
+// to its window, plus a few extraction chunks) and so are notes; the rest is
+// parsed with no model or reported as unread. Numbers: external_logs.model_window.
+function _evBigWarning(file, dtype){
+  const W=(curInfo&&curInfo.model_window)||{}, tok=Math.round(file.size/4), n=x=>Math.round(x).toLocaleString();
+  const notes=dtype===EV_NOTES;
+  const lines=[`${file.name} is ${_evSize(file.size)} — about ${n(tok)} tokens.`, 'It is sent in chunks, so its size is not limited.'];
+  if(!W.model){ lines.push('No AI model is configured: nothing in it is sent to a model.'); }
+  else {
+    const ctx=+W.context_tokens||0, maxc=+((W.model_max_chars||{})[notes?'notes':'log'])||0, mt=Math.round(maxc/4);
+    lines.push(ctx?`That is ${n(Math.ceil(tok/ctx))} × the context window of ${W.model} (${n(ctx)} tokens).`:`The context window of ${W.model} is unknown.`);
+    lines.push(`The model is never given all of it: at most ${n(maxc)} characters (~${n(mt)} tokens, ${ctx?Math.max(1,Math.ceil(mt/ctx)):'?'} window(s))`
+      +(notes?', condensed into facts; the rest stays searchable.':', and only from a file the reader does not recognise; recognised log data is parsed with no model.'));
+    lines.push(W.subscription?`Cost: billed to your ${W.provider||''} subscription, not per token.`
+      :(+W.usd_per_m_input>0?`Cost: at most about $${(mt/1e6*W.usd_per_m_input).toFixed(2)} each time it is read.`:`Cost: no price is known for ${W.model}.`));
+  }
+  if(!notes) lines.push('Large log files take a lot of memory and time to parse.');
+  return lines.join('\n\n')+'\n\nSend it?';
+}
+function _evAdd(fd){
   fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
     .then(item=>{ window._evAdd=false; window._evPasted=null; const box=$('#ev-attach'); if(box) box.innerHTML='<div class="agnote">Attached: <b>'+esc(item.name)+'</b></div>';
       window._dtAdd=false; _evRefresh(L=>L.concat([item])); toast(item.data_type===EV_NOTES?'Notes added — condensing them now; chat and the report read them when done.':item.data_type===EV_VELO?'Recognised as a Velociraptor offline collection — importing it into Velociraptor and the case now.':item.data_type?'Log data added — reading it now; run Refusion when it is done.':'Evidence added.'); if(item.data_type) _evFollow(); })
@@ -1337,14 +1427,14 @@ function evDel(id){
 function evAttachFiles(fid, files){
   const box=$('#ev-attach');
   [...(files||[])].forEach(file=>{
-    if(file.size>100*1024*1024){ toast(file.name+': larger than 100 MB'); return; }
-    const fd=new FormData(); fd.append('file',file); fd.append('finding_id',fid);
-    toast('Attaching '+file.name+'…');
-    fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
+    const fd=new FormData(); fd.append('finding_id',fid);
+    const post=fd=>fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
       .then(item=>{ _evRefresh(L=>L.concat([item]));
         if(box) box.insertAdjacentHTML('beforeend',`<div class="cfghint" style="margin-top:4px">Attached: <b>${esc(item.name)}</b> · <span class="elink" onclick="closeFindingDetail();window._evEdit='${esc(item.id)}';window._evFilter='';setTab('evidence')">add a description</span></div>`);
         toast('Evidence attached.'); })
       .catch(e=>toast(file.name+' not attached: '+e.message));
+    if(file.size>EV_CHUNKED){ _evSendChunked(fd, file, '', post); return; }
+    fd.append('file',file); toast('Attaching '+file.name+'…'); post(fd);
   });
 }
 // Report history (plan step 9): the SELECTED scope's kept reports (each scope has

@@ -263,7 +263,7 @@ class Page(unittest.TestCase):
                  for c in ("EV_LOGTYPES", "EV_VIA", "EV_SOURCES", "EV_NOTES", "EV_VELO", "DT_KINDS")] + \
                 [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0)
                  for n in ("_evFields", "_evThumb", "_evItem", "renderEvidence", "renderData", "_dtFactsHtml",
-                           "_evHostList", "_evPickers", "_evLog", "_evFollow", "_dtWindow")] + \
+                           "_evHostList", "_evPickers", "_evLog", "_evFollow", "_dtWindow", "_dtUpHtml", "_isVeloZip", "_evBigWarning")] + \
                 [re.search(r"function %s\(.*?\}\n" % n, src).group(0) for n in ("_evSize", "_evSrc", "_evList", "_evOnly",
                                                                                   "_dataList")]
         js = ("const esc=s=>String(s); const window={}; let OUT=''; const $=()=>({set innerHTML(v){OUT=v}});"
@@ -336,6 +336,44 @@ renderData(curInfo); console.log(JSON.stringify(OUT));""")
         self.assertIn("importing into Velociraptor…", out)
         self.assertIn("import failed: not a collection", out)
         self.assertNotIn("Log data ·", out)
+
+    def test_an_uploaded_collection_has_no_file_link_and_shows_its_upload(self):
+        out = self.run_js("""
+const it={id:'0123456789d1',name:'HOST2',description:'d',file_name:'Collection-HOST2.zip',size:3e9,sha256:'',kind:'other',ai:true,host:'',time:'',source:'velociraptor',source_other:'',finding_id:'',data_type:'velociraptor',stored:false,log:{status:'running'}};
+curInfo={case_id:'c1', case_files:[it]}; window._dtUp={file:'Collection-HOST2.zip',pct:42.5,line:'1.2 GB of 3 GB'};
+renderData(curInfo); console.log(JSON.stringify(OUT));""")
+        self.assertIn("no copy is kept here", out)
+        self.assertNotIn("/api/cases/c1/files/0123456789d1", out)
+        self.assertNotIn("SHA-256", out)
+        self.assertIn("42.5% · 1.2 GB of 3 GB", out)
+
+    def test_a_collection_is_recognised_in_the_browser_from_the_zips_end(self):
+        out = self.run_js("""
+const mk=s=>new Blob([new Uint8Array(20*1024*1024), s]);
+Promise.all([_isVeloZip(mk('PK..results/x.json..collection_context.json..')), _isVeloZip(mk('PK..data.zip..metadata.json')),
+             _isVeloZip(mk('PK..export.csv..readme.txt'))]).then(r=>console.log(JSON.stringify(r)));""")
+        self.assertEqual([True, True, False], out)
+
+    def test_the_warning_before_a_file_over_100_mb(self):
+        out = self.run_js("""
+const f={name:'fw.log', size:350*1024*1024};
+curInfo={model_window:{model:'gpt-x', provider:'openrouter', context_tokens:272000, budget_chars:798000,
+  usd_per_m_input:1.25, subscription:false, model_max_chars:{log:918000, notes:240000}}};
+const log=_evBigWarning(f,'auto'), notes=_evBigWarning(f,'notes');
+curInfo.model_window.subscription=true; curInfo.model_window.provider='codex'; const sub=_evBigWarning(f,'auto');
+curInfo.model_window={}; const none=_evBigWarning(f,'auto');
+console.log(JSON.stringify([log, notes, sub, none]));""")
+        log, notes, sub, none = out
+        self.assertIn("about 91,750,400 tokens", log)
+        self.assertIn("338 × the context window of gpt-x (272,000 tokens)", log)
+        self.assertIn("at most 918,000 characters (~229,500 tokens, 1 window(s))", log)
+        self.assertIn("recognised log data is parsed with no model", log)
+        self.assertIn("at most about $0.29", log)
+        self.assertIn("memory", log)
+        self.assertIn("at most 240,000 characters", notes)
+        self.assertNotIn("memory", notes)
+        self.assertIn("billed to your codex subscription", sub)
+        self.assertIn("No AI model is configured", none)
 
     def test_log_data_shows_how_it_was_read_and_its_switch(self):
         out = self.run_js("""

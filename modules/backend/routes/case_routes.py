@@ -593,17 +593,38 @@ def upload_case_file(case_id):
     """multipart: file, name, description (both required), host, time, source,
     finding_id (a Timeline row: host / time / title are then taken from the case),
     data_type (log data: siem / firewall / edr / idp / proxy / other -- parsed and
-    used in the analysis). Up to 100 MB; SHA-256 recorded."""
-    f = request.files.get("file")
-    if not f or not f.filename:
-        return jsonify({"error": "no file"}), 400
+    used in the analysis). Up to 100 MB; SHA-256 recorded.
+
+    Larger files come in chunks first (tus, purpose "case_file") and are then
+    added here by `upload_id` + `file_name` instead of `file`: same fields, same
+    checks, same answer, no size cap."""
     fm = request.form
-    return _cf_reply(_case_files.add(case_id, f.stream, f.filename, name=fm.get("name", ""),
-                                     description=fm.get("description", ""), host=fm.get("host", ""),
-                                     time=fm.get("time", ""), source=fm.get("source", ""),
-                                     finding_id=fm.get("finding_id", ""),
-                                     source_other=fm.get("source_other", ""),
-                                     data_type=fm.get("data_type", "")))
+    upload_id = (fm.get("upload_id") or "").strip()
+    if upload_id:
+        src = _case_files.finished_upload(upload_id)
+        if not src:
+            return jsonify({"error": "that upload is not complete on the server -- send the file again"}), 400
+        stream, file_name = None, fm.get("file_name", "")
+    else:
+        f = request.files.get("file")
+        if not f or not f.filename:
+            return jsonify({"error": "no file"}), 400
+        src, stream, file_name = None, f.stream, f.filename
+    try:
+        return _cf_reply(_case_files.add(case_id, stream, file_name, name=fm.get("name", ""),
+                                         description=fm.get("description", ""), host=fm.get("host", ""),
+                                         time=fm.get("time", ""), source=fm.get("source", ""),
+                                         finding_id=fm.get("finding_id", ""),
+                                         source_other=fm.get("source_other", ""),
+                                         data_type=fm.get("data_type", ""), src_path=src))
+    finally:
+        if src:                    # moved in on success; a refused one is not kept
+            import os
+            for p in (src, src + ".info"):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["GET"])
