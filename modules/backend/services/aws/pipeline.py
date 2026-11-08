@@ -419,6 +419,13 @@ def run_aws_pipeline(
                 return result
             result['aws_account'] = pre['account']
             result['aws_identity'] = pre['arn']
+            # the account's name, so a case shows "aws:<alias>" -- not an account number
+            try:
+                _al = boto_client.client("iam", aws_config).list_account_aliases().get("AccountAliases") or []
+                if _al:
+                    result['aws_account_alias'] = str(_al[0])
+            except Exception:                                     # noqa: BLE001 -- the number still works
+                pass
 
         result['phases']['validation'] = {'status': 'complete'}
         _set_progress(run_id, 10)

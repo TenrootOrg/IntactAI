@@ -372,8 +372,8 @@ class CloudUsersAreSeenOnTheirAccount(unittest.TestCase):
         ents, rels = map_cloud([_root_event(), _user_event()], run_id="r1", provider="aws", account=ACCT)
         g = correlate.assemble("c", [(ents, rels)], ["r1"])
         cards = {c["name"]: c for c in identities.resolve_identities(g)}
-        self.assertEqual(cards["aws-root"]["seen_on"], [f"aws:{ACCT}"])
-        self.assertEqual(cards["scanner_svc"]["seen_on"], [f"aws:{ACCT}"])
+        self.assertEqual(cards["aws-root"]["seen_on"], [f"AWS account …{ACCT[-4:]}"])
+        self.assertEqual(cards["scanner_svc"]["seen_on"], [f"AWS account …{ACCT[-4:]}"])
 
 
 class WhatWasTouched(unittest.TestCase):
@@ -542,6 +542,46 @@ class ASetupRowInsideALaterWindow(unittest.TestCase):
         self.assertEqual(state.ts, "2025-02-12T22:04:21", "the stored finding is not changed")
         self.assertEqual(date_state_in_window([state], ents, {"start": "2025-01-01T00:00:00"})[0].ts, state.ts)
         self.assertEqual(date_state_in_window([state], ents, None)[0].ts, state.ts)
+
+
+class TheMachineIsTheHost(unittest.TestCase):
+    """2026-10-26: every AWS row's host read "aws:<account number>" -- it told the reader
+    nothing. A row about a machine shows the machine; account-level rows show the account
+    by its alias (or the last four digits)."""
+
+    def test_a_machine_row_is_hosted_on_the_machine(self):
+        hit = {"rule_title": "AWS Port Opened To The Internet", "severity": "medium", "_timestamp": "2026-10-25 15:17:14",
+               "matched_record": {"eventTime": "2026-10-25T15:17:14Z", "eventName": "PutInstancePublicPorts",
+                                  "requestParameters": {"instanceName": "web-01", "portInfos": []},
+                                  "userIdentity": {"type": "Root", "accountId": ACCT, "arn": f"arn:aws:iam::{ACCT}:root"}}}
+        ents, _ = map_cloud([hit], run_id="r1", provider="aws", account=ACCT, alias="acme-prod")
+        ev = next(e for e in ents if e.type == "event")
+        host = next(e for e in ents if e.id == ev.attrs["_assets"][0])
+        self.assertEqual(host.label, "web-01")
+        self.assertTrue(ev.id.startswith("event:") or ACCT in ev.id or ev.id, "id unchanged in shape")
+        acct = next(e for e in ents if e.id == f"asset:cloud_account:aws:{ACCT}")
+        self.assertEqual(acct.label, "aws:acme-prod")
+
+    def test_an_ec2_instance_and_a_state_row(self):
+        run = {"rule_title": "AWS GPU Or Very Large Instance Launched", "severity": "medium", "_timestamp": "2026-10-25 10:00:00",
+               "matched_record": {"eventTime": "2026-10-25T10:00:00Z", "eventName": "RunInstances",
+                                  "responseElements": {"instancesSet": {"items": [{"instanceId": "i-0abc"}]}},
+                                  "userIdentity": {"type": "IAMUser", "userName": "u", "arn": f"arn:aws:iam::{ACCT}:user/u"}}}
+        sg = {"rule_title": "State: Security group web (sg-1) lets the internet reach 22", "severity": "high",
+              "_timestamp": None, "_finding_time": "2026-10-26T09:13:00", "_state_snapshot": True, "_source": "AWS.Exposure",
+              "matched_record": '{"ResourceName": "web (sg-1)", "ResourceType": "AWS::EC2::SecurityGroup"}'}
+        ents, _ = map_cloud([run, sg, _user_event()], run_id="r1", provider="aws", account=ACCT)
+        hosts = {e.label for e in ents if e.type == "asset"}
+        self.assertEqual(hosts, {"i-0abc", "web (sg-1)", f"AWS account …{ACCT[-4:]}"})
+        iam = next(e for e in ents if e.type == "event" and "Backdoor" in e.label)
+        self.assertEqual(iam.attrs["_assets"], [f"asset:cloud_account:aws:{ACCT}"], "an IAM row stays on the account")
+
+    def test_event_ids_do_not_move(self):
+        hit = _user_event()
+        hit["matched_record"] = dict(hit["matched_record"], requestParameters={"instanceName": "web-01"})
+        a, _ = map_cloud([_user_event()], run_id="r1", provider="aws", account=ACCT)
+        b, _ = map_cloud([hit], run_id="r1", provider="aws", account=ACCT)
+        self.assertEqual([e.id for e in a if e.type == "event"], [e.id for e in b if e.type == "event"])
 
 if __name__ == "__main__":
     unittest.main()

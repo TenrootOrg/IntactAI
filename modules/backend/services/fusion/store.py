@@ -1313,6 +1313,7 @@ def _cloud_contribution(rid, det, provider):
             raw = fb
     synthetic = bool(det.get("synthetic"))
     context = None
+    alias = det.get("aws_account_alias")
     if not raw:
         import json
         import os
@@ -1322,6 +1323,7 @@ def _cloud_contribution(rid, det, provider):
                     with open(base) as f:
                         _persisted = json.load(f) or {}
                     raw = _persisted.get("findings")
+                    alias = alias or _persisted.get("aws_account_alias")
                     synthetic = synthetic or bool(_persisted.get("synthetic"))
                     # the raw CloudTrail the scan kept: each AWS row's surrounding events
                     _ct = (_persisted.get("collected_data") or {}).get("AWS.CloudTrail")
@@ -1341,7 +1343,7 @@ def _cloud_contribution(rid, det, provider):
         return [], []
     return map_cloud(finds, run_id=rid, provider=provider,
                      account=_cloud_account(det, finds),
-                     context=context if provider == "aws" else None)
+                     context=context if provider == "aws" else None, alias=alias)
 
 
 # A run's raw_results.json is read with json.load, which expands it in memory.
