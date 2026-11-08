@@ -31,7 +31,7 @@ document.addEventListener('alpine:init', () => {
                 // modules/timesketch/llm_providers/README.md.
                 openrouter_key: '',
                 openrouter_key_pending: false,
-                openrouter_model: 'anthropic/claude-3.5-sonnet',
+                openrouter_model: '~anthropic/claude-sonnet-latest',   // Timesketch default (timesketch_llm_routes.DEFAULT_OPENROUTER_MODEL)
                 litellm_url: '',
                 litellm_model: '',
                 litellm_key: ''
@@ -129,7 +129,7 @@ document.addEventListener('alpine:init', () => {
                         // listed here or this page would drop the flag.
                         openrouter_key: tsData.openrouter_key || '',
                         openrouter_key_pending: !!tsData.openrouter_key_pending,
-                        openrouter_model: tsData.openrouter_model || 'anthropic/claude-3.5-sonnet',
+                        openrouter_model: tsData.openrouter_model || '~anthropic/claude-sonnet-latest',
                         litellm_url: tsData.litellm_url || '',
                         litellm_model: tsData.litellm_model || '',
                         litellm_key: tsData.litellm_key || ''

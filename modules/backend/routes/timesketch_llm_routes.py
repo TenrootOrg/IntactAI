@@ -69,6 +69,9 @@ _TS_PROVIDERS = {
 # OpenRouter, like Settings -> Agentic: one key there now serves both sections
 # (services/openrouter_key.py). Was 'google'.
 DEFAULT_LLM_MODE = 'openrouter'
+# Its model until one is chosen: Claude Sonnet, newest, through OpenRouter (the
+# `~` alias follows the latest Sonnet). Same id Settings -> Agentic suggests.
+DEFAULT_OPENROUTER_MODEL = '~anthropic/claude-sonnet-latest'
 
 
 def _mask_secret(value):
@@ -214,7 +217,7 @@ def get_timesketch_llm_config():
             'ollama_url': '',
             'ollama_model': '',
             'openrouter_key': '',
-            'openrouter_model': '',
+            'openrouter_model': DEFAULT_OPENROUTER_MODEL,
             'litellm_url': '',
             'litellm_model': '',
             'litellm_key': '',

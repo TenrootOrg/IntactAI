@@ -26,7 +26,7 @@ Configuration in timesketch.conf:
         'default': {
             'openrouter': {
                 'api_key': 'sk-or-v1-...',
-                'model': 'anthropic/claude-3.5-sonnet',
+                'model': '~anthropic/claude-sonnet-latest',
             },
         },
         'nl2q': {
@@ -38,7 +38,7 @@ Configuration in timesketch.conf:
         'llm_summarization': {
             'openrouter': {
                 'api_key': 'sk-or-v1-...',
-                'model': 'anthropic/claude-3.5-sonnet',
+                'model': '~anthropic/claude-sonnet-latest',
                 'max_output_tokens': 4096,
                 'temperature': 0.3,
             },
@@ -69,7 +69,7 @@ class OpenRouter(interface.LLMProvider):
 
     Required config keys:
         api_key: OpenRouter API key (starts with sk-or-v1-...).
-        model: Model identifier (e.g. 'anthropic/claude-3.5-sonnet').
+        model: Model identifier (e.g. '~anthropic/claude-sonnet-latest').
 
     Optional config keys:
         timeout: Request timeout in seconds (default: 120).
