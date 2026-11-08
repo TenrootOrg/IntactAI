@@ -161,3 +161,33 @@ content heuristic.
 
 **Reported by** attack-sim campaign (dev-attack-simulation-rules), 2026-10-08;
 archive-staging re-characterised 2026-10-11. See memory [[attack-sim-campaign-state]].
+
+## External data: a bare username in a log never reaches Identities
+
+**Symptom**
+A log added under Case Analysis → External data links an account to the case
+only when the account carries its domain (`CORP\kobi`, `kobi@corp.com`). A bare
+username (`kobi`, `admin`, `root`), common in Linux auth, VPN and some firewall
+logs, joins nothing: even when the case already has `CORP\kobi` from a
+Velociraptor collection, the log's `kobi` rows never reach that identity card
+or its findings. The rows stay searchable in chat.
+
+**Where it happens**
+- `services/fusion/mappers/external.py:map_external` keeps a row's user only when
+  `cloud._account_key()` returns `account:domain:…` ("a bare name joins nothing").
+- `correlate._prune_external_only` then drops any log-only account that no
+  other source saw and no detection in the log is about.
+
+**Why it was left this way**
+A bare name is ambiguous: `admin` exists on every host and in every domain, so
+joining it blindly would merge unrelated people. A fix should join a bare name
+only when the case has exactly one account with that short name (or the log's
+host pins the domain), and leave it unjoined otherwise.
+
+**Not measured.** The October external-log tests (58 public datasets, Elastic's
+sample logs for 57 streams, the Splunk attack recordings) measured detection,
+not which identity a log's account lands on. How often this happens with real
+logs is unknown.
+
+**Reported by** Nof, 2026-11-08 (question: does all external data reach
+identities and the timeline?). Found by reading the code; not tested.
