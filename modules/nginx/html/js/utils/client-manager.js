@@ -45,6 +45,9 @@ class ClientManager {
 
         // Facet state.
         this.onlineOnly = options.onlineOnly !== undefined ? options.onlineOnly : true;
+        // Shown in red on every offline row when set (the scheduler: a client can be
+        // offline when the schedule is made and online when it runs, or not).
+        this.offlineNote = options.offlineNote || '';
         this.activeOs = new Set();
         this.activeLabels = new Set();
         this.search = '';
@@ -236,6 +239,7 @@ class ClientManager {
                             <span class="text-xs text-gray-500">${safeOs}</span>
                             ${labelChips}
                         </div>
+                        ${!isOnline && this.offlineNote ? `<div class="text-xs" style="color:#f87171">${escapeHtml(this.offlineNote)}</div>` : ''}
                     </div>
                     <span class="text-xs text-gray-600 font-mono truncate">${safeClientId.substring(0, 12)}...</span>
                 </label>

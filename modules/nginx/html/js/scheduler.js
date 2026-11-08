@@ -173,7 +173,13 @@ function renderScheduleCard(job) {
 }
 
 // Client manager instance (uses shared utility)
-const schedulerClientManager = new ClientManager('schedule-client-list', 'schedule-client-cb');
+// A schedule targets clients for LATER runs, so offline ones are listed too (QA
+// 2026-11-08: with every client offline the picker showed none, and nothing could
+// be scheduled). Each offline row says, in red, what that means for the run.
+const schedulerClientManager = new ClientManager('schedule-client-list', 'schedule-client-cb', {
+    onlineOnly: false,
+    offlineNote: 'Offline now: the scheduled run will not work for this client unless it is online when the schedule runs.',
+});
 
 // Backwards-compatible wrapper functions
 function loadSchedulerClients() { schedulerClientManager.load(); }

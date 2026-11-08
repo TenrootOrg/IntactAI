@@ -75,7 +75,15 @@ class ClientListRefresh(unittest.TestCase):
         with open(os.path.join(HTML, "index.html"), encoding="utf-8") as f:
             m = re.search(r"js/utils/client-manager\.js\?v=(\d+)", f.read())
         self.assertIsNotNone(m)
-        self.assertGreaterEqual(int(m.group(1)), 4)
+        self.assertGreaterEqual(int(m.group(1)), 8)
+
+    @unittest.skipIf(shutil.which("node") is None, "node is not installed")
+    def test_the_scheduler_lists_offline_clients_with_a_red_note(self):
+        # QA 2026-11-08: with every client offline the scheduler's picker was empty
+        # (online-only), so a Timesketch or collector schedule could not be made.
+        r = subprocess.run(["node", os.path.join(ROOT, "tests", "client_picker_offline_note.js"), ROOT],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
 
 
 if __name__ == "__main__":
