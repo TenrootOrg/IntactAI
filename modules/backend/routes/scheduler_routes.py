@@ -82,12 +82,6 @@ def create_job():
             return jsonify({"error": "name is required"}), 400
         if not blueprint_id:
             return jsonify({"error": "blueprint_id is required"}), 400
-        # The per-client collection type was removed from the scheduler (QA 2026-11-08):
-        # it needs its clients online when the schedule is made, and a Velociraptor Hunt
-        # runs the same blueprint on every client. Schedules made before still run.
-        if blueprint_type == 'agentic':
-            return jsonify({"error": "Velociraptor Collector schedules are no longer offered: "
-                                     "schedule a Velociraptor Hunt with the same blueprint instead."}), 400
 
         # Validate interval_value
         if interval_value < 1:
@@ -188,11 +182,6 @@ def update_job(job_id):
         # is `start_at` (composed with run_time into a datetime downstream).
         if 'start_date' in data and 'start_at' not in data:
             data['start_at'] = data.pop('start_date')
-        # No editing into the removed collection type (see create_job). Pause/resume
-        # of an old collection schedule goes through /toggle, not here.
-        if data.get('blueprint_type') == 'agentic':
-            return jsonify({"error": "Velociraptor Collector schedules are no longer offered: "
-                                     "schedule a Velociraptor Hunt with the same blueprint instead."}), 400
         # Validate interval_unit if the edit changes it.
         if 'interval_unit' in data:
             from services.scheduler.jobs import INTERVAL_UNITS
