@@ -89,15 +89,50 @@ def _save_config(config):
 def _load_cloud_config():
     """Load cloud configuration from database."""
     from services.file_storage_service import load_cloud_config
+    # deepcopy, not .copy(): _deep_merge writes into the nested aws/azure dicts,
+    # and a shallow copy shares them with the module-level defaults -- the saved
+    # secrets (and later the GET's mask) ended up in DEFAULT_CLOUD_CONFIG itself.
     try:
         saved = load_cloud_config()
         if saved:
-            config = DEFAULT_CLOUD_CONFIG.copy()
+            config = copy.deepcopy(DEFAULT_CLOUD_CONFIG)
             _deep_merge(config, saved)
             return config
     except Exception as e:
         print(f"Error loading cloud config: {e}")
-    return DEFAULT_CLOUD_CONFIG.copy()
+    return copy.deepcopy(DEFAULT_CLOUD_CONFIG)
+
+
+# Cloud secrets: masked the same way on every GET, and a masked value sent back
+# means "keep the stored one" on every PUT. GET /api/config returned them in
+# clear (QA 2026-11-08: the full AWS secret access key) while GET
+# /api/config/cloud masked them -- one rule now serves both endpoints.
+_CLOUD_SECRETS = (("aws", "secret_access_key", True), ("aws", "session_token", False),
+                  ("azure", "client_secret", False))
+
+
+def _mask_cloud(cloud):
+    """A copy of the cloud config with its secrets masked (last 4 shown where
+    the Cloud page has always shown them)."""
+    m = copy.deepcopy(cloud) if isinstance(cloud, dict) else {}
+    for section, field, tail in _CLOUD_SECRETS:
+        sec = m.get(section)
+        if isinstance(sec, dict) and sec.get(field):
+            v = str(sec[field])
+            sec[field] = '••••••••' + (v[-4:] if tail and len(v) > 4 else '')
+    return m
+
+
+def _keep_masked_cloud(incoming, stored):
+    """In place: every masked secret in `incoming` becomes the stored value."""
+    if not isinstance(incoming, dict):
+        return incoming
+    stored = stored or {}
+    for section, field, _tail in _CLOUD_SECRETS:
+        sec = incoming.get(section)
+        if isinstance(sec, dict) and str(sec.get(field) or '').startswith(_API_KEY_MASK_PREFIX):
+            sec[field] = (stored.get(section) or {}).get(field, '')
+    return incoming
 
 
 def _stored_online_key(incoming, stored):
@@ -741,6 +776,9 @@ def get_config():
             config = json.loads(json.dumps(config))
             key = config['agentic']['decision_model']['api_key']
             config['agentic']['decision_model']['api_key'] = '••••••••' + key[-4:] if len(key) > 4 else '••••••••'
+        # The cloud secrets: this endpoint returned them in clear (see _mask_cloud).
+        if 'cloud' in config:
+            config['cloud'] = _mask_cloud(config['cloud'])
         return jsonify(config)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -785,6 +823,10 @@ def save_config():
         dmc = config.get('agentic', {}).get('decision_model')
         if isinstance(dmc, dict) and str(dmc.get('api_key') or '').startswith('••••'):
             dmc['api_key'] = _stored_decision_key(dmc, config.get('agentic'))
+        # A caller that reads this config and saves it back whole now gets the
+        # cloud secrets masked: keep the stored ones rather than store the mask.
+        if isinstance(config.get('cloud'), dict):
+            _keep_masked_cloud(config['cloud'], _load_cloud_config())
 
         # Which AI settings were in force BEFORE this save, so a change can be told
         # apart from re-saving the same thing.
@@ -826,16 +868,7 @@ def save_config():
 def get_cloud_config():
     """Get cloud provider configuration."""
     try:
-        config = _load_cloud_config()
-        # Mask sensitive fields for GET requests
-        masked = config.copy()
-        if masked.get('aws', {}).get('secret_access_key'):
-            masked['aws']['secret_access_key'] = '••••••••' + masked['aws']['secret_access_key'][-4:]
-        if masked.get('aws', {}).get('session_token'):
-            masked['aws']['session_token'] = '••••••••'
-        if masked.get('azure', {}).get('client_secret'):
-            masked['azure']['client_secret'] = '••••••••'
-        return jsonify(masked)
+        return jsonify(_mask_cloud(_load_cloud_config()))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -852,12 +885,7 @@ def save_cloud_config_endpoint():
         existing = _load_cloud_config()
 
         # Don't overwrite with masked values
-        if config.get('aws', {}).get('secret_access_key', '').startswith('••••'):
-            config['aws']['secret_access_key'] = existing.get('aws', {}).get('secret_access_key', '')
-        if config.get('aws', {}).get('session_token') == '••••••••':
-            config['aws']['session_token'] = existing.get('aws', {}).get('session_token', '')
-        if config.get('azure', {}).get('client_secret') == '••••••••':
-            config['azure']['client_secret'] = existing.get('azure', {}).get('client_secret', '')
+        _keep_masked_cloud(config, existing)
         # The AWS region is chosen on the AWS page and remembered by the scan --
         # a Settings save (maybe from a page opened before that scan) keeps it.
         if isinstance(config.get('aws'), dict):
