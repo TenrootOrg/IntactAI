@@ -107,6 +107,12 @@
       // FALLBACK: a route that still lets the WorkspaceError 409 through (e.g.
       // AWS) — switch to Default and retry once.
       return resp.clone().json().then(function (d) {
+        // The active case is Closed: say so once, whatever module launched it.
+        // No switch or retry -- which case to use instead is the analyst's call.
+        if (d && d.code === 'case_closed') {
+          _showWorkspaceBlocked(d.error || 'This case is closed. Reopen it in Case Management first.');
+          return resp;
+        }
         if (!d || d.code !== 'workspace_system_blocked') return resp;
         return _ensureDefaultCaseId().then(function (def) {
           if (def && get() !== def) {

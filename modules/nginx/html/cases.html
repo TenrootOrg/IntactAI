@@ -307,7 +307,7 @@
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-<script src="js/active-case.js?v=9"></script>
+<script src="js/active-case.js?v=10"></script>
 <!-- set embed + view mode before body renders (no flash) -->
 <script>(function(){var q=new URLSearchParams(location.search);
   if(q.get('embed')==='1')document.documentElement.classList.add('embed');
@@ -831,11 +831,13 @@ function _riskWhy(r){
 const CASE_STATUS_LABEL={open:'Open',contained:'Contained',closed:'Closed'};
 function caseMetaHtml(info){
   info=info||{};
-  const st=CASE_STATUS_LABEL[String(info.case_status||'').toLowerCase()]||'Open';
+  const key=String(info.case_status||'').toLowerCase(), st=CASE_STATUS_LABEL[key]||'Open';
+  // Open green, Closed red (QA 2026-11-08: both were the same amber); Contained keeps amber.
+  const col={closed:'var(--crit)',contained:'var(--med,#d29922)'}[key]||'var(--ok)';
   const own=typeof info.case_owner==='string'?info.case_owner.trim():'';
   const desc=typeof info.case_description==='string'?info.case_description.trim():'';
   return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:3px 0;font-size:12px">`
-    +`<span class="sg-hint" style="border-style:solid">${esc(st)}</span>`
+    +`<span class="sg-hint" style="border-style:solid;color:${col};border-color:${col}">${esc(st)}</span>`
     +(own?`<span style="color:var(--muted)">owner: ${esc(own)}</span>`:'')
     +(desc?`<span style="color:var(--muted);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(desc)}">— ${esc(desc)}</span>`:'')
     +`</div>`;

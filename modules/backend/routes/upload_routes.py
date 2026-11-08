@@ -412,6 +412,22 @@ def handle_tus_hook():
                     }
                 }), 200
 
+            # Case work into a Closed case is refused HERE, before a byte is sent.
+            # Left to post-create, the run would fail to open and the whole file
+            # would still upload with nothing to receive it.
+            if purpose in ('velociraptor', 'timesketch', 'agentic_external', 'memory'):
+                from services.workflow_service import closed_case_error
+                closed = closed_case_error((metadata.get('case_id') or '').strip())
+                if closed:
+                    print(f"[TUS HOOK] Rejected: case is closed ({metadata.get('case_id')})", flush=True)
+                    return jsonify({
+                        "RejectUpload": True,
+                        "HTTPResponse": {
+                            "StatusCode": 409,
+                            "Body": json.dumps({"error": closed, "code": "case_closed"})
+                        }
+                    }), 200
+
             print(f"[TUS HOOK] Validated upload: {filename} for {purpose}", flush=True)
             return jsonify({"ok": True})
 

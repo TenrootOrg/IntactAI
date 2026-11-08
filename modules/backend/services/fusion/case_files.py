@@ -131,6 +131,13 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
     data_type = _s(data_type, 20)
     if data_type and data_type != "auto" and data_type not in external_logs.DATA_TYPES:
         return {"error": f"data_type must be auto or one of: {', '.join(external_logs.DATA_TYPES)}"}
+    if data_type:
+        # Log data starts a run, which a Closed case refuses. Checked before the
+        # file is written, or the refusal would leave it on disk with no entry.
+        from services.workflow_service import closed_case_error
+        closed = closed_case_error(case_id)
+        if closed:
+            return {"error": closed}
     name, description = _s(name, 200), _s(description, 1000)
     link = {}
     if _s(finding_id, 100):

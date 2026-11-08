@@ -94,8 +94,30 @@ _SYSTEM_CASE_CACHE = {"id": None}
 class WorkspaceError(Exception):
     """An operation isn't allowed in the resolved workspace — e.g. an
     investigation feature targeting the built-in System workspace. The
-    app-level errorhandler turns this into an HTTP 409 with this message."""
-    pass
+    app-level errorhandler turns this into an HTTP 409 with this message and
+    `code`, which the UI uses to tell the cases apart."""
+    def __init__(self, message, code="workspace_system_blocked"):
+        super().__init__(message)
+        self.code = code
+
+
+def closed_case_error(case_id):
+    """The refusal text when `case_id` is a Closed case, else None.
+
+    A Closed case is finished: a hunt or collection launched while it was the
+    active case still landed in it (QA, 2026-11-08), adding evidence after the
+    case was closed. Never raises: an unreadable case is not a closed one."""
+    if not case_id:
+        return None
+    try:
+        from services.fusion import store
+        d = store.get_case(case_id)
+        if d and store.case_info(d)["case_status"] == "closed":
+            return (f'Case "{d.get("name") or case_id}" is closed, so nothing new can '
+                    f"run in it. Reopen it in Case Management, or switch to another case.")
+    except Exception:                       # noqa: BLE001 — never block on a lookup failure
+        pass
+    return None
 
 
 def _system_case_id():
@@ -193,6 +215,9 @@ def _resolve_case_id(automation_type, case_id):
                 "Modules run against an investigation workspace, not the System "
                 "workspace. Switch to or create an investigation workspace first."
             )
+        closed = closed_case_error(cid)
+        if closed:
+            raise WorkspaceError(closed, code="case_closed")
         return cid
 
     # No active case (scheduler / background, no request context) -> Default.

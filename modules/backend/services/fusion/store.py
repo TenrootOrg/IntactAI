@@ -4060,8 +4060,9 @@ CASE_STATUSES = ("open", "contained", "closed")
 
 
 def case_info(d) -> dict:
-    """The analyst's own description of the case (plan step 3). Labels only —
-    nothing is locked, hidden or re-fused by them.
+    """The analyst's own description of the case (plan step 3). Labels, with one
+    exception: a Closed case refuses new runs (workflow_service.closed_case_error).
+    Nothing is hidden or re-fused by them.
 
     Cases made before these fields existed — and bundles imported from older
     appliances — have none of them, and a hand-edited or damaged record may hold

@@ -56,6 +56,10 @@ def _schedule_case(value):
         return None, "A schedule runs module work: choose an investigation case, not the System workspace."
     if not store.get_case(cid):
         return None, f"No case {cid}"
+    from services.workflow_service import closed_case_error
+    closed = closed_case_error(cid)
+    if closed:
+        return None, closed
     return cid, None
 
 
