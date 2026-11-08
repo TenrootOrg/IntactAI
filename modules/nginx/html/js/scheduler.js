@@ -306,6 +306,14 @@ function showNewScheduleModal() {
     onScheduleBlueprintTypeChange();
 }
 
+// The form is a page-level overlay (index.html), not part of the Scheduler panel,
+// so switching section left it open over the next one (QA 2026-11-08). Leaving
+// the Scheduler cancels it, like the ✕ does; nothing is saved.
+window.addEventListener('automation-tab-entered', (ev) => {
+    const modal = document.getElementById('schedule-modal');
+    if (ev.detail !== 'scheduler' && modal && !modal.classList.contains('hidden')) closeScheduleModal();
+});
+
 // Close modal
 function closeScheduleModal() {
     document.getElementById('schedule-modal').classList.add('hidden');
