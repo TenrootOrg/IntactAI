@@ -189,7 +189,7 @@ async function onScheduleBlueprintTypeChange() {
     const clientSection = document.getElementById('schedule-client-section');
 
     // Hide every per-type options block; the active one is revealed below.
-    ['timesketch', 'memory', 'collector', 'hunt', 'aws'].forEach(k => {
+    ['timesketch', 'memory', 'hunt', 'aws'].forEach(k => {
         const el = document.getElementById('schedule-' + k + '-options');
         if (el) el.classList.add('hidden');
     });
@@ -200,15 +200,15 @@ async function onScheduleBlueprintTypeChange() {
     if (clientSection) clientSection.classList.toggle('hidden', envWide);
 
     // Reveal this type's options block.
-    const optKey = { agentic: 'collector', velociraptor: 'hunt', timesketch: 'timesketch',
+    const optKey = { velociraptor: 'hunt', timesketch: 'timesketch',
                      memory: 'memory', aws: 'aws' }[type];
     const optEl = optKey && document.getElementById('schedule-' + optKey + '-options');
     if (optEl) optEl.classList.remove('hidden');
 
     blueprintSelectContainer.classList.remove('hidden');
 
-    // Blueprint list source: AWS has its own endpoint; everything else (agentic
-    // collector / velociraptor hunt / timesketch / memory) is /api/blueprints/<type>.
+    // Blueprint list source: AWS has its own endpoint; everything else
+    // (velociraptor hunt / timesketch / memory) is /api/blueprints/<type>.
     const url = (type === 'aws') ? '/api/aws/blueprints' : `/api/blueprints/${type}`;
     try {
         const response = await fetch(url);
@@ -271,7 +271,10 @@ function showNewScheduleModal() {
     document.getElementById('schedule-description').value = '';
     document.getElementById('schedule-interval-value').value = 1;
     document.getElementById('schedule-interval-unit').value = 'days';
-    document.getElementById('schedule-blueprint-type').value = 'agentic';  // Velociraptor Collector (default)
+    // Velociraptor Hunt is the default. The per-client "Velociraptor Collector" type
+    // was removed from the scheduler (QA 2026-11-08: it needs clients online at
+    // creation time, and a hunt covers the same artifacts for every client).
+    document.getElementById('schedule-blueprint-type').value = 'velociraptor';
 
     // Default start date = today (UTC); default run time 02:00
     document.getElementById('schedule-start-date').value = new Date().toISOString().slice(0, 10);
@@ -289,7 +292,6 @@ function showNewScheduleModal() {
     const setVal = (id, v) => { const el = document.getElementById(id); if (el) { if (el.type === 'checkbox') el.checked = v; else el.value = v; } };
     setVal('schedule-memory-yara', true); setVal('schedule-memory-case', '');
     setVal('schedule-memory-acq-timeout', ''); setVal('schedule-memory-plugin-timeout', ''); setVal('schedule-memory-yara-timeout', '');
-    setVal('schedule-collector-minutes', '30');
     setVal('schedule-hunt-labels', '');
     setVal('schedule-aws-scope', 'account_wide'); setVal('schedule-aws-regions', ''); setVal('schedule-aws-max-events', '');
 
@@ -312,6 +314,13 @@ async function editSchedule(jobId) {
         }
 
         const job = await response.json();
+        // A collection schedule made before the type was removed still runs and can be
+        // paused or deleted; it can no longer be edited (its type is not in the form).
+        if (job.blueprint_type === 'agentic') {
+            alert('Velociraptor Collector schedules were removed from the scheduler. This one still runs; '
+                  + 'pause or delete it, and schedule a Velociraptor Hunt for the same blueprint instead.');
+            return;
+        }
 
         document.getElementById('schedule-modal').classList.remove('hidden');
         document.getElementById('schedule-modal-title').textContent = 'Edit Scheduled Job';
@@ -355,7 +364,6 @@ async function editSchedule(jobId) {
         setV('schedule-memory-acq-timeout', opts.acquire_flow_timeout_s);
         setV('schedule-memory-plugin-timeout', opts.plugin_timeout_s);
         setV('schedule-memory-yara-timeout', opts.yarascan_timeout_s);
-        setV('schedule-collector-minutes', opts.collection_minutes);
         setV('schedule-hunt-labels', (opts.include_labels || []).join(', '));
         setV('schedule-aws-scope', opts.scope_mode);
         setV('schedule-aws-max-events', opts.max_events_per_region);
@@ -401,8 +409,6 @@ async function saveScheduleFromModal() {
                     acquire_flow_timeout_s: num('schedule-memory-acq-timeout'),
                     plugin_timeout_s: num('schedule-memory-plugin-timeout'),
                     yarascan_timeout_s: num('schedule-memory-yara-timeout') };
-    } else if (blueprintType === 'agentic') {
-        options = { collection_minutes: num('schedule-collector-minutes') || 30 };
     } else if (blueprintType === 'velociraptor') {
         options = { include_labels: csv('schedule-hunt-labels') };
     } else if (blueprintType === 'aws') {
@@ -441,11 +447,6 @@ async function saveScheduleFromModal() {
         options: options,                 // per-type run options
         case_id: (document.getElementById('schedule-case') || {}).value || ''   // where its runs are filed
     };
-
-    // Agentic runs are collection-only — no LLM report at the module level.
-    if (blueprintType === 'agentic') {
-        payload.report_types = [];
-    }
 
     try {
         const url = editId ? `/api/scheduler/jobs/${editId}` : '/api/scheduler/jobs';
