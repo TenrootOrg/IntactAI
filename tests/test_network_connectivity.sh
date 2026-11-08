@@ -53,4 +53,22 @@ test_closed_port_fails_within_timeout() {
     assert_true test "$elapsed" -le 4
 }
 
+test_blocked_dns_port_alone_does_not_abort() {
+    # A network that refuses outbound TCP/53 to public resolvers but allows
+    # HTTPS (live on a VMware NAT'd Vagrant box) must not fail the IP check.
+    (
+        _tcp_reachable() { [[ "$2" != 53 ]]; }
+        check_network_connectivity >/dev/null 2>&1
+    )
+    assert_true test $? -eq 0
+}
+
+test_all_ip_targets_unreachable_aborts() {
+    (
+        _tcp_reachable() { return 1; }
+        check_network_connectivity >/dev/null 2>&1
+    )
+    assert_false test $? -eq 0
+}
+
 run_all_tests

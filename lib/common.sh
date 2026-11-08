@@ -536,8 +536,20 @@ check_network_connectivity() {
     local has_issues=false
 
     # Test 1: Can we reach the internet at all? (IP connectivity)
-    if ! _tcp_reachable 8.8.8.8 53; then
-        log_error "No internet connectivity (cannot reach 8.8.8.8:53)"
+    # Any one target is enough. Networks that force clients onto an internal
+    # resolver refuse outbound TCP/53 to public DNS -- seen live on a VMware
+    # NAT'd Vagrant box: 8.8.8.8:53 "Connection refused" while ping, 1.1.1.1:443
+    # and download.docker.com:443 all worked. The install only needs HTTPS, so
+    # a single port-53 probe aborted a box that could install fine.
+    local target ip_ok=false
+    for target in 1.1.1.1:443 8.8.8.8:443 8.8.8.8:53; do
+        if _tcp_reachable "${target%:*}" "${target#*:}"; then
+            ip_ok=true
+            break
+        fi
+    done
+    if [[ "$ip_ok" != true ]]; then
+        log_error "No internet connectivity (cannot reach 1.1.1.1:443, 8.8.8.8:443 or 8.8.8.8:53)"
         log_error "Please check your network configuration"
         return 1
     fi
