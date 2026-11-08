@@ -961,7 +961,7 @@ def _scan_velociraptor():
             size += int(line.split()[0])
         except (ValueError, IndexError):
             continue
-    return size, "hunts + flows + monitoring (clients and server artifacts are kept)"
+    return size, "hunts + flows + monitoring + server-artifact flows (clients and the client MSI builds are kept)"
 
 
 def _es_base() -> str:
