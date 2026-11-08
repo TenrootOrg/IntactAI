@@ -333,6 +333,12 @@ async function editSchedule(jobId) {
 
         document.getElementById('schedule-modal').classList.remove('hidden');
         document.getElementById('schedule-modal-title').textContent = 'Edit Scheduled Job';
+        // Show it in the Velociraptor org it runs in, so its saved clients are in
+        // the list (and saving keeps that org). set() clears + reloads the list
+        // synchronously before the saved selection is restored below.
+        if (window.VeloOrg && (job.velo_org || 'root') !== window.VeloOrg.get()) {
+            window.VeloOrg.set(job.velo_org || 'root');
+        }
 
         // Start UTC clock
         startUtcClock();

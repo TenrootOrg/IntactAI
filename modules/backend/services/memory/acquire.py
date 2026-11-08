@@ -38,6 +38,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from services import velo_org
 from typing import Callable
 
 from config import VELOCIRAPTOR_CONTAINER
@@ -162,7 +163,7 @@ def _velo_query(vql: str, timeout: int = 30) -> list[dict]:
         "docker", "exec", VELOCIRAPTOR_CONTAINER,
         "/velociraptor/velociraptor",
         "--api_config", "/velociraptor/api.config.yaml",
-        "--nobanner",
+        "--nobanner", *velo_org.cli_args(),
         "query", "--format", "jsonl", vql,
     ]
     try:

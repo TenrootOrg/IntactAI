@@ -29,10 +29,17 @@ class Stub:
         # hunts before, then after, the delete: 3 hunts gone, though hunt_delete
         # streamed 40 file rows (and none at all for a hunt no client ran).
         self.hunts_listed = [3, 0]
+        self.orgs = [{"id": "root"}]
+        self.org_of_query = []
 
     def Query(self, req, timeout=None):
+        from services import velo_org
         self.max_rows.append(req.max_row)
         vql = req.Query[0].VQL
+        self.org_of_query.append(velo_org.current())
+        if "FROM orgs()" in vql:
+            yield types.SimpleNamespace(Response=json.dumps(self.orgs))
+            return
         if vql == "SELECT hunt_id FROM hunts()":
             yield types.SimpleNamespace(Response=json.dumps([{"hunt_id": "H"}] * self.hunts_listed.pop(0)))
             return
@@ -61,9 +68,25 @@ class PurgeCountsWhileStreaming(unittest.TestCase):
 
     def test_batches_are_bounded(self):
         vs.purge_velociraptor_data(logger=lambda *a: None)
-        self.assertEqual(7, len(self.stub.max_rows))
+        self.assertEqual(8, len(self.stub.max_rows))     # + the org list
         self.assertTrue(all(m <= 10000 for m in self.stub.max_rows), self.stub.max_rows)
 
+
+
+class EveryOrg(PurgeCountsWhileStreaming):
+    """System purge cleans every Velociraptor org, each with its own clients,
+    hunts and flows, and sums the counts."""
+    def test_each_org_is_purged_in_its_own_org(self):
+        self.stub.orgs = [{"id": "root"}, {"id": "OFM5G"}]
+        self.stub.hunts_listed = [3, 0, 2, 0]
+        out = vs.purge_velociraptor_data(logger=lambda *a: None)
+        self.assertEqual(5, out["hunts"])
+        self.assertEqual(2 * 20002, out["flows"])
+        self.assertEqual([], out["errors"])
+        # the org list is read in root; then 7 queries in root, 7 in OFM5G
+        self.assertEqual([""] * 8 + ["OFM5G"] * 7, self.stub.org_of_query)
+
+    test_counts_every_batch = test_batches_are_bounded = None
 
 
 class ServerArtifactFlows(unittest.TestCase):

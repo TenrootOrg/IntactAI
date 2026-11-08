@@ -91,6 +91,9 @@ class TusUploader {
             // XHR (bypassing the window.fetch X-Case-Id hook), so the case must
             // ride in the upload metadata for the tusd hook to tag the run.
             case_id: (window.ActiveCase && window.ActiveCase.get && window.ActiveCase.get()) || '',
+            // Same for the Velociraptor org: the tusd hook is not a browser
+            // request, so an offline-collection import lands in this org.
+            velo_org: (window.VeloOrg && window.VeloOrg.get()) || 'root',
             ...this.metadata
         };
 

@@ -37,6 +37,10 @@ function escapeHtml(text) {
 
 function openService(serviceId) {
     const service = window.services[serviceId];
+    if (serviceId === 'velociraptor' && window.VeloOrg) {    // open it in the top-bar org
+        window.open(window.VeloOrg.guiUrl(''), '_blank');
+        return;
+    }
     const url = service.path
         ? `${service.protocol}://${window.baseHost}${service.path}`
         : `${service.protocol}://${window.baseHost}:${service.port}/`;

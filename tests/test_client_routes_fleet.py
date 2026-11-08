@@ -98,9 +98,7 @@ class FleetRouteCase(unittest.TestCase):
         self.saved = (vs.setup_velociraptor_connection, vs.api_pb2_grpc.APIStub)
         vs.setup_velociraptor_connection = lambda: types.SimpleNamespace(close=lambda: None)
         vs.api_pb2_grpc.APIStub = lambda ch: self.stub
-        reset = getattr(cr, "_FLEET_CACHE", None)
-        if reset is not None:
-            reset.update(at=0.0, rows=None)
+        cr._FLEET_CACHE.clear()          # per Velociraptor org: {org: {"at", "rows"}}
 
     def tearDown(self):
         vs.setup_velociraptor_connection, vs.api_pb2_grpc.APIStub = self.saved
@@ -163,7 +161,7 @@ class Summary(FleetRouteCase):
         cr.get_clients_summary()
         cr.get_clients_summary()
         self.assertEqual(1, self.stub.queries, "a second tab within 30 s must not re-query")
-        cr._FLEET_CACHE["at"] -= cr.SUMMARY_MAX_AGE + 1  # 31 s later
+        cr._FLEET_CACHE[""]["at"] -= cr.SUMMARY_MAX_AGE + 1  # 31 s later (root org)
         cr.get_clients_summary()
         self.assertEqual(2, self.stub.queries)
 

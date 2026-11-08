@@ -279,7 +279,18 @@ def register_cancel_event(run_id) -> threading.Event:
 
 
 def register_cleanup(run_id, callback):
-    """Register a cleanup callback for a workflow run. Called when stop is requested."""
+    """Register a cleanup callback for a workflow run. Called when stop is requested.
+
+    It runs in the org it was registered in: Stop comes from a request (or the
+    watchdog) that may have another Velociraptor org selected, or none."""
+    from services import velo_org
+    org = velo_org.current()
+    if org:
+        inner = callback
+
+        def callback():
+            with velo_org.use(org):
+                return inner()
     with _cancel_lock:
         if run_id in _cleanup_callbacks:
             _cleanup_callbacks[run_id].append(callback)
@@ -480,11 +491,18 @@ def create_automation_run(automation_type, name, details=None, case_id=None):
     # actually had fatal errors logged. See the QA bug context — a
     # Velociraptor flow logged "Could not find flow ... No data found"
     # at error level and the run still went green.
+    details = dict(details or {})
+    # The Velociraptor org this run was started in: anything that re-reads its
+    # hunt / flow later (case fusion, re-collect, adopt, Stop cleanup at
+    # startup) re-enters it with velo_org.use(velo_org.of_run(run)).
+    from services import velo_org
+    if velo_org.current() and not details.get("velo_org"):
+        details["velo_org"] = velo_org.current()
     workflow_data = {
         "run_id": run_id,
         "automation_type": automation_type,
         "name": name,
-        "details": details or {},
+        "details": details,
         "status": "pending",
         "progress": 0,
         "logs": [],

@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="vendor/flatpickr/dark.css">
     <script src="vendor/flatpickr/flatpickr.min.js"></script>
     <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-    <script src="js/active-case.js?v=10"></script>
+    <script src="js/active-case.js?v=14"></script>
 </head>
 <body class="bg-gray-900 text-white" x-data x-cloak>
     <!-- Load splash — covers the brief window while partials inject + Alpine
@@ -532,6 +532,10 @@
                             </div>
                         </div>
 
+                        <!-- Velociraptor org: shown for every type (a hunt schedule has no
+                             client list, but still runs in an org). Saved with the schedule. -->
+                        <div class="velo-org-slot mb-4" data-hint="The schedule runs in this org every time (saved with it)."></div>
+
                         <!-- Client Selection (hidden for env-wide types: Velociraptor Hunt) -->
                         <div id="schedule-client-section">
                             <div class="flex items-center justify-between mb-2">
@@ -653,32 +657,32 @@
     <!-- JavaScript - Alpine app + module-specific scripts -->
     <script src="js/api-client.js"></script>
     <!-- App stores (split from the former monolithic app.js) -->
-    <script src="js/stores/app.js?v=6"></script>
+    <script src="js/stores/app.js?v=7"></script>
     <script src="js/stores/services.js?v=3"></script>
     <script src="js/stores/workflows.js?v=12"></script>
     <script src="js/stores/settings.js?v=67"></script>
     <script src="js/legacy/handlers.js?v=1"></script>
-    <script src="js/velociraptor.js?v=9"></script>
+    <script src="js/velociraptor.js?v=10"></script>
     <script src="js/blueprints.js?v=4"></script>
     <!-- Shared client picker — must load BEFORE any module that instantiates
          ClientManager at script scope (blueprints-forensics, scheduler, ...). -->
-    <script src="js/utils/client-manager.js?v=9"></script>
-    <script src="js/blueprints-forensics.js?v=10"></script>
+    <script src="js/utils/client-manager.js?v=10"></script>
+    <script src="js/blueprints-forensics.js?v=11"></script>
     <!-- tus resumable upload protocol (local) -->
     <script src="vendor/tus/tus.min.js"></script>
-    <script src="js/upload.js?v=4"></script>
+    <script src="js/upload.js?v=5"></script>
     <script src="js/timesketch.js?v=4"></script>
     <!-- Must load before the stores/partials that call TabReset.arm(). -->
     <script src="js/components/tab-reset.js?v=1"></script>
     <script src="js/memory.js?v=25"></script>
-    <script src="js/scheduler.js?v=8"></script>
+    <script src="js/scheduler.js?v=9"></script>
     <!-- Extracted inline helpers (Phase C): downloads copy/availability,
          active-case bar, AWS/Azure flatpickr pickers. -->
     <script src="js/components/downloads.js?v=1"></script>
-    <script src="js/components/workspace-bar.js?v=3"></script>
+    <script src="js/components/workspace-bar.js?v=5"></script>
     <script src="js/components/cloud-datepickers.js?v=8"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=269"></script>
+    <script src="js/bootstrap/partial-loader.js?v=271"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

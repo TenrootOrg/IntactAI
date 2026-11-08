@@ -942,7 +942,7 @@ def _scan_report_downloads():
 # server_artifacts/Custom.Elastic.Flows.Upload (server-side output no section
 # touches) and 1.1GB was one client's own directory. An estimate that counts what
 # will still be there after the run is worse than no estimate.
-_VELO_PURGED_PATHS = ("hunts", "clients")
+_VELO_PURGED_PATHS = ("hunts", "clients", "orgs")   # orgs/<id>/ holds each other org's
 
 
 def _scan_velociraptor():

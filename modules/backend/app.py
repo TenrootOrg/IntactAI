@@ -158,6 +158,19 @@ def _auth_gate():
     }), 401
 
 
+# Velociraptor organization: the top-bar dropdown's `velo_org` cookie (sent on
+# every request, download links and uploads included). Set on EVERY request,
+# empty included: werkzeug may reuse a thread, and a stale org must not carry
+# over. Threads started from here inherit it (services/velo_org.py).
+from services import velo_org
+velo_org.install_thread_inheritance()
+
+
+@app.before_request
+def _velo_org_from_request():
+    velo_org.set_current(request.headers.get('X-Velo-Org') or request.cookies.get(velo_org.COOKIE))
+
+
 # Workspace guard: investigation features targeting the System workspace raise
 # WorkspaceError from create_automation_run(). Surface it as a clean 409 JSON
 # (instead of a 500 traceback) so the UI can toast the message.
@@ -421,21 +434,23 @@ def run_startup_initialization():
                         _state = (_w.get("details") or {}).get("_cleanup_state") or {}
                         if _state:
                             from services.memory.cleanup import cleanup_after_run
-                            cleanup_after_run(
-                                client_id=_state.get("client_id"),
-                                flow_id=_state.get("flow_id"),
-                                host_path=_state.get("host_path"),
-                                evidence_id=_state.get("evidence_id"),
-                                evidence_filename=_state.get("evidence_filename"),
-                                volweb_client=None,
-                                delete_evidence_row=False,
-                                # The operator asked to keep this image (or the
-                                # run was started FROM one). Without this the
-                                # replay deletes the very file they kept.
-                                preserve_dump=_state.get("preserve_dump") or False,
-                                logger=lambda m, level="info": print(
-                                    f"[STARTUP] [memory-cleanup {_run_id}] {m}", flush=True),
-                            )
+                            # Its flow is in the org the run started in.
+                            with velo_org.use(velo_org.of_run(_w)):
+                                cleanup_after_run(
+                                    client_id=_state.get("client_id"),
+                                    flow_id=_state.get("flow_id"),
+                                    host_path=_state.get("host_path"),
+                                    evidence_id=_state.get("evidence_id"),
+                                    evidence_filename=_state.get("evidence_filename"),
+                                    volweb_client=None,
+                                    delete_evidence_row=False,
+                                    # The operator asked to keep this image (or the
+                                    # run was started FROM one). Without this the
+                                    # replay deletes the very file they kept.
+                                    preserve_dump=_state.get("preserve_dump") or False,
+                                    logger=lambda m, level="info": print(
+                                        f"[STARTUP] [memory-cleanup {_run_id}] {m}", flush=True),
+                                )
                     except Exception as e:
                         print(f"[STARTUP] memory-cleanup replay failed for {_run_id}: {e}", flush=True)
         if _reaped:

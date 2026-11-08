@@ -203,6 +203,11 @@ def _decode_client_info(info, client_id):
     raise ValueError(f"{client_id}: info is not a ClientInfo record")
 
 
+def _org_snapshot_path():
+    from services import velo_org
+    return VELOCIRAPTOR_SNAPSHOT_PATH.replace("/var./", velo_org.datastore(), 1)
+
+
 def get_clients_from_snapshot_file(include_offline=True):
     """Read clients from Velociraptor snapshot file (fallback method only).
 
@@ -223,7 +228,7 @@ def get_clients_from_snapshot_file(include_offline=True):
         print("[CLIENT-LIST] Using fallback snapshot file method...", flush=True)
         result = subprocess.run([
             "docker", "exec", VELOCIRAPTOR_CONTAINER,
-            "cat", VELOCIRAPTOR_SNAPSHOT_PATH
+            "cat", _org_snapshot_path()
         ], capture_output=True, text=True, timeout=10)
     except Exception as e:
         print(f"[CLIENT-LIST] Error reading snapshot: {e}", flush=True)
@@ -359,7 +364,9 @@ def setup_velociraptor_connection():
                 channel.close()
                 config, channel = fresh, _secure_channel(fresh)
         print(f"[GRPC] Secure channel established to {config['api_connection_string']}", flush=True)
-        return channel
+        # Every query on it runs in the operator's Velociraptor org (velo_org).
+        from services import velo_org
+        return velo_org.wrap(channel)
 
     except Exception as e:
         print(f"[GRPC] Connection setup failed: {e}", flush=True)
@@ -773,7 +780,8 @@ def export_flow_to_zip(client_id: str, flow_id: str, out_path: str, logger=None,
     out_dir = os.path.dirname(out_path) or "/tmp"
     os.makedirs(out_dir, exist_ok=True)
 
-    src_dir = f"/var./downloads/{client_id}/{flow_id}"
+    from services import velo_org        # another org's downloads live under /var./orgs/<id>/
+    src_dir = f"{velo_org.datastore()}downloads/{client_id}/{flow_id}"
     locate_cmd = [
         "docker", "exec", VELOCIRAPTOR_CONTAINER, "sh", "-c",
         f"ls -1 {src_dir}/*.zip 2>/dev/null | head -1",
@@ -835,8 +843,9 @@ def cleanup_flow_export(client_id: str, flow_id: str, logger=None) -> None:
         else:
             print(f"[VELO-EXPORT] [{level}] {msg}", flush=True)
 
+    from services import velo_org
     script = (
-        f"rm -rf /var./downloads/{client_id}/{flow_id} 2>/dev/null || true"
+        f"rm -rf {velo_org.datastore()}downloads/{client_id}/{flow_id} 2>/dev/null || true"
     )
     # docker exec into the running container instead of spinning up an
     # alpine sidecar — same reasoning as export_flow_to_zip(): airgapped
@@ -987,7 +996,47 @@ def hunt_tool_preflight(logger):
         pass
 
 
-def purge_velociraptor_data(logger=None, delete_flows=True,
+def purge_velociraptor_data(logger=None, delete_flows=True, delete_monitoring=True,
+                            delete_hunts=True):
+    """System purge, in EVERY Velociraptor org (each has its own clients, hunts
+    and flows): the per-org work is _purge_org below, and the counts are summed.
+    The org list is read in root; if it can't be, only root is purged."""
+    from services import velo_org
+    orgs = [""]
+    try:
+        with velo_org.root():
+            channel = setup_velociraptor_connection()
+            if channel:
+                try:
+                    req = api_pb2.VQLCollectorArgs(max_wait=10, max_row=1000, Query=[
+                        api_pb2.VQLRequest(VQL="SELECT OrgId AS id FROM orgs()")])
+                    for resp in api_pb2_grpc.APIStub(channel).Query(req, timeout=30):
+                        for o in (json.loads(resp.Response) if resp.Response else []):
+                            if velo_org.clean(o.get("id")):
+                                orgs.append(o["id"])
+                finally:
+                    channel.close()
+    except Exception as e:
+        print(f"[VELO-PURGE] could not list orgs, purging root only: {e}", flush=True)
+    total = None
+    for org in orgs:
+        if logger and len(orgs) > 1:
+            try:
+                logger(f"Org {org or 'root'}:", "info")
+            except Exception:
+                pass
+        with velo_org.use(org):
+            res = _purge_org(logger=logger, delete_flows=delete_flows,
+                             delete_monitoring=delete_monitoring, delete_hunts=delete_hunts)
+        if total is None:
+            total = res
+        else:
+            for k, v in res.items():
+                total[k] = total[k] + v if k != "errors" else total[k] + [f"{org}: {e}" for e in v]
+    return total
+
+
+def _purge_org(logger=None, delete_flows=True,
                             delete_monitoring=True, delete_hunts=True):
     """Safely remove COLLECTED DATA from the Velociraptor server while keeping
     every client enrolled.

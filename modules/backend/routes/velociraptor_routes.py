@@ -145,7 +145,10 @@ def run_timesketch_collection():
         # as defense-in-depth — even if a future code change drops the
         # validator, the args never pass through a shell parser so
         # injection via $(...)/backtick/quotes can't reach the host.
-        def _cancel_velo_flow(cid=client_id, fid=flow_id):
+        # The org is captured now: Stop runs this from the Stop request, which
+        # may come from a browser with another org selected.
+        from services import velo_org
+        def _cancel_velo_flow(cid=client_id, fid=flow_id, org=velo_org.current()):
             try:
                 import subprocess as _sp
                 _sp.run(
@@ -153,7 +156,7 @@ def run_timesketch_collection():
                         "docker", "exec", "intact_velociraptor",
                         "/velociraptor/velociraptor",
                         "--api_config", "/velociraptor/api.config.yaml",
-                        "--nobanner", "query",
+                        "--nobanner", *velo_org.cli_args(org), "query",
                         f"SELECT cancel_flow(client_id='{cid}', flow_id='{fid}') FROM scope()",
                     ],
                     shell=False, capture_output=True, timeout=10,
@@ -715,6 +718,38 @@ def get_client_labels():
         return jsonify({"labels": []})
 
 
+@velociraptor_bp.route('/api/velociraptor/orgs', methods=['GET'])
+def list_orgs():
+    """Velociraptor organizations for the top-bar org dropdown, root first.
+
+    Intact's own API user gets the same roles it has in root in any org it is not
+    in yet: an org made in Velociraptor's GUI does not include it, and every query
+    there then fails with "User api requires permission ANY_QUERY" (checked on
+    0.77.3). It is already a server admin in root, so this grants nothing it
+    could not grant itself."""
+    from services import velo_org
+    from services.velociraptor_clients import _query
+    try:
+        with velo_org.root():
+            orgs = _query("SELECT OrgId AS id, Name AS name FROM orgs()", timeout=30) or []
+            me = (_query("SELECT whoami() AS u FROM scope()", timeout=30) or [{}])[0].get("u") or "api"
+            have = {r.get("org_id") for r in (_query(
+                f"SELECT org_id FROM gui_users(all_orgs=TRUE) WHERE name = '{me}'", timeout=30) or [])}
+            missing = [o["id"] for o in orgs if o.get("id") and o["id"] not in have]
+            if missing:
+                _query(f"SELECT user_grant(user='{me}', roles=['administrator', 'api'], "
+                       f"orgs={json.dumps(missing)}) AS g FROM scope()", timeout=30)
+                print(f"[ORGS] granted {me} access to org(s) {missing}", flush=True)
+    except Exception as e:
+        print(f"[ORGS] ✗ Error listing orgs: {e}", flush=True)
+        return jsonify({"orgs": [{"id": "root", "name": "root"}], "current": velo_org.current() or "root",
+                        "error": str(e)})
+    out = [{"id": o["id"], "name": "root" if o["id"] == "root" else (o.get("name") or o["id"])}
+           for o in orgs if o.get("id")]
+    out.sort(key=lambda o: (o["id"] != "root", o["name"].lower()))
+    return jsonify({"orgs": out or [{"id": "root", "name": "root"}], "current": velo_org.current() or "root"})
+
+
 # ============================================================================
 # Artifact Definitions
 # ============================================================================
@@ -909,6 +944,12 @@ def _adopt_from_workflow(source_run_id):
         return jsonify({"error": f"{source_run_id} is a "
                                  f"{source.get('automation_type') or 'non-Velociraptor'} run "
                                  f"with no Velociraptor collection to pull."}), 400
+
+    # Its ids live in the org the source ran in: the adopt runs (and their
+    # threads) are created in it, whatever org this browser has selected. The
+    # next request sets its own org again (app.py), so this does not leak.
+    from services import velo_org
+    velo_org.set_current(velo_org.of_run(source))
 
     started, skipped = [], []
     for raw in locators:
@@ -1309,6 +1350,13 @@ def velociraptor_upgrade_clients():
     """Start the pilot (stage=pilot, optional client_ids) or a wave of the rest (stage=rest,
     optional label = a Velociraptor label, limit = at most this many clients)."""
     from services.velociraptor_clients import start_upgrade
+    from services import velo_org
+    if velo_org.current():
+        # The upgrade package is built from root's client config: installed on
+        # another org's clients it would move them into root.
+        return jsonify({"error": "Client upgrade works only in the root Velociraptor org: the "
+                                 "upgrade package carries root's client config and would move "
+                                 "this org's clients into root. Switch the org to root."}), 400
     body = request.get_json(silent=True) or {}
     try:
         run_id = start_upgrade(body.get("stage"), body.get("client_ids") or None,

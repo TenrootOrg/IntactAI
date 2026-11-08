@@ -329,3 +329,97 @@
   window.ActiveCase = { get, set, listCases, createCase, deleteCase, ensureActiveCase,
                         renderCaseSelector, gotoSystemWorkflows, blockIfSystem };
 })();
+
+/**
+ * Velociraptor organization — the org picker shown at the top of every page
+ * that works with Velociraptor (above its client list, or its import / add-by-id
+ * form). A page asks for it with an empty <div class="velo-org-slot"></div>; it
+ * is mounted here whenever one appears (partials and modals render late).
+ *
+ * Kept in the `velo_org` cookie, not a header: a cookie also rides on download
+ * links, window.open and tus uploads, which the fetch hook above never sees. The
+ * backend runs every Velociraptor query in it (services/velo_org.py); anything
+ * started in an org keeps that org even if the picker changes later. One choice
+ * for the whole browser: changing it on one page changes it on every page, and
+ * each client list (ClientManager) reloads from the new org on 'velo-org-changed'.
+ */
+(function () {
+  const COOKIE = 'velo_org';
+  const SYNC_KEY = 'veloOrgId';      // localStorage: tells the other frames / tabs
+  const _fetch = window.fetch.bind(window);
+
+  function get() {
+    const m = document.cookie.match(/(?:^|;\s*)velo_org=([^;]*)/);
+    return (m && decodeURIComponent(m[1])) || 'root';
+  }
+  function _announce(id) {
+    // defaultSelected too: pages reset their form when a tab opens (Timesketch),
+    // and a reset puts a <select> back on its default option -- the old org.
+    document.querySelectorAll('select.velo-org-select').forEach(s => {
+      for (const o of s.options) o.defaultSelected = (o.value === id);
+      s.value = id;
+    });
+    window.dispatchEvent(new CustomEvent('velo-org-changed', { detail: { id } }));
+  }
+  function set(id) {
+    id = id || 'root';
+    const v = id !== 'root' ? encodeURIComponent(id) : '';
+    // A year, path=/ so /api, /velociraptor and the tus endpoint all get it.
+    document.cookie = `${COOKIE}=${v}; path=/; max-age=${v ? 31536000 : 0}; SameSite=Strict`;
+    try { localStorage.setItem(SYNC_KEY, id); } catch (e) {}
+    _announce(id);
+  }
+  // Another frame (Case Analysis is an iframe) or tab changed it.
+  window.addEventListener('storage', e => { if (e.key === SYNC_KEY) _announce(get()); });
+
+  // One request for every picker on the page (there are up to seven); a failed
+  // one is retried by the next picker that mounts.
+  let _orgs = null;
+  function list() {
+    if (!_orgs) {
+      _orgs = _fetch('/api/velociraptor/orgs', { credentials: 'same-origin' })
+        .then(r => (r.ok ? r.json() : { orgs: [] }))
+        .then(d => d.orgs || [])
+        .catch(() => []);
+      _orgs.then(o => { if (!o.length) _orgs = null; });
+    }
+    return _orgs;
+  }
+  /** Velociraptor GUI url in the selected org (its GUI takes ?org_id=). */
+  function guiUrl(hash) {
+    const org = get();
+    return `https://${location.hostname}/velociraptor/app/index.html` +
+           (org !== 'root' ? `?org_id=${encodeURIComponent(org)}` : '') + (hash || '');
+  }
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  async function renderSelector(el) {
+    if (!el) return;
+    el.dataset.mounted = '1';
+    const orgs = await list();
+    if (!orgs.length) { el.innerHTML = ''; return; }        // Velociraptor not installed / down
+    let cur = get();
+    if (!orgs.some(o => o.id === cur)) { cur = 'root'; set('root'); }   // org deleted since
+    const options = orgs.map(o => `<option value="${esc(o.id)}"${o.id === cur ? ' selected' : ''}>` +
+      `${esc(o.name)}${o.id !== 'root' && o.name !== o.id ? ` (${esc(o.id)})` : ''}</option>`).join('');
+    const hint = el.dataset.hint || 'Clients, hunts, collections and imports started here use this org.';
+    if (el.dataset.style === 'case') {        // Case Analysis (cases.html) form styling
+      el.innerHTML = `<label>Velociraptor org</label><select class="velo-org-select">${options}</select>
+        <div class="cfghint">${esc(hint)}</div>`;
+    } else {                                  // the Tailwind module pages
+      el.innerHTML = `<label class="block text-sm font-medium text-gray-300 mb-1">Velociraptor organization</label>
+        <select class="velo-org-select w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">${options}</select>
+        <p class="text-xs text-gray-500 mt-1">${esc(hint)}</p>`;
+    }
+    el.querySelector('select').addEventListener('change', function () { set(this.value); });
+  }
+  function mountAll() {
+    document.querySelectorAll('.velo-org-slot:not([data-mounted])').forEach(renderSelector);
+  }
+  let _t = null;
+  new MutationObserver(() => { clearTimeout(_t); _t = setTimeout(mountAll, 50); })
+    .observe(document.documentElement, { childList: true, subtree: true });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountAll);
+  else mountAll();
+
+  window.VeloOrg = { get, set, list, guiUrl, renderSelector };
+})();

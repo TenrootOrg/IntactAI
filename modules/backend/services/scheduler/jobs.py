@@ -154,6 +154,13 @@ def _record_reschedule_error(job_id, message):
         pass
 
 
+def _velo_org_now():
+    """The Velociraptor org selected in the request creating / retargeting a
+    schedule (None = root): its runs must query the same org later."""
+    from services import velo_org
+    return velo_org.current() or None
+
+
 def create_scheduled_job(
     name: str,
     blueprint_id: str,
@@ -222,8 +229,8 @@ def create_scheduled_job(
          interval_type, interval_value, interval_unit, start_at, run_time, options, next_run_at, enabled,
          report_types, anonymize_data, custom_patterns,
          time_filter_enabled, time_filter_mode, time_filter_relative_range,
-         time_filter_start, time_filter_end, created_at, updated_at, case_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         time_filter_start, time_filter_end, created_at, updated_at, case_id, velo_org)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         job_id,
         name,
@@ -249,7 +256,8 @@ def create_scheduled_job(
         time_filter_end,
         now.isoformat(),
         now.isoformat(),
-        case_id or None
+        case_id or None,
+        _velo_org_now(),
     ))
     conn.commit()
     conn.close()
@@ -317,7 +325,7 @@ def update_scheduled_job(job_id: str, updates: dict) -> Optional[dict]:
     allowed_fields = [
         'name', 'description', 'blueprint_id', 'blueprint_type',
         'client_ids', 'interval_value', 'interval_unit', 'start_at', 'run_time', 'enabled',
-        'report_types', 'anonymize_data', 'custom_patterns', 'options', 'case_id'
+        'report_types', 'anonymize_data', 'custom_patterns', 'options', 'case_id', 'velo_org'
     ]
 
     conn = get_db_connection()

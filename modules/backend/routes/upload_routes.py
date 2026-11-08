@@ -350,6 +350,11 @@ def handle_tus_hook():
 
         # Metadata is already decoded by tusd
         metadata = upload_info.get('MetaData', {})
+        # The browser's org rides in the metadata like case_id (js/upload.js):
+        # this webhook comes from tusd, not the browser. Runs created here and
+        # the import thread started at post-finish inherit it (velo_org).
+        from services import velo_org
+        velo_org.set_current(metadata.get('velo_org'))
 
         print(f"[TUS HOOK] Event: {event_type}", flush=True)
         print(f"[TUS HOOK] Upload ID: {upload_info.get('ID', 'unknown')}", flush=True)

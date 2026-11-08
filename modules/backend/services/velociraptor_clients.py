@@ -8,6 +8,7 @@ report its version (a client never interrogated reports none -- 9 of 10 on the
 lab box, 2026-10-11).
 """
 import time
+from services import velo_org
 
 ONLINE_SECONDS = 600     # same window as get_clients_from_snapshot / the dashboard
 REFRESH_HUNT_DAYS = 7    # an offline client answers when it is next seen, within this
@@ -292,6 +293,7 @@ def _define_linux_artifact():
         raise RuntimeError(f"Velociraptor did not accept the Linux upgrade artifact ({out[:200]})")
 
 
+@velo_org.in_root   # the client packages are root's (its client config)
 def packages_ready(server):
     """The verified packages for `server`, if they exist AND are still the registered
     tools; else None. Built on demand by the upgrade run that needs them (~15 s)."""
@@ -306,6 +308,7 @@ def packages_ready(server):
     return pkg
 
 
+@velo_org.in_root   # the client packages are root's (its client config)
 def prepare_packages(log=print):
     """Build, verify and register the Windows MSI and the Linux binary for the
     server's version. Raises RuntimeError with the reason; nothing is recorded as

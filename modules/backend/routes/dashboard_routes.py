@@ -151,7 +151,10 @@ def _reconcile_velociraptor_hunt(run):
     if not hunt_id:
         return
     from services.workflow_service import update_run_status
-    if _hunt_registered_cached(hunt_id):
+    from services import velo_org        # the run's org, not the polling browser's
+    with velo_org.use(velo_org.of_run(run)):
+        registered = _hunt_registered_cached(hunt_id)
+    if registered:
         update_run_status(run.get("run_id", run.get("id")), "completed", progress=100)
         run["status"] = "completed"
         run["progress"] = 100
@@ -498,8 +501,10 @@ def recollect(run_id):
                                      "run.", "busy": True}), 409
         _recollecting.add(run_id)
 
-    threading.Thread(target=_recollect_worker, args=(run_id, run),
-                     daemon=True, name=f"recollect-{run_id}").start()
+    from services import velo_org        # re-read in the run's org, not the browser's
+    with velo_org.use(velo_org.of_run(run)):
+        threading.Thread(target=_recollect_worker, args=(run_id, run),
+                         daemon=True, name=f"recollect-{run_id}").start()
     return jsonify({"success": True, "run_id": run_id,
                     "message": "Re-collecting from Velociraptor — follow the "
                                "run's log."}), 202

@@ -330,3 +330,8 @@ async function startForensicsCollection() {
         statusEl.innerHTML = `<span class="text-red-400">Error: ${error.message}</span>`;
     }
 }
+
+// The Hunt form's labels are the selected Velociraptor org's.
+window.addEventListener('velo-org-changed', () => {
+    if (document.getElementById('forensics-hunt-labels-dd')) loadForensicsHuntLabels();
+});

@@ -15,6 +15,14 @@ import zipfile
 from services.offline_collector.constants import VELOCIRAPTOR_CONTAINER, get_velo_client_path
 
 
+def _org_channel(*args):
+    """A Velociraptor channel in the operator's org: an import lands in the org
+    selected when it was started (services/velo_org.py)."""
+    import grpc
+    from services import velo_org
+    return velo_org.wrap(grpc.secure_channel(*args))
+
+
 def _ensure_executable(path, log=None):
     """Return a runnable path for `path`, repairing the execute bit if needed.
 
@@ -174,7 +182,7 @@ def _wait_import_flow_finished(config, creds, max_message_size, flow_id, run_id,
     while time.time() < deadline:
         state = ""
         try:
-            ch = grpc.secure_channel(
+            ch = _org_channel(
                 config["api_connection_string"], creds,
                 (("grpc.ssl_target_name_override", "VelociraptorServer"),
                  ("grpc.max_receive_message_length", max_message_size),
@@ -353,7 +361,7 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
         )
 
         max_message_size = 100 * 1024 * 1024  # 100MB
-        channel = grpc.secure_channel(
+        channel = _org_channel(
             config["api_connection_string"],
             creds,
             (
@@ -510,7 +518,7 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
             # Query flow RESULTS to get the actual imported client info
             # Server.Utils.ImportCollection outputs info about what was imported
             try:
-                channel2 = grpc.secure_channel(
+                channel2 = _org_channel(
                     config["api_connection_string"],
                     creds,
                     (

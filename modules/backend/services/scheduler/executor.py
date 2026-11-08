@@ -32,7 +32,18 @@ def _job_case(job_meta):
 
 
 def run_scheduled_blueprint(job_id: str):
-    """Execute a scheduled blueprint run. This is the main APScheduler callback."""
+    """Execute a scheduled blueprint run. This is the main APScheduler callback.
+
+    Runs in the Velociraptor org the schedule was made in (its velo_org): the
+    APScheduler thread has none, and Run now comes from a request that may have
+    another org selected. Everything below -- runs, threads -- inherits it."""
+    from services import velo_org
+    from .jobs import get_scheduled_job
+    with velo_org.use((get_scheduled_job(job_id) or {}).get('velo_org')):
+        return _run_scheduled_blueprint(job_id)
+
+
+def _run_scheduled_blueprint(job_id: str):
     from services.agentic import run_agentic_pipeline
     from services.file_storage_service import get_velociraptor_blueprint, get_agentic_blueprint
     from services.workflow_service import create_automation_run, add_log_to_run, update_run_status

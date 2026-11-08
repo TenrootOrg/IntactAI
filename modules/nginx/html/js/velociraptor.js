@@ -11,7 +11,9 @@ const artifactNames = {
 async function runArtifact(artifactId) {
     const artifactName = artifactNames[artifactId] || artifactId;
 
-    const veloUrl = `https://${window.baseHost}/velociraptor/app/index.html#/hunts/new?artifact=${encodeURIComponent(artifactName)}`;
+    const hash = `#/hunts/new?artifact=${encodeURIComponent(artifactName)}`;
+    const veloUrl = window.VeloOrg ? window.VeloOrg.guiUrl(hash)      // in the top-bar org
+        : `https://${window.baseHost}/velociraptor/app/index.html${hash}`;
 
     if (confirm(`This will open Velociraptor to create a hunt for ${artifactName}.\n\nContinue?`)) {
         window.open(veloUrl, '_blank');

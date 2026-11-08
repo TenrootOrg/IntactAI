@@ -65,6 +65,16 @@ class ClientManager {
         this._refreshing = false;  // a refresh is in flight (repeat clicks ignored)
         this._refreshError = '';   // shown in the bar; the list itself is kept
         this._loadedAt = null;     // when the fleet was last fetched
+
+        // The Velociraptor org picker changed: this list is another org's fleet
+        // now. Drop the selection (those ids are not in the new org) and reload.
+        // Only a list that was ever loaded -- a page not opened yet loads its own.
+        if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('velo-org-changed', () => {
+            if (!this._listenerAttached) return;
+            this.selected.clear();
+            this._fireChange();
+            this.load();
+        });
     }
 
     /**

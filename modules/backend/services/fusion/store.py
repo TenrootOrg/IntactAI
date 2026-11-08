@@ -1854,6 +1854,15 @@ def _cached_map(fp, det, load_rows, map_rows):
 
 
 def _contribution_for_run(run, log=None, refetch=False):
+    """A member run's entities, read in the Velociraptor org the run was started
+    in: a case can hold runs of several orgs, and fusion runs from timers and
+    other requests that have no (or another) org selected."""
+    from services import velo_org
+    with velo_org.use(velo_org.of_run(run)):
+        return _contribution_for_run_in_org(run, log=log, refetch=refetch)
+
+
+def _contribution_for_run_in_org(run, log=None, refetch=False):
     atype, rid = run.get("automation_type"), run.get("run_id")
     det = run.get("details") or {}
     # External data's "Use in analysis" switch, off. Log data and a Velociraptor
@@ -4158,7 +4167,7 @@ def set_host_status(case_id, asset_id, status) -> dict:
     return {"asset_id": asset_id, "status": status}
 
 
-_VR_ISOLATED = {"at": 0.0, "ids": set()}
+_VR_ISOLATED = {}    # Velociraptor org -> {"at", "ids"}
 
 
 def velociraptor_isolated() -> set:
@@ -4167,8 +4176,11 @@ def velociraptor_isolated() -> set:
     never isolate or release from here. Cached a minute so the Risk tab stays
     fast; Velociraptor down or absent gives an empty set, never an error."""
     import time as _t
-    if _t.time() - _VR_ISOLATED["at"] < 60:
-        return _VR_ISOLATED["ids"]
+    from services import velo_org
+    org = velo_org.current()
+    hit = _VR_ISOLATED.get(org)
+    if hit and _t.time() - hit["at"] < 60:
+        return hit["ids"]
     ids = set()
     try:
         from services import velociraptor_service as vr
@@ -4177,7 +4189,7 @@ def velociraptor_isolated() -> set:
                 ids.add(str(c.get("client_id")))
     except Exception as e:                                   # noqa: BLE001 — a badge, never a failure
         print(f"[FUSION] Velociraptor isolation check skipped: {e}", flush=True)
-    _VR_ISOLATED.update(at=_t.time(), ids=ids)
+    _VR_ISOLATED[org] = {"at": _t.time(), "ids": ids}
     return ids
 
 

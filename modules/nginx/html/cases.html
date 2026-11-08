@@ -307,7 +307,7 @@
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-<script src="js/active-case.js?v=10"></script>
+<script src="js/active-case.js?v=14"></script>
 <!-- set embed + view mode before body renders (no flash) -->
 <script>(function(){var q=new URLSearchParams(location.search);
   if(q.get('embed')==='1')document.documentElement.classList.add('embed');
@@ -318,7 +318,7 @@
 <script src="vendor/flatpickr/flatpickr.min.js"></script>
 <!-- resumable chunked upload, for importing a case bundle (multi-GB) -->
 <script src="vendor/tus/tus.min.js"></script>
-<script src="js/upload.js?v=4"></script>
+<script src="js/upload.js?v=5"></script>
 </head>
 <body>
 <header>
@@ -1238,6 +1238,7 @@ function renderData(info){
     <div id="dt-upload">${_dtUpHtml()}</div>
     ${window._dtAdd?`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:640px">
       <label>File</label><input type="file" id="dtn-file"/>
+      <div class="velo-org-slot" data-style="case" data-hint="A Velociraptor offline collection is imported into this org."></div>
       <label>What is it</label><select id="dtn-dtype">${o('auto','Log data — any kind: detect it automatically')}${EV_LOGTYPES.map(([k,l])=>o(k,'Log data — '+l)).join('')}${o(EV_NOTES,"Incident notes — the customer's account (chat, interview notes, e-mails)")}</select>
       <div class="cfghint">Log data is read whatever its format (CSV, JSON, CEF, syslog…); the type only names its findings. A Velociraptor offline collection (.zip, any size) is recognised and imported like Velociraptor → Offline collection → Import; one with a password goes through that page. Notes: text files (.txt, .md, .eml, a chat export).</div>
       <label>Name <span style="color:var(--crit)">*</span></label><input id="dtn-name" maxlength="200" placeholder="e.g. FortiGate export Oct 1–3 / Call with the customer's IT"/>

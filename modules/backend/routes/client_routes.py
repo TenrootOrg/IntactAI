@@ -32,22 +32,30 @@ def _online(c, now):
 # /api/clients/summary answers from this instead, at most SUMMARY_MAX_AGE old.
 # Any full /api/clients fetch refreshes it; the pickers' ↻ always fetches live.
 SUMMARY_MAX_AGE = 30
-_FLEET_CACHE = {"at": 0.0, "rows": None}
+_FLEET_CACHE = {}                # Velociraptor org -> {"at", "rows"}: each org has its own fleet
 _FLEET_LOCK = threading.Lock()   # summary misses only: N tabs missing together cost one query
 
 
 def _fetch_fleet():
     """Every enrolled client (offline ones too), live; refreshes the cache."""
+    from services import velo_org
     rows = get_clients_from_snapshot(include_offline=True)
-    _FLEET_CACHE.update(at=time.time(), rows=rows)
+    _FLEET_CACHE[velo_org.current()] = {"at": time.time(), "rows": rows}
     return rows
+
+
+def _fleet_as_of():
+    from services import velo_org
+    return (_FLEET_CACHE.get(velo_org.current()) or {}).get("at", 0.0)
 
 
 def _cached_fleet():
     """The fleet, at most SUMMARY_MAX_AGE old."""
+    from services import velo_org
     with _FLEET_LOCK:
-        if _FLEET_CACHE["rows"] is not None and time.time() - _FLEET_CACHE["at"] < SUMMARY_MAX_AGE:
-            return _FLEET_CACHE["rows"]
+        hit = _FLEET_CACHE.get(velo_org.current())
+        if hit and time.time() - hit["at"] < SUMMARY_MAX_AGE:
+            return hit["rows"]
         return _fetch_fleet()
 
 
@@ -127,7 +135,7 @@ def get_clients_summary():
         clients = [c for c in _cached_fleet() if not c.get('imported')]
         now = time.time()
         return jsonify({"online": sum(1 for c in clients if _online(c, now)),
-                        "total": len(clients), "as_of": int(_FLEET_CACHE["at"])})
+                        "total": len(clients), "as_of": int(_fleet_as_of())})
     except Exception as e:
         print(f"API Error: {e}")
         return jsonify({"error": str(e), "online": 0, "total": 0}), 500
@@ -159,6 +167,13 @@ def download_client(platform):
         version : legacy version (defaults to versions.velociraptor_legacy
                   in config.yaml). Only honoured when source='online'.
     """
+    from services import velo_org
+    if velo_org.current():
+        # Every installer here embeds root's client config, so a host installed
+        # from it enrols into root, not the org selected in the top bar.
+        return jsonify({"error": "These installers enrol hosts into the root Velociraptor org. "
+                                 "Switch the org to root to download them, or build an installer "
+                                 "for this org in Velociraptor's GUI."}), 409
     try:
         print(f"[CLIENT-ROUTE] Download request for platform: {platform}", flush=True)
 
