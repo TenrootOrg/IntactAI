@@ -12,6 +12,7 @@ import traceback
 from services import get_clients_from_snapshot
 from services.velociraptor_clients import ONLINE_SECONDS
 from services.msi_generator_service import download_client_installer
+from services.velociraptor_clients import ORG_INSTALLER_SOURCES, build_org_installer
 from services.legacy_velociraptor_service import (
     build_legacy_client,
     build_modern_musl_linux_client,
@@ -147,6 +148,16 @@ def get_client(client_id):
     # This endpoint would require VQL query implementation
     return jsonify({"error": "Not implemented yet"}), 501
 
+def _org_named(filename):
+    """An installer built for a non-root Velociraptor org says so in its name."""
+    from services import velo_org
+    org = velo_org.current()
+    if not org:
+        return filename
+    base, dot, ext = filename.rpartition('.')
+    return f"{base}-{org}.{ext}" if dot and ext in ('exe', 'msi') else f"{filename}-{org}"
+
+
 @client_bp.route('/api/clients/download/<platform>')
 def download_client(platform):
     """Download a Velociraptor client installer.
@@ -167,13 +178,26 @@ def download_client(platform):
         version : legacy version (defaults to versions.velociraptor_legacy
                   in config.yaml). Only honoured when source='online'.
     """
+    # A host enrols into the org whose client config its installer carries. The
+    # files below are root's; for another org each is repacked on demand with
+    # that org's config (the legacy / musl builds read it in
+    # legacy_velociraptor_service._client_config_bytes).
     from services import velo_org
-    if velo_org.current():
-        # Every installer here embeds root's client config, so a host installed
-        # from it enrols into root, not the org selected in the top bar.
-        return jsonify({"error": "These installers enrol hosts into the root Velociraptor org. "
-                                 "Switch the org to root to download them, or build an installer "
-                                 "for this org in Velociraptor's GUI."}), 409
+    org = velo_org.current()
+    if org and platform in ORG_INSTALLER_SOURCES:
+        import shutil
+        import tempfile
+        work = tempfile.mkdtemp(prefix="intact-org-installer-")
+        try:
+            path, name, mime = build_org_installer(platform, org, work)
+        except Exception as e:  # noqa: BLE001
+            shutil.rmtree(work, ignore_errors=True)
+            print(f"[CLIENT-ROUTE] ✗ {platform} installer for org {org}: {e}", flush=True)
+            return jsonify({"error": f"Could not build the {platform} installer for org {org}: {e}"}), 500
+        print(f"[CLIENT-ROUTE] Serving {name} (org {org})", flush=True)
+        resp = send_file(path, mimetype=mime, as_attachment=True, download_name=name)
+        resp.call_on_close(lambda: shutil.rmtree(work, ignore_errors=True))
+        return resp
     try:
         print(f"[CLIENT-ROUTE] Download request for platform: {platform}", flush=True)
 
@@ -194,7 +218,7 @@ def download_client(platform):
                 result['path'],
                 mimetype='application/octet-stream',
                 as_attachment=True,
-                download_name=result['filename'],
+                download_name=_org_named(result['filename']),
             )
 
         # --- Legacy builds: repack on demand --------------------------------
@@ -216,7 +240,7 @@ def download_client(platform):
                 result['path'],
                 mimetype='application/octet-stream' if target == 'linux' else 'application/x-msdownload',
                 as_attachment=True,
-                download_name=result['filename'],
+                download_name=_org_named(result['filename']),
             )
 
         # --- Modern builds (existing behavior) ------------------------------

@@ -147,6 +147,91 @@ def _velo_exec(*args, timeout=120, text=True):
                           capture_output=True, text=text, timeout=timeout)
 
 
+# ---------------------------------------------------------------------------
+# Installers for a Velociraptor org other than root.
+#
+# A client enrols into the org whose client config it carries -- the configs
+# differ only in Client.nonce (same server URL and CA). The Downloads page's
+# files are repacked with root's, so for another org each installer is repacked
+# on demand with that org's config, from the PLAIN upstream binaries the image
+# stages under /opt/velociraptor: `config repack --msi` on the Downloads MSI
+# (already repacked) returns RepackInfo null and writes nothing (0.77.3).
+# ---------------------------------------------------------------------------
+ORG_INSTALLER_SOURCES = {
+    # platform: (plain binary in the Velociraptor container, repack flag, file name, mimetype)
+    "windows-msi": ("/opt/velociraptor/windows/velociraptor_client.msi", "--msi",
+                    "velociraptor-client-windows-{org}.msi", "application/x-msi"),
+    "windows-exe": ("/opt/velociraptor/windows/velociraptor_client.exe", "--exe",
+                    "velociraptor-client-windows-{org}.exe", "application/x-msdownload"),
+    "windows": ("/opt/velociraptor/windows/velociraptor_client.exe", "--exe",
+                "velociraptor-client-windows-{org}.exe", "application/x-msdownload"),
+    "linux": ("/opt/velociraptor/linux/velociraptor", "--exe",
+              "velociraptor-client-linux-{org}", "application/octet-stream"),
+    "mac": ("/opt/velociraptor/mac/velociraptor_client", "--exe",
+            "velociraptor-client-mac-{org}", "application/octet-stream"),
+}
+
+
+def org_client_config(org):
+    """An org's client config (YAML text), read from Velociraptor in root."""
+    from services import velo_org
+    org = velo_org.clean(org)
+    if not org:
+        raise ValueError("root's client config is /velociraptor/client.config.yaml")
+    with velo_org.root():
+        rows = _query(f"SELECT Name, _client_config FROM orgs() WHERE OrgId = '{org}'", timeout=30) or []
+    if not rows or not rows[0].get("_client_config"):
+        raise RuntimeError(f"Velociraptor has no org {org}")
+    return rows[0]["_client_config"], rows[0].get("Name") or org
+
+
+def _nonce(config_text):
+    import re
+    m = re.search(r"^\s*nonce:\s*(\S+)", config_text or "", re.M)
+    return m.group(1) if m else ""
+
+
+def build_org_installer(platform, org, out_dir):
+    """Repack `platform`'s installer with `org`'s client config into out_dir.
+    Returns (path, download name, mimetype). The result is read back and must
+    carry the org's nonce, or it raises: a wrong installer enrols hosts into
+    another org, which nobody notices until they are missing."""
+    import re
+    import uuid
+    if platform not in ORG_INSTALLER_SOURCES:
+        raise ValueError(f"no per-org build for {platform}")
+    src, flag, name, mime = ORG_INSTALLER_SOURCES[platform]
+    config, org_name = org_client_config(org)
+    want = _nonce(config)
+    tag = uuid.uuid4().hex[:12]
+    cfg, out = f"/tmp/intact-org-{tag}.config.yaml", f"/tmp/intact-org-{tag}{'.msi' if flag == '--msi' else ''}"
+    import subprocess
+    from config import VELOCIRAPTOR_CONTAINER
+    try:
+        w = subprocess.run(["docker", "exec", "-i", VELOCIRAPTOR_CONTAINER, "sh", "-c", f"umask 077; cat > {cfg}"],
+                           input=config.encode(), capture_output=True, timeout=30)
+        if w.returncode != 0:
+            raise RuntimeError(f"could not stage the org's client config: {w.stderr.decode()[:200]}")
+        r = _velo_exec(SERVER_BIN, "--nobanner", "config", "repack", flag, src, cfg, out, timeout=300)
+        blob = _velo_exec("cat", out, text=False, timeout=120).stdout
+        if r.returncode != 0 or not blob:
+            raise RuntimeError(f"repack of {src} failed: {(r.stderr or r.stdout or '')[-300:]}")
+        # Read back what was embedded. `--embedded_config` cannot read an MSI.
+        got = (_nonce(msi_config_text(blob)) if flag == "--msi" else
+               _nonce(_velo_exec(SERVER_BIN, "--nobanner", "--embedded_config", out,
+                                 "config", "show", timeout=60).stdout))
+    finally:
+        _velo_exec("rm", "-f", cfg, out)
+    if not want or got != want:
+        raise RuntimeError(f"the repacked {platform} installer does not carry org {org}'s config "
+                           f"(nonce {got or 'none'}, expected {want})")
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", org_name).strip("-") or org
+    path = _os.path.join(out_dir, name.format(org=safe))
+    with open(path, "wb") as fh:
+        fh.write(blob)
+    return path, _os.path.basename(path), mime
+
+
 def package_state():
     import json
     try:

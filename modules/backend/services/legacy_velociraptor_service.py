@@ -177,6 +177,26 @@ _LEGACY_CLIENT_FIELDS = {
 }
 
 
+def _client_config_bytes() -> bytes:
+    """The client config to embed: the selected Velociraptor org's (a client
+    enrols into the org whose nonce it carries), else root's file."""
+    from services import velo_org
+    if velo_org.current():
+        from services.velociraptor_clients import org_client_config
+        return org_client_config(velo_org.current())[0].encode()
+    result = subprocess.run(
+        ["docker", "exec", VELO_CONTAINER,
+         "cat", "/velociraptor/client.config.yaml"],
+        capture_output=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Could not read client.config.yaml from {VELO_CONTAINER}: "
+            f"{result.stderr.decode('utf-8', errors='replace')[:200]}"
+        )
+    return result.stdout
+
+
 def _fetch_client_config(out_path: str) -> None:
     """Pull /velociraptor/client.config.yaml out of the running velociraptor
     container and adapt it to the legacy schema.
@@ -193,19 +213,8 @@ def _fetch_client_config(out_path: str) -> None:
     modern server."""
     import yaml as _yaml
 
-    result = subprocess.run(
-        ["docker", "exec", VELO_CONTAINER,
-         "cat", "/velociraptor/client.config.yaml"],
-        capture_output=True, timeout=15,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Could not read client.config.yaml from {VELO_CONTAINER}: "
-            f"{result.stderr.decode('utf-8', errors='replace')[:200]}"
-        )
-
     try:
-        full_cfg = _yaml.safe_load(result.stdout) or {}
+        full_cfg = _yaml.safe_load(_client_config_bytes()) or {}
     except Exception as e:
         raise RuntimeError(f"client.config.yaml parse failed: {e}") from e
 
@@ -416,19 +425,14 @@ def build_modern_musl_linux_client(version: Optional[str] = None,
     out_path = os.path.join(work, f"velociraptor_client_musl_v{v}")
 
     # Pull modern client.config AS-IS (no field stripping). The modern
-    # binary accepts the modern config schema natively.
-    result = subprocess.run(
-        ["docker", "exec", VELO_CONTAINER,
-         "cat", "/velociraptor/client.config.yaml"],
-        capture_output=True, timeout=15,
-    )
-    if result.returncode != 0:
+    # binary accepts the modern config schema natively. The selected org's.
+    try:
+        cfg_bytes = _client_config_bytes()
+    except Exception as e:
         shutil.rmtree(work, ignore_errors=True)
-        return {"success": False, "error":
-            f"Could not read client.config.yaml from {VELO_CONTAINER}: "
-            f"{result.stderr.decode('utf-8', errors='replace')[:200]}"}
+        return {"success": False, "error": str(e)}
     with open(cfg_path, "wb") as f:
-        f.write(result.stdout)
+        f.write(cfg_bytes)
 
     # Repack: musl binary repacks itself with the config embedded.
     cmd = [musl_bin, "config", "repack",
