@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import uuid
+import zipfile
 
 DATA_DIR = "/app/data/case_files"
 MAX_BYTES = 100 * 1024 * 1024
@@ -36,6 +37,57 @@ _ID = re.compile(r"[0-9a-f]{12}")
 def _store():
     from . import store
     return store
+
+
+# data_type of a Velociraptor offline collection added as External data. It is not
+# parsed as logs: it goes through Velociraptor -> Offline collection -> Import's own
+# path (import into Velociraptor, then fuse), on a velociraptor_upload run.
+VELOCIRAPTOR = "velociraptor"
+
+
+def is_velociraptor_collection(path) -> bool:
+    """The collector's zip holds collection_context.json; an encrypted one wraps
+    everything in a top-level data.zip (offline_collector.importer reads both)."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = zf.namelist()
+    except Exception:                                      # noqa: BLE001 — not a zip
+        return False
+    return "data.zip" in names or any(n.rsplit("/", 1)[-1] == "collection_context.json" for n in names)
+
+
+def _start_velociraptor_import(case_id, item, path) -> str:
+    """Import the collection like Velociraptor -> Offline collection -> Import, in
+    the background, on a velociraptor_upload run of this case."""
+    import threading
+    from services.workflow_service import add_log_to_run, create_automation_run, update_run_status
+    rid = create_automation_run("velociraptor_upload", f"Velociraptor offline collection: {item['name']}",
+                                details={"filename": item["file_name"], "file_id": item["id"],
+                                         "size_bytes": item["size"], "use_in_analysis": True,
+                                         "added_from": "external_data"}, case_id=case_id)
+    # The importer deletes the file it is given. This one is the case's evidence
+    # copy (its SHA-256 is on record), so it gets a link of its own.
+    work_path = path + ".import"
+    try:
+        os.link(path, work_path)
+    except OSError:
+        shutil.copyfile(path, work_path)
+    add_log_to_run(rid, "Recognised in External data as a Velociraptor offline collection — "
+                        "importing it like Velociraptor → Offline collection → Import")
+    update_run_status(rid, "running", progress=10)
+
+    def work():
+        try:
+            from routes.upload_routes import import_offline_collection
+            import_offline_collection(work_path, item["file_name"], rid)
+        except Exception as e:                             # noqa: BLE001 — the run must end
+            add_log_to_run(rid, f"Import error: {e}", "error")
+            update_run_status(rid, "failed", error=str(e))
+        finally:
+            if os.path.exists(work_path):
+                os.remove(work_path)
+    threading.Thread(target=work, daemon=True).start()
+    return rid
 
 
 def _dir(case_id) -> str:
@@ -92,7 +144,7 @@ def with_log_status(items) -> list:
         x["log"] = {"status": run.get("status") or "missing", "error": run.get("error") or "",
                     **{k: det.get(k) for k in ("format", "via", "rows", "alerts", "first_ts", "last_ts",
                                                "data_type", "leftover_lines", "row_errors", "facts", "lines",
-                                               "description")}}
+                                               "description", "artifact_count")}}
     return items
 
 
@@ -180,15 +232,21 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
             "source_other": "" if link or source in SOURCES and source != "other" else _s(source_other, 100),
             "finding_id": link.get("finding_id", ""), "finding_title": link.get("finding_title", ""),
             "added_at": st._now_iso()}
-    if data_type:
+    if data_type and data_type != external_logs.NOTES and is_velociraptor_collection(dest):
+        # Whatever log type was picked: a Velociraptor collection is not a log export.
+        item.update(data_type=VELOCIRAPTOR, source="velociraptor", source_other="")
+        item["run_id"] = _start_velociraptor_import(case_id, item, dest)
+    elif data_type:
         item["data_type"] = data_type
         item["run_id"] = external_logs.start(case_id, item, data_type)
     st._mutate_list_field(case_id, "case_files", lambda v: (v if isinstance(v, list) else []) + [item])
     st._report_behind(case_id)
+    what = ("Velociraptor offline collection, importing" if item.get("data_type") == VELOCIRAPTOR
+            else "log data, parsing")
     st.log_case_event(case_id, "Evidence added", "info",
                       f"{name} — {fname} ({size:,} bytes) · SHA-256 {item['sha256']}"
                       + (f" · linked to {item['finding_title']}" if link else "")
-                      + (f" · log data, parsing in run {item['run_id']}" if data_type else ""))
+                      + (f" · {what} in run {item['run_id']}" if data_type else ""))
     return with_log_status([next(x for x in listing({"case_files": [item]}))])[0]
 
 
@@ -385,10 +443,14 @@ def with_data_sources(md, d, facts=None) -> str:
         if dt == NOTES:
             what = (f"{L.get('facts') or 0} fact(s) from {L.get('lines') or 0} line(s)"
                     if L.get("status") == "completed" else L.get("status") or "not read")
+        elif dt == VELOCIRAPTOR:
+            what = (f"{L.get('rows') or 0:,} row(s) from {L.get('artifact_count') or 0} artifact(s), "
+                    f"imported into Velociraptor" if L.get("status") == "completed" else L.get("status") or "not read")
         else:
             what = (f"{L.get('rows') or 0:,} row(s), {L.get('alerts') or 0:,} detection(s)"
                     if L.get("status") == "completed" else L.get("status") or "not read")
-        out.append(f"- **{x['name']}** — {DATA_TYPES.get(dt, 'Log data')} · {what}")
+        label = "Velociraptor offline collection" if dt == VELOCIRAPTOR else DATA_TYPES.get(dt, "Log data")
+        out.append(f"- **{x['name']}** — {label} · {what}")
         out.append(f"    - {x['file_name']} · SHA-256 `{x['sha256']}`" + (f" · {x['description']}" if x["description"] else ""))
     if facts:
         out += ["", "### Reported by the customer (not verified)", "",

@@ -1851,6 +1851,10 @@ def _cached_map(fp, det, load_rows, map_rows):
 def _contribution_for_run(run, log=None, refetch=False):
     atype, rid = run.get("automation_type"), run.get("run_id")
     det = run.get("details") or {}
+    # External data's "Use in analysis" switch, off. Log data and a Velociraptor
+    # collection added there (case_files) carry it; no other run sets it.
+    if det.get("use_in_analysis") is False:
+        return [], []
     try:
         if atype == "memory":
             return _memory_contribution(rid, det)

@@ -260,7 +260,7 @@ class Page(unittest.TestCase):
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
         parts = [re.search(r"const %s=.*?;\n" % c, src).group(0)
-                 for c in ("EV_LOGTYPES", "EV_VIA", "EV_SOURCES", "EV_NOTES", "DT_KINDS")] + \
+                 for c in ("EV_LOGTYPES", "EV_VIA", "EV_SOURCES", "EV_NOTES", "EV_VELO", "DT_KINDS")] + \
                 [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0)
                  for n in ("_evFields", "_evThumb", "_evItem", "renderEvidence", "renderData", "_dtFactsHtml",
                            "_evHostList", "_evPickers", "_evLog", "_evFollow", "_dtWindow")] + \
@@ -324,6 +324,18 @@ console.log(JSON.stringify([page, open, nomodel]));""")
         self.assertIn("Staging activity (L1-L40)", opened)
         self.assertIn("hide model description", opened)
         self.assertIn("No model configured", nomodel)
+
+    def test_a_velociraptor_collection_shows_as_one(self):
+        out = self.run_js("""
+const it=(id,log)=>({id,name:'HOST1 '+id,description:'d',file_name:'Collection-HOST1.zip',size:9,sha256:'ab'.repeat(32),kind:'other',ai:true,host:'',time:'',source:'velociraptor',source_other:'',finding_id:'',data_type:'velociraptor',log});
+curInfo={case_id:'c1', case_files:[it('0123456789c1',{status:'completed',rows:1200,artifact_count:7}),
+  it('0123456789c2',{status:'running'}), it('0123456789c3',{status:'failed',error:'not a collection'})]};
+renderData(curInfo); console.log(JSON.stringify(OUT));""")
+        self.assertEqual(3, out.count("Velociraptor offline collection</span>"))
+        self.assertIn("1,200 row(s) from 7 artifact(s) · imported into Velociraptor", out)
+        self.assertIn("importing into Velociraptor…", out)
+        self.assertIn("import failed: not a collection", out)
+        self.assertNotIn("Log data ·", out)
 
     def test_log_data_shows_how_it_was_read_and_its_switch(self):
         out = self.run_js("""

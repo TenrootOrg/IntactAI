@@ -259,6 +259,8 @@ def _fuse_offline_import(import_result, upload_run_id):
                                    f"({best[1]}/{len(imported)} imported artifacts)")
             except Exception:
                 pass
+        # What External data shows for a collection added there (case_files).
+        det["rows"], det["artifact_count"] = total_rows, len(artifacts or [])
         run["details"] = det
         try:
             save_workflow(run)
@@ -287,6 +289,40 @@ def _fuse_offline_import(import_result, upload_run_id):
         print(f"[OFFLINE IMPORT] fuse of imported data failed: {e}", flush=True)
         import traceback
         traceback.print_exc()
+
+
+def import_offline_collection(file_path, original_filename, run_id, password=None):
+    """Import a Velociraptor offline collection into Velociraptor and fuse it into
+    the run's case. Shared by Velociraptor -> Offline collection -> Import (the tus
+    hook) and Case Analysis -> External data (case_files), which recognises a
+    collection there. Owns the run's terminal state. Blocking: callers thread it."""
+    try:
+        from services.offline_collector.importer import import_results
+        # finalize=False: _fuse_offline_import below is part of
+        # THIS run and completes it. Without this the run showed
+        # COMPLETED, 100%, while the fusion was still inserting.
+        result = import_results(file_path, original_filename, run_id=run_id,
+                                password=password, finalize=False)
+        print(f"[TUS HOOK] Velociraptor import result: {result}", flush=True)
+        # Fuse the imported flow into the Case as a final step of THIS
+        # upload run — read the rows back and persist them for the
+        # fusion graph. No agent, no LLM (see _fuse_offline_import).
+        _fuse_offline_import(result, run_id)
+        # THE CALLER OWNS THE TERMINAL STATE. _fuse_offline_import
+        # returns early on several perfectly legitimate paths —
+        # nothing imported, no hunt or flow id, zero rows — and
+        # none of them set a status. That was harmless while
+        # import_results marked the run completed before it ran;
+        # with finalize=False it would strand the run at
+        # "running" forever. Skipped entirely if the fusion
+        # raises: the handler below marks it failed instead.
+        update_run_status(run_id, "completed", progress=100)
+    except Exception as e:
+        print(f"[TUS HOOK] Velociraptor import error: {e}", flush=True)
+        traceback.print_exc()
+        if run_id:
+            add_log_to_run(run_id, f"Import error: {str(e)}", "error")
+            update_run_status(run_id, "failed", error=str(e))
 
 
 @upload_bp.route('/api/uploads/hook', methods=['POST'])
@@ -658,36 +694,8 @@ def handle_tus_hook():
                 if run_id:
                     add_log_to_run(run_id, "Starting Velociraptor offline collector import...")
 
-                def run_velociraptor_import():
-                    try:
-                        from services.offline_collector.importer import import_results
-                        # finalize=False: _fuse_offline_import below is part of
-                        # THIS run and completes it. Without this the run showed
-                        # COMPLETED, 100%, while the fusion was still inserting.
-                        result = import_results(file_path, original_filename, run_id=run_id,
-                                                password=import_password, finalize=False)
-                        print(f"[TUS HOOK] Velociraptor import result: {result}", flush=True)
-                        # Fuse the imported flow into the Case as a final step of THIS
-                        # upload run — read the rows back and persist them for the
-                        # fusion graph. No agent, no LLM (see _fuse_offline_import).
-                        _fuse_offline_import(result, run_id)
-                        # THE CALLER OWNS THE TERMINAL STATE. _fuse_offline_import
-                        # returns early on several perfectly legitimate paths —
-                        # nothing imported, no hunt or flow id, zero rows — and
-                        # none of them set a status. That was harmless while
-                        # import_results marked the run completed before it ran;
-                        # with finalize=False it would strand the run at
-                        # "running" forever. Skipped entirely if the fusion
-                        # raises: the handler below marks it failed instead.
-                        update_run_status(run_id, "completed", progress=100)
-                    except Exception as e:
-                        print(f"[TUS HOOK] Velociraptor import error: {e}", flush=True)
-                        traceback.print_exc()
-                        if run_id:
-                            add_log_to_run(run_id, f"Import error: {str(e)}", "error")
-                            update_run_status(run_id, "failed", error=str(e))
-
-                thread = threading.Thread(target=run_velociraptor_import, daemon=True)
+                thread = threading.Thread(target=import_offline_collection, daemon=True,
+                                          args=(file_path, original_filename, run_id, import_password))
                 thread.start()
 
             elif purpose == 'case_import':
