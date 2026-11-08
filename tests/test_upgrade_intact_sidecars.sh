@@ -91,10 +91,10 @@ test_an_already_current_box_loads_nothing() {
 # The dashboard, and the upgrade dialog in it, are served by nginx. A new nginx
 # that does not come up must not leave the box with no UI: the old pins go back.
 # Fake docker: nginx answers 200 unless its .env names the image marked BAD.
-BAD=""; RECREATES=/dev/null
+BAD=""; RECREATES=/dev/null; RUNNING_NGINX=""
 fakedocker() {
     case "$1" in
-        inspect) echo running ;;
+        inspect) [[ "$*" == *Config.Image*intact_nginx* ]] && echo "$RUNNING_NGINX" || echo running ;;
         exec)    [[ -n "$BAD" && "$(_env nginx NGINX_VERSION)" == "$BAD" ]] && echo 502 || echo 200 ;;
         compose) echo x >> "$RECREATES" ;;
     esac
@@ -126,6 +126,51 @@ test_nothing_moved_means_nothing_probed() {
     _fresh; BAD="1.31.3-alpine"
     assert_true _intact_move_sidecars
     assert_true _intact_sidecars_or_revert
+}
+
+# A box installed before 20261021 has no modules/nginx/.env at all: nginx ran a
+# floating nginx:alpine and config.yaml had no versions.nginx. update_env_var
+# refuses a missing file, so the upgrade loaded 1.31.7 and left nginx on
+# nginx:alpine with "Env file not found". Observed 2026-10-28.
+_no_nginx_env() {
+    _fresh; BAD=""; RUNNING_NGINX="nginx:alpine"
+    rm -f "${SCRIPT_DIR}/modules/nginx/.env"
+    printf "versions:\n  backend_tusd: 'v2.10.0'\n" > "$CONFIG_FILE"
+    echo nginx:alpine >> "$STORE"
+}
+
+test_a_box_without_a_nginx_env_moves_nginx() {
+    _no_nginx_env
+    _ship intact-nginx-1.31.7-alpine.tar nginx:1.31.7-alpine
+    assert_true _intact_move_sidecars
+    assert_eq "$(_env nginx NGINX_VERSION)" "1.31.7-alpine"
+    assert_contains "$(cat "$CONFIG_FILE")" "nginx: '1.31.7-alpine'"
+    assert_contains "$(cat "$LOG_FILE")" "NGINX_VERSION: alpine -> 1.31.7-alpine" \
+        "the old version is the tag the running container had"
+    assert_not_contains "$(cat "$LOG_FILE")" "Env file not found"
+}
+
+test_a_created_nginx_env_reverts_to_the_image_that_served() {
+    _no_nginx_env; BAD="1.31.7-alpine"; RECREATES="$(mktemp)"
+    _ship intact-nginx-1.31.7-alpine.tar nginx:1.31.7-alpine
+    _intact_move_sidecars
+    assert_false _intact_sidecars_or_revert
+    assert_eq "$(_env nginx NGINX_VERSION)" "alpine" "compose then runs nginx:alpine, what served before"
+}
+
+test_a_created_nginx_env_is_removed_when_nothing_is_known_to_revert_to() {
+    _no_nginx_env; RUNNING_NGINX=""; BAD="1.31.7-alpine"; RECREATES="$(mktemp)"
+    _ship intact-nginx-1.31.7-alpine.tar nginx:1.31.7-alpine
+    _intact_move_sidecars
+    assert_false _intact_sidecars_or_revert
+    assert_false test -e "${SCRIPT_DIR}/modules/nginx/.env"
+}
+
+test_no_nginx_env_is_created_when_the_image_does_not_appear() {
+    _no_nginx_env
+    _ship intact-nginx-1.31.7-alpine.tar nginx:something-else
+    assert_false _intact_move_sidecars
+    assert_false test -e "${SCRIPT_DIR}/modules/nginx/.env"
 }
 
 run_all_tests; _rc=$?
