@@ -148,6 +148,44 @@ idx.setdefault("assets", {})["intact"] = {
 json.dump(idx, open(idx_path, "w"), indent=2)
 PY
 
+# The merged root manifest carries the RELEASE's checksums for every module's
+# files -- including the intact module this run just rebuilt from current
+# source. Left as downloaded, every changed file fails verification on the box
+# ("CHECKSUM MISMATCH ... 71 corrupt", 2026-11-08) and the upgrade refuses.
+# Re-merge: the other modules' entries stay, the intact module's come from the
+# fresh asset's own manifest (all `source/` files are the intact module's).
+if [ -f "$WORK/$TAG.manifest.json" ]; then
+    INTACT_MAN="$WORK/.intact-manifest.json"
+    if [ -f "$INTACT_ASSET.manifest.json" ]; then
+        cp "$INTACT_ASSET.manifest.json" "$INTACT_MAN"
+    else
+        tar -xzOf "$INTACT_ASSET" --wildcards '*/manifests/intact.json' > "$INTACT_MAN" 2>/dev/null || true
+    fi
+    if [ ! -s "$INTACT_MAN" ]; then
+        err "no manifest for the rebuilt intact asset -- the merged manifest cannot be fixed"
+        exit 1
+    fi
+    python3 - "$WORK/$TAG.manifest.json" "$INTACT_MAN" <<'PY'
+import json, sys
+merged_path, intact_path = sys.argv[1:3]
+m = json.load(open(merged_path))
+ic = (json.load(open(intact_path)).get("contents") or {})
+fresh = ic.get("sha256") or {}
+if not fresh:
+    sys.exit("the rebuilt intact asset's manifest lists no checksums")
+old = m.setdefault("contents", {}).get("sha256") or {}
+merged = {k: v for k, v in old.items() if not k.startswith("source/") and k not in fresh}
+merged.update(fresh)
+m["contents"]["sha256"] = merged
+if ic.get("transitive_versions"):
+    m["contents"].setdefault("transitive_versions", {}).update(ic["transitive_versions"])
+json.dump(m, open(merged_path, "w"), indent=2)
+print(f"[local-release] merged manifest: {len(old)} -> {len(merged)} checksummed files "
+      f"({len(fresh)} from the rebuilt intact asset)")
+PY
+    rm -f "$INTACT_MAN"
+fi
+
 # index.json FIRST, deliberately -- same reason prepare_package.sh does this:
 # the Import UI peeks at only the first few MB of the upload to show what's
 # in it, so the index needs to be in the opening KB, not wherever a bare `ls`
@@ -168,6 +206,11 @@ done < <(find "$WORK" -maxdepth 1 \( -name "$TAG-*.tar.gz" -o -name "$TAG-*.tar"
 # unwrapping altogether.
 WRAP_EXTRA=()
 [ -f "$WORK/$TAG.manifest.json" ] && WRAP_EXTRA+=("$TAG.manifest.json")
+# The engine's checksum too. The asset loop above takes only .tar/.tar.gz, so
+# it was dropped -- and the installed bootstrap extracts '*-engine.tar.gz' and
+# '*-engine.tar.gz.sha256' in ONE tar call, which fails when either is absent:
+# "could not obtain the upgrade engine" from a package that carried it.
+[ -f "$WORK/$TAG-engine.tar.gz.sha256" ] && WRAP_EXTRA+=("$TAG-engine.tar.gz.sha256")
 
 FINAL="$OUT_DIR/$TAG-package-local.tar"
 log "wrapping final package -> $FINAL"
