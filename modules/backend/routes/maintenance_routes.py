@@ -206,6 +206,9 @@ def download_velociraptor_tools():
                 )
                 if result.get('success'):
                     add_log_to_run(run_id, f"Tool download completed: {result.get('summary', '')}", "success")
+                    # The tools were registered in root; give every other org the same files.
+                    from services.velociraptor_clients import sync_tools_to_orgs
+                    sync_tools_to_orgs(log=lambda m: add_log_to_run(run_id, m, "info"))
                     update_run_status(run_id, "completed", progress=100)
                 else:
                     add_log_to_run(run_id, f"Tool download failed: {result.get('error', 'Unknown')}", "error")

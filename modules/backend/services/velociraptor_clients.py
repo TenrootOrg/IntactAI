@@ -67,7 +67,8 @@ def classify(rows, server_version, now=None):
                         "os": r.get("os") or "", "release": r.get("release") or "",
                         "labels": list(r.get("labels") or []),
                         "version": v, "state": state, "online": online,
-                        "last_seen": int(seen_s) if seen_s else None})
+                        "last_seen": int(seen_s) if seen_s else None,
+                        "org": r.get("org") or "root", "org_name": r.get("org_name") or "root"})
     order = {"behind": 0, "unknown": 1, "ahead": 2, "current": 3, "imported": 4}
     clients.sort(key=lambda c: (order[c["state"]], not c["online"], c["hostname"].lower()))
     return {"server_version": server_version or "", "clients": clients, "counts": counts,
@@ -89,13 +90,36 @@ def _query(vql, timeout=120):
         channel.close()
 
 
+def org_list():
+    """[(org id, name)] of every Velociraptor org, root first ('root' for root)."""
+    with velo_org.root():
+        rows = _query("SELECT OrgId AS id, Name AS name FROM orgs()", timeout=30) or []
+    orgs = [(r["id"], "root" if r["id"] == "root" else (r.get("name") or r["id"])) for r in rows if r.get("id")]
+    return sorted(orgs or [("root", "root")], key=lambda o: (o[0] != "root", o[1].lower()))
+
+
+def in_org(org):
+    """velo_org.use() for an org id as stored here ('root' / None = root)."""
+    return velo_org.use("" if org in (None, "", "root") else org)
+
+
 def client_versions():
-    """The running server's version and every client's, classified (offline ones too)."""
-    server = (_query("SELECT version.version AS v FROM config") or [{}])[0].get("v") or ""
-    rows = _query("SELECT client_id, os_info.hostname AS hostname, os_info.system AS os, "
-                  "os_info.release AS release, agent_information.version AS version, labels, last_seen_at, last_ip, "
-                  "agent_information.name AS agent, last_interrogate_flow_id AS interrogated "
-                  "FROM clients() WHERE client_id != 'server'")
+    """The running server's version and every client's, in EVERY org, classified
+    (offline ones too). Each client carries its org: the upgrade labels, hunts and
+    packages are per org (a client enrols into the org its config names).
+    ponytail: rows are keyed by client_id across orgs -- agent ids are random, so a
+    clash would take two orgs enrolling the same machine's writeback."""
+    with velo_org.root():
+        server = (_query("SELECT version.version AS v FROM config") or [{}])[0].get("v") or ""
+    rows = []
+    for org, name in org_list():
+        with in_org(org):
+            for r in _query("SELECT client_id, os_info.hostname AS hostname, os_info.system AS os, "
+                            "os_info.release AS release, agent_information.version AS version, labels, "
+                            "last_seen_at, last_ip, agent_information.name AS agent, "
+                            "last_interrogate_flow_id AS interrogated "
+                            "FROM clients() WHERE client_id != 'server'") or []:
+                rows.append({**r, "org": org, "org_name": name})
     return classify(rows, server)
 
 
@@ -104,10 +128,16 @@ def refresh_client_info():
     (and OS). Open for REFRESH_HUNT_DAYS so offline clients answer later.
     Returns the hunt id, or None."""
     from services.velociraptor_service import create_velociraptor_hunt
-    return create_velociraptor_hunt(
-        "Generic.Client.Info", description="Settings → Velociraptor: refresh client versions",
-        cpu_limit=50, expire_seconds=REFRESH_HUNT_DAYS * 86400, timeout_seconds=300,
-        max_rows=100000, max_bytes=50 * 1024 * 1024)
+    hunts = []
+    for org, _ in org_list():                    # a hunt reaches its own org's clients only
+        with in_org(org):
+            h = create_velociraptor_hunt(
+                "Generic.Client.Info", description="Settings → Velociraptor: refresh client versions",
+                cpu_limit=50, expire_seconds=REFRESH_HUNT_DAYS * 86400, timeout_seconds=300,
+                max_rows=100000, max_bytes=50 * 1024 * 1024)
+        if h:
+            hunts.append(h)
+    return ", ".join(hunts) or None
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +221,30 @@ def _nonce(config_text):
     return m.group(1) if m else ""
 
 
+def _repack_for_org(src, flag, config, out):
+    """Repack `src` (in the Velociraptor container) with `config` into `out` there;
+    return the nonce actually embedded. The caller removes `out`."""
+    import subprocess
+    import uuid
+    from config import VELOCIRAPTOR_CONTAINER
+    cfg = f"/tmp/intact-org-{uuid.uuid4().hex[:12]}.config.yaml"
+    try:
+        w = subprocess.run(["docker", "exec", "-i", VELOCIRAPTOR_CONTAINER, "sh", "-c", f"umask 077; cat > {cfg}"],
+                           input=config.encode(), capture_output=True, timeout=30)
+        if w.returncode != 0:
+            raise RuntimeError(f"could not stage the org's client config: {w.stderr.decode()[:200]}")
+        r = _velo_exec(SERVER_BIN, "--nobanner", "config", "repack", flag, src, cfg, out, timeout=300)
+        if r.returncode != 0:
+            raise RuntimeError(f"repack of {src} failed: {(r.stderr or r.stdout or '')[-300:]}")
+        # Read back what was embedded. `--embedded_config` cannot read an MSI.
+        if flag == "--msi":
+            return _nonce(msi_config_text(_velo_exec("cat", out, text=False, timeout=120).stdout))
+        return _nonce(_velo_exec(SERVER_BIN, "--nobanner", "--embedded_config", out,
+                                 "config", "show", timeout=60).stdout)
+    finally:
+        _velo_exec("rm", "-f", cfg)
+
+
 def build_org_installer(platform, org, out_dir):
     """Repack `platform`'s installer with `org`'s client config into out_dir.
     Returns (path, download name, mimetype). The result is read back and must
@@ -203,25 +257,14 @@ def build_org_installer(platform, org, out_dir):
     src, flag, name, mime = ORG_INSTALLER_SOURCES[platform]
     config, org_name = org_client_config(org)
     want = _nonce(config)
-    tag = uuid.uuid4().hex[:12]
-    cfg, out = f"/tmp/intact-org-{tag}.config.yaml", f"/tmp/intact-org-{tag}{'.msi' if flag == '--msi' else ''}"
-    import subprocess
-    from config import VELOCIRAPTOR_CONTAINER
+    out = f"/tmp/intact-org-{uuid.uuid4().hex[:12]}{'.msi' if flag == '--msi' else ''}"
     try:
-        w = subprocess.run(["docker", "exec", "-i", VELOCIRAPTOR_CONTAINER, "sh", "-c", f"umask 077; cat > {cfg}"],
-                           input=config.encode(), capture_output=True, timeout=30)
-        if w.returncode != 0:
-            raise RuntimeError(f"could not stage the org's client config: {w.stderr.decode()[:200]}")
-        r = _velo_exec(SERVER_BIN, "--nobanner", "config", "repack", flag, src, cfg, out, timeout=300)
+        got = _repack_for_org(src, flag, config, out)
         blob = _velo_exec("cat", out, text=False, timeout=120).stdout
-        if r.returncode != 0 or not blob:
-            raise RuntimeError(f"repack of {src} failed: {(r.stderr or r.stdout or '')[-300:]}")
-        # Read back what was embedded. `--embedded_config` cannot read an MSI.
-        got = (_nonce(msi_config_text(blob)) if flag == "--msi" else
-               _nonce(_velo_exec(SERVER_BIN, "--nobanner", "--embedded_config", out,
-                                 "config", "show", timeout=60).stdout))
+        if not blob:
+            raise RuntimeError(f"repack of {src} wrote nothing")
     finally:
-        _velo_exec("rm", "-f", cfg, out)
+        _velo_exec("rm", "-f", out)
     if not want or got != want:
         raise RuntimeError(f"the repacked {platform} installer does not carry org {org}'s config "
                            f"(nonce {got or 'none'}, expected {want})")
@@ -230,6 +273,95 @@ def build_org_installer(platform, org, out_dir):
     with open(path, "wb") as fh:
         fh.write(blob)
     return path, _os.path.basename(path), mime
+
+
+# ---------------------------------------------------------------------------
+# Tools in other orgs.
+#
+# Intact registers its tool files (Hayabusa, Autoruns, ...) for offline use in
+# root only -- at install, in the upgrade's tool refresh and from Settings. An org
+# made later has its own inventory: on 0.77.3 it got 36 of root's 45 locally
+# served tools, but e.g. Autorun_amd64 pointed at a file that was never written
+# and lastactivityview at nirsoft.net, so a collection there tried the internet,
+# which an air-gapped box does not have. All orgs share /var./public, so the fix
+# is to register root's own file in the org.
+# ---------------------------------------------------------------------------
+# Never copied: built from root's client config, they would move clients to root.
+ROOT_ONLY_TOOLS = {spec["tool"] for spec in OS_UPGRADE.values()} | {"VelociraptorWindows_x86MSI"}
+
+
+def _skip_tool(name):
+    """Root-only packages, and Velociraptor's own binaries: the server provides
+    those to every org itself (Server.Internal.ToolDependencies; the test org served
+    the right VelociraptorLinux untouched). Registering them in an org made its
+    inventory hang -- every later inventory() there timed out (0.77.3, 2026-11-08)."""
+    return name in ROOT_ONLY_TOOLS or name.startswith("Velociraptor")
+
+
+def _tool_defs():
+    # inventory() itself, NOT inventory_get() per tool: inventory_get materializes
+    # a tool that is not downloaded yet -- it fetched from the internet and the
+    # whole listing timed out at 120 s (0.77.3).
+    # A tool can have several entries (the artifact's version and an admin
+    # override): name -> [entries].
+    rows = _query("SELECT name, serve_locally, filestore_path, filename, hash FROM inventory()",
+                  timeout=120) or []
+    out = {}
+    for r in rows:
+        if r.get("name"):
+            out.setdefault(r["name"], []).append(r)
+    return out
+
+
+def sync_tools_to_orgs(orgs=None, log=print):
+    """Make every non-root org serve root's locally served tools from the same
+    file. Returns {org: [tools registered]}. Never raises: a tool it cannot copy
+    is logged and the rest go on."""
+    from services import velo_org
+    done = {}
+    try:
+        with velo_org.root():
+            if orgs is None:
+                orgs = [o["id"] for o in (_query("SELECT OrgId AS id FROM orgs()", timeout=30) or [])]
+            orgs = [o for o in (velo_org.clean(o) for o in orgs) if o]
+            if not orgs:
+                return done
+            defs = _tool_defs()
+        on_disk = set((_velo_exec("ls", "-1", "/var./public").stdout or "").split())
+        root = {}
+        for n, entries in defs.items():
+            served = [d for d in entries if d.get("serve_locally") and d.get("filestore_path") in on_disk]
+            if served and not _skip_tool(n):
+                root[n] = max(served, key=lambda d: bool(d.get("hash")))
+    except Exception as e:  # noqa: BLE001
+        log(f"[ORG-TOOLS] could not read root's tools: {e}")
+        return done
+    for org in orgs:
+        added = []
+        try:
+            with velo_org.use(org):
+                have = _tool_defs()
+                for name, r in sorted(root.items()):
+                    # Fine when any of its entries serves a file that exists (and is
+                    # root's, when root recorded a hash -- some, e.g. sigcheck, have none).
+                    if any(o.get("serve_locally") and o.get("filestore_path") in on_disk
+                           and (not r.get("hash") or o.get("hash") == r.get("hash"))
+                           for o in have.get(name) or []):
+                        continue
+                    try:
+                        fname = (r.get("filename") or name).replace("'", "")
+                        _query(f"SELECT inventory_add(tool='{name}', file='/var./public/{r['filestore_path']}', "
+                               f"accessor='file', filename='{fname}', serve_locally=TRUE) AS a FROM scope()",
+                               timeout=300)
+                        added.append(name)
+                    except Exception as e:  # noqa: BLE001
+                        log(f"[ORG-TOOLS] org {org}: could not register {name}: {e}")
+        except Exception as e:  # noqa: BLE001
+            log(f"[ORG-TOOLS] org {org}: {e}")
+        if added:
+            log(f"[ORG-TOOLS] org {org}: registered {len(added)} tool(s) from root: {', '.join(added)}")
+        done[org] = added
+    return done
 
 
 def package_state():
@@ -376,6 +508,37 @@ def _define_linux_artifact():
         channel.close()
     if "Intact.Client.Upgrade.Linux" not in out:
         raise RuntimeError(f"Velociraptor did not accept the Linux upgrade artifact ({out[:200]})")
+
+
+def prepare_org_packages(org, server, log=print):
+    """The upgrade packages for a non-root org: the server's plain MSI and Linux
+    binary repacked with THAT org's client config, read back (the org's nonce must
+    be embedded) and registered as the org's WindowsMSI / IntactVelociraptorLinux
+    tools -- the upgrade artifacts install those. Root's packages carry root's
+    config: installed on this org's clients they would move them into root.
+    Built on every run (a few seconds each); returns {"windows", "linux"} names."""
+    import uuid
+    config, org_name = org_client_config(org)
+    want = _nonce(config)
+    if not want:
+        raise RuntimeError(f"org {org} has no client nonce")
+    out = {}
+    for os_name, src, flag, ext in (("windows", WINDOWS_SOURCE, "--msi", ".msi"), ("linux", LINUX_SOURCE, "--exe", "")):
+        tmp = f"/tmp/intact-org-pkg-{uuid.uuid4().hex[:12]}{ext}"
+        try:
+            got = _repack_for_org(src, flag, config, tmp)
+            if got != want:
+                raise RuntimeError(f"the {os_name} package for org {org} carries nonce {got or 'none'}, "
+                                   f"not the org's")
+            sha = (_velo_exec("sha256sum", tmp).stdout.split() or [""])[0]
+            name = f"velociraptor-v{server}-{os_name}-amd64-intact-{org}{ext}"
+            with in_org(org):
+                _register_tool(OS_UPGRADE[os_name]["tool"], tmp, name, server, sha)
+        finally:
+            _velo_exec("rm", "-f", tmp)
+        out[os_name] = name
+        log(f"Org {org_name}: {os_name} package {name} built with the org's client config and registered")
+    return out
 
 
 @velo_org.in_root   # the client packages are root's (its client config)
@@ -535,7 +698,8 @@ def filter_clients(status, state=None, os=None, version=None, online=None, q=Non
             continue
         if online is not None and c["online"] != online:
             continue
-        if q and q not in c["hostname"].lower() and q not in c["client_id"].lower():
+        if q and q not in c["hostname"].lower() and q not in c["client_id"].lower() \
+                and q not in (c.get("org_name") or "").lower():
             continue
         if reason:
             key, _ = eligibility(c)
@@ -573,6 +737,8 @@ def sort_clients(rows, key="", desc=False):
     and never-seen clients always sort last."""
     if key == "host":
         k = lambda c: c["hostname"].lower()
+    elif key == "org":
+        k = lambda c: (c.get("org") != "root", (c.get("org_name") or "").lower(), c["hostname"].lower())
     elif key == "os":
         k = lambda c: (c["os"] or "~", c["hostname"].lower())
     elif key == "version":
@@ -683,7 +849,8 @@ def start_upgrade(stage, client_ids=None, label=None, limit=None, without_pilot=
                  "label": run_label,
                  "scope": {"label": label, "limit": limit},
                  "targets": [{"client_id": c["client_id"], "hostname": c["hostname"], "os": c["os"],
-                              "from": c["version"]} for c in targets],
+                              "from": c["version"], "org": c.get("org") or "root",
+                              "org_name": c.get("org_name") or "root"} for c in targets],
                  "watch_until": time.time() + WATCH[stage]["seconds"],
                  "upgraded": [], "failed": [], "pending": [c["client_id"] for c in targets]})
     if no_pilot:
@@ -693,7 +860,10 @@ def start_upgrade(stage, client_ids=None, label=None, limit=None, without_pilot=
     if len(refused) > 20:
         add_log_to_run(run_id, f"... and {len(refused) - 20} more skipped", "warning")
     update_run_status(run_id, "running", progress=1)
-    threading.Thread(target=_run_upgrade, args=(run_id,), daemon=True, name=f"velo-upgrade-{run_id}").start()
+    # The run covers every org and picks each one explicitly: start it in root,
+    # not in whatever org the page that clicked has selected.
+    with velo_org.root():
+        threading.Thread(target=_run_upgrade, args=(run_id,), daemon=True, name=f"velo-upgrade-{run_id}").start()
     return run_id
 
 
@@ -769,6 +939,27 @@ def _hunt_failures(hunt_id, os_name):
                            f"artifact='{art}')"), os_name)
 
 
+def _hunt_key(org, os_name):
+    """A run's hunts are {key: hunt id}: 'windows' for root (as runs from before
+    orgs stored them), 'OFM5G:windows' for another org."""
+    return os_name if org in (None, "", "root") else f"{org}:{os_name}"
+
+
+def _hunt_org_os(key):
+    org, _, os_name = key.rpartition(":")
+    return (org or "root"), os_name
+
+
+def _label_by_org(ids, label, op, by_id):
+    """_label_clients in each client's own org (a label is per org)."""
+    groups = {}
+    for cid in ids:
+        groups.setdefault((by_id.get(cid) or {}).get("org") or "root", []).append(cid)
+    for org, group in groups.items():
+        with in_org(org):
+            _label_clients(group, label, op)
+
+
 def _label_clients(ids, label, op):
     """One VQL per 200 clients, not one per client."""
     from services.vql_safety import is_valid_client_id
@@ -820,25 +1011,36 @@ def _run_upgrade(run_id):
                     "the first upgrade with this server version")
                 pkg = prepare_packages(log=log)      # raises (run failed, nothing pushed) unless verified
             update_run_status(run_id, "running", progress=3, details={"package_id": pkg["package_id"]})
-            _label_clients(list(by_id), label, "set")
+            # Clients of other orgs get packages carrying THEIR org's client config
+            # (root's would move them into root), and their own labels and hunts:
+            # labels, hunts and tools are all per org.
+            orgs = sorted({t.get("org") or "root" for t in by_id.values()}, key=lambda o: o != "root")
+            for org in orgs:
+                if org != "root":
+                    prepare_org_packages(org, server, log=log)
+            _label_by_org(list(by_id), label, "set", by_id)
             # ONE window for every OS hunt (they run at once), sized by all the MB.
             sleep = w["sleep"] if stage == "pilot" else spread_seconds(
                 1, sum(OS_UPGRADE[t["os"]]["mb"] for t in by_id.values()))
-            for os_name in sorted({t["os"] for t in by_id.values()}):
-                art = OS_UPGRADE[os_name]["artifact"]
-                hunt = (_query(
-                    "LET h = hunt(description='Settings → Velociraptor: upgrade clients to " + server
-                    + f" ({stage}, {os_name})', artifacts='{art}', "
-                    f"spec=dict(`{art}`=dict(SleepDuration='{sleep}')), include_labels=['{label}'], "
-                    # the per-client timeout covers the random wait plus the install
-                    f"expires=now() + {w['open_days'] * 86400}, timeout={sleep + 900}, cpu_limit=50) "
-                    "SELECT HuntId FROM h") or [{}])[0].get("HuntId")
-                if not hunt:
-                    raise RuntimeError(f"Velociraptor did not create the {os_name} upgrade hunt")
-                hunts[os_name] = hunt
-                log(f"Hunt {hunt}: {art} on {sum(t['os'] == os_name for t in by_id.values())} {os_name} "
-                    f"client(s) labelled {label}; downloads spread over {sleep // 60} min; open "
-                    f"{w['open_days']} day(s) (offline clients upgrade when next seen)")
+            for org in orgs:
+                mine = [t for t in by_id.values() if (t.get("org") or "root") == org]
+                where = "" if org == "root" else f" in org {mine[0].get('org_name') or org}"
+                for os_name in sorted({t["os"] for t in mine}):
+                    art = OS_UPGRADE[os_name]["artifact"]
+                    with in_org(org):
+                        hunt = (_query(
+                            "LET h = hunt(description='Settings → Velociraptor: upgrade clients to " + server
+                            + f" ({stage}, {os_name})', artifacts='{art}', "
+                            f"spec=dict(`{art}`=dict(SleepDuration='{sleep}')), include_labels=['{label}'], "
+                            # the per-client timeout covers the random wait plus the install
+                            f"expires=now() + {w['open_days'] * 86400}, timeout={sleep + 900}, cpu_limit=50) "
+                            "SELECT HuntId FROM h") or [{}])[0].get("HuntId")
+                    if not hunt:
+                        raise RuntimeError(f"Velociraptor did not create the {os_name} upgrade hunt{where}")
+                    hunts[_hunt_key(org, os_name)] = hunt
+                    log(f"Hunt {hunt}{where}: {art} on {sum(t['os'] == os_name for t in mine)} {os_name} "
+                        f"client(s) labelled {label}; downloads spread over {sleep // 60} min; open "
+                        f"{w['open_days']} day(s) (offline clients upgrade when next seen)")
             update_run_status(run_id, "running", progress=5, details={"hunts": hunts})
             log(f"Following the upgrade: every {w['every'] // 60 or w['every']} "
                 f"{'min' if w['every'] >= 60 else 's'} for {w['seconds'] // 3600 or w['seconds'] // 60} "
@@ -860,7 +1062,7 @@ def _run_upgrade(run_id):
                         and version_key(rows[cid]["version"]) == version_key(server)]
             done.update(new_done)
             if new_done:
-                _label_clients(new_done, label, "remove")
+                _label_by_org(new_done, label, "remove", by_id)
                 if stage == "pilot" or len(new_done) <= 5:
                     for cid in new_done:
                         t = by_id[cid]
@@ -868,8 +1070,11 @@ def _run_upgrade(run_id):
                 else:
                     log(f"+{len(new_done)} upgraded: {_names([by_id[c] for c in new_done])}", "success")
             new_failed, pend = {}, set(pending())
-            for os_name, hunt in hunts.items():
-                for cid, why in _hunt_failures(hunt, os_name).items():
+            for key, hunt in hunts.items():
+                org, os_name = _hunt_org_os(key)
+                with in_org(org):
+                    found = _hunt_failures(hunt, os_name)
+                for cid, why in found.items():
                     if cid in pend:
                         new_failed[cid] = why
             failed.update(new_failed)
@@ -882,7 +1087,9 @@ def _run_upgrade(run_id):
                 for cid in pending():
                     if (rows.get(cid) or {}).get("online") and time.time() - asked.get(cid, 0) > 120:
                         # the server may keep the old version on record after a restart
-                        _query(f"SELECT collect_client(client_id='{cid}', artifacts='Generic.Client.Info') FROM scope()")
+                        with in_org(by_id[cid].get("org")):
+                            _query(f"SELECT collect_client(client_id='{cid}', artifacts='Generic.Client.Info') "
+                                   "FROM scope()")
                         asked[cid] = time.time()
             left = pending()
             offline = [cid for cid in left if not (rows.get(cid) or {}).get("online")]
@@ -897,9 +1104,10 @@ def _run_upgrade(run_id):
         if cancel.is_set():
             # Stopped by the operator (request_stop already marked the run cancelled):
             # stop the hunts and unlabel who is left, so nothing else is upgraded.
-            for hunt in hunts.values():
-                _query(f"SELECT hunt_update(hunt_id='{hunt}', stop=TRUE) FROM scope()")
-            _label_clients(pending(), label, "remove")
+            for key, hunt in hunts.items():
+                with in_org(_hunt_org_os(key)[0]):
+                    _query(f"SELECT hunt_update(hunt_id='{hunt}', stop=TRUE) FROM scope()")
+            _label_by_org(pending(), label, "remove", by_id)
             # force: the run is already 'cancelled', and this IS the work the stop did
             add_log_to_run(run_id, f"Stopped: {len(done)} of {total} upgraded, {len(failed)} failed; hunts "
                                    f"stopped -- the {len(pending())} not upgraded yet will not be",
@@ -918,7 +1126,7 @@ def _run_upgrade(run_id):
         if len(stuck) > 20:
             log(f"... and {len(stuck) - 20} more still on the old version", "error")
         bad = sorted(failed | set(stuck))
-        _label_clients(bad, label, "remove")   # offline ones keep it: the open hunt reaches them through it
+        _label_by_org(bad, label, "remove", by_id)   # offline ones keep it: the open hunt reaches them through it
         status = "failed" if bad or (stage == "pilot" and left) else "completed"
         update_run_status(run_id, status, progress=100,
                           error=(f"{len(bad)} client(s) did not upgrade" if bad else None),

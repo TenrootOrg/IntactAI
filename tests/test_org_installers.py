@@ -68,5 +68,40 @@ class OrgInstaller(unittest.TestCase):
         self.assertTrue(any(c[:2] == ("rm", "-f") for c in self.calls))
 
 
+class ToolSync(unittest.TestCase):
+    """Root's locally served tools are registered in every other org that cannot
+    serve the same file -- never Velociraptor's own binaries (registering those
+    hung the org's inventory) or the root-only upgrade packages."""
+
+    def test_only_missing_tools_are_registered(self):
+        from unittest import mock
+        from services import velo_org
+        root = [{"name": "Hayabusa", "serve_locally": True, "filestore_path": "aa", "filename": "h.zip", "hash": "H1"},
+                {"name": "sigcheck", "serve_locally": True, "filestore_path": "bb", "filename": "s.exe", "hash": ""},
+                {"name": "Autoruns", "serve_locally": True, "filestore_path": "cc", "filename": "a.exe", "hash": "A1"},
+                {"name": "VelociraptorLinux", "serve_locally": True, "filestore_path": "dd", "hash": "V1"},
+                {"name": "WindowsMSI", "serve_locally": True, "filestore_path": "ee", "hash": "W1"},
+                {"name": "NotHere", "serve_locally": True, "filestore_path": "zz", "hash": "N1"}]
+        org = [{"name": "Hayabusa", "serve_locally": True, "filestore_path": "aa2", "hash": "H1"},   # fine
+               {"name": "sigcheck", "serve_locally": True, "filestore_path": "bb2", "hash": "S9"},   # root has no hash: fine
+               {"name": "Autoruns", "serve_locally": True, "filestore_path": "gone", "hash": "A1"}]  # file missing
+        added = []
+
+        def query(vql, timeout=120):
+            if "FROM orgs()" in vql:
+                return [{"id": "root"}, {"id": "OFM5G"}]
+            if "FROM inventory()" in vql:
+                return org if velo_org.current() else root
+            if "inventory_add" in vql:
+                added.append((velo_org.current(), vql.split("tool='")[1].split("'")[0]))
+            return []
+        disk = types.SimpleNamespace(stdout="aa\nbb\ncc\ndd\nee\naa2\nbb2\n")
+        with mock.patch.object(vc, "_query", side_effect=query), \
+             mock.patch.object(vc, "_velo_exec", return_value=disk):
+            out = vc.sync_tools_to_orgs(log=lambda m: None)
+        self.assertEqual([("OFM5G", "Autoruns")], added)
+        self.assertEqual({"OFM5G": ["Autoruns"]}, out)
+
+
 if __name__ == "__main__":
     unittest.main()

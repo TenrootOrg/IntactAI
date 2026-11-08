@@ -593,6 +593,15 @@ def run_startup_initialization():
         print(f"[STARTUP] Offline collector initialization error: {e}", flush=True)
         initialization_status["offline_collectors"] = False
 
+    # Every other Velociraptor org serves root's tools from the same files. On
+    # each start, so an upgrade's tool refresh (root only) reaches every org.
+    if velo_ready:
+        try:
+            from services.velociraptor_clients import sync_tools_to_orgs
+            sync_tools_to_orgs(log=lambda m: print(f"[STARTUP] {m}", flush=True))
+        except Exception as e:
+            print(f"[STARTUP] Org tool sync error: {e}", flush=True)
+
     initialization_status["in_progress"] = False
     print("[STARTUP] Background initialization complete", flush=True)
 

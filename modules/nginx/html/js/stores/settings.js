@@ -320,7 +320,8 @@ document.addEventListener('alpine:init', () => {
                 who = this.veloPilot.hostname;
             } else {
                 body = { stage };
-                who = (this.veloUpgrade.eligible || 0).toLocaleString() + ' client(s)';
+                // One run: every Velociraptor org's clients, each with its own org's package.
+                who = (this.veloUpgrade.eligible || 0).toLocaleString() + ' client(s) in every Velociraptor org';
                 // The pilot is optional: it is the cheap way to catch a bad package on
                 // one machine, not a lock on the fleet. Without one, say so once.
                 if (!this.veloUpgrade.pilot_passed) {

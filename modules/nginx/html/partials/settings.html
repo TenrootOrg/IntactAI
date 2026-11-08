@@ -1598,7 +1598,7 @@
                                 <table class="w-full text-sm">
                                     <!-- click a header to sort (on the server: it covers the whole fleet, not this page) -->
                                     <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-700">
-                                        <template x-for="[k, label] in [['host','Host'],['os','OS'],['version','Version'],['upgrade','Upgrade'],['last_seen','Last seen']]" :key="k">
+                                        <template x-for="[k, label] in [['host','Host'],['org','Org'],['os','OS'],['version','Version'],['upgrade','Upgrade'],['last_seen','Last seen']]" :key="k">
                                             <th class="py-1.5 cursor-pointer hover:text-gray-300 whitespace-nowrap" @click="$store.settings.setVeloSort(k)"
                                                 :title="'Sort by ' + label.toLowerCase()">
                                                 <span x-text="label"></span><span x-show="$store.settings.veloFilter.sort === k" x-text="$store.settings.veloFilter.dir === 'desc' ? ' ▼' : ' ▲'"></span>
@@ -1608,6 +1608,7 @@
                                         <template x-for="c in $store.settings.velo.clients" :key="c.client_id">
                                             <tr class="border-b border-gray-700/50">
                                                 <td class="py-1.5 text-white" :title="c.client_id + (c.release ? ' — ' + c.release : '')" x-text="c.hostname || c.client_id"></td>
+                                                <td class="text-gray-400" :title="'Velociraptor org ' + (c.org || 'root')" x-text="c.org_name || 'root'"></td>
                                                 <td class="text-gray-400" x-text="c.os || '—'"></td>
                                                 <td class="text-gray-300" x-text="c.version || '—'"></td>
                                                 <td :title="c.upgrade.text"
@@ -1646,7 +1647,7 @@
                                                              :class="c.ok ? 'cursor-pointer hover:bg-gray-700 text-white' : 'cursor-not-allowed text-gray-500'"
                                                              :title="c.ok ? '' : c.why" class="px-2 py-1">
                                                             <span x-text="c.hostname"></span>
-                                                            <span class="text-xs" x-text="c.ok ? ' — ' + c.os + ' ' + c.version : ' — ' + c.why.split(' -- ')[0]"></span>
+                                                            <span class="text-xs" x-text="(c.org_name && c.org_name !== 'root' ? ' [' + c.org_name + ']' : '') + (c.ok ? ' — ' + c.os + ' ' + c.version : ' — ' + c.why.split(' -- ')[0])"></span>
                                                         </div>
                                                     </template>
                                                 </div>
@@ -1662,7 +1663,7 @@
                                             <p x-show="!$store.settings.veloUpgrade.eligible_online" class="text-xs text-gray-500 mt-2">No online client can be upgraded right now.</p>
                                         </div>
                                         <div class="bg-gray-900 rounded p-3">
-                                            <div class="text-gray-300 font-medium mb-2">2. Upgrade all <span class="text-xs text-gray-500">— every other client behind the server; followed 24 h, checked hourly</span></div>
+                                            <div class="text-gray-300 font-medium mb-2">2. Upgrade all <span class="text-xs text-gray-500">— every other client behind the server, in every Velociraptor org (each gets a package with its own org's config), in one run; followed 24 h, checked hourly</span></div>
                                             <div class="flex items-center gap-2 mt-2">
                                                 <span class="text-xs text-gray-500" x-text="$store.settings.veloWaveText()"></span>
                                                 <button @click="$store.settings.startVeloUpgrade('rest')" class="ml-auto bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1 rounded text-white"

@@ -740,6 +740,11 @@ def list_orgs():
                 _query(f"SELECT user_grant(user='{me}', roles=['administrator', 'api'], "
                        f"orgs={json.dumps(missing)}) AS g FROM scope()", timeout=30)
                 print(f"[ORGS] granted {me} access to org(s) {missing}", flush=True)
+                # A new org: give it root's tools too (a minute or two of copies,
+                # so not in this request).
+                from services.velociraptor_clients import sync_tools_to_orgs
+                threading.Thread(target=sync_tools_to_orgs, args=(missing,), daemon=True,
+                                 name="org-tool-sync").start()
     except Exception as e:
         print(f"[ORGS] ✗ Error listing orgs: {e}", flush=True)
         return jsonify({"orgs": [{"id": "root", "name": "root"}], "current": velo_org.current() or "root",
@@ -1236,7 +1241,7 @@ def velociraptor_client_versions():
     thousands is never sent, nor rendered, whole). Filters: state, os, version,
     online (1/0), q (host or client id), reason ('eligible' or a not-upgradable
     key), hide=unknown (collapse clients that never reported a version);
-    sort (host / os / version / upgrade / last_seen) + dir=desc; page (1-based),
+    sort (host / org / os / version / upgrade / last_seen) + dir=desc; page (1-based),
     per (<= 200). Each row carries upgrade={code, text} for the table's column."""
     from services.velociraptor_clients import (client_versions, summarize, filter_clients, sort_clients,
                                                upgrade_status)
@@ -1291,7 +1296,8 @@ def velociraptor_pilot_candidates():
         if key is None and not c["online"]:
             key, why = "offline", "offline -- a pilot must be online"
         rows.append({"client_id": c["client_id"], "hostname": c["hostname"], "os": c["os"],
-                     "version": c["version"], "ok": key is None, "why": why})
+                     "version": c["version"], "org_name": c.get("org_name") or "root",
+                     "ok": key is None, "why": why})
     rows.sort(key=lambda r: (not r["ok"], r["hostname"].lower()))
     return jsonify({"clients": rows[:20]})
 
@@ -1349,14 +1355,9 @@ def velociraptor_upgrade_state():
 def velociraptor_upgrade_clients():
     """Start the pilot (stage=pilot, optional client_ids) or a wave of the rest (stage=rest,
     optional label = a Velociraptor label, limit = at most this many clients)."""
+    # One run covers the clients of every Velociraptor org, each upgraded with a
+    # package carrying its own org's client config (velociraptor_clients).
     from services.velociraptor_clients import start_upgrade
-    from services import velo_org
-    if velo_org.current():
-        # The upgrade package is built from root's client config: installed on
-        # another org's clients it would move them into root.
-        return jsonify({"error": "Client upgrade works only in the root Velociraptor org: the "
-                                 "upgrade package carries root's client config and would move "
-                                 "this org's clients into root. Switch the org to root."}), 400
     body = request.get_json(silent=True) or {}
     try:
         run_id = start_upgrade(body.get("stage"), body.get("client_ids") or None,
