@@ -998,10 +998,27 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
     stays consistent. We deliberately do NOT `rm -rf` the datastore folders:
     that leaves dangling flow/hunt index entries and can corrupt the store.
 
-    - flows:      flow_delete() for every flow of every client. This is the
-                  bulk of the datastore (clients/<id>/artifacts/).
+    - flows:      the delete_flow() PLUGIN for every flow of every client. This
+                  is the bulk of the datastore (clients/<id>/artifacts/).
+    - server flows: delete_flow() for the server artifacts' flows (the GUI's
+                  Server Artifacts list: every offline import, cancel-hunt,
+                  delete-client...), except the Server.Utils.Create* builders
+                  (Intact registers the client MSI from its flow's uploads) and
+                  anything still running.
     - monitoring: file_store_delete() over clients/<id>/monitoring[_logs]/**.
-    - hunts:      hunt_delete(really_do_it=true) for every hunt.
+    - hunts:      the hunt_delete() PLUGIN for every hunt.
+
+    delete_flow and hunt_delete are PLUGINS (SELECT * FROM delete_flow(...)).
+    This used to call them as functions -- flow_delete(...) AS deleted, a name
+    the server does not have, and hunt_delete(...) in a SELECT list. Both
+    returned null for every row and deleted nothing, while the rows were
+    counted as "deleted": a purge reported N hunts and flows gone and the GUI
+    still listed every one (QA 2026-11-08; checked on Velociraptor 0.77.3, whose
+    help() lists both as plugins). A len(list={ SELECT * FROM delete_flow(..) })
+    sub-query does not work either: it returned 0 and the flow stayed. Only
+    foreach(row=<ids>, query={ SELECT * FROM <plugin>(..) }) deleted (tested on
+    the box), and its rows are the deleted FILES, so GROUP BY the id counts
+    flows / hunts.
 
     Client identity (client_info/) and registration are untouched, so clients
     stay enrolled and visible — only their collected data is removed. The
@@ -1018,7 +1035,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         else:
             print(f"[VELO-PURGE] [{level}] {msg}", flush=True)
 
-    out = {"hunts": 0, "flows": 0, "data_files": 0, "monitoring": 0, "errors": []}
+    out = {"hunts": 0, "flows": 0, "server_flows": 0, "data_files": 0, "monitoring": 0, "errors": []}
     channel = setup_velociraptor_connection()
     if not channel:
         log("Could not connect to Velociraptor — skipping data purge", "warning")
@@ -1053,9 +1070,10 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
             try:
                 log("Deleting hunts…")
                 n = _count(
-                    "SELECT hunt_id, "
-                    "hunt_delete(hunt_id=hunt_id, really_do_it=true) AS deleted "
-                    "FROM hunts()",
+                    "SELECT hunt_id FROM foreach("
+                    "row={ SELECT hunt_id FROM hunts() }, "
+                    "query={ SELECT hunt_id, * FROM hunt_delete(hunt_id=hunt_id, really_do_it=TRUE) }) "
+                    "GROUP BY hunt_id",
                     timeout=600,
                 )
                 out["hunts"] = n
@@ -1064,16 +1082,18 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
                 log(f"Hunt deletion error: {e}", "warning")
                 out["errors"].append(f"hunts: {e}")
 
-        # 2. Live flows — flow_delete removes the collection metadata + files.
+        # 2. Live flows — delete_flow removes the collection metadata + files.
         if delete_flows:
             try:
                 log("Deleting tracked flows…")
                 n = _count(
-                    "SELECT client_id, session_id, "
-                    "flow_delete(client_id=client_id, flow_id=session_id, really_do_it=true) AS deleted "
-                    "FROM foreach("
+                    "SELECT client_id, session_id FROM foreach("
                     "row={ SELECT client_id FROM clients() WHERE client_id != 'server' }, "
-                    "query={ SELECT client_id, session_id FROM flows(client_id=client_id) }, "
+                    "query={ SELECT client_id, session_id FROM foreach("
+                    "row={ SELECT session_id FROM flows(client_id=client_id) }, "
+                    "query={ SELECT client_id, session_id, * FROM delete_flow(client_id=client_id, "
+                    "flow_id=session_id, really_do_it=TRUE, sync=TRUE) }) "
+                    "GROUP BY session_id }, "
                     "workers=10)",
                     timeout=1800,
                 )
@@ -1082,6 +1102,32 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
             except Exception as e:
                 log(f"Flow deletion error: {e}", "warning")
                 out["errors"].append(f"flows: {e}")
+
+            # 2b. Server-artifact flows. The query above skips the 'server'
+            #     pseudo-client, so every offline import (Server.Utils.
+            #     ImportCollection) and every cancel-hunt / delete-client stayed
+            #     in the GUI's Server Artifacts list after a purge (QA
+            #     2026-11-08; 71 of 79 on the dev box). Kept: the
+            #     Server.Utils.Create* builders -- the client MSI is registered
+            #     from its CreateMSI flow's uploads, so deleting that flow would
+            #     break the upgrade package -- and anything still running.
+            try:
+                log("Deleting server-artifact flows (imports, cancel-hunt, delete-client…)…")
+                n = _count(
+                    "SELECT session_id FROM foreach("
+                    "row={ SELECT session_id FROM flows(client_id='server') "
+                    "WHERE state != 'RUNNING' "
+                    "AND NOT join(array=request.artifacts, sep=',') =~ '^Server.Utils.Create' }, "
+                    "query={ SELECT session_id, * FROM delete_flow(client_id='server', "
+                    "flow_id=session_id, really_do_it=TRUE, sync=TRUE) }) "
+                    "GROUP BY session_id",
+                    timeout=600,
+                )
+                out["server_flows"] = n
+                log(f"Deleted {out['server_flows']} server-artifact flow(s)", "success")
+            except Exception as e:
+                log(f"Server flow deletion error: {e}", "warning")
+                out["errors"].append(f"server flows: {e}")
 
             # 3. Residual collected-result files. Hunt/flow deletion above
             #    leaves ORPHANED result files when the originating hunt/flow

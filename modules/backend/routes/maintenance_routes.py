@@ -607,6 +607,7 @@ def run_system_purge():
                     add_log_to_run(
                         run_id,
                         f"  Deleted {res.get('hunts', 0)} hunts, {res.get('flows', 0)} flows, "
+                        f"{res.get('server_flows', 0)} server-artifact flows, "
                         f"{res.get('data_files', 0)} result files, "
                         f"{res.get('monitoring', 0)} monitoring files",
                         "info",
