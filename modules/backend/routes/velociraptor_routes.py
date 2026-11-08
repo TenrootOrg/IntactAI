@@ -987,6 +987,7 @@ def _adopt_worker(run_id, kind, ident):
     from services.fusion.mappers.agentic import SUPPORTED_ARTIFACTS
     from services.workflow_service import mutate_run_details
 
+    empty_reads = []
     try:
         update_run_status(run_id, "running", progress=5)
         add_log_to_run(run_id, f"=== Adopting Velociraptor {kind} {ident} ===")
@@ -1008,13 +1009,14 @@ def _adopt_worker(run_id, kind, ident):
             # bought nothing but a field to get wrong.
             results, artifacts, client_info = get_existing_collection_results(
                 run_id, flow_id=ident,
-                only_artifacts=SUPPORTED_ARTIFACTS, progress_log=True)
+                only_artifacts=SUPPORTED_ARTIFACTS, progress_log=True,
+                empty_reads=empty_reads)
 
         update_run_status(run_id, "running", progress=85)
         total = sum(len(rows) for rows in (results or {}).values())
         if total == 0:
-            # TWO different failures wear the same zero, and telling them apart
-            # decides where the operator goes looking. `client_info` is populated
+            # THREE different failures wear the same zero, and telling them
+            # apart decides where the operator goes looking. `client_info` is populated
             # only once the collection has actually been LOCATED on a client, so
             # empty means the id isn't on this server at all — a typo — while
             # populated means it is there and simply carries nothing fusion maps.
@@ -1029,6 +1031,20 @@ def _adopt_worker(run_id, kind, ident):
                 where = ", ".join(sorted(
                     ((info or {}).get("hostname") or cid)
                     for cid, info in client_info.items())) or "the server"
+            if client_info and empty_reads:
+                # The third: the allowlist admitted
+                # sources and every one of them read 0 rows. F.DB1MDRE9ATTNA was
+                # such a flow -- really empty -- and the run blamed the allowlist.
+                # A read the server refused looks the same from here, except it
+                # carries VQL log lines, so they are quoted when present.
+                said = [ln for _, lines in empty_reads for ln in lines]
+                msg = (f"{ident} was found on {where} with {len(empty_reads)} "
+                       f"supported artifact source(s), but every one returned 0 "
+                       f"rows — the collection holds nothing to add to the case.")
+                if said:
+                    msg += (f" Velociraptor also logged: "
+                            f"{' | '.join(dict.fromkeys(said))}")
+            elif client_info:
                 msg = (f"{ident} was found on {where}, but none of its artifacts "
                        f"are ones fusion maps — nothing was added to the case. "
                        f"The log above lists what it collected and what was "
