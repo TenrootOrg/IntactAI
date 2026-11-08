@@ -246,14 +246,27 @@ main() {
     # -------------------------------------------------------------------------
     # Timeline Processing (Plaso/Timesketch) - Air-gap Support
     # -------------------------------------------------------------------------
-    local timesketch_enabled
+    # Plaso follows its OWN flag. It used to be pulled whenever TimeSketch was on,
+    # so `modules.plaso.enabled: false` still downloaded it (QA 2026-11-08). The
+    # upgrade plan and --package installs already honoured the flag.
+    local timesketch_enabled plaso_enabled
     timesketch_enabled=$(read_config "['modules']['timesketch']['enabled']")
-    if is_enabled "$timesketch_enabled"; then
+    plaso_enabled=$(read_config "['modules']['plaso']['enabled']")
+    # A config from before modules.plaso existed has no key: keep the old rule.
+    [[ -z "$plaso_enabled" ]] && plaso_enabled="$timesketch_enabled"
+    if is_enabled "$plaso_enabled"; then
         pull_plaso_image
-        pull_python_alpine_image
+        pull_python_alpine_image        # only Plaso's decompression step uses it
+    else
+        log_info "Plaso pre-download: SKIPPED (Plaso disabled)"
+        if is_enabled "$timesketch_enabled"; then
+            log_warn "TimeSketch is enabled but Plaso is not: timeline imports need Plaso. Set modules.plaso.enabled: true to install it."
+        fi
+    fi
+    if is_enabled "$timesketch_enabled"; then
         download_timesketch_packages
     else
-        log_info "Timeline Processing pre-downloads: SKIPPED (TimeSketch disabled)"
+        log_info "TimeSketch pre-downloads: SKIPPED (TimeSketch disabled)"
     fi
 
     # -------------------------------------------------------------------------
