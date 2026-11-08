@@ -1332,7 +1332,7 @@ def _purge_velociraptor(run_id):
     enrolled. Delegates to the gRPC-API purge in velociraptor_service — that
     runs in the proper server context (the old `docker exec … query` CLI saw 0
     hunts and 0 clients, so it silently freed nothing) and uses Velociraptor's
-    own flow_delete/hunt_delete/file_store_delete primitives instead of an
+    own delete_flow/hunt_delete plugins and file_store_delete instead of an
     index-corrupting `rm -rf`."""
     from services.velociraptor_service import purge_velociraptor_data
 
@@ -1347,6 +1347,7 @@ def _purge_velociraptor(run_id):
     after = _scan_velociraptor()[0]
     detail = (
         f"{res.get('hunts', 0)} hunts, {res.get('flows', 0)} flows, "
+        f"{res.get('server_flows', 0)} server-artifact flows, "
         f"{res.get('data_files', 0)} result files, "
         f"{res.get('monitoring', 0)} monitoring files"
     )

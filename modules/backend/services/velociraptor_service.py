@@ -1069,14 +1069,18 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         if delete_hunts:
             try:
                 log("Deleting hunts…")
-                n = _count(
+                # Counted as hunts before minus after: hunt_delete yields a row
+                # per deleted FILE, and a hunt no client ran yields none, so it
+                # was deleted but reported as 0 (checked on the box 2026-11-08).
+                listed = "SELECT hunt_id FROM hunts()"
+                before = _count(listed, timeout=120)
+                _count(
                     "SELECT hunt_id FROM foreach("
                     "row={ SELECT hunt_id FROM hunts() }, "
-                    "query={ SELECT hunt_id, * FROM hunt_delete(hunt_id=hunt_id, really_do_it=TRUE) }) "
-                    "GROUP BY hunt_id",
+                    "query={ SELECT hunt_id, * FROM hunt_delete(hunt_id=hunt_id, really_do_it=TRUE) })",
                     timeout=600,
                 )
-                out["hunts"] = n
+                out["hunts"] = max(0, before - _count(listed, timeout=120))
                 log(f"Deleted {out['hunts']} hunt(s)", "success")
             except Exception as e:
                 log(f"Hunt deletion error: {e}", "warning")

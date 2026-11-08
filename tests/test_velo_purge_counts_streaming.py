@@ -19,17 +19,23 @@ import _optional_deps  # noqa: F401,E402
 from services import velociraptor_service as vs  # noqa: E402
 
 # Order matters: the server-flow query also says delete_flow, so it is matched first.
-BATCHES = {"FROM hunts()": [3], "FROM flows(client_id='server')": [71], "FROM delete_flow": [10000, 10000, 2],
+BATCHES = {"hunt_delete": [40], "FROM flows(client_id='server')": [71], "FROM delete_flow": [10000, 10000, 2],
            "/artifacts/**": [7], "/monitoring/**": [0, 5]}
 
 
 class Stub:
     def __init__(self):
         self.max_rows = []
+        # hunts before, then after, the delete: 3 hunts gone, though hunt_delete
+        # streamed 40 file rows (and none at all for a hunt no client ran).
+        self.hunts_listed = [3, 0]
 
     def Query(self, req, timeout=None):
         self.max_rows.append(req.max_row)
         vql = req.Query[0].VQL
+        if vql == "SELECT hunt_id FROM hunts()":
+            yield types.SimpleNamespace(Response=json.dumps([{"hunt_id": "H"}] * self.hunts_listed.pop(0)))
+            return
         key = next(k for k in BATCHES if k in vql)
         for n in BATCHES[key]:
             yield types.SimpleNamespace(Response=json.dumps([{"deleted": True}] * n))
@@ -55,7 +61,7 @@ class PurgeCountsWhileStreaming(unittest.TestCase):
 
     def test_batches_are_bounded(self):
         vs.purge_velociraptor_data(logger=lambda *a: None)
-        self.assertEqual(5, len(self.stub.max_rows))
+        self.assertEqual(7, len(self.stub.max_rows))
         self.assertTrue(all(m <= 10000 for m in self.stub.max_rows), self.stub.max_rows)
 
 
