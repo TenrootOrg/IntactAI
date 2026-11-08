@@ -100,6 +100,23 @@ def _load_cloud_config():
     return DEFAULT_CLOUD_CONFIG.copy()
 
 
+def _stored_online_key(incoming, stored):
+    """The real key behind a masked online_llm.api_key.
+
+    OpenRouter's is the key shared with Settings -> Timesketch
+    (services/openrouter_key.py). Any other provider's is the stored one only
+    while the stored config is for that same provider: the field holds ONE key,
+    so "keep the saved key" after switching provider (the old one still masked
+    on screen) used to hand an OpenRouter key to Anthropic, or the reverse.
+    """
+    provider = (incoming or {}).get('provider')
+    if provider == 'openrouter':
+        from services import openrouter_key
+        return openrouter_key.get()
+    stored = stored or {}
+    return stored.get('api_key', '') if stored.get('provider') == provider else ''
+
+
 def _save_cloud_config(config):
     """Save cloud configuration to database."""
     from services.file_storage_service import save_cloud_config
@@ -556,7 +573,7 @@ def test_llm_connection():
     on = agentic.get('online_llm') or {}
     if isinstance(on.get('api_key'), str) and on['api_key'].startswith(_API_KEY_MASK_PREFIX):
         on = dict(on)
-        on['api_key'] = ((cfg.get('agentic') or {}).get('online_llm') or {}).get('api_key', '')
+        on['api_key'] = _stored_online_key(on, (cfg.get('agentic') or {}).get('online_llm'))
         agentic['online_llm'] = on
 
     # One token is all this needs; the saved cap would otherwise let a test
@@ -653,7 +670,8 @@ def test_decision_model():
     if isinstance((agentic.get('online_llm') or {}).get('api_key'), str) and \
             agentic['online_llm']['api_key'].startswith(_API_KEY_MASK_PREFIX):
         agentic['online_llm'] = {**agentic['online_llm'],
-                                 'api_key': ((_load_config().get('agentic') or {}).get('online_llm') or {}).get('api_key', '')}
+                                 'api_key': _stored_online_key(agentic['online_llm'],
+                                                               (_load_config().get('agentic') or {}).get('online_llm'))}
     p = dm.provider(agentic)
     info = {"provider": p, "model": dm.model_name(agentic), "cloud": dm.PROVIDERS[p]["cloud"]}
     why = dm.why_inactive(agentic)
@@ -701,6 +719,17 @@ def get_config():
     """Get frontend configuration."""
     try:
         config = _load_config()
+        # OpenRouter's key is shared with Settings -> Timesketch. One entered
+        # only there is shown here too (masked below), flagged: it is not in
+        # force for Case Analysis until this section is saved -- see
+        # services/openrouter_key.py for why it is not filled in silently.
+        on = config.get('agentic', {}).get('online_llm', {})
+        if on.get('provider') == 'openrouter' and not on.get('api_key'):
+            from services import openrouter_key
+            shared = openrouter_key.get()
+            if shared:
+                on['api_key'] = shared
+                on['key_from_shared'] = True
         # Mask the LLM key the same way GET /api/config/cloud already masks
         # its cloud secrets — this endpoint previously returned it unmasked.
         if config.get('agentic', {}).get('online_llm', {}).get('api_key'):
@@ -729,11 +758,19 @@ def save_config():
 
         # Don't overwrite the real key with the masked placeholder GET
         # returns — same protection /api/config/cloud's PUT already has.
-        key = config.get('agentic', {}).get('online_llm', {}).get('api_key', '')
-        if key.startswith('••••'):
-            existing = _load_config()
-            config['agentic']['online_llm']['api_key'] = \
-                existing.get('agentic', {}).get('online_llm', {}).get('api_key', '')
+        on = (config.get('agentic') or {}).get('online_llm')
+        if isinstance(on, dict):
+            on.pop('key_from_shared', None)          # a GET-only hint, never stored
+            if on.get('provider') == 'openrouter':
+                # The key shared with Settings -> Timesketch: masked keeps it,
+                # anything else replaces it for both sections. A body without
+                # the field is an API caller not touching it, not "remove it".
+                from services import openrouter_key
+                on['api_key'] = openrouter_key.save(on['api_key'] if 'api_key' in on
+                                                    else _API_KEY_MASK_PREFIX)
+            elif str(on.get('api_key') or '').startswith(_API_KEY_MASK_PREFIX):
+                on['api_key'] = _stored_online_key(
+                    on, (_load_config().get('agentic') or {}).get('online_llm'))
         # A Settings page cached from before the rename (2026-10) sends a `jev`
         # block filled with its own defaults (enabled: false): saving it would switch
         # the decision model off. Ignore it and keep what is stored. (An export

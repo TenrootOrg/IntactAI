@@ -804,7 +804,14 @@
                                 </div>
                                 <div x-show="!$store.settings.isSubscription()">
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>
-                                    <input type="password" x-model="$store.settings.config.agentic.online_llm.api_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-...">
+                                    <input type="password" x-model="$store.settings.config.agentic.online_llm.api_key"
+                                           @input="$store.settings.shareOpenrouterKey($event.target.value, 'agentic')"
+                                           class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-...">
+                                    <!-- One OpenRouter key for Agentic and Timesketch (services/openrouter_key.py). -->
+                                    <p x-show="$store.settings.config.agentic.online_llm.provider === 'openrouter'" class="text-[11px] text-gray-500 mt-1">
+                                        Shared with Settings → Timesketch.
+                                        <span x-show="$store.settings.config.agentic.online_llm.key_from_shared" class="text-yellow-600">Entered there — Save here to use it for Case Analysis.</span>
+                                    </p>
                                 </div>
                                 <div x-show="$store.settings.isSubscription()" class="text-xs text-gray-500 self-end pb-1.5">
                                     No API key needed — this provider signs in with your
@@ -1301,7 +1308,13 @@
                             <div class="grid grid-cols-2 gap-3">
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>
-                                    <input type="password" x-model="$store.settings.config.timesketch.openrouter_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-or-v1-...">
+                                    <input type="password" x-model="$store.settings.config.timesketch.openrouter_key"
+                                           @input="$store.settings.shareOpenrouterKey($event.target.value, 'timesketch')"
+                                           class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-or-v1-...">
+                                    <p class="text-[11px] text-gray-500 mt-1">
+                                        Shared with Settings → Agentic; the model is set separately.
+                                        <span x-show="$store.settings.config.timesketch.openrouter_key_pending" class="text-yellow-600">Timesketch is not using this key yet — save here to apply it (restarts Timesketch).</span>
+                                    </p>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Model</label>
@@ -1467,8 +1480,30 @@
                             OpenRouter and LiteLLM are IntactAI add-on providers installed into the Timesketch container at start-up.
                         </p>
 
-                        <!-- Save Button -->
+                        <!-- Save Button. Test and Update catalog are Agentic's own: the same
+                             one-token probe (/api/config/llm/test) and the same refresh of every
+                             catalog, OpenRouter's included, which both tabs' pickers read. -->
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button x-show="$store.settings.config.timesketch.llm_mode === 'openrouter'"
+                                    @click="$store.settings.testTimesketchLlm()"
+                                    :disabled="$store.settings.tsLlmTesting"
+                                    class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-2 rounded text-sm font-medium mr-2"
+                                    title="Sends a 1-token prompt to the OpenRouter model on screen — proves the key and the model id, at effectively zero cost.">
+                                <span x-text="$store.settings.tsLlmTesting ? 'Testing…' : 'Test connection'"></span>
+                            </button>
+                            <template x-if="$store.settings.tsLlmTestResult && $store.settings.config.timesketch.llm_mode === 'openrouter'">
+                                <span class="text-sm mr-3 self-center"
+                                      :class="$store.settings.tsLlmTestResult.success ? 'text-green-400' : 'text-red-400'"
+                                      :title="$store.settings.tsLlmTestResult.detail || ''"
+                                      x-text="$store.settings.tsLlmTestResult.success
+                                        ? ('OK — replied in ' + $store.settings.tsLlmTestResult.elapsed_ms + 'ms')
+                                        : ('Failed: ' + ($store.settings.tsLlmTestResult.error || 'unknown'))"></span>
+                            </template>
+                            <button @click="$store.settings.updateCatalog()" :disabled="$store.settings.updatingCatalog"
+                                    class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-2 rounded text-sm font-medium mr-2"
+                                    title="Fetch the current model lists (OpenRouter's included — the same catalog Settings → Agentic uses). The existing catalog is kept if the fetch fails or returns nothing.">
+                                <span x-text="$store.settings.updatingCatalog ? 'Updating…' : 'Update catalog'"></span>
+                            </button>
                             <button @click="$store.settings.saveTimesketch()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
                                 <span x-text="$store.settings.saving ? 'Saving...' : 'Save Timesketch Settings'"></span>
                             </button>

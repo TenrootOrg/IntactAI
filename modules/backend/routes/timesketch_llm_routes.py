@@ -21,6 +21,9 @@ from services import (
     add_log_to_run,
     update_run_status
 )
+from services import openrouter_key
+# Moved to the service so the shared-key adoption reads the conf the same way.
+from services.openrouter_key import read_conf_value as _read_conf_value
 
 timesketch_llm_bp = Blueprint('timesketch_llm', __name__)
 
@@ -63,21 +66,9 @@ _TS_PROVIDERS = {
     )),
 }
 
-DEFAULT_LLM_MODE = 'google'
-
-
-def _read_conf_value(content, ts_provider, conf_key):
-    """Pull one provider field out of timesketch.conf, '' if absent.
-
-    Same shape as the aistudio/ollama scrapes this file has always used:
-    find the provider dict, then the key inside it. `[^}]*` keeps the match
-    from wandering past the end of that provider's block.
-    """
-    match = re.search(
-        r"'" + re.escape(ts_provider) + r"':\s*\{[^}]*'"
-        + re.escape(conf_key) + r"':\s*'([^']*)'",
-        content)
-    return match.group(1) if match else ''
+# OpenRouter, like Settings -> Agentic: one key there now serves both sections
+# (services/openrouter_key.py). Was 'google'.
+DEFAULT_LLM_MODE = 'openrouter'
 
 
 def _mask_secret(value):
@@ -99,6 +90,11 @@ def _detect_llm_mode(content):
     if match:
         for mode, (ts_provider, _fields) in _TS_PROVIDERS.items():
             if ts_provider == match.group(1):
+                # aistudio with no key is the shipped template, not a choice
+                # anyone saved (a keyless Google config does nothing), so it
+                # shows the default. A saved provider is always kept.
+                if ts_provider == 'aistudio' and not _read_conf_value(content, 'aistudio', 'api_key'):
+                    return DEFAULT_LLM_MODE
                 return mode
     return DEFAULT_LLM_MODE
 
@@ -243,7 +239,18 @@ def get_timesketch_llm_config():
             config['llm_mode'] = _detect_llm_mode(content)
 
         except FileNotFoundError:
+            content = ''
             print(f"[TIMESKETCH] Config file not found: {TIMESKETCH_CONFIG_PATH}", flush=True)
+
+        # The OpenRouter key is the one shared with Settings -> Agentic, not
+        # only what this file holds: a key entered there has to show up here.
+        shared = openrouter_key.get()
+        config['openrouter_key'] = _mask_secret(shared)
+        # True while Timesketch is not running on that key yet: the file is
+        # only rewritten (and Timesketch restarted) by a save on this tab.
+        in_force = (_read_conf_value(content, 'openrouter', 'api_key')
+                    if re.search(r"'nl2q':\s*\{\s*'openrouter'", content) else '')
+        config['openrouter_key_pending'] = bool(shared) and in_force != shared
 
         return jsonify(config)
 
@@ -519,6 +526,13 @@ def update_timesketch_llm_config():
                          f"Expected one of: {', '.join(sorted(_TS_PROVIDERS))}."
             }), 400
         data['llm_mode'] = llm_mode
+
+        # Resolved here, not in the worker: the shared key (Settings ->
+        # Agentic sees it too) must be stored before this returns, and a
+        # masked key must become the shared one rather than this file's old one.
+        if llm_mode == 'openrouter':
+            data['openrouter_key'] = openrouter_key.save(data.get('openrouter_key'),
+                                                         from_timesketch=True)
 
         _ts_provider, _fields = _TS_PROVIDERS[llm_mode]
 

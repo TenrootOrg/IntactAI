@@ -18,7 +18,10 @@ document.addEventListener('alpine:init', () => {
                 decision_model: { enabled: false, mode: '', provider: 'openrouter', model: 'jev-latest', url: '', context_tokens: 0, min_confidence: 0.2, api_key: '', uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true, injection: true, chat_confidence: true, scopes: true, compromise: true, report: true } }
             },
             timesketch: {
-                llm_mode: 'google',
+                // OpenRouter by default, like Agentic: the two share one key
+                // (services/openrouter_key.py). Must match DEFAULT_LLM_MODE in
+                // routes/timesketch_llm_routes.py.
+                llm_mode: 'openrouter',
                 google_ai_key: '',
                 google_ai_model: 'gemini-2.5-flash',
                 ollama_url: 'http://localhost:11434',
@@ -27,6 +30,7 @@ document.addEventListener('alpine:init', () => {
                 // installs into the Timesketch container at start-up — see
                 // modules/timesketch/llm_providers/README.md.
                 openrouter_key: '',
+                openrouter_key_pending: false,
                 openrouter_model: 'anthropic/claude-3.5-sonnet',
                 litellm_url: '',
                 litellm_model: '',
@@ -55,6 +59,11 @@ document.addEventListener('alpine:init', () => {
         offlineModelsError: '',
         llmTesting: false,
         llmTestResult: null,
+        tsLlmTesting: false,
+        tsLlmTestResult: null,
+        // The online provider + (masked) key as last loaded/saved, so switching
+        // the provider away and back in the picker gives the saved key back.
+        _savedOnline: {},
         velo: null,
         veloLoading: false,
         veloRefreshing: false,
@@ -111,12 +120,15 @@ document.addEventListener('alpine:init', () => {
                 if (tsResponse.ok) {
                     const tsData = await tsResponse.json();
                     this.config.timesketch = {
-                        llm_mode: tsData.llm_mode || 'google',
+                        llm_mode: tsData.llm_mode || 'openrouter',
                         google_ai_key: tsData.google_ai_key || '',
                         google_ai_model: tsData.google_ai_model || 'gemini-2.5-flash',
                         ollama_url: tsData.ollama_url || '',
                         ollama_model: tsData.ollama_model || '',
+                        // The OpenRouter key shared with Agentic (masked);
+                        // listed here or this page would drop the flag.
                         openrouter_key: tsData.openrouter_key || '',
+                        openrouter_key_pending: !!tsData.openrouter_key_pending,
                         openrouter_model: tsData.openrouter_model || 'anthropic/claude-3.5-sonnet',
                         litellm_url: tsData.litellm_url || '',
                         litellm_model: tsData.litellm_model || '',
@@ -135,6 +147,7 @@ document.addEventListener('alpine:init', () => {
                     };
                 }
 
+                this._savedOnline = { ...this.config.agentic.online_llm };
                 window.currentConfig = this.config;
 
                 // If the saved provider is a subscription (CLI) one, begin the
@@ -483,6 +496,11 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Agentic settings saved', 'success');
+                    // The shared OpenRouter key is in force here now; Timesketch
+                    // may now be behind it (its tab says so).
+                    this.config.agentic.online_llm.key_from_shared = false;
+                    this._savedOnline = { ...this.config.agentic.online_llm };
+                    this._refreshTimesketchKey();
                     // Deliberately does NOT touch Case Analysis. Reloading it made
                     // saving a model kick a report generation on every case whose
                     // report was a template — minutes of model time and real tokens
@@ -579,6 +597,11 @@ document.addEventListener('alpine:init', () => {
                                  'success');
                 window.dispatchEvent(new CustomEvent('llm-catalog-refreshed',
                     { detail: { provider: this.config.agentic?.online_llm?.provider } }));
+                // Settings -> Timesketch reads the same OpenRouter catalog, whatever
+                // Agentic's provider is: tell its model picker too.
+                if (this.config.agentic?.online_llm?.provider !== 'openrouter') {
+                    window.dispatchEvent(new CustomEvent('llm-catalog-refreshed', { detail: { provider: 'openrouter' } }));
+                }
                 this._refreshCaseAnalysis();
             } else {
                 this.showMessage('No catalog could be updated — previous lists kept. '
@@ -605,6 +628,59 @@ document.addEventListener('alpine:init', () => {
             } catch (e) { /* cross-origin or not loaded — nothing to refresh */ }
         },
 
+        // Agentic and Timesketch share ONE OpenRouter key (the models stay
+        // separate). Typing it in either field shows it in the other at once,
+        // not only after a save and a reload -- the QA ticket was exactly
+        // "entered it in Agentic, Timesketch asked for it again".
+        shareOpenrouterKey(value, from) {
+            const on = this.config.agentic.online_llm;
+            if (from === 'agentic' && on.provider !== 'openrouter') return;   // another vendor's key
+            this.config.timesketch.openrouter_key = value;
+            if (on.provider === 'openrouter') on.api_key = value;
+        },
+
+        // The key an online provider should show when picked: OpenRouter's is
+        // the shared one; another provider's is the saved key only if it was
+        // saved for that provider (the backend applies the same rule to a
+        // masked key, so what is shown is what Save keeps).
+        _onlineKeyFor(provider) {
+            if (provider === 'openrouter') return this.config.timesketch.openrouter_key || '';
+            return this._savedOnline.provider === provider ? (this._savedOnline.api_key || '') : '';
+        },
+
+        async _refreshTimesketchKey() {
+            try {
+                const r = await fetch('/api/timesketch/config/llm');
+                if (!r.ok) return;
+                const d = await r.json();
+                this.config.timesketch.openrouter_key = d.openrouter_key || '';
+                this.config.timesketch.openrouter_key_pending = !!d.openrouter_key_pending;
+            } catch (e) { /* the tab shows the last value; a reload fixes it */ }
+        },
+
+        // Settings -> Timesketch's Test: the same one-token probe as Agentic's
+        // (/api/config/llm/test), pointed at this tab's OpenRouter key and model.
+        // OpenRouter only -- the backend calls the provider itself, and the other
+        // Timesketch providers are addressed from inside the Timesketch container.
+        async testTimesketchLlm() {
+            if (this.tsLlmTesting) return;
+            const ts = this.config.timesketch;
+            this.tsLlmTesting = true;
+            this.tsLlmTestResult = null;
+            try {
+                const r = await fetch('/api/config/llm/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agentic: { llm_mode: 'online',
+                        online_llm: { provider: 'openrouter', api_key: ts.openrouter_key, model: ts.openrouter_model } } }),
+                });
+                this.tsLlmTestResult = await r.json();
+            } catch (e) {
+                this.tsLlmTestResult = { success: false, error: e.message };
+            }
+            this.tsLlmTesting = false;
+        },
+
         async saveTimesketch() {
             this.saving = true;
             try {
@@ -616,6 +692,7 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Timesketch settings saved - containers restarting...', 'success');
+                    if (this.config.timesketch.llm_mode === 'openrouter') this.config.timesketch.openrouter_key_pending = false;
                     // Same fire-and-forget catalog refresh saveAgentic() does, so
                     // the model combobox on this tab works for an operator who has
                     // never opened Agentic. The OpenRouter catalog is shared and
@@ -2157,6 +2234,10 @@ document.addEventListener('alpine:init', () => {
             // Route name mapping: the UI uses `claude` but the catalog
             // route is `/api/config/anthropic/models` — translate.
             const provider = this.config.agentic.online_llm.provider;
+            // A masked (or empty) key belonged to the provider picked before; show
+            // this one's instead. A key the operator typed is left alone.
+            const k = this.config.agentic.online_llm.api_key || '';
+            if (!k || k.startsWith('••••')) this.config.agentic.online_llm.api_key = this._onlineKeyFor(provider);
 
             // Subscription providers have no model catalog endpoint (there is no
             // key to enumerate models with), so skip the fetch entirely — it

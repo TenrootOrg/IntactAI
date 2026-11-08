@@ -107,6 +107,11 @@ def test_openrouter_models():
         key = (ol.get("api_key") if (ol.get("provider") or "") == "openrouter" else "") \
             or (dmc.get("api_key") if (dmc.get("provider") or "openrouter") == "openrouter" else "")
         if not key:
+            # The OpenRouter key shared with Settings -> Timesketch, so its
+            # "Update catalog" button tests models on a Timesketch-only key.
+            from services import openrouter_key
+            key = openrouter_key.get()
+        if not key:
             return jsonify({"success": False, "error": "needs an OpenRouter API key (the AI model's or the decision model's)"}), 400
         if model_probe.busy():
             return jsonify({"success": False, "error": "a catalog test is already running — "
