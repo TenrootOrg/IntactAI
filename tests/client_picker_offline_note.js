@@ -38,9 +38,17 @@ const NOTE = 'Offline now: the scheduled run will not work for this client unles
   assert(other.includes('ONLINE-PC') && !other.includes('OFFLINE-PC'), 'default stays online only');
   assert(!other.includes('Offline now'), 'no note without the option');
 
+  // no clients at all: the scheduler says why nothing can be picked, in red
+  const EMPTY = 'No Velociraptor clients exist yet';
+  const none = await build({ onlineOnly: false, offlineNote: NOTE, emptyNote: EMPTY + ', online or offline.' }, []);
+  assert(none.includes(EMPTY) && none.includes('color:#f87171'), 'empty fleet: a red explanation');
+  const noneDefault = await build({}, []);
+  assert(noneDefault.includes('No clients found') && !noneDefault.includes(EMPTY), 'other pickers keep their text');
+
   // and the scheduler really is built with those settings
   const sj = fs.readFileSync(path.join(process.argv[2], 'modules/nginx/html/js/scheduler.js'), 'utf8');
   const ctor = sj.slice(sj.indexOf("const schedulerClientManager = new ClientManager("));
   assert(/onlineOnly:\s*false/.test(ctor.slice(0, 400)) && ctor.slice(0, 400).includes(NOTE), 'scheduler options');
+  assert(/emptyNote:\s*SCHEDULE_NO_CLIENTS/.test(ctor.slice(0, 400)), 'scheduler empty-fleet note');
   console.log('ok');
 })().catch(e => { console.error(e.message); process.exit(1); });

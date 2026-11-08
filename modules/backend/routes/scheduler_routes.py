@@ -20,6 +20,12 @@ from services.scheduler_service import (
 
 scheduler_bp = Blueprint('scheduler', __name__)
 
+# Schedule types that run on chosen clients (Velociraptor Hunt and AWS are
+# environment-wide). Without a client such a schedule fires and does nothing.
+CLIENT_TYPES = ("agentic", "timesketch", "memory")
+NO_CLIENT_ERROR = ("Choose at least one client, online or offline: this schedule type runs "
+                   "on the clients you pick.")
+
 
 @scheduler_bp.route('/api/scheduler/jobs', methods=['GET'])
 def get_jobs():
@@ -103,6 +109,8 @@ def create_job():
         client_ids, _cid_err = validate_client_ids_list(data.get('client_ids'))
         if _cid_err:
             return jsonify({"error": _cid_err}), 400
+        if blueprint_type in CLIENT_TYPES and not client_ids:
+            return jsonify({"error": NO_CLIENT_ERROR}), 400
         description = data.get('description', '')
         report_types = data.get('report_types', ['technical'])
         anonymize_data = data.get('anonymize_data', False)
@@ -205,6 +213,12 @@ def update_job(job_id):
             if _cid_err:
                 return jsonify({"error": _cid_err}), 400
             data['client_ids'] = cleaned
+        # An edit may not leave a client-targeted schedule with no client (the
+        # type is the edit's, else the stored job's).
+        if 'client_ids' in data and not data['client_ids']:
+            kind = data.get('blueprint_type') or (get_scheduled_job(job_id) or {}).get('blueprint_type')
+            if kind in CLIENT_TYPES:
+                return jsonify({"error": NO_CLIENT_ERROR}), 400
 
         # CREATE enforces >= 1; UPDATE fed this straight into the scheduler
         # trigger. A zero or negative interval is not an injection, just a job

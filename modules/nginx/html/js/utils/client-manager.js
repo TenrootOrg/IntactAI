@@ -48,6 +48,8 @@ class ClientManager {
         // Shown in red on every offline row when set (the scheduler: a client can be
         // offline when the schedule is made and online when it runs, or not).
         this.offlineNote = options.offlineNote || '';
+        // Shown in red instead of "No clients found" when the fleet is empty.
+        this.emptyNote = options.emptyNote || '';
         this.activeOs = new Set();
         this.activeLabels = new Set();
         this.search = '';
@@ -183,7 +185,9 @@ class ClientManager {
         this._renderFacetBar();
 
         if (this._clients.length === 0) {
-            container.innerHTML = '<p class="text-sm text-gray-500">No clients found</p>';
+            container.innerHTML = this.emptyNote
+                ? `<p class="text-sm" style="color:#f87171">${escapeHtml(this.emptyNote)}</p>`
+                : '<p class="text-sm text-gray-500">No clients found</p>';
             return;
         }
         if (shown.length === 0) {

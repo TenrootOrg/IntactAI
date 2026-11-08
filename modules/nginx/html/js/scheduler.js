@@ -176,9 +176,13 @@ function renderScheduleCard(job) {
 // A schedule targets clients for LATER runs, so offline ones are listed too (QA
 // 2026-11-08: with every client offline the picker showed none, and nothing could
 // be scheduled). Each offline row says, in red, what that means for the run.
+const SCHEDULE_NO_CLIENTS = 'No Velociraptor clients exist yet, online or offline. This schedule type runs on '
+    + 'the clients you pick, so it cannot be saved: enroll a client first, or schedule a Velociraptor Hunt '
+    + '(it reaches every client, including ones enrolled later).';
 const schedulerClientManager = new ClientManager('schedule-client-list', 'schedule-client-cb', {
     onlineOnly: false,
     offlineNote: 'Offline now: the scheduled run will not work for this client unless it is online when the schedule runs.',
+    emptyNote: SCHEDULE_NO_CLIENTS,
 });
 
 // Backwards-compatible wrapper functions
@@ -428,7 +432,8 @@ async function saveScheduleFromModal() {
     }
     // Client selection required only for client-targeted types.
     if (!envWide && clientIds.length === 0) {
-        alert('Please select at least one client');
+        alert(schedulerClientManager.totalClients === 0 ? SCHEDULE_NO_CLIENTS
+              : 'Please select at least one client (online or offline).');
         return;
     }
     if (!envWide && !schedulerClientManager.confirmMany('Schedule this job')) return;
