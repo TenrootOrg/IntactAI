@@ -113,7 +113,7 @@ def load_id_helpers():
 
 def run_worker(*, rows=None, artifacts=None, client_info=None, kind="flow",
                ident="F.ABC", fetch_raises=None, persist_raises=None,
-               empty_reads=None):
+               empty_reads=None, settled=None):
     """EXECUTE _adopt_worker against fakes and report what it did.
 
     The rest of this file asserts on source text, which is the house style and
@@ -121,7 +121,8 @@ def run_worker(*, rows=None, artifacts=None, client_info=None, kind="flow",
     worker actually reaches a terminal state, and that is the property that
     matters most. So this one runs it.
     """
-    calls = {"status": [], "logs": [], "persisted": [], "details": {}}
+    calls = {"status": [], "logs": [], "persisted": [], "details": {}, "final_asked": [],
+             "final_written": []}
 
     def update_run_status(rid, status, progress=None, error=None, **kw):
         calls["status"].append((status, progress, error))
@@ -151,6 +152,18 @@ def run_worker(*, rows=None, artifacts=None, client_info=None, kind="flow",
     fake_mapper = type("m", (), {"SUPPORTED_ARTIFACTS": frozenset({"a", "b", "c"})})
     fake_ws = type("m", (), {"mutate_run_details": staticmethod(mutate_run_details)})
 
+    # The fusion store's "settled" helpers: is the hunt final, and the marker.
+    def _hunt_final(hid):
+        calls["final_asked"].append(hid)
+        return settled
+
+    def _write_final(fp, final):
+        calls["final_written"].append((fp, final, len(calls["persisted"])))
+    fake_fstore = type("m", (), {"_hunt_final": staticmethod(_hunt_final),
+                                 "_write_final": staticmethod(_write_final),
+                                 "_raw_results_path": staticmethod(lambda rid, det: f"/data/downloads/{rid}/raw_results.json")})
+    fake_fusion = type("m", (), {"store": fake_fstore})
+
     import builtins
     real_import = builtins.__import__
 
@@ -161,6 +174,8 @@ def run_worker(*, rows=None, artifacts=None, client_info=None, kind="flow",
             return fake_mapper
         if name == "services.workflow_service":
             return fake_ws
+        if name == "services.fusion" and fromlist and "store" in fromlist:
+            return fake_fusion
         return real_import(name, g, l, fromlist, level)
 
     # The worker prints a traceback on its error path by design; stub it so a
@@ -712,6 +727,41 @@ class TestThePanelOffersWorkflowIds(unittest.TestCase):
         adopt = vjs[vjs.index("async function adoptVelociraptorId"):]
         self.assertIn("data.runs", adopt)
         self.assertIn("switchTab('workflows')", adopt)
+
+
+class SettledHuntIsNotReadTwice(unittest.TestCase):
+    """QA 2026-11-08: adopting H.D8RUHI8ARBOH8 (an offline import's hunt, finished)
+    saved 188,790 rows and completed; the auto-fuse it armed re-read the whole hunt
+    6 s later, logging into the completed run. The fuse skips a hunt only when its
+    "settled" marker matches, and the adopt never wrote one."""
+    ROWS = {"a": [{"x": 1}], "b": [{"y": 2}]}
+    INFO = {"C.1": {"hostname": "ALDC02"}, "C.2": {"hostname": "ALClient01"}}
+
+    def test_a_finished_hunt_is_marked_settled_after_its_rows_are_saved(self):
+        c = run_worker(rows=self.ROWS, artifacts=["a", "b"], client_info=self.INFO, kind="hunt",
+                       ident="H.D8RUHI8ARBOH8", settled={"H.D8RUHI8ARBOH8": 188790})
+        self.assertEqual("completed", c["final"])
+        self.assertEqual(["H.D8RUHI8ARBOH8"], c["final_asked"])
+        self.assertEqual(1, len(c["final_written"]))
+        fp, final, persisted_before = c["final_written"][0]
+        self.assertEqual("/data/downloads/run_1/raw_results.json", fp)
+        self.assertEqual({"H.D8RUHI8ARBOH8": 188790}, final["settled"])
+        self.assertEqual({"C.1": "ALDC02", "C.2": "ALClient01"}, final["hostnames"])
+        self.assertEqual(1, persisted_before, "the mark must follow the saved rows, never precede them")
+        self.assertTrue(any("instead of downloading it again" in m for _, m in c["logs"]))
+
+    def test_a_hunt_still_running_is_not_marked(self):
+        c = run_worker(rows=self.ROWS, artifacts=["a", "b"], client_info=self.INFO, kind="hunt",
+                       ident="H.RUNNING", settled=None)
+        self.assertEqual("completed", c["final"])
+        self.assertEqual([], c["final_written"])
+
+    def test_a_flow_is_never_marked_by_the_adopt(self):
+        c = run_worker(rows=self.ROWS, artifacts=["a"], client_info={"C.1": {"hostname": "H"}},
+                       kind="flow", ident="F.ABC", settled={"F.ABC": 1})
+        self.assertEqual("completed", c["final"])
+        self.assertEqual([], c["final_asked"])
+        self.assertEqual([], c["final_written"])
 
 
 if __name__ == "__main__":

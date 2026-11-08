@@ -999,6 +999,15 @@ def _adopt_worker(run_id, kind, ident):
                                f"else in this collection is skipped.")
         update_run_status(run_id, "running", progress=10)
 
+        # Checked BEFORE the read, exactly as the fuse does: a hunt that can gain
+        # nothing (stopped or expired, every client done) makes this copy whole, so
+        # it is marked settled below. Without the mark the auto-fuse this adopt
+        # arms re-read the whole hunt seconds later -- 188,790 rows again, logged
+        # into this already COMPLETED run and rewriting the snapshot just saved
+        # (QA 2026-11-08, H.D8RUHI8ARBOH8). A FLOW's client is only known after the
+        # read, so no mark there: the fuse re-reads it once and marks it itself.
+        from services.fusion import store as fusion_store
+        settled = fusion_store._hunt_final(ident) if kind == "hunt" else None
         if kind == "hunt":
             results, artifacts, client_info = get_existing_collection_results(
                 run_id, hunt_id=ident,
@@ -1082,6 +1091,12 @@ def _adopt_worker(run_id, kind, ident):
         update_run_status(run_id, "running", progress=92)
         add_log_to_run(run_id, "Persisting rows where the case graph reads them…")
         persist_pipeline_artifacts(run_id, results)
+        if settled is not None:
+            fusion_store._write_final(fusion_store._raw_results_path(run_id, {}),
+                                      {"settled": settled, "hostnames": hostnames})
+            add_log_to_run(run_id, f"The {kind} is finished in Velociraptor, so the case "
+                                   f"reads this saved copy from now on instead of "
+                                   f"downloading it again.")
 
         add_log_to_run(
             run_id,

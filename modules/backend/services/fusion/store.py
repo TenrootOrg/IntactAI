@@ -1680,7 +1680,12 @@ def _hunt_final(hunt_id):
         over = (h.get("state") in ("STOPPED", "ARCHIVED") or st.get("stopped") is True
                 or (int(h.get("expires") or 0) and int(h["expires"]) < _t.time() * 1e6))
         sched = int(st.get("total_clients_scheduled") or 0)
-        if not over or sched != int(st.get("total_finished_clients") or 0):
+        # ">=", not "==": an offline import adds finished flows to a hunt without
+        # scheduling them, so finished can exceed scheduled (H.D8RUHI8ARBOH8: 18
+        # finished of 11 scheduled). "==" made such a hunt never final, and every
+        # fuse downloaded it again in full. A hunt that later gains rows still
+        # re-reads: the row count is part of what the marker must match.
+        if not over or int(st.get("total_finished_clients") or 0) < sched:
             return None
         return {str(hunt_id): int(st.get("total_collected_rows") or 0)}
     except Exception:                                    # noqa: BLE001 -- unknown = pull
