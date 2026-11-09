@@ -95,9 +95,16 @@ def disk():
     return {"total": u.total, "used": u.used, "free": u.free, "pct": pct, "level": level}
 
 
+# Every case keeps a record of type "case" (and a baseline) that stays
+# "running" for the case's whole life: bookkeeping, not work a move cuts off.
+# Counting them made Move ask "2 runs are still going" on every box.
+_BOOKKEEPING_TYPES = {"case", "fusion_baseline"}
+
+
 def active_runs():
     from services.workflow_service import get_all_automation_runs
-    return [r for r in get_all_automation_runs() or [] if r.get("status") in ("running", "pending")]
+    return [r for r in get_all_automation_runs() or []
+            if r.get("status") in ("running", "pending") and r.get("automation_type") not in _BOOKKEEPING_TYPES]
 
 
 def start_move(path, force=False):

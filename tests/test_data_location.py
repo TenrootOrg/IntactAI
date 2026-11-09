@@ -34,6 +34,8 @@ class Paths(unittest.TestCase):
 
 
 class StartMove(unittest.TestCase):
+    _real_active_runs = staticmethod(dl.active_runs)
+
     def setUp(self):
         self.host_calls = []
         patches = [
@@ -68,6 +70,15 @@ class StartMove(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "still going"):
             dl.start_move("/mnt/intact-data")
         self.assertEqual("starting", dl.start_move("/mnt/intact-data", force=True)["state"])
+
+    def test_case_records_are_not_running_work(self):
+        from services import workflow_service as ws
+        runs = [{"automation_type": "case", "name": "Case — Default", "status": "running"},
+                {"automation_type": "fusion_baseline", "status": "running"},
+                {"automation_type": "velociraptor_collection", "status": "running"}]
+        with mock.patch.object(ws, "get_all_automation_runs", return_value=runs):
+            self.assertEqual(["velociraptor_collection"],
+                             [r["automation_type"] for r in StartMove._real_active_runs()])
 
     def test_never_starts_on_a_folder_the_host_rejected(self):
         dl.check.return_value = {"ok": False, "reason": "/mnt/x is on vfat filesystem"}

@@ -35,7 +35,10 @@ OUT_DIR="${2:-.}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CACHE_DIR="${INTACT_LOCAL_RELEASE_CACHE:-$HOME/.cache/intact-local-release}/$TAG"
 BACKEND_CONTAINER="${INTACT_BACKEND_CONTAINER:-intact_backend}"
-CACHED_MODULES="elk,iris,timesketch,plaso,velociraptor,volweb,portainer"
+# INTACT_LOCAL_RELEASE_MODULES narrows it (e.g. "velociraptor" for a quick
+# core + Velociraptor box); use its own INTACT_LOCAL_RELEASE_CACHE, since the
+# cache is one tarball per tag.
+CACHED_MODULES="${INTACT_LOCAL_RELEASE_MODULES:-elk,iris,timesketch,plaso,velociraptor,volweb,portainer}"
 
 log() { printf '[local-release] %s\n' "$1"; }
 err() { printf '[local-release][ERROR] %s\n' "$1" >&2; }
