@@ -139,7 +139,7 @@ def run_timesketch_collection():
         register_cancel_event(run_id)
         # Cleanup callback cancels the Velociraptor flow when Stop is
         # clicked — so the endpoint stops collecting + uploading too.
-        # `cid` is shape-validated above (^C\.[0-9a-f]+$); `fid` came
+        # `cid` is shape-validated above (vql_safety.is_valid_client_id); `fid` came
         # from `run_kape_collection_grpc` (server-generated, not
         # operator input). Subprocess is arg-list form + shell=False
         # as defense-in-depth — even if a future code change drops the

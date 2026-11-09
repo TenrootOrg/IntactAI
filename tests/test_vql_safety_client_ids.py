@@ -25,6 +25,13 @@ class ClientIds(unittest.TestCase):
     def test_imported_offline_collection(self):
         self.assertTrue(is_valid_client_id("C.c14d3891_8930_4a05_8cfa_3baf34a79201"))
 
+    def test_a_client_in_another_org_is_accepted(self):
+        # Velociraptor names a client enrolled into a non-root org "<id>-<org id>".
+        self.assertTrue(is_valid_client_id("C.4e755431fba671e8-OFM5G"))
+        for bad in ("C.4e755431fba671e8-ofm5g", "C.4e755431fba671e8-O'x", "C.4e755431fba671e8-",
+                    "C.4e755431fba671e8-OFM5G-O1"):
+            self.assertFalse(is_valid_client_id(bad), bad)
+
     def test_injection_shapes_still_rejected(self):
         for bad in ("C.abc'", "C.abc) OR 1", "C.abc def", "C.abc/../x", "C.abc-def",
                     "C.ABC", "C.", "", None, "F.ABC", "C." + "a" * 41):
