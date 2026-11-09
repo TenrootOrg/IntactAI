@@ -1078,10 +1078,18 @@ def _adopt_worker(run_id, kind, ident):
             # Reporting "no supported artifacts" for a mistyped id sends someone
             # to argue about the allowlist over a transposed character.
             if not client_info:
-                msg = (f"{ident} was not found on the Velociraptor server. Check "
-                       f"the id: a flow looks like F.XXXXXXXX, a hunt like "
-                       f"H.XXXXXXXX, and a hunt's per-client flow like "
-                       f"F.XXXXXXXX.H.")
+                # It is looked up in ONE org -- the one selected when Add by ID was
+                # clicked -- so a right id in another org reads exactly like a typo.
+                try:
+                    from services import velo_org
+                    org = velo_org.current() or "root"
+                except ImportError:
+                    org = "root"
+                msg = (f"{ident} was not found on the Velociraptor server in org {org}. "
+                       f"If it was collected in another org, select that org above the "
+                       f"id and add it again. Otherwise check the id: a flow looks like "
+                       f"F.XXXXXXXX, a hunt like H.XXXXXXXX, and a hunt's per-client "
+                       f"flow like F.XXXXXXXX.H.")
             else:
                 where = ", ".join(sorted(
                     ((info or {}).get("hostname") or cid)
