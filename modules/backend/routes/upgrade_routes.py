@@ -418,11 +418,30 @@ def _fetch_plan(tag):
         if m["module"] == "intact":
             current_intact = m.get("current") or "unknown"
         action = m.get("action")
+        # plan.sh always re-applies intact when the package carries it (a
+        # rolling tag can be rebuilt from new code). For the online upgrade
+        # that locked the row as "upgrade" even at the SAME version, so an
+        # operator who only wanted a missing module had to re-download and
+        # re-apply the whole platform too. Same version -> a normal
+        # "no change" row: tick it to reinstall (--reinstall intact), leave
+        # it and it stays out of --only, so it is neither fetched nor applied.
+        if m["module"] == "intact" and action == "upgrade" and m.get("current") == m.get("target"):
+            action = "noop"
         if action in ("upgrade", "noop"):
             forced.append({"module": m["module"], "current": m.get("current") or "not installed",
                            "target": m.get("target"), "action": action})
         elif action == "install":
             optional.append({"module": m["module"], "target": m.get("target"), "action": action})
+        elif action == "skip" and m.get("note") == "disabled in config.yaml" and m.get("target"):
+            # Not chosen at install time (enabled: false). Dropping these left
+            # the dialog with no way to add a module later -- on a box
+            # installed with only velociraptor it offered nothing at all.
+            # Offered like a new module; ticking it switches it on in
+            # config.yaml when the upgrade starts (_enable_modules). Whatever
+            # `current` says: plaso's is a constant pin in the backend's .env,
+            # so its enabled flag is the only sign it is there.
+            optional.append({"module": m["module"], "target": m.get("target"), "action": "install",
+                             "enable": True})
 
     return {
         "current_intact_version": current_intact,
@@ -662,6 +681,51 @@ def _start_launcher_run(automation_type, name, details, cli_args, force=False):
     return jsonify({"success": True, "run_id": run_id}), 202
 
 
+def _enable_modules(names, value=True):
+    """Set modules.<name>.enabled in config.yaml for each name. Returns the
+    names it changed. The engine skips a module that is enabled: false, so an
+    operator's tick to install one must switch it on first.
+
+    By text, in place (see auth_service.write_first_login: config.yaml is
+    bind-mounted by inode, and the operator's comments must survive), and
+    checked by parsing: nothing but those flags may change."""
+    import yaml
+    from services.auth_service import config_path
+    path = config_path()
+    if not path or not names:
+        return []
+    with open(path, encoding="utf-8") as fh:
+        original = fh.read()
+    lines = original.splitlines(keepends=True)
+    want, have = ("true", "false") if value else ("false", "true")
+    changed, section, module = [], None, None
+    for i, line in enumerate(lines):
+        if re.match(r"^\S", line) and not line.startswith("#"):
+            section, module = line.split(":", 1)[0].strip(), None
+            continue
+        if section != "modules":
+            continue
+        m = re.match(r"^  (\w+)\s*:\s*(#.*)?$", line.rstrip("\r\n"))
+        if m:
+            module = m.group(1)
+            continue
+        m = re.match(r"^(    enabled\s*:\s*)" + have + r"(\s*(#.*)?)$", line.rstrip("\r\n"))
+        if m and module in names and module not in changed:
+            lines[i] = m.group(1) + want + m.group(2) + ("\n" if line.endswith("\n") else "")
+            changed.append(module)
+    if not changed:
+        return []
+    updated = "".join(lines)
+    before, after = yaml.safe_load(original), yaml.safe_load(updated)
+    for name in changed:
+        after["modules"][name]["enabled"] = before["modules"][name]["enabled"]
+    if before != after:
+        raise RuntimeError("refusing to edit config.yaml: the change would touch more than the enabled flags")
+    with open(path, "w", encoding="utf-8") as fh:   # truncate in place
+        fh.write(updated)
+    return changed
+
+
 @upgrade_bp.route('/api/upgrade/online', methods=['POST'])
 def start_online_upgrade():
     """Online upgrade: downloads AND applies a release tag in one run.
@@ -722,11 +786,22 @@ def start_online_upgrade():
     if reinstall:
         cli_args += ["--reinstall", ",".join(reinstall)]
 
-    return _start_launcher_run(
+    # Ticked modules that are switched off in config.yaml: on, or the run
+    # skips them. Back off if the run never started, so a refused start
+    # does not leave the next install or upgrade deploying them unasked.
+    try:
+        enabled = _enable_modules([row["module"] for row in plan["optional"]
+                                   if row.get("enable") and row["module"] in opted_optional])
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"success": False, "error": f"Could not switch the modules on in config.yaml: {e}"}), 500
+    resp = _start_launcher_run(
         "upgrade", f"Online upgrade to {tag}",
         {"kind": "online", "tag": tag, "modules": modules},
         cli_args, force=bool(data.get('force')),
     )
+    if enabled and (not isinstance(resp, tuple) or resp[1] != 202):
+        _enable_modules(enabled, value=False)
+    return resp
 
 
 @upgrade_bp.route('/api/upgrade/offline', methods=['POST'])
