@@ -146,6 +146,26 @@ def start_cleanup():
     return {"started": True, "old_copies": st.get("old_copies")}
 
 
+def disks():
+    """Mounted disks the data could move to, for the Settings picker:
+    [{path, size, free, device}]. The system disk (/) is the picker's own
+    "System disk" entry; bind mounts (data/ itself), /boot and folders inside
+    the install are left out. Only filesystems Docker can run on."""
+    _rc, out, _err = host_run(["findmnt", "-rn", "-b", "-o", "TARGET,FSTYPE,SIZE,AVAIL,SOURCE",
+                               "-t", "ext4,xfs,btrfs"], timeout=60)
+    found = []
+    for line in (out or "").splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        target, _fs, size, avail, source = parts[:5]
+        if (target == "/" or target.startswith("/boot") or "[" in source
+                or target.startswith(HOST_PATH.rstrip("/") + "/") or not _PATH_RE.match(target)):
+            continue
+        found.append({"path": target, "size": int(size), "free": int(avail), "device": source})
+    return found
+
+
 def overview():
     setting = read_setting()
     return {"data_path": setting, "location": setting or "system disk",

@@ -133,6 +133,16 @@ def data_location_get():
     return jsonify(dl.overview())
 
 
+@system_bp.route('/api/system/data-location/disks', methods=['GET'])
+def data_location_disks():
+    """Mounted disks the data could move to (the Settings picker)."""
+    from services import data_location as dl
+    try:
+        return jsonify({"disks": dl.disks()})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"disks": [], "error": str(e)})
+
+
 @system_bp.route('/api/system/data-location/check', methods=['POST'])
 def data_location_check():
     """Can the data go to body.path ('' = the system disk)? Changes nothing."""

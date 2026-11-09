@@ -11,7 +11,7 @@
                      x-show="d && d.level !== 'ok'" class="mb-6 rounded-lg px-4 py-3 text-sm border"
                      :class="d && d.level === 'critical' ? 'bg-red-900/40 border-red-700 text-red-200' : 'bg-yellow-900/30 border-yellow-700 text-yellow-200'">
                     <span x-text="d ? ('Data disk ' + d.pct + '% full (' + (d.free / 1073741824).toFixed(1) + ' GB free). ' + (d.level === 'critical' ? 'Collections and uploads may fail soon: ' : '') + 'Purge old data or move it to a bigger drive in ') : ''"></span>
-                    <button @click="$store.app.switchTab('settings')" class="underline">Settings → General → Data location</button>.
+                    <button @click="$store.app.switchTab('settings')" class="underline">Settings → General → Data storage</button>.
                 </div>
 
                 <!-- Stats Overview — Total + Online cards hide together when
