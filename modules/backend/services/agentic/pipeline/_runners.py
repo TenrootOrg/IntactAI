@@ -12,6 +12,7 @@ from services.workflow_service import (
     is_cancelled,
     unregister_cancel,
     request_stop,
+    mutate_run_details,
 )
 
 
@@ -121,14 +122,10 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
         try:
             launched_flow_ids = [c['flow_id'] for c in success_collections if c.get('flow_id')]
             if launched_flow_ids:
-                _wf = get_workflow(run_id)
-                if _wf is not None:
-                    _wd = _wf.get('details') or {}
-                    if not isinstance(_wd, dict):
-                        _wd = {}
-                    _wd['flow_id'] = launched_flow_ids if len(launched_flow_ids) > 1 else launched_flow_ids[0]
-                    _wf['details'] = _wd
-                    save_workflow(_wf)
+                # Details only, under the run's lock: a whole-row save here could
+                # write a Stop pressed meanwhile back to 'running'.
+                _fid = launched_flow_ids if len(launched_flow_ids) > 1 else launched_flow_ids[0]
+                mutate_run_details(run_id, lambda d: d.__setitem__('flow_id', _fid))
         except Exception as _e:
             # Best-effort — re-analysis falls back to "unavailable" if
             # the stash misses; doesn't break the main pipeline.
@@ -211,7 +208,8 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
                 f"Some flows had not finished yet — they keep running in Velociraptor "
                 f"and finish there. Increase Collection Time to capture more of them "
                 f"in the run itself.", "info")
-        else:
+        elif not (cancel_event and cancel_event.is_set()):
+            # A Stop breaks the poll loop early too; that is not a natural finish.
             add_log_to_run(run_id, "[Velociraptor] All flows completed naturally", "success")
 
         # One row-count summary, same shape either way. The timed-out case does

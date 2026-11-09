@@ -31,7 +31,13 @@ def save_workflow(workflow_data: Dict[str, Any]) -> bool:
     over lines and error counts other threads appended in between -- the
     lost-log race the per-run lock used to paper over. The embedded `logs`
     column now only holds what runs created before workflow_logs carry (and
-    rows inserted whole, e.g. an imported case bundle)."""
+    rows inserted whole, e.g. an imported case bundle).
+
+    'cancelled' is terminal here too, with its stop reason: an unlocked
+    read-modify-save (the agentic phase tick, the flow_id stash) that read the
+    run just before a Stop wrote it back as 'running', and the run sat 'running'
+    for 10 h until the orphan sweep failed it. update_run_status already refuses
+    every cancelled->X move, force=True included, so no caller loses a write."""
     for attempt in range(3):
         try:
             conn = get_connection()
@@ -43,9 +49,14 @@ def save_workflow(workflow_data: Dict[str, Any]) -> bool:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(run_id) DO UPDATE SET
                     automation_type = excluded.automation_type, name = excluded.name,
-                    details = excluded.details, status = excluded.status,
+                    details = excluded.details,
+                    status = CASE WHEN workflows.status = 'cancelled'
+                                  THEN 'cancelled' ELSE excluded.status END,
                     progress = excluded.progress, phase = excluded.phase,
-                    error = excluded.error, created_at = excluded.created_at,
+                    error = CASE WHEN workflows.status = 'cancelled'
+                                      AND excluded.status IS NOT 'cancelled'
+                                 THEN workflows.error ELSE excluded.error END,
+                    created_at = excluded.created_at,
                     updated_at = excluded.updated_at, phase_timings = excluded.phase_timings,
                     llm_metrics = excluded.llm_metrics,
                     sigma_rule_tally = excluded.sigma_rule_tally, case_id = excluded.case_id""",

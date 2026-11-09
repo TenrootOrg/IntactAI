@@ -282,6 +282,19 @@ fi
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
+# One prepare per output directory. Without this, a second prepare (a
+# double-click, two tabs) ran the reaper below and rm -rf'd the FIRST run's
+# live staging mid-download. Held on fd 9 for the life of the script; the
+# kernel drops it on any exit, SIGKILL included. No flock (macOS laptop):
+# run unguarded, as before.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$OUT_DIR/.intact-prepare.lock"
+    if ! flock -n 9; then
+        err "another prepare is already running into $OUT_DIR -- refusing, so its staging is not deleted"
+        exit 1
+    fi
+fi
+
 # Stage INSIDE the output directory, not /tmp.
 #
 # `mktemp -d` puts several GB of module assets on whatever filesystem backs
@@ -304,6 +317,7 @@ for _stale in "$OUT_DIR"/.intact-prepare-*; do
     printf '[prepare] %-9s %s (from an interrupted run)\n' "cleaning" "$(basename "$_stale")"
     rm -rf "$_stale"
 done
+rm -f "$OUT_DIR"/*-package.tar.partial
 
 WORK="$(mktemp -d -p "$OUT_DIR" .intact-prepare-XXXXXX 2>/dev/null)" \
     || WORK="$(mktemp -d)"
@@ -316,16 +330,16 @@ WORK="$(mktemp -d -p "$OUT_DIR" .intact-prepare-XXXXXX 2>/dev/null)" \
 # trapped; nothing can fix that, which is why the staging directory is named
 # and sits beside the output, where the next run reaps it.
 #
-# The half-written OUT is removed too unless the run got all the way through.
-# A truncated tarball is worse than no file: it is the right name and a
-# plausible size, so it looks like a package until it fails to extract on the
-# air-gapped box it was carried to.
-OUT_OK=0
+# The half-written wrap is removed too. It is written as $OUT.partial and only
+# renamed to $OUT once verified, so a killed run never leaves a truncated
+# tarball under the real name -- the right name and a plausible size, which the
+# Apply picker lists as a package until it fails to extract on the air-gapped
+# box it was carried to. (A SIGKILLed .partial is reaped by the next run.)
 _cleanup() {
     rm -rf "$WORK"
-    if [ "$OUT_OK" -eq 0 ] && [ -n "${OUT:-}" ] && [ -f "$OUT" ]; then
-        rm -f "$OUT"
-        printf '[prepare] %-9s %s (incomplete)\n' "removed" "$(basename "$OUT")"
+    if [ -n "${PART:-}" ] && [ -f "$PART" ]; then
+        rm -f "$PART"
+        printf '[prepare] %-9s %s (incomplete)\n' "removed" "$(basename "$PART")"
     fi
 }
 trap _cleanup EXIT INT TERM HUP
@@ -660,7 +674,7 @@ export GITHUB_TOKEN
                 "$(( got * 100 / TOTAL_BYTES ))"
         fi
     done
-) &
+) 9>&- &  # 9>&-: an orphaned watcher (parent SIGKILLed) loops forever; it must not keep the lock
 WATCHER=$!
 trap 'kill "$WATCHER" 2>/dev/null; _cleanup' EXIT INT TERM HUP
 
@@ -955,13 +969,14 @@ PY
 fi
 
 OUT="$OUT_DIR/$TAG-package.tar"
+PART="$OUT.partial"
 log "wrapping into a single file"
 # index.json FIRST, deliberately. The Import UI peeks at only the first few MB
 # of the uploaded file to show the operator what they are about to apply; with
 # the index at the end of a multi-GB stream there is nothing to read without
 # downloading all of it. Listing it first puts it in the opening KB.
 WRAP_STARTED=$(date +%s)
-tar -cf "$OUT" "${WRAP_MEMBERS[@]}"
+tar -cf "$PART" "${WRAP_MEMBERS[@]}"
 
 # Prove the archive is readable before calling it a package. tar can exit 0
 # having written something the far end cannot open (a disk that filled at the
@@ -978,14 +993,15 @@ tar -cf "$OUT" "${WRAP_MEMBERS[@]}"
 # to catch. Output to /dev/null: the listing itself is noise, only the exit
 # status matters.
 log "verifying the wrapped package"
-if ! tar -tf "$OUT" >/dev/null 2>&1; then
+if ! tar -tf "$PART" >/dev/null 2>&1; then
     err "the wrapped package failed its integrity check (tar cannot read it back)"
     err "  usually a full disk at the final write -- check space and re-run"
     exit 1
 fi
 
-# Only now is OUT a real package; before this line the trap deletes it.
-OUT_OK=1
+# Only now is it a real package. Same-directory rename: atomic, so $OUT is
+# either absent or complete.
+mv -f "$PART" "$OUT"
 printf '[prepare]   %-9s %-14s %8s  in %s\n' "wrote" "$(basename "$OUT")" \
     "$(_h "$(stat -c%s "$OUT" 2>/dev/null || echo 0)")" \
     "$(_elapsed $(( $(date +%s) - WRAP_STARTED )))"

@@ -155,7 +155,7 @@ def pending(case_id) -> bool:
         return case_id in _TIMERS
 
 
-def schedule(case_id, reason="new data", *, delay=None, _attempt=0) -> bool:
+def schedule(case_id, reason="new data", *, delay=None, _attempt=0, _busy=0) -> bool:
     """Arm (or re-arm) the auto-fuse for a case. Returns True if armed.
 
     Cheap and non-blocking on purpose: this is called from inside
@@ -169,11 +169,11 @@ def schedule(case_id, reason="new data", *, delay=None, _attempt=0) -> bool:
         old = _TIMERS.pop(case_id, None)
         if old is not None:
             old.cancel()                       # re-arm: the case is still busy
-        t = threading.Timer(wait, _fire, args=(case_id, reason, _attempt))
+        t = threading.Timer(wait, _fire, args=(case_id, reason, _attempt, _busy))
         t.daemon = True                        # never hold up a shutdown
         _TIMERS[case_id] = t
         t.start()
-    if old is None and _attempt == 0:
+    if old is None and _attempt == 0 and _busy == 0:
         _announce(case_id, reason, wait)       # a FRESH quiet window — say so
     return True
 
@@ -260,21 +260,26 @@ def catch_up(stagger=None) -> int:
     return armed
 
 
-def _importing(store, case_id, d) -> bool:
-    """Is a member run still running or pending? Best-effort: an unreadable run
-    list must not block the fuse for ever."""
+def _importing(store, case_id, d) -> list:
+    """Member runs still running or pending (their ids; empty = none). Best-effort:
+    an unreadable run list must not block the fuse for ever."""
+    out = []
     try:
         for rid in store._members_for_case(case_id, d) or []:
             run = store._ws().get_automation_run(rid)
             if run and run.get("status") in ("running", "pending"):
-                return True
+                out.append(rid)
     except Exception as e:                     # noqa: BLE001
         print(f"[AUTOFUSE] could not check member runs for {case_id}: {e}", flush=True)
-    return False
+    return out
 
 
-def _fire(case_id, reason="new data", attempt=0) -> None:
-    """The timer expired: fuse the case if it still wants fusing."""
+def _fire(case_id, reason="new data", attempt=0, busy=0) -> None:
+    """The timer expired: fuse the case if it still wants fusing.
+
+    `attempt` counts importing polls, `busy` counts FusionBusy retries. ONE shared
+    counter meant a case that waited 9+ polls on a long import gave up on its very
+    first busy hit, with an "after 10 attempts" message that was not true."""
     with _GUARD:
         _TIMERS.pop(case_id, None)
     store = _store()
@@ -286,19 +291,37 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
             return                             # operator opted out
         stale = store.stale_member_runs(case_id, d)
         if not stale:
+            # A RETRY finding the graph current means another fuse caught it up —
+            # most often store._FUSE_OWED's catch-up, which rebuilds the graph only.
+            # The report this data was owed would then never be written. A fresh
+            # arming (attempt 0) stays a no-op: nothing landed for it to describe.
+            if attempt or busy:
+                try:
+                    behind = store.report_stale_runs(case_id, d)
+                except Exception:              # noqa: BLE001 — a hint probe, not a fuse failure
+                    behind = []
+                if behind:
+                    _regenerate_report(case_id, d)
             return                             # someone already fused it — no-op
         # AN IMPORT STILL RUNNING IS NOT A QUIET CASE. A member run that is still
         # fetching rows would be fused half-loaded, and the quiet period alone
         # cannot tell the difference — an upload writes nothing to the run for
         # minutes while it pulls a hunt. Wait for it instead.
-        if _importing(store, case_id, d):
+        running = _importing(store, case_id, d)
+        if running:
             if attempt + 1 >= MAX_IMPORTING_RETRIES:
+                # Name the run: a hunt or log run left at "running" blocks this for
+                # good, and "a member run" gave the operator nothing to go and fix.
+                _mins = int(MAX_IMPORTING_RETRIES * IMPORTING_RETRY_SECONDS // 60)
                 store.log_case_event(
                     case_id, "Refusion skipped", "warning",
-                    "a member run has been importing for a long time — click Refusion "
-                    "once it finishes")
+                    f"automatic re-fuse gave up after waiting {_mins} min for "
+                    f"{', '.join(map(str, running[:5]))} still marked running — "
+                    "the new data is NOT in the graph yet. Finish or stop that run, "
+                    "then click Refusion")
                 return
-            schedule(case_id, reason, delay=IMPORTING_RETRY_SECONDS, _attempt=attempt + 1)
+            schedule(case_id, reason, delay=IMPORTING_RETRY_SECONDS,
+                     _attempt=attempt + 1, _busy=busy)
             return
         # CRASH-LOOP BREAKER. A fuse can die in a way no `except` will ever see:
         # a big case OOMs the process (measured — five 547 MB member runs peaked at
@@ -361,7 +384,7 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
         except store.FusionBusy:
             # Nothing was attempted, so this is not an incomplete fuse.
             store._merge_case_details(case_id, {"auto_fuse_incomplete": False})
-            if attempt + 1 >= MAX_BUSY_RETRIES:
+            if busy + 1 >= MAX_BUSY_RETRIES:
                 store.log_case_event(
                     case_id, "Refusion skipped", "warning",
                     f"automatic re-fuse gave up after {MAX_BUSY_RETRIES} attempts — "
@@ -370,8 +393,9 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
             store.log_case_event(
                 case_id, "Refusion deferred", "info",
                 f"automatic re-fuse postponed — a fuse is already running "
-                f"(attempt {attempt + 1}/{MAX_BUSY_RETRIES})")
-            schedule(case_id, reason, delay=BUSY_RETRY_SECONDS, _attempt=attempt + 1)
+                f"(attempt {busy + 1}/{MAX_BUSY_RETRIES})")
+            schedule(case_id, reason, delay=BUSY_RETRY_SECONDS,
+                     _attempt=attempt, _busy=busy + 1)
     except Exception as e:                     # a timer thread must never die loudly
         try:
             st = _store()

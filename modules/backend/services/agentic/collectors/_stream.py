@@ -434,6 +434,14 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                 f"[Velociraptor] Collection window closed — retrieved "
                 f"{len(all_results)} source(s), {total_rows} row(s) so far",
                 "info")
+        elif cancel_event and cancel_event.is_set():
+            # The cancel break above lands here too; a stopped collection is not
+            # a green "All flows finished".
+            add_log_to_run(
+                run_id,
+                f"[Velociraptor] Collection stopped — retrieved "
+                f"{len(all_results)} source(s), {total_rows} row(s) before the stop",
+                "warning")
         else:
             add_log_to_run(
                 run_id,

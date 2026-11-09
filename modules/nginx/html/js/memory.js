@@ -76,11 +76,8 @@ document.addEventListener('alpine:init', () => {
         // In-flight run state
         // --------------------------------------------------------------
         currentRunId: '',
-        currentStatus: '',
-        currentProgress: 0,
         dispatching: false,
         lastStatus: '',
-        _pollTimer: null,
 
         // --------------------------------------------------------------
         // Offline upload state
@@ -282,7 +279,6 @@ document.addEventListener('alpine:init', () => {
                     return;
                 }
                 this.reuseStatus = `started: ${j.run_id}`;
-                if (Alpine.store('workflows')?.refresh) Alpine.store('workflows').refresh();
                 if (Alpine.store('app')?.switchTab) Alpine.store('app').switchTab('workflows');
             } catch (e) {
                 this.reuseStatus = String(e);
@@ -314,7 +310,6 @@ document.addEventListener('alpine:init', () => {
                 }
                 this.adoptStatus = `pulled ${j.plugin_rows} plugin rows and ${j.yara_hits} YARA hits. Opening Workflows…`;
                 this.adoptId = '';
-                if (Alpine.store('workflows')?.refresh) Alpine.store('workflows').refresh();
                 setTimeout(() => {
                     if (Alpine.store('app')?.switchTab) Alpine.store('app').switchTab('workflows');
                 }, 1200);
@@ -367,14 +362,9 @@ document.addEventListener('alpine:init', () => {
                     return;
                 }
                 this.currentRunId = j.run_id;
-                this.currentStatus = 'running';
-                this.currentProgress = 1;
                 this.lastStatus = `started: ${j.run_id}`;
                 // Run status lives on the Workflows page like every other
-                // module — refresh it and navigate there on dispatch.
-                if (Alpine.store('workflows') && typeof Alpine.store('workflows').refresh === 'function') {
-                    Alpine.store('workflows').refresh();
-                }
+                // module; switchTab('workflows') reloads it.
                 if (Alpine.store('app')?.switchTab) {
                     Alpine.store('app').switchTab('workflows');
                 }
@@ -449,7 +439,8 @@ document.addEventListener('alpine:init', () => {
                 onProgress: () => {},
                 onSuccess: () => {
                     this.uploading = false;
-                    if (Alpine.store('workflows')?.refresh) Alpine.store('workflows').refresh();
+                    // The store has load(), not refresh(): the old call was a silent no-op.
+                    Alpine.store('workflows')?.load?.();
                 },
                 onError: (error) => {
                     // The operator is on the Workflows tab by now — an alert is
@@ -468,42 +459,14 @@ document.addEventListener('alpine:init', () => {
             // the tusd hook before the first chunk lands, and carries the
             // progress, the log and the terminal state.
             this.uploadFile = null;
-            if (Alpine.store('workflows')?.refresh) Alpine.store('workflows').refresh();
             if (Alpine.store('app')?.switchTab) Alpine.store('app').switchTab('workflows');
-        },
-
-        // --------------------------------------------------------------
-        // Polling
-        // --------------------------------------------------------------
-        _startPolling() {
-            this._stopPolling();
-            this._pollTimer = setInterval(() => this._poll(), 3000);
-            this._poll();
-        },
-
-        _stopPolling() {
-            if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
-        },
-
-        async _poll() {
-            if (!this.currentRunId) return;
-            try {
-                const r = await fetch(`/api/memory/run/${this.currentRunId}/status`);
-                const j = await r.json();
-                this.currentStatus = j.status || '';
-                this.currentProgress = j.progress || 0;
-                if (['completed', 'failed', 'cancelled'].includes(this.currentStatus)) {
-                    this._stopPolling();
-                }
-            } catch (_) { /* network blip — keep polling */ }
         },
 
     });
 
     // Returning to the tab restores the defaults captured here. Exempt:
     // blueprints/blueprintsLoadedAt are an expensive cache, not operator
-    // input; _pollTimer is a live handle that must not be orphaned (nulling
-    // it leaks the interval); dispatching is the double-submit guard and
+    // input; dispatching is the double-submit guard and
     // clearing it mid-dispatch would let a second run through.
     // `dumps` is a cache like `blueprints` — wiping it would blank the picker
     // on every tab switch. `selectedDump`/`reuseStatus` ARE operator input and
@@ -514,7 +477,7 @@ document.addEventListener('alpine:init', () => {
     // mid-flight, and coming back reset symUploading, re-enabling Upload for a
     // second copy of the same 840 MB pack. Their own callbacks clear them.
     TabReset.arm(Alpine.store('memory'), 'modules-memory',
-                 { keep: ['blueprints', 'blueprintsLoadedAt', '_pollTimer',
+                 { keep: ['blueprints', 'blueprintsLoadedAt',
                           'dispatching', 'dumps', 'keepDump',
                           'uploading', 'symUploading', 'symLibLoading',
                           'dumpsLoading', 'adopting'] });

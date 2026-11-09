@@ -549,7 +549,7 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
         except (TypeError, ValueError):
             pass
 
-    from services.workflow_service import register_cancel_event, unregister_cancel
+    from services.workflow_service import register_cancel_event, register_cleanup, request_stop, unregister_cancel
 
     case_id = _job_case(job_meta)
     batch_id = create_automation_run(
@@ -568,12 +568,29 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
     stop = register_cancel_event(batch_id)
     update_run_status(batch_id, "running", progress=1)
 
+    # Stop on the batch only flipped the batch row: the host being captured kept
+    # acquiring and analysing for up to an hour, and the operator had to find
+    # its row and stop it by hand. The cleanup runs before the batch turns
+    # 'cancelled', so its log line is not dropped.
+    current = {}   # the host run in flight: {"run": id, "n": position}
+
+    def _stop_current_host():
+        rid = current.get("run")
+        if rid:
+            add_log_to_run(batch_id, f"stopping host {current['n']}/{len(client_ids)} (run {rid}); "
+                                     f"{len(client_ids) - current['n']} host(s) not started", "warning")
+            request_stop(rid, reason=f"batch {batch_id} stopped")
+
+    register_cleanup(batch_id, _stop_current_host)
+
     def _one_after_another():
         total, done = len(client_ids), 0
         try:
             for n, cid in enumerate(client_ids, 1):
                 if stop.is_set():
-                    add_log_to_run(batch_id, f"stopped — {total - n + 1} host(s) not started", "warning")
+                    # force: the batch is already 'cancelled', which drops plain lines.
+                    add_log_to_run(batch_id, f"stopped — {total - n + 1} host(s) not started", "warning",
+                                   force=True)
                     update_run_status(batch_id, "cancelled", progress=(n - 1) * 100 // total)
                     return
                 run_id = create_automation_run(
@@ -590,12 +607,17 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
                         "case_name": case_name,
                     },
                 )
+                current.update(run=run_id, n=n)
+                if stop.is_set():   # Stop landed while this run was created: the cleanup may have missed it
+                    request_stop(run_id, reason=f"batch {batch_id} stopped")
+                    return
                 add_log_to_run(batch_id, f"host {n}/{total}: {cid} → run {run_id}")
                 add_log_to_run(run_id, f"scheduler: memory dispatch client={cid} mode={mode} "
                                        f"(host {n}/{total} of batch {batch_id})", "info")
                 update_run_status(run_id, "running", progress=1)
                 run_memory_pipeline(run_id=run_id, client_id=cid, mode=mode, case_name=case_name,
                                     blueprint=blueprint, timeouts=timeouts or None)
+                current.clear()
                 done += 1
                 if not stop.is_set():   # a Stop mid-host must not be flipped back to running
                     update_run_status(batch_id, "running", progress=max(1, done * 100 // total - 1))

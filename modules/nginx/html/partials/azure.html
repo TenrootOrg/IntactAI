@@ -119,8 +119,11 @@
                                  this.azureRunId = data.run_id;
                                  // Always redirect to workflows - all status/errors visible in log
                                  $store.app.switchTab('workflows');
+                             } else {
+                                 // A refused or failed start used to just re-enable the button.
+                                 alert('Scan failed to start: ' + (data.error || 'unknown'));
                              }
-                         } catch(e) { console.error(e); }
+                         } catch(e) { console.error(e); alert('Scan failed: ' + e.message); }
                          this.azureRunning = false;
                      },
                      async uploadAzureLogs(event) {
@@ -148,14 +151,17 @@
 
                              // Ingest only — collection feeds the case, which
                              // owns all LLM analysis now.
-                             await fetch('/api/azure/analyze-offline', {
+                             const anRes = await fetch('/api/azure/analyze-offline', {
                                  method: 'POST',
                                  headers: { 'Content-Type': 'application/json' },
                                  body: JSON.stringify({ run_id: runId, enable_llm: false })
                              });
+                             // Unchecked, a refused analyze still sent the operator to
+                             // Workflows to watch an `uploaded` row that never moves.
+                             if (!anRes.ok) throw new Error('analysis did not start: ' + ((await anRes.json()).error || anRes.status));
                          } catch(e) {
                              console.error(e);
-                             alert('Upload failed');
+                             alert('Upload failed: ' + e.message);
                              this.azureRunning = false;
                              event.target.value = '';
                              return;

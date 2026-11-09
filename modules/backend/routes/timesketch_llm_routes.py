@@ -27,6 +27,11 @@ from services.openrouter_key import read_conf_value as _read_conf_value
 
 timesketch_llm_bp = Blueprint('timesketch_llm', __name__)
 
+# One settings save at a time. Two overlapping workers each read, edit and
+# rewrite timesketch.conf and restart all four containers twice. Taken by the
+# PUT, released by the worker when it ends.
+_settings_save_lock = threading.Lock()
+
 TIMESKETCH_CONFIG_PATH = '/app/config/timesketch/timesketch.conf'
 TIMESKETCH_CONFIG_DIR = os.path.dirname(TIMESKETCH_CONFIG_PATH)
 DFIQ_DATA_DIR = os.path.join(TIMESKETCH_CONFIG_DIR, 'dfiq')
@@ -499,9 +504,13 @@ def _run_timesketch_settings_workflow(run_id, config_data):
             update_run_status(run_id, "completed", progress=100)
             add_log_to_run(run_id, "Timesketch settings update completed successfully", "success")
         elif containers_ok:
-            # Containers running but web not accessible yet - might still be starting
-            update_run_status(run_id, "completed", progress=100)
-            add_log_to_run(run_id, "Settings saved. Containers running but web interface may still be initializing.", "warning")
+            # Not green: a 'completed' here sent operators to a Timesketch that
+            # would not load, with only a warning line to say why.
+            update_run_status(run_id, "failed",
+                              error=f"Settings saved and containers running, but the "
+                                    f"Timesketch web UI was not reachable after {max_wait}s")
+            add_log_to_run(run_id, "Settings saved, but the Timesketch web interface is not reachable. "
+                                   "Check the intact_timesketch_web logs.", "error")
         else:
             update_run_status(run_id, "failed", error="Containers failed to start properly")
             add_log_to_run(run_id, "Settings workflow failed - containers not running", "error")
@@ -510,6 +519,8 @@ def _run_timesketch_settings_workflow(run_id, config_data):
         add_log_to_run(run_id, f"Error: {str(e)}", "error")
         update_run_status(run_id, "failed", error=str(e))
         traceback.print_exc()
+    finally:
+        _settings_save_lock.release()
 
 
 @timesketch_llm_bp.route('/api/timesketch/config/llm', methods=['PUT'])
@@ -529,7 +540,14 @@ def update_timesketch_llm_config():
                          f"Expected one of: {', '.join(sorted(_TS_PROVIDERS))}."
             }), 400
         data['llm_mode'] = llm_mode
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
+    if not _settings_save_lock.acquire(blocking=False):
+        return jsonify({"error": "A Timesketch settings save is already running. "
+                                 "Wait for it to finish in Settings -> Actions."}), 409
+    started = False
+    try:
         # Resolved here, not in the worker: the shared key (Settings ->
         # Agentic sees it too) must be stored before this returns, and a
         # masked key must become the shared one rather than this file's old one.
@@ -561,6 +579,7 @@ def update_timesketch_llm_config():
         )
         thread.daemon = True
         thread.start()
+        started = True
 
         return jsonify({
             "success": True,
@@ -572,3 +591,7 @@ def update_timesketch_llm_config():
         print(f"[TIMESKETCH] Error starting settings workflow: {e}", flush=True)
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+    finally:
+        # The worker owns the lock once it is running; otherwise give it back.
+        if not started:
+            _settings_save_lock.release()

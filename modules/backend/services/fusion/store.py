@@ -537,6 +537,20 @@ def _set_pending_disposition(case_id, proposal) -> None:
         print(f"[FUSION] pending disposition not saved for {case_id}: {e}", flush=True)
 
 
+def _take_pending_disposition(case_id):
+    """Pop the parked offer under the run lock and return it (None when another turn
+    already took it), so exactly one turn acts on it."""
+    taken = {}
+
+    def _mutate(details):
+        taken["p"] = details.pop("pending_disposition", None)
+    try:
+        _ws().mutate_run_details(case_id, _mutate)
+    except Exception as e:  # noqa: BLE001 — never break the chat over this
+        print(f"[FUSION] pending disposition not taken for {case_id}: {e}", flush=True)
+    return taken.get("p") or None
+
+
 def clear_disposition(case_id, target) -> dict:
     """Reverse an operator triage on a target (un-suppress) and re-fuse so a
     finding marked not-real / known-IT comes back to its real severity. The
@@ -551,12 +565,22 @@ def clear_disposition(case_id, target) -> dict:
     def _mutate(details):
         details["dispositions"] = [x for x in (details.get("dispositions") or [])
                                    if x.get("target") != target]
+        _reopen_checklist(details, {target})
 
     ws.mutate_run_details(case_id, _mutate)
     ws.update_run_status(case_id, "pending")
     log_case_event(case_id, "Risk · disposition cleared", "info", f"{target}; re-fusing")
     fuse_case(case_id, trigger=TRIGGER_DISPOSITION_CLEARED)
     return {"target": target, "cleared": True}
+
+
+def _reopen_checklist(details, targets) -> None:
+    """An accepted checklist item whose disposition was just removed goes back to
+    pending: left "accepted", it claimed the customer had cleared a finding that
+    was back in risk."""
+    for it in details.get("disposition_checklist") or []:
+        if it.get("finding_id") in targets and it.get("status") == "accepted":
+            it["status"] = "pending"
 
 
 def _promote_disposition_to_baseline(case_id, target) -> None:
@@ -803,6 +827,19 @@ def _report_behind(case_id) -> None:
     tokens -- but the Analysis tab says it is behind. Regenerating clears it."""
     try:
         _merge_case_details(case_id, {"report_dirty": True})
+    except Exception:                                   # noqa: BLE001 — a hint, never a failure
+        pass
+    _scopes_report_behind(case_id)
+
+
+def _scopes_report_behind(case_id) -> None:
+    """Verdicts, identities and report settings are the case's, not one scope's: every
+    saved scope's report is behind too. Marking only the live row let switch_scope
+    restore another scope's report_dirty=False over a narrative that no longer matched."""
+    try:
+        _mutate_list_field(case_id, "scopes", lambda cur: [
+            {**s, "report_dirty": True} if isinstance(s, dict) and s.get("report_md") else s
+            for s in cur])
     except Exception:                                   # noqa: BLE001 — a hint, never a failure
         pass
 
@@ -4248,9 +4285,10 @@ def _merge_case_details(case_id, patch) -> None:
     out too, leaving the operator on a spinner that could never finish, with no
     error anywhere in the UI. A persist that did not persist is an exception.
     """
-    ws = _ws()
-    cur = (ws.get_automation_run(case_id) or {}).get("status") or "completed"
-    if not ws.update_run_status(case_id, cur, details=patch):
+    # mutate_run_details, not a status read + update_run_status(cur): that put back a
+    # status a concurrent writer had just changed, and a 'completed' write could
+    # auto-flip a case with logged errors to 'failed'.
+    if not _ws().mutate_run_details(case_id, lambda d: d.update(patch)):
         raise RuntimeError(f"case details write failed for {case_id} "
                            f"(fields: {', '.join(sorted(patch))})")
 
@@ -5258,11 +5296,13 @@ def set_analysis_config(case_id, cfg) -> dict:
     if patch:
         before = get_case(case_id) or {}
         _log_config_changes(case_id, before, patch)
-        if before.get("report_md") and any(k in patch and patch[k] != before.get(k)
-                                           for k in _REPORT_INPUT_KEYS):
+        _inputs_changed = any(k in patch and patch[k] != before.get(k) for k in _REPORT_INPUT_KEYS)
+        if before.get("report_md") and _inputs_changed:
             patch["report_dirty"] = True
         try:
             _merge_case_details(case_id, patch)
+            if _inputs_changed:
+                _scopes_report_behind(case_id)
             log_case_event(case_id, "Configuration saved", "success",
                            f"{len(patch)} setting(s) written to the database")
         except Exception as e:        # surface DB write failures in the log
@@ -5920,6 +5960,14 @@ def decide_checklist_item(case_id, item_id, decision) -> dict:
                         attribution="customer",
                         reason=f"customer-confirmed benign: {item.get('question', '')}",
                         scope="case", trigger=TRIGGER_CHECKLIST)
+    elif decision == "decline" and item.get("finding_id"):
+        # Accept then decline left the accept's benign disposition in place: the item
+        # read "declined" while the finding stayed suppressed. Only the customer's own
+        # disposition goes -- an operator's verdict on the same finding is theirs.
+        fid = item["finding_id"]
+        if any(x.get("target") == fid and x.get("attribution") == "customer"
+               for x in ((get_case(case_id) or {}).get("dispositions") or [])):
+            clear_disposition(case_id, fid)
     return {"item_id": item_id, "status": item["status"]}
 
 
@@ -6051,6 +6099,7 @@ def validate_timeline_many(case_id, finding_ids, status, notes="", *, fuse=True,
                         d["watermark"] = wms[i]
                     rest.append(d)
             details["dispositions"] = rest
+            _reopen_checklist(details, (set(ids) | drop) - {x.get("target") for x in rest})
 
         ws = _ws()
         if ws.mutate_run_details(case_id, _disp) is False:   # no row / unwritable DB
@@ -6492,17 +6541,33 @@ def chat_case(case_id, question) -> str:
     # So the matcher can no longer decide anything. The model ALWAYS answers, and a
     # detected verdict is only offered for confirmation; it is applied on the next
     # turn if — and only if — the operator says yes.
-    pending = d.get("pending_disposition") or None
+    # The scope this turn was asked in: a scope switch while the model answers
+    # must not file the exchange under the scope switched to.
+    turn_scope = _active_scope_id(d)
+    # Every branch below ends the offer, so take it under the lock first: read from
+    # the snapshot, two concurrent "confirm"s both applied it, and a FusionBusy
+    # raised before the clear left it armed for the next "yes".
+    pending = _take_pending_disposition(case_id) if d.get("pending_disposition") else None
     if pending:
         if llm_sim.is_affirmative(question):
             log_case_event(case_id, "Chat · disposition confirmed", "info",
                            f"{pending.get('label')} → {pending.get('verdict')} "
                            f"({pending.get('attribution')})")
-            set_disposition(case_id, pending["target"], verdict=pending["verdict"],
-                            attribution=pending["attribution"],
-                            reason=pending.get("reason", ""),
-                            scope=pending.get("scope", "case"))
-            _set_pending_disposition(case_id, None)
+            try:
+                set_disposition(case_id, pending["target"], verdict=pending["verdict"],
+                                attribution=pending["attribution"],
+                                reason=pending.get("reason", ""),
+                                scope=pending.get("scope", "case"))
+            except FusionBusy:
+                # The disposition is saved before the fuse. Owed explicitly: an
+                # environment verdict hits the busy lock in the baseline's _record=False
+                # fuse, which does not mark it owed, and "queued" would be untrue.
+                with _FUSE_LOCKS_GUARD:
+                    _FUSE_OWED.add(case_id)
+                return (f"Marked **{pending['label']}** as {pending['verdict']} "
+                        f"({pending['attribution']}) — saved. A fuse is already running, "
+                        f"so the re-fuse that applies it is queued to run when that one "
+                        f"finishes.")
             return (f"Marked **{pending['label']}** as {pending['verdict']} "
                     f"({pending['attribution']}). It is suppressed from active findings "
                     f"and no longer drives host risk; the case was re-fused. "
@@ -6510,10 +6575,8 @@ def chat_case(case_id, question) -> str:
         if llm_sim.is_negative(question):
             log_case_event(case_id, "Chat · disposition declined", "info",
                            str(pending.get("label"))[:80])
-            _set_pending_disposition(case_id, None)
             return (f"Kept **{pending['label']}** as-is — nothing was changed.")
         # anything else: the offer simply lapses, the question is answered normally
-        _set_pending_disposition(case_id, None)
 
     from . import injection, decision_model as dm
     injection.take_hits(case_id)            # this turn's injection note starts clean
@@ -6568,7 +6631,13 @@ def chat_case(case_id, question) -> str:
         log_case_event(case_id, "Chat", "error", f"LLM failed: {e}")
         raise
     def _append_msgs(details):           # atomic, so concurrent turns don't clobber
-        msgs = list(details.get("chat_messages") or [])
+        target = details
+        if _active_scope_id(details) != turn_scope:
+            # switched away mid-turn: switch_scope saved our chat into the scope entry
+            target = next((s for s in _scopes(details) if s["id"] == turn_scope), None)
+            if target is None:
+                return                   # that scope was deleted meanwhile
+        msgs = list(target.get("chat_messages") or [])
         msgs += [{"role": "user", "content": question},
                  {"role": "assistant", "content": ans}]
         # Cap retained history: llm_sim.chat() resends the ENTIRE history
@@ -6578,7 +6647,7 @@ def chat_case(case_id, question) -> str:
         # cost/latency per turn with no warning. Keep the most recent
         # exchanges; older turns are dropped from what gets resent (the
         # trimmed history is what's persisted, matching activity_log's cap).
-        details["chat_messages"] = msgs[-_CHAT_HISTORY_CAP:] if len(msgs) > _CHAT_HISTORY_CAP else msgs
+        target["chat_messages"] = msgs[-_CHAT_HISTORY_CAP:] if len(msgs) > _CHAT_HISTORY_CAP else msgs
     _ws().mutate_run_details(case_id, _append_msgs)
     return ans
 

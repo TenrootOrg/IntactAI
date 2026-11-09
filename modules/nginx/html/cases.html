@@ -1172,17 +1172,20 @@ function evUseInAnalysis(id, on){
 }
 // While a log file is being read, follow it: only the attachment list is
 // refreshed, never the whole case under the operator.
-function _evFollow(){
+// One failed poll (backend restart, upgrade) used to stop the follow for good
+// and an {error} reply blanked the list: keep the list and retry, slower.
+function _evFollow(ms){
   clearTimeout(window._evFollowT);
   const busy=_evList().some(x=>x.data_type&&x.log&&(x.log.status==='running'||x.log.status==='pending'));
   if(!busy||!curInfo) return;
   const cid=curInfo.case_id;
   window._evFollowT=setTimeout(()=>api('/api/cases/'+cid).then(info=>{
-    if(!curInfo||curInfo.case_id!==cid||!info) return;
-    curInfo.case_files=info.case_files||[];
+    if(!curInfo||curInfo.case_id!==cid) return;
+    if(!Array.isArray(info&&info.case_files)){ if(info&&info.error) _evFollow(15000); return; }
+    curInfo.case_files=info.case_files;
     if(tab==='evidence' && !window._evAdd && !window._evEdit) renderEvidence(curInfo);
     else if(tab==='data' && !window._dtAdd && !window._evEdit) renderData(curInfo); else _evFollow();
-  }).catch(()=>{}),4000);
+  }).catch(()=>{ if(curInfo&&curInfo.case_id===cid) _evFollow(15000); }),ms||4000);
 }
 function _evItem(x){
   const edit=window._evEdit===x.id, lab=x.finding_title||'';
@@ -2754,7 +2757,13 @@ function renderLog(id){
 function logFollow(on){
   window._logFollow=on;
   if(window._logTimer){clearInterval(window._logTimer);window._logTimer=null;}
-  if(on && tab==='log') window._logTimer=setInterval(logRefresh,4000);
+  // The dashboard hides this iframe (x-show) without unloading it: skip ticks
+  // while hidden, or a Log tab left open polls /log every 4 s until reload.
+  if(on && tab==='log') window._logTimer=setInterval(()=>{
+    const fe=window.frameElement;
+    if(document.hidden||(fe&&!fe.getClientRects().length)) return;   // not offsetParent: null in fullscreen (fixed)
+    logRefresh();
+  },4000);
 }
 function logRefresh(){
   if(!window._logCase) return;

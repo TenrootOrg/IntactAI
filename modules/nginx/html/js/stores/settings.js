@@ -1007,8 +1007,6 @@ document.addEventListener('alpine:init', () => {
         showPreparePackageModal: false,
         prepareLoading: false,
         prepareRunId: null,
-        preparePackageReady: false,
-        preparePackageSize: '',
         // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
         // 'online'  → POST /api/upgrade/online (combined prepare + apply)
         prepareModalMode: 'prepare',
@@ -1399,7 +1397,6 @@ document.addEventListener('alpine:init', () => {
         optedInReinstall: [],       // ONLINE mode: no-change module IDs ticked to FORCE a reinstall (bug recovery)
         fetchingRefs: false,
         computingPlan: false,
-        showingPrepareModules: false,
         // Current installed Intact tag, fetched on modal open. Used
         // by the dropdown filter so older releases are NOT selectable
         // — prevents the operator from accidentally picking a
@@ -1601,10 +1598,14 @@ document.addEventListener('alpine:init', () => {
             // GitHub days. selectedRef intentionally left empty —
             // the operator picks one, and the @change handler fires
             // the next step. No auto-pick + no auto-plan.
+            // Reopening the modal mid-fetch starts a second one; only the newest may land.
+            const seq = this._refsSeq = (this._refsSeq || 0) + 1;
             this.fetchingRefs = true;
             this.upgradeRefs = [];
             this.selectedRef = '';
             this.upgradePlan = null;
+            // Any plan still loading is for a release that is no longer picked.
+            this.computingPlan = false;
             try {
                 // force: always ask GitHub. Both callers are explicit operator
                 // actions (opening the modal, pressing refresh), and the 30-min
@@ -1617,6 +1618,7 @@ document.addEventListener('alpine:init', () => {
                     body: JSON.stringify({ force: true }),
                 });
                 const d = await r.json();
+                if (seq !== this._refsSeq) return;
                 if (d && d.success) {
                     this.upgradeRefs = d.refs || [];
                     // The backend serves the last known list when a live fetch
@@ -1638,6 +1640,7 @@ document.addEventListener('alpine:init', () => {
                     this.showTopToast('Could not fetch releases: ' + (d.error || 'unknown'), 'error');
                 }
             } catch (e) {
+                if (seq !== this._refsSeq) return;
                 const msg = e.name === 'AbortError'
                     ? 'Fetch releases timed out after 60s — GitHub may be slow; try again in a minute.'
                     : 'Fetch releases failed: ' + e.message;
@@ -1651,6 +1654,7 @@ document.addEventListener('alpine:init', () => {
                 this.showTopToast('Pick a release first', 'error');
                 return;
             }
+            const ref = this.selectedRef;
             this.computingPlan = true;
             this.upgradePlan = null;
             this.optedInOptional = [];
@@ -1659,15 +1663,19 @@ document.addEventListener('alpine:init', () => {
                 const r = await this._fetchWithTimeout('/api/upgrade/plan', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({target: this.selectedRef}),
+                    body: JSON.stringify({target: ref}),
                 });
                 const d = await r.json();
+                // The operator picked another release while this loaded: a late
+                // reply would show the old release's plan under the new pick.
+                if (this.selectedRef !== ref) return;
                 if (d && d.success) {
                     this.upgradePlan = d.plan;
                 } else {
                     this.showTopToast('Plan failed: ' + (d.error || 'unknown'), 'error');
                 }
             } catch (e) {
+                if (this.selectedRef !== ref) return;
                 const msg = e.name === 'AbortError'
                     ? 'Plan compute timed out after 60s — GitHub may be slow; try again.'
                     : 'Plan request failed: ' + e.message;
@@ -1757,8 +1765,6 @@ document.addEventListener('alpine:init', () => {
             this.showPreparePackageModal = true;
             this.prepareLoading = false;
             this.prepareRunId = null;
-            this.preparePackageReady = false;
-            this.preparePackageSize = '';
             this.upgradeRefs = [];
             this.selectedRef = '';
             this.upgradePlan = null;
@@ -1791,37 +1797,18 @@ document.addEventListener('alpine:init', () => {
             await this.fetchUpgradeRefs();
         },
 
-        // Operator picked a different release in the dropdown — re-run
-        // the matching step automatically (plan for online, modules
-        // for prepare). Saves a click; matches the "auto-show" UX.
+        // Operator picked a different release in the dropdown — re-plan
+        // automatically in online mode. Prepare mode needs no step: it
+        // downloads the whole package for the picked release.
         async onSelectedRefChange() {
-            if (!this.selectedRef) return;
-            if (this.prepareModalMode === 'online') {
+            if (this.selectedRef && this.prepareModalMode === 'online') {
                 await this.computeUpgradePlan();
-            } else {
             }
         },
 
         closePreparePackageModal() {
             this.showPreparePackageModal = false;
-            this.preparePackageReady = false;
             this.prepareRunId = null;
-        },
-
-        async downloadPreparedPackage() {
-            if (!this.prepareRunId) {
-                this.showMessage('No package ready for download', 'error');
-                return;
-            }
-
-            // Trigger download via new window/tab
-            window.open(`/api/upgrade/prepare/${this.prepareRunId}/download`, '_blank');
-
-            // Close modal after download initiated
-            setTimeout(() => {
-                this.closePreparePackageModal();
-                this.showMessage('Package download started', 'success');
-            }, 1000);
         },
 
         // ===== OFFLINE UPGRADE =====

@@ -7,6 +7,7 @@ is "Refresh client info", a Generic.Client.Info hunt that makes each client
 report its version (a client never interrogated reports none -- 9 of 10 on the
 lab box, 2026-10-11).
 """
+import threading
 import time
 from services import velo_org
 
@@ -803,11 +804,12 @@ def running_upgrade():
                  if r.get("automation_type") == RUN_TYPE and r.get("status") in ("running", "pending")), None)
 
 
+_START_LOCK = threading.Lock()
+
+
 def start_upgrade(stage, client_ids=None, label=None, limit=None, without_pilot=False):
     """Preflight, then start the run. Returns run_id; raises ValueError (the
     operator's reason) when it must not start."""
-    import threading
-    import time
     from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
     if stage not in WATCH:
         raise ValueError("stage must be pilot or rest")
@@ -820,39 +822,43 @@ def start_upgrade(stage, client_ids=None, label=None, limit=None, without_pilot=
             raise ValueError("the wave size must be a number")
         if limit < 1:
             raise ValueError("the wave size must be at least 1")
-    busy = running_upgrade()
-    if busy:
-        raise ValueError(f"an upgrade is still being followed ({busy.get('name')}) -- wait for it to finish "
-                         "or stop it in Settings → Actions")
-    status = client_versions()
-    server = status["server_version"]
-    # The packages are built by the run itself when missing or stale (a server upgrade
-    # happens every few months; building takes ~15 s). A new server version means new
-    # packages, so the pilot gate starts over.
-    pkg = packages_ready(server)
-    # A pilot is recommended, not required: the operator may upgrade the fleet
-    # without one, but must say so (without_pilot), so a stale page or a script
-    # that never heard of the pilot still cannot skip it by accident.
-    no_pilot = stage == "rest" and not (pkg and pilot_passed(pkg["package_id"]))
-    if no_pilot and not without_pilot:
-        raise ValueError(f"no pilot has passed for {server} -- run one, or confirm upgrading without it")
-    targets, refused = upgrade_targets(status, stage, client_ids, label=label, limit=limit)
-    if not targets:
-        why = "; ".join(refused[:5]) if refused else (
-            f"no eligible client{' labelled ' + label if label else ''} -- see 'Not upgraded from here'")
-        raise ValueError("no client to upgrade: " + why)
-    run_label = f"intact-upgrade-{server}-{stage}"
-    scope = (f" labelled {label}" if label else "") + (f", wave of {limit}" if limit else "")
-    run_id = create_automation_run(
-        RUN_TYPE, f"Upgrade Velociraptor clients to {server} ({stage}: {len(targets)}{scope})",
-        details={"stage": stage, "package_version": server, "package_id": (pkg or {}).get("package_id"),
-                 "label": run_label,
-                 "scope": {"label": label, "limit": limit},
-                 "targets": [{"client_id": c["client_id"], "hostname": c["hostname"], "os": c["os"],
-                              "from": c["version"], "org": c.get("org") or "root",
-                              "org_name": c.get("org_name") or "root"} for c in targets],
-                 "watch_until": time.time() + WATCH[stage]["seconds"],
-                 "upgraded": [], "failed": [], "pending": [c["client_id"] for c in targets]})
+    # Check-then-create under one lock: a double-click or a second tab otherwise
+    # passed the one-at-a-time check twice (client_versions() takes seconds) and
+    # hunted the same clients twice.
+    with _START_LOCK:
+        busy = running_upgrade()
+        if busy:
+            raise ValueError(f"an upgrade is still being followed ({busy.get('name')}) -- wait for it to finish "
+                             "or stop it in Settings → Actions")
+        status = client_versions()
+        server = status["server_version"]
+        # The packages are built by the run itself when missing or stale (a server upgrade
+        # happens every few months; building takes ~15 s). A new server version means new
+        # packages, so the pilot gate starts over.
+        pkg = packages_ready(server)
+        # A pilot is recommended, not required: the operator may upgrade the fleet
+        # without one, but must say so (without_pilot), so a stale page or a script
+        # that never heard of the pilot still cannot skip it by accident.
+        no_pilot = stage == "rest" and not (pkg and pilot_passed(pkg["package_id"]))
+        if no_pilot and not without_pilot:
+            raise ValueError(f"no pilot has passed for {server} -- run one, or confirm upgrading without it")
+        targets, refused = upgrade_targets(status, stage, client_ids, label=label, limit=limit)
+        if not targets:
+            why = "; ".join(refused[:5]) if refused else (
+                f"no eligible client{' labelled ' + label if label else ''} -- see 'Not upgraded from here'")
+            raise ValueError("no client to upgrade: " + why)
+        run_label = f"intact-upgrade-{server}-{stage}"
+        scope = (f" labelled {label}" if label else "") + (f", wave of {limit}" if limit else "")
+        run_id = create_automation_run(
+            RUN_TYPE, f"Upgrade Velociraptor clients to {server} ({stage}: {len(targets)}{scope})",
+            details={"stage": stage, "package_version": server, "package_id": (pkg or {}).get("package_id"),
+                     "label": run_label,
+                     "scope": {"label": label, "limit": limit},
+                     "targets": [{"client_id": c["client_id"], "hostname": c["hostname"], "os": c["os"],
+                                  "from": c["version"], "org": c.get("org") or "root",
+                                  "org_name": c.get("org_name") or "root"} for c in targets],
+                     "watch_until": time.time() + WATCH[stage]["seconds"],
+                     "upgraded": [], "failed": [], "pending": [c["client_id"] for c in targets]})
     if no_pilot:
         add_log_to_run(run_id, f"Started without a pilot for {server} (the operator confirmed)", "warning")
     for why in refused[:20]:
@@ -995,6 +1001,7 @@ def _run_upgrade(run_id):
                                            register_cancel_event, unregister_cancel)
     log = lambda m, lvl="info": add_log_to_run(run_id, m, lvl)          # noqa: E731
     cancel = register_cancel_event(run_id)        # Settings → Actions → Stop wakes the wait at once
+    hunts, by_id, label = {}, {}, None            # the except path cleans up whatever got this far
     try:
         d = (get_automation_run(run_id) or {}).get("details") or {}
         stage, server, label = d["stage"], d["package_version"], d["label"]
@@ -1002,7 +1009,10 @@ def _run_upgrade(run_id):
         by_id = {t["client_id"]: t for t in d["targets"]}
         total = len(by_id)
         hunts = dict(d.get("hunts") or {})
-        if not hunts:
+        # Every hunt is saved as soon as it exists, so a restart mid-creation
+        # resumes with the ones still missing -- not `if not hunts`, which made
+        # them all again (duplicate hunts: clients ran the upgrade twice).
+        if not {_hunt_key(t.get("org") or "root", t["os"]) for t in by_id.values()} <= hunts.keys():
             pkg = packages_ready(server)
             if pkg:
                 log(f"Using the verified packages for {server} (built {pkg.get('built_at', '?')})")
@@ -1026,6 +1036,8 @@ def _run_upgrade(run_id):
                 mine = [t for t in by_id.values() if (t.get("org") or "root") == org]
                 where = "" if org == "root" else f" in org {mine[0].get('org_name') or org}"
                 for os_name in sorted({t["os"] for t in mine}):
+                    if _hunt_key(org, os_name) in hunts:
+                        continue
                     art = OS_UPGRADE[os_name]["artifact"]
                     with in_org(org):
                         hunt = (_query(
@@ -1038,6 +1050,7 @@ def _run_upgrade(run_id):
                     if not hunt:
                         raise RuntimeError(f"Velociraptor did not create the {os_name} upgrade hunt{where}")
                     hunts[_hunt_key(org, os_name)] = hunt
+                    update_run_status(run_id, "running", details={"hunts": hunts})
                     log(f"Hunt {hunt}{where}: {art} on {sum(t['os'] == os_name for t in mine)} {os_name} "
                         f"client(s) labelled {label}; downloads spread over {sleep // 60} min; open "
                         f"{w['open_days']} day(s) (offline clients upgrade when next seen)")
@@ -1136,6 +1149,20 @@ def _run_upgrade(run_id):
             + (f", {len(bad)} failed" if bad else ""), "success" if status == "completed" else "warning")
     except Exception as e:  # noqa: BLE001
         log(f"Upgrade stopped: {e}", "error")
+        # A failed run is followed by nobody: Stop no longer reaches it and the
+        # one-at-a-time check lets the next run start, so its open hunts and labels
+        # must not outlive it (they upgraded the same clients again under that run).
+        try:
+            for key, hunt in hunts.items():
+                with in_org(_hunt_org_os(key)[0]):
+                    _query(f"SELECT hunt_update(hunt_id='{hunt}', stop=TRUE) FROM scope()")
+            if label:
+                _label_by_org(list(by_id), label, "remove", by_id)
+            if hunts:
+                log(f"Stopped this run's hunts ({', '.join(hunts.values())}) and removed its label", "warning")
+        except Exception as ce:  # noqa: BLE001
+            log(f"Could not stop this run's hunts ({', '.join(hunts.values()) or 'none'}) or remove its label "
+                f"{label}: {ce} -- stop them in Velociraptor", "error")
         update_run_status(run_id, "failed", progress=100, error=str(e)[:300])
     finally:
         unregister_cancel(run_id)

@@ -33,13 +33,10 @@ def _provider_from_request(default="codex-subscription"):
 
 
 def _close_orphaned_runs(provider):
-    """Close out any earlier run of ours still marked pending/running.
+    """Close out earlier runs of ours whose worker died with a restart.
 
-    Two different situations end up looking identical in the table, and each
-    gets its own explanation below: a backend restart (upgrade, crash, compose
-    recreate) kills the daemon worker while the row stays 'pending' forever, and
-    a second click supersedes a run that is legitimately still waiting (a device
-    login can sit for 15 minutes awaiting approval).
+    A backend restart (upgrade, crash, compose recreate) kills the daemon
+    worker while the row stays 'pending' forever.
     """
     try:
         from services import workflow_service as ws
@@ -51,22 +48,19 @@ def _close_orphaned_runs(provider):
     for r in runs:
         if r.get("name") not in ours or r.get("status") not in ("pending", "running"):
             continue
-        # A run whose worker is still alive here is being superseded by the
-        # action the operator just started (e.g. clicking Connect twice while
-        # the first code was still awaiting approval). One with no worker was
-        # orphaned by a restart. Saying "restarted" for both is a lie the
-        # operator cannot debug.
-        superseded = sub.is_run_active(r["run_id"])
-        msg = ("Superseded: a newer attempt was started from Settings, so this "
-               "one was cancelled." if superseded else
-               "Interrupted: the backend restarted while this workflow was "
-               "running, so it could not finish. Start it again.")
+        # A run whose worker is still alive is left to finish itself. Marking
+        # it "superseded" never stopped it: its _finish later overwrote the
+        # failed row with 'completed', so the log said cancelled and the
+        # status said green.
+        if sub.is_run_active(r["run_id"]):
+            continue
         try:
-            ws.add_log_to_run(r["run_id"], msg, "warning" if superseded else "error")
-            ws.update_run_status(
-                r["run_id"], "failed",
-                error="superseded by a newer attempt" if superseded
-                      else "interrupted by a backend restart")
+            ws.add_log_to_run(
+                r["run_id"],
+                "Interrupted: the backend restarted while this workflow was "
+                "running, so it could not finish. Start it again.", "error")
+            ws.update_run_status(r["run_id"], "failed",
+                                 error="interrupted by a backend restart")
         except Exception:  # noqa: BLE001
             pass
 
@@ -82,6 +76,9 @@ def _start_action(provider, kind, target, *args):
     )
     add_log_to_run(run_id, f"Starting: {name}")
     add_log_to_run(run_id, f"Workflow ID: {run_id}")
+    # Marked before the thread starts, so a second click in that gap does not
+    # see a pending row with no worker and close it as interrupted.
+    sub._mark_active(run_id)
     t = threading.Thread(target=target, args=(run_id, provider) + args)
     t.daemon = True
     t.start()

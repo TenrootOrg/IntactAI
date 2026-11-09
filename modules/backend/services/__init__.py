@@ -47,11 +47,6 @@ from services.vql_utils import (
     safe_json_parse
 )
 
-from services.workflow_logger import (
-    WorkflowLogger,
-    create_logger
-)
-
 __all__ = [
     'create_automation_run',
     'add_log_to_run',
@@ -76,7 +71,5 @@ __all__ = [
     'execute_vql',
     'execute_vql_single',
     'execute_vql_raw',
-    'safe_json_parse',
-    'WorkflowLogger',
-    'create_logger'
+    'safe_json_parse'
 ]
