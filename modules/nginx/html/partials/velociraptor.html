@@ -178,7 +178,7 @@
                         </div>
 
                         <!-- Start Button -->
-                        <button id="forensics-start-btn" onclick="startForensicsCollection()"
+                        <button id="forensics-start-btn" @click="startForensicsCollection(forensicsMode)"
                             class="w-full mt-4 px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
                             :class="forensicsMode === 'raw' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-purple-600 hover:bg-purple-700'">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

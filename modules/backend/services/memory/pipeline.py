@@ -641,11 +641,15 @@ def _max_concurrent_runs() -> int:
     return value
 
 
-def _take_run_slot(cancel, log) -> None:
+def _take_run_slot(cancel, log, run_id: str | None = None) -> None:
     """Block until this run may start. Raises if the run is stopped while it
     waits, so a queued run can be cancelled like any other. Logs outside the
     lock: a log write can sit on SQLite's busy timeout, and a finishing run
-    must never wait on that to hand its slot over."""
+    must never wait on that to hand its slot over.
+
+    A waiting run is marked 'pending': it used to stay 'running 1%' on
+    Workflows for the whole wait (hours, one run at a time), and only its log
+    said it was queued. The first _bump after the slot sets 'running' again."""
     global _runs_active
     told_at = None
     while True:
@@ -662,6 +666,8 @@ def _take_run_slot(cancel, log) -> None:
                 _RUN_SLOTS.wait(timeout=5)
                 continue
             active = _runs_active
+        if told_at is None and run_id:
+            update_run_status(run_id, "pending", progress=0)
         log(f"pipeline: queued — {active} memory run(s) already in progress "
             f"(limit {limit}, setting memory.max_concurrent_runs); this run starts "
             f"when one finishes", "info")
@@ -694,6 +700,7 @@ def run_memory_pipeline(
     from_upload_path: str | None = None,
     timeouts: dict | None = None,
     keep_dump: bool = False,
+    cancel_event=None,
 ) -> None:
     # Resolved timeouts in seconds. Operator override (UI textbox)
     # wins over blueprint.settings, which wins over defaults. Defaults
@@ -736,8 +743,12 @@ def run_memory_pipeline(
       blueprint: optional blueprint dict with overrides
         (``plugin_set``, ``yara_rulesets``, ``compression``,
         ``max_bytes``, etc.).
+      cancel_event: the Event a caller registered before work of its own
+        (the upload route's ZIP extract). Registering a fresh one here would
+        drop a Stop that landed during that work.
     """
-    cancel_event = register_cancel_event(run_id)
+    if cancel_event is None:
+        cancel_event = register_cancel_event(run_id)
     cancel = cancel_event.is_set  # for compactness in cancel checks
 
     # Per-phase state that cleanup needs, populated as we go.
@@ -774,7 +785,17 @@ def run_memory_pipeline(
     # Register a single all-encompassing cleanup callback so Stop
     # triggers cleanup the same way a normal failure path would.
     # ----------------------------------------------------------------
+    # Stop runs _cleanup on the HTTP thread while the worker can reach its
+    # except and run it too. Serialised, not run-once: the worker's pass sees
+    # what the step in flight at Stop time produced after it (a docker cp that
+    # lands the .raw after the first pass, a VolWeb evidence id).
+    cleanup_lock = threading.Lock()
+
     def _cleanup() -> None:
+        with cleanup_lock:
+            _cleanup_locked()
+
+    def _cleanup_locked() -> None:
         if not finished and evidence_id:
             stopped = client.stop_tasks(evidence_id, volweb_task_ids)
             if stopped:
@@ -826,7 +847,7 @@ def run_memory_pipeline(
             # two never leaves a kept image marked for deletion.
             host_path = from_upload_path
             _persist_cleanup_state(run_id, host_path=from_upload_path)
-        _take_run_slot(cancel, log)
+        _take_run_slot(cancel, log, run_id=run_id)
         holds_slot = True
         started_at = time.time()   # "complete in Ns" is the work, not the queue
 
@@ -1041,8 +1062,18 @@ def run_memory_pipeline(
                 for k in ("max_bytes", "cpu_limit", "compression"):
                     if bp_settings.get(k) is not None:
                         overrides[k] = bp_settings[k]
+            def _on_dispatched(fid: str, dst: str) -> None:
+                # Known the moment the flow is dispatched, not after the up-to-
+                # 90-minute acquire: a restart in that window left the boot
+                # reaper nothing to DeleteFlow and no partial .raw to remove,
+                # and a Stop during the extract cleaned up with both None.
+                nonlocal flow_id, host_path
+                flow_id, host_path = fid, dst
+                _persist_cleanup_state(run_id, flow_id=fid, host_path=dst)
+
             acq = acquire_memory_dump(
                 client_id,
+                on_dispatched=_on_dispatched,
                 dumps_dir=dumps_dir,
                 logger=lambda m, level="info": add_log_to_run(run_id, m, level),
                 run_id=run_id,

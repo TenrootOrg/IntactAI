@@ -413,9 +413,31 @@ def _purge_kb_orphans() -> int:
         return 0
 
 
+def _refuse_during_upgrade():
+    """(response, 409) while an upgrade is in flight, else None.
+
+    A purge wipes data/tmp -- the upgrade lock file (a new one is a new inode,
+    so a second upgrade could then start), the run's log, its .done.json and
+    the rollback snapshots -- and can prune images loaded but not yet started.
+    Refused whole rather than per section: almost every section touches
+    something a live upgrade is using."""
+    from services import upgrade_launcher
+    blocking = upgrade_launcher.blocking_upgrade_run()
+    if not blocking:
+        return None
+    return jsonify({
+        "error": "An upgrade is running. Purge is disabled until it finishes "
+                 "(or Stop it first).",
+        "blocking_run_id": blocking,
+    }), 409
+
+
 @maintenance_bp.route('/api/maintenance/purge', methods=['POST'])
 def run_system_purge():
     """Purge all accumulated data: workflows, reports, uploads, temp files, Velociraptor hunt data."""
+    refused = _refuse_during_upgrade()
+    if refused:
+        return refused
     run_id = create_automation_run(
         automation_type="system_purge",
         name="System Purge",
@@ -1807,6 +1829,9 @@ def purge_selected_sections():
     unknown = [s for s in requested if s not in known]
     if unknown:
         return jsonify({"error": f"unknown sections: {unknown}"}), 400
+    refused = _refuse_during_upgrade()
+    if refused:
+        return refused
 
     run_id = create_automation_run(
         automation_type="system_purge",

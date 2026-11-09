@@ -206,6 +206,8 @@ class Evidence(unittest.TestCase):
         get = mock.patch.object(ws, "get_automation_run",
                                 lambda rid, with_logs=True: runs.get(rid)).start()
         upd = mock.patch.object(ws, "update_run_status").start()
+        mock.patch.object(ws, "mutate_run_details",
+                         lambda rid, fn: fn(runs[rid]["details"])).start()
         gone = mock.patch("services.file_storage_service.delete_workflow").start()
         runs["external_log_9"] = {"status": "running", "details": {"rows": 0}}
         self.d["fused_run_ids"] = ["external_log_9", "velociraptor_collection_1"]
@@ -217,7 +219,11 @@ class Evidence(unittest.TestCase):
         self.assertNotIn("error", case_files.add("c1", io.BytesIO(b"x"), "b.log", name="n", description="d",
                                                  data_type="auto"))
         case_files.update("c1", it["id"], {"ai": False})
-        upd.assert_called_with("external_log_9", "running", details={"use_in_analysis": False}, force=True)
+        # C11: details only, under the run lock -- a forced status write raced the
+        # parse finishing and left the run "running" for good.
+        self.assertIs(False, runs["external_log_9"]["details"]["use_in_analysis"])
+        self.assertFalse([c for c in upd.call_args_list if c.kwargs.get("force")],
+                         "the toggle must not force a status write")
         self.assertEqual(["velociraptor_collection_1"], self.d["fused_run_ids"], "the case shows it as changed")
         case_files.delete("c1", it["id"])
         gone.assert_called_once_with("external_log_9")

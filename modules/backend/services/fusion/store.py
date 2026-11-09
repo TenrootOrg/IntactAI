@@ -498,6 +498,12 @@ def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin"
     def _mutate(details):
         existing = [x for x in (details.get("dispositions") or []) if x.get("target") != target]
         details["dispositions"] = existing + [disp]
+        # The newer verdict replaces a Timeline one on the same finding: the Timeline
+        # reads validations over dispositions, so a stale "True positive" there kept
+        # showing over a chat/checklist "benign" that had already left risk.
+        if any(v.get("finding_id") == target for v in (details.get("timeline_validations") or [])):
+            details["timeline_validations"] = [v for v in details["timeline_validations"]
+                                               if v.get("finding_id") != target]
 
     # Atomic read-modify-write under the run lock — a plain get_case() +
     # update_run_status() (the old pattern) reads a snapshot, computes the
@@ -2915,8 +2921,30 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         _llm_calls = d.get("report_llm_calls") or 0
     _plog("Refusion · writing graph to database", "info",
           f"{len(pruned.get('entities') or {}):,} entities → sidecar", pct=95)
+    # A failed graph write used to log one error line and carry on: the row then got
+    # the new fused_at / graph_counts / fused_run_ids over the OLD graph, the case
+    # read "Refusion complete — saved", and the next automatic fuse skipped those
+    # runs as already in the graph. Fail the fuse instead, before anything is
+    # stamped. The old graph is hard-linked aside first so a refused ROW write
+    # below can put it back (a link, not a copy: the graph can be 100s of MB).
+    _gp, _gprev = _graph_path(case_id), _graph_path(case_id) + ".prev"
+    _had_graph = os.path.exists(_gp)
+    try:
+        if os.path.exists(_gprev):
+            os.remove(_gprev)
+        if _had_graph:
+            os.link(_gp, _gprev)
+    except OSError as _e:
+        _gprev = None              # no rollback possible; the merge is idempotent anyway
+        print(f"[FUSION] previous graph not kept aside for {case_id}: {_e}", flush=True)
     if not _write_graph_sidecar(case_id, pruned):
-        _plog("Refusion · graph write", "error", "sidecar write failed (see backend log)")
+        if _gprev and _had_graph:
+            try:
+                os.remove(_gprev)        # the old graph never moved; drop the spare link
+            except OSError:
+                pass
+        raise RuntimeError("graph sidecar write failed (see backend log) — "
+                           "the previous graph and case state are kept")
     report = _with_evidence(case_id, report, d)
     if _report_is_new:
         try:
@@ -2990,7 +3018,22 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         write_report_for_scope(case_id, _gen_scope,
                                {k: _details.pop(k) for k in _report_keys + ("report_counts", "report_engine")
                                 if k in _details})
-    ws.update_run_status(case_id, "completed", details=_details)
+    if ws.update_run_status(case_id, "completed", details=_details) is False:
+        # Refused (a 'cancelled' row) or unwritable: nothing above was saved, but the
+        # log said "saved". Put the old graph back so graph and row still agree.
+        try:
+            if _gprev and _had_graph:
+                os.replace(_gprev, _gp)
+            elif not _had_graph:
+                _delete_graph_sidecar(case_id)
+        except OSError as _e:
+            print(f"[FUSION] previous graph not restored for {case_id}: {_e}", flush=True)
+        raise RuntimeError("the case row write was refused — nothing from this fuse was saved")
+    if _gprev and _had_graph:
+        try:
+            os.remove(_gprev)
+        except OSError:
+            pass
     # Checklist: fill ONLY when the case still has none, and do it under the run lock.
     # It used to ride along in the bulk patch above, computed from a snapshot read at
     # the TOP of this function — ~33 s earlier on a real case (9 hosts / 18.7k
@@ -3123,7 +3166,7 @@ def watch_and_fuse(case_id, run_id, *, poll=10, timeout=10800) -> None:
     start = time.time()
     while time.time() - start < timeout:
         r = ws.get_automation_run(run_id) or {}
-        if (r.get("status") or "") in ("completed", "failed", "cancelled"):
+        if (r.get("status") or "") in ws._FINISHED_STATUSES:   # one tuple with auto-fuse arming
             break
         time.sleep(poll)
     try:
@@ -3198,13 +3241,13 @@ def _read_graph_sidecar(case_id):
 
 def _delete_graph_sidecar(case_id) -> None:
     """The case's fused graph. Both callers that delete case data — delete_case()
-    and the maintenance purge — go through here."""
-    try:
-        os.remove(_graph_path(case_id))
-    except FileNotFoundError:
-        pass
-    except Exception:                                    # noqa: BLE001
-        pass
+    and the maintenance purge — go through here. The ".prev" spare a fuse keeps
+    while it writes (see _fuse_case_locked) goes too, or a crash mid-fuse orphans it."""
+    for p in (_graph_path(case_id), _graph_path(case_id) + ".prev"):
+        try:
+            os.remove(p)
+        except Exception:                                # noqa: BLE001 — incl. FileNotFoundError
+            pass
 
 
 def _counts_from_graph_dict(fg) -> dict:
@@ -6010,7 +6053,11 @@ def validate_timeline_many(case_id, finding_ids, status, notes="", *, fuse=True,
             details["dispositions"] = rest
 
         ws = _ws()
-        ws.mutate_run_details(case_id, _disp)
+        if ws.mutate_run_details(case_id, _disp) is False:   # no row / unwritable DB
+            # A re-fuse never rebuilds dispositions from validations, so "re-fuse to
+            # apply" was a dead end here: the row read FP while the finding kept its risk.
+            _hint[0] = "set the verdict again"
+            raise RuntimeError("the disposition was not saved")
         ws.update_run_status(case_id, "pending")
         trigger = TRIGGER_DISPOSITION if status in reasons else TRIGGER_DISPOSITION_CLEARED
         if not quiet:
@@ -6020,6 +6067,7 @@ def validate_timeline_many(case_id, finding_ids, status, notes="", *, fuse=True,
             return {"finding_ids": ids, "status": status, "refuse": trigger}
         fuse_case(case_id, trigger=trigger)
         return {"finding_ids": ids, "status": status}
+    _hint = ["re-fuse the case"]
     try:
         return _apply()
     except FusionBusy:
@@ -6029,9 +6077,9 @@ def validate_timeline_many(case_id, finding_ids, status, notes="", *, fuse=True,
         if not quiet:
             log_case_event(case_id, "Timeline · validation", "error",
                            f"{label}: the verdict is saved, but applying it to the analysis failed "
-                           f"({why}) — re-fuse the case to apply it")
+                           f"({why}) — {_hint[0]} to apply it")
         return {"finding_ids": ids, "status": status,
-                "warning": f"saved, but not yet applied to the analysis ({why}) — re-fuse the case"}
+                "warning": f"saved, but not yet applied to the analysis ({why}) — {_hint[0]}"}
 
 
 def validate_timeline_batch(case_id, items, notes="") -> dict:
@@ -6259,7 +6307,10 @@ def get_timeline(case_id) -> list:
     # Timeline shows the part of the case inside the selected window. The events
     # and the verdicts below are the case's — one list, triaged once.
     g = view_graph(case_id, d)
-    vrec = {v.get("finding_id"): v for v in (d.get("timeline_validations") or [])}
+    # Dispositions too, not validations alone: a finding marked benign from chat or
+    # the checklist left risk but its row still read Pending. The same merge the
+    # report uses (render.analyst_verdicts); the re-open rule is applied below.
+    vrec = render.analyst_verdicts(d.get("dispositions"), d.get("timeline_validations"))
     fwm = {f.id: f.watermark() for f in g.findings}     # current occurrence watermark
     from . import decision_model as dm
     dm_on = dm.enabled("disposition")

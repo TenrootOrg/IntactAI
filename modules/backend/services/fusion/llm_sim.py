@@ -2471,7 +2471,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                 "The evidence-only brief is below — the rest of the report is "
                                 "unaffected.\n\n"
                                 + render.phase_brief_md(graph, z, _pf, verdicts=render.analyst_verdict_map(
-                                    dispositions, validations)))
+                                    dispositions, validations, graph)))
                     else:
                         body = got.get("body", "")
                     # Same writer as the deterministic report: heading, the facts as

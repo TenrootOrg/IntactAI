@@ -60,7 +60,13 @@ _u_handle_interrupt() {
     # After the unwind, deliberately: the rollback steps above may still need
     # what was extracted. Guarded because this file is sourced on its own in
     # tests, where package.sh's functions are not present.
-    if declare -F upkg_cleanup >/dev/null 2>&1; then
+    #
+    # Not when a failed image load asked to keep it: Stop after that deleted
+    # the retry tree, and the EXIT trap that `exit 130` fires then told the
+    # operator it had been kept. That trap owns the keep message.
+    if declare -F u_keep_scratch_requested >/dev/null 2>&1 && u_keep_scratch_requested; then
+        :
+    elif declare -F upkg_cleanup >/dev/null 2>&1; then
         upkg_cleanup
     fi
 
@@ -101,15 +107,24 @@ _u_exit_cleanup() {
     # ORIGINAL run_id, and that run would then cancel itself the moment it
     # started, for a Stop the operator pressed on a previous attempt.
     [[ -n "${LOG_FILE:-}" ]] && rm -f "${LOG_FILE%.log}.cancel" 2>/dev/null
-    if declare -F u_keep_scratch_requested >/dev/null 2>&1 && u_keep_scratch_requested; then
+    # The keep marker and tally on disk belong to whichever run holds the lock.
+    # A hopped --dry-run (dashboard preview/preflight) runs beside a live
+    # upgrade without it, and must neither clear that run's marker nor leave
+    # its own extraction behind because of it. Unset = sourced alone in tests.
+    local _own=1
+    (( ${U_LOCK_HELD:-1} )) || _own=0
+    if (( _own )) && declare -F u_keep_scratch_requested >/dev/null 2>&1 && u_keep_scratch_requested; then
         log_warn "  an image failed to load — keeping the extracted package for a retry:"
         log_warn "    ${UPKG_DIR:-?}"
         log_warn "    sudo bash ${SCRIPT_DIR}/scripts/upgrade.sh --package-dir ${UPKG_DIR:-?} --root ${SCRIPT_DIR}"
         log_warn "    (swept automatically after 48h)"
     elif declare -F upkg_cleanup >/dev/null 2>&1; then
         upkg_cleanup
-        declare -F u_clear_run_state >/dev/null 2>&1 && u_clear_run_state
     fi
+    # Per-run state, cleared on BOTH branches: clearing it only on the no-keep
+    # one left the marker behind after a failed load, and every later run then
+    # kept its extraction too. The kept tree needs no marker; it is just not deleted.
+    (( _own )) && declare -F u_clear_run_state >/dev/null 2>&1 && u_clear_run_state
     return $rc
 }
 

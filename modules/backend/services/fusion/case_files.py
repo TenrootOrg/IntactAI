@@ -387,12 +387,16 @@ def _use_in_analysis(case_id, run_id, on) -> None:
     """Log data switched in or out of the analysis. The run stays (its rows are kept);
     fusion reads the flag. Forgetting the run among the fused ones makes the case
     show "new data — Refusion" in either direction."""
-    from services.workflow_service import get_automation_run, update_run_status
-    run = get_automation_run(run_id) or {}
-    if run:
-        update_run_status(run_id, run.get("status") or "completed", details={"use_in_analysis": on},
-                          force=True)
+    from services.workflow_service import get_automation_run, mutate_run_details
+    # Details only, under the run lock. It used to read the status unlocked and write
+    # it back with force=True, so a toggle landing as the parse finished put the
+    # run back to "running" for good (never fused; failed by the next restart).
+    mutate_run_details(run_id, lambda det: det.update(use_in_analysis=on))
     _forget_fused(case_id, run_id)
+    # The old status write also armed the auto-fuse on a finished run; keep that.
+    if (get_automation_run(run_id, with_logs=False) or {}).get("status") in ("completed", "success"):
+        from . import autofuse
+        autofuse.schedule(case_id, reason=f"log data switched {'in' if on else 'out'}")
 
 
 def _forget_fused(case_id, run_id) -> None:

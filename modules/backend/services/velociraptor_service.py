@@ -24,7 +24,6 @@ from services.vql_safety import is_valid_client_id, is_valid_flow_id
 velociraptor_api_config = None
 _api_config_lock = threading.Lock()
 _API_CONFIG_KEYS = ("ca_certificate", "client_private_key", "client_cert", "api_connection_string")
-_SHARED_CONFIG_COPY = "/tmp/api.config.yaml"
 _CONNECT_CHECK_SECONDS = 5
 
 def get_clients_from_snapshot(include_offline=False):
@@ -303,25 +302,10 @@ def load_velociraptor_api_config(stale=None):
                 print("[CONFIG] ✗ API config is incomplete", flush=True)
                 return None
             velociraptor_api_config = config
-            _refresh_shared_config_copy(result.stdout)
             return config
         except Exception as e:
             print(f"[CONFIG] ✗ Exception loading API config: {e}", flush=True)
             return None
-
-
-def _refresh_shared_config_copy(text):
-    """tools_download_service and msi_generator_service still read their own copy
-    of /tmp/api.config.yaml (written by them only when missing), so keep it current
-    -- replaced atomically, never truncated in place, so a reader can't see it half
-    written. ponytail: drop once both use setup_velociraptor_connection()."""
-    try:
-        tmp = _SHARED_CONFIG_COPY + ".new"
-        with open(tmp, "w") as f:
-            f.write(text)
-        os.replace(tmp, _SHARED_CONFIG_COPY)
-    except OSError as e:
-        print(f"[CONFIG] Could not refresh {_SHARED_CONFIG_COPY}: {e}", flush=True)
 
 
 def _secure_channel(config):

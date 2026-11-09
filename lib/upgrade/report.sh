@@ -5,7 +5,8 @@
 #   0  everything committed, every gate 'up'
 #   1  at least one module rolled back or failed
 #   2  refused before touching anything (set by the caller, not here)
-#   3  everything committed but at least one module degraded
+#   3  everything committed but at least one module degraded, or the
+#      post-upgrade gate found a problem (U_POST_GATE_ERRORS, set by upgrade.sh)
 
 print_upgrade_report() {
     local item
@@ -59,7 +60,7 @@ print_upgrade_report() {
 upgrade_exit_code() {
     if (( ${#UPGRADE_FAILED[@]} || ${#UPGRADE_ROLLED_BACK[@]} )); then
         echo 1
-    elif (( ${#UPGRADE_DEGRADED[@]} )); then
+    elif (( ${#UPGRADE_DEGRADED[@]} || ${U_POST_GATE_ERRORS:-0} > 0 )); then
         echo 3
     else
         echo 0

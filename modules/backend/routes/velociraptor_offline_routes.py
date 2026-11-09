@@ -277,6 +277,9 @@ def generate_offline_collector():
                     encryption_scheme=encryption_scheme,
                     encryption_password=encryption_password,
                     progress_timeout=progress_timeout,
+                    # Hand over the Event itself: a lookup by run_id alone
+                    # missed Stop once request_stop dropped the entry (E6).
+                    cancel_event=cancel_event,
                 )
 
                 if result.get('cancelled'):

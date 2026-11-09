@@ -295,8 +295,10 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
             )
         except ValueError as ve:
             add_log_to_run(run_id, str(ve), "error")
-            update_run_status(run_id, "failed")
-            return {"success": False, "error": str(ve)}
+            # error=: without it the row's error field was blank (or the generic
+            # "1 fatal error(s) logged") and the reason sat only in the log.
+            update_run_status(run_id, "failed", error=str(ve))
+            return {"success": False, "run_id": run_id, "error": str(ve)}
 
         # Verify this is a valid Velociraptor collection ZIP
         add_log_to_run(run_id, "Verifying ZIP contents...")
@@ -711,19 +713,36 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
                 "artifacts": artifacts,
                 "message": f"Successfully imported to Velociraptor. Client: {hostname} ({client_id}). {detail_msg}. View in Velociraptor UI for full details."
             }
-        else:
-            # Import may have worked but we couldn't get the IDs
-            add_log_to_run(run_id, "Import completed but could not retrieve client/flow IDs")
+        elif flow_id:
+            # The import flow ran but named no client: still a real import, and
+            # the flow id is what the read-back needs (it was dropped here, so
+            # the caller found nothing to fuse).
+            add_log_to_run(run_id, "Import completed but could not retrieve the client ID")
             update_run_status(run_id, "completed" if finalize else "running",
-                              progress=100 if finalize else 90)
+                              progress=100 if finalize else 90, details={
+                "hunt_id": imported_hunt_id,
+                "flow_id": flow_id,
+                "artifacts": artifacts,
+                "is_agentic": True,
+            })
 
             return {
                 "success": True,
                 "run_id": run_id,
+                "flow_id": flow_id,
                 "hunt_id": imported_hunt_id,
                 "hostname": hostname,
                 "message": "Import sent to Velociraptor. Check Velociraptor UI for results."
             }
+        else:
+            # No flow id = nothing was imported. Velociraptor reports a failed
+            # ImportCollection (or a ZIP that is no collection) only in its
+            # response log, so this used to end green with an empty case.
+            err = ("Velociraptor returned no import flow — the file is not a Velociraptor "
+                   "collection, or the import failed; see the Velociraptor lines above")
+            add_log_to_run(run_id, err, "error")
+            update_run_status(run_id, "failed", error=err)
+            return {"success": False, "run_id": run_id, "error": err}
 
     except grpc.RpcError as e:
         error_msg = f"gRPC error: {e.details() if hasattr(e, 'details') else str(e)}"

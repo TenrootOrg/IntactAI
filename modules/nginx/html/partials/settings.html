@@ -14,7 +14,7 @@
 
                 <!-- Settings Tabs -->
                 <div x-data="{ settingsTab: 'general' }" @show-system-actions.window="settingsTab = 'actions'; $store.settings.loadActions()"
-                     x-init="setInterval(() => { if (settingsTab === 'actions') $store.settings.loadActions() }, 1000)" class="space-y-4">
+                     x-init="setInterval(() => { if (settingsTab === 'actions' && $store.app.currentTab === 'settings' && !document.hidden) $store.settings.loadActions() }, 1000)" class="space-y-4">
                     <!-- Tab Navigation -->
                     <div class="flex border-b border-gray-700">
                         <button @click="settingsTab = 'general'" :class="settingsTab === 'general' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
@@ -1650,7 +1650,7 @@
                          "Ask clients to report again" lives in the Version unknown column, the one
                          place it matters. -->
                     <div x-show="settingsTab === 'velociraptor' && $store.services.has('velociraptor')" x-transition
-                         x-init="setInterval(() => { if (settingsTab === 'velociraptor' && !document.hidden && !$store.settings.veloLoading) $store.settings.loadVelociraptor() }, 30000)"
+                         x-init="setInterval(() => { if (settingsTab === 'velociraptor' && $store.app.currentTab === 'settings' && !document.hidden && !$store.settings.veloLoading) $store.settings.loadVelociraptor() }, 30000)"
                          class="bg-gray-800 rounded-lg p-5 border border-gray-700">
                         <h3 class="text-lg font-semibold text-white mb-1">Velociraptor clients</h3>
                         <p class="text-xs text-gray-500 mb-4" x-show="$store.settings.velo" x-text="$store.settings.velo ? 'Server ' + $store.settings.velo.summary.server_version + ' · ' + $store.settings.velo.summary.counts.online + ' of ' + $store.settings.velo.summary.total + ' online · clients are upgraded from here: a pilot first, then all the rest' : ''"></p>

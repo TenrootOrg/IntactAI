@@ -457,8 +457,9 @@ def compute_upgrade_plan():
     """The module-selection table for a specific tag. Cheap: fetches only
     the ~0.2 MB merged manifest via `upgrade.sh --plan <tag> --json`, then
     runs the SAME plan_current_versions + plan_build the real run uses.
-    --dry-run is not this cheap -- it takes the upgrade lock and downloads
-    the full payload.
+    --dry-run is not this cheap -- it downloads and extracts the full
+    payload (and takes the upgrade lock when run from a shell, not when the
+    dashboard runs it through the bootstrap).
 
     Body: {"target": "intact-20260812"}
 
@@ -1125,9 +1126,10 @@ def preflight_upgrade_package():
 
     bootstrap_upgrade.sh --package <path> --dry-run does the real work here
     -- the package's own engine is extracted, verified and asked to plan, so
-    this endpoint reuses it rather than a second validator. It briefly takes the upgrade lock (the
-    same one a real apply would), which is fine: preflight is a deliberate
-    pre-apply check, not something polled in the background.
+    this endpoint reuses it rather than a second validator. It takes NO
+    upgrade lock: it enters through the bootstrap, and the engine skips the
+    lock for a hopped --dry-run (scripts/upgrade.sh, "THE FAR SIDE OF THE
+    HOP"), so a preflight never 409s an Apply and can run beside a live one.
 
     Body: {"package_path": "...", "only": "elk,timesketch"}
     """

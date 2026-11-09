@@ -8,7 +8,6 @@ connection attempt fails (a stale hostname must still heal itself).
 """
 import os
 import sys
-import tempfile
 import threading
 import time
 import types
@@ -55,9 +54,7 @@ class FakeGrpc:
 
 class ConfigCache(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.saved = (vs.subprocess.run, vs.grpc, vs._SHARED_CONFIG_COPY, vs.velociraptor_api_config)
-        vs._SHARED_CONFIG_COPY = os.path.join(self.tmp, "api.config.yaml")
+        self.saved = (vs.subprocess.run, vs.grpc, vs.velociraptor_api_config)
         vs.velociraptor_api_config = None
         self.host = "old-host"
         self.execs = 0
@@ -69,7 +66,7 @@ class ConfigCache(unittest.TestCase):
         vs.subprocess.run = run
 
     def tearDown(self):
-        vs.subprocess.run, vs.grpc, vs._SHARED_CONFIG_COPY, vs.velociraptor_api_config = self.saved
+        vs.subprocess.run, vs.grpc, vs.velociraptor_api_config = self.saved
 
     def test_50_concurrent_calls_all_get_a_valid_config_from_one_read(self):
         vs.grpc = FakeGrpc(reachable=lambda addr: True)
@@ -94,8 +91,8 @@ class ConfigCache(unittest.TestCase):
         # healthy again: served from memory
         vs.setup_velociraptor_connection()
         self.assertEqual(2, self.execs)
-        with open(vs._SHARED_CONFIG_COPY) as f:        # sibling services' copy follows
-            self.assertIn("new-host", f.read())
+        # No /tmp copy is written any more: nothing reads it (tools/MSI use this loader).
+        self.assertFalse(hasattr(vs, "_SHARED_CONFIG_COPY"))
 
     def test_server_down_still_returns_a_channel(self):
         # Unchanged config + unreachable server: the caller's own RPC reports the

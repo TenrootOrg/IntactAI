@@ -217,11 +217,32 @@ async function onForensicsBlueprintChange(blueprintId) {
     if (infoDiv) infoDiv.classList.remove('hidden');
 }
 
-async function startForensicsCollection() {
-    // Get mode by checking which mode button has the active class (border-purple/blue-500)
-    const aiButton = document.getElementById('forensics-mode-ai');
-    const rawButton = document.getElementById('forensics-mode-raw');
-    const isAiMode = aiButton?.className.includes('border-purple-500') && !rawButton?.className.includes('border-blue-500');
+// Re-entry guard: neither /api/agentic/run nor /api/velociraptor/bestpractice
+// rejects duplicates, so a double-click started two collections (or two hunts,
+// which with no label filter go to every client).
+let _forensicsStarting = false;
+
+// `mode` is the panel's Alpine forensicsMode ('ai' | 'raw'), passed by the
+// button. It used to be sniffed from the mode tabs' border-* CSS classes, so a
+// restyle would silently turn a Collection click into an all-clients hunt.
+async function startForensicsCollection(mode) {
+    if (mode !== 'ai' && mode !== 'raw') {
+        alert('Pick Collection or Hunt first');
+        return;
+    }
+    if (_forensicsStarting) return;
+    _forensicsStarting = true;
+    const btn = document.getElementById('forensics-start-btn');
+    if (btn) btn.disabled = true;
+    try {
+        await _startForensics(mode === 'ai');
+    } finally {
+        _forensicsStarting = false;
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function _startForensics(isAiMode) {
 
     const blueprintId = document.getElementById('forensics-blueprint-select')?.value;
     if (!blueprintId) {

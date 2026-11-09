@@ -236,6 +236,95 @@ def run_startup_initialization():
     except Exception as e:  # noqa: BLE001 — never block boot on housekeeping
         print(f"[STARTUP] subscription-connector sweep skipped: {e}", flush=True)
 
+    # Reap orphaned runs: anything left RUNNING/PENDING by the previous process was
+    # being driven by an in-backend worker thread that died with the restart and
+    # cannot resume — so it would otherwise hang at its last progress % forever.
+    # Mark them failed with a clear, actionable message. EXCLUDES the upgrade types
+    # (reconcile_on_boot below reattaches them across the very restart an upgrade
+    # causes), server-side velociraptor_hunt (runs on the Velociraptor server, the
+    # dashboard reconciles it) and velociraptor_client_upgrade (resumed above).
+    # Early, before the docker prunes (up to 300 s): a stale 'running' row holds
+    # back its case's auto-fuse, and an import one the upgrade page's active check.
+    try:
+        from services.workflow_service import (load_workflows, update_run_status,
+                                               created_before_boot)
+        _REAP_TYPES = {"velociraptor_upload", "timesketch", "velociraptor_collection",
+                       "agentic", "aws_scan", "azure_scan", "memory",
+                       "velociraptor_adopt", "memory_batch",
+                       # In-backend workers too; they sat 'running' for up to 10 h
+                       # (the idle sweep) after a restart.
+                       "timesketch_upload", "timesketch_kape_upload",
+                       "velociraptor_offline_collector", "velociraptor_offline_import",
+                       "case_import", "case_export", "decision_relevance",
+                       "support_bundle", "external_log", "memory_symbols_upload",
+                       "agentic_external_upload", "scheduled_hunt", "settings",
+                       "maintenance", "system_purge", "investigation"}
+        _reaped = 0
+        _all_runs = load_workflows(with_logs=False) or []
+        for _w in _all_runs:
+            # 'uploaded' for Azure only: its parsed upload lived in memory and is
+            # gone, so the row could never be analysed or end. AWS keeps it on disk.
+            if (_w.get("automation_type") in _REAP_TYPES
+                    and (_w.get("status") in ("running", "pending")
+                         or (_w.get("status") == "uploaded"
+                             and _w.get("automation_type") == "azure_scan"))
+                    # Created by THIS process: Flask serves during boot work, and
+                    # a run started in that window is ours, not orphaned.
+                    and created_before_boot(_w)):
+                _run_id = _w["run_id"]
+                _why = ("Interrupted by a backend restart — the task's worker did "
+                        "not survive. Please re-run/re-upload.")
+                # A scheduled memory batch walks its hosts in one thread that died
+                # here: name the hosts it never reached, or they are silently dropped.
+                if _w.get("automation_type") == "memory_batch":
+                    _started = {(r.get("details") or {}).get("client_id") for r in _all_runs
+                                if (r.get("details") or {}).get("batch_run_id") == _run_id}
+                    _left = [c for c in (_w.get("details") or {}).get("client_ids") or []
+                             if c not in _started]
+                    if _left:
+                        _why += (f" {len(_left)} host(s) never started: " + ", ".join(_left[:20])
+                                 + (" …" if len(_left) > 20 else ""))
+                try:
+                    update_run_status(_run_id, "failed", error=_why)
+                    _reaped += 1
+                except Exception:
+                    pass
+                # Memory acquisitions leak real side effects on a crash: a
+                # multi-GB .raw dump left on disk and a Velociraptor flow
+                # still running on the endpoint. register_cleanup()'s
+                # callback is in-memory only and died with the old process,
+                # so replay it here from the state the pipeline persisted
+                # into details._cleanup_state as it went (see
+                # services/memory/pipeline.py's _persist_cleanup_state).
+                if _w.get("automation_type") == "memory":
+                    try:
+                        _state = (_w.get("details") or {}).get("_cleanup_state") or {}
+                        if _state:
+                            from services.memory.cleanup import cleanup_after_run
+                            # Its flow is in the org the run started in.
+                            with velo_org.use(velo_org.of_run(_w)):
+                                cleanup_after_run(
+                                    client_id=_state.get("client_id"),
+                                    flow_id=_state.get("flow_id"),
+                                    host_path=_state.get("host_path"),
+                                    evidence_id=_state.get("evidence_id"),
+                                    evidence_filename=_state.get("evidence_filename"),
+                                    volweb_client=None,
+                                    delete_evidence_row=False,
+                                    # The operator asked to keep this image (or the
+                                    # run was started FROM one). Without this the
+                                    # replay deletes the very file they kept.
+                                    preserve_dump=_state.get("preserve_dump") or False,
+                                    logger=lambda m, level="info": print(
+                                        f"[STARTUP] [memory-cleanup {_run_id}] {m}", flush=True),
+                                )
+                    except Exception as e:
+                        print(f"[STARTUP] memory-cleanup replay failed for {_run_id}: {e}", flush=True)
+        if _reaped:
+            print(f"[STARTUP] Reaped {_reaped} run(s) orphaned by the restart", flush=True)
+    except Exception as e:
+        print(f"[STARTUP] Orphan-run reaper skipped: {e}", flush=True)
+
     # Boot-time housekeeping that used to live inside the two-phase upgrade
     # resume block. The upgrade engine runs on the host as upgrade.sh now, so
     # there is no pending-upgrade state to resume, no self-heal to arm and no
@@ -388,77 +477,7 @@ def run_startup_initialization():
     except Exception as _ame:
         print(f"[STARTUP] Pre-auth login migration skipped: {_ame}", flush=True)
 
-    # Reap orphaned runs: anything left RUNNING/PENDING by the previous process was
-    # being driven by an in-backend worker thread that died with the restart and
-    # cannot resume — so it would otherwise hang at its last progress % forever.
-    # Mark them failed with a clear, actionable message. EXCLUDES online_upgrade
-    # (which intentionally survives the two-phase restart and resumes above) and
-    # server-side velociraptor_hunt (runs on the Velociraptor server, not here).
-    try:
-        from services.workflow_service import load_workflows, update_run_status
-        _REAP_TYPES = {"velociraptor_upload", "timesketch", "velociraptor_collection",
-                       "agentic", "aws_scan", "azure_scan", "memory",
-                       "velociraptor_adopt", "memory_batch"}
-        _reaped = 0
-        _all_runs = load_workflows(with_logs=False) or []
-        for _w in _all_runs:
-            if (_w.get("automation_type") in _REAP_TYPES
-                    and _w.get("status") in ("running", "pending")):
-                _run_id = _w["run_id"]
-                _why = ("Interrupted by a backend restart — the task's worker did "
-                        "not survive. Please re-run/re-upload.")
-                # A scheduled memory batch walks its hosts in one thread that died
-                # here: name the hosts it never reached, or they are silently dropped.
-                if _w.get("automation_type") == "memory_batch":
-                    _started = {(r.get("details") or {}).get("client_id") for r in _all_runs
-                                if (r.get("details") or {}).get("batch_run_id") == _run_id}
-                    _left = [c for c in (_w.get("details") or {}).get("client_ids") or []
-                             if c not in _started]
-                    if _left:
-                        _why += (f" {len(_left)} host(s) never started: " + ", ".join(_left[:20])
-                                 + (" …" if len(_left) > 20 else ""))
-                try:
-                    update_run_status(_run_id, "failed", error=_why)
-                    _reaped += 1
-                except Exception:
-                    pass
-                # Memory acquisitions leak real side effects on a crash: a
-                # multi-GB .raw dump left on disk and a Velociraptor flow
-                # still running on the endpoint. register_cleanup()'s
-                # callback is in-memory only and died with the old process,
-                # so replay it here from the state the pipeline persisted
-                # into details._cleanup_state as it went (see
-                # services/memory/pipeline.py's _persist_cleanup_state).
-                if _w.get("automation_type") == "memory":
-                    try:
-                        _state = (_w.get("details") or {}).get("_cleanup_state") or {}
-                        if _state:
-                            from services.memory.cleanup import cleanup_after_run
-                            # Its flow is in the org the run started in.
-                            with velo_org.use(velo_org.of_run(_w)):
-                                cleanup_after_run(
-                                    client_id=_state.get("client_id"),
-                                    flow_id=_state.get("flow_id"),
-                                    host_path=_state.get("host_path"),
-                                    evidence_id=_state.get("evidence_id"),
-                                    evidence_filename=_state.get("evidence_filename"),
-                                    volweb_client=None,
-                                    delete_evidence_row=False,
-                                    # The operator asked to keep this image (or the
-                                    # run was started FROM one). Without this the
-                                    # replay deletes the very file they kept.
-                                    preserve_dump=_state.get("preserve_dump") or False,
-                                    logger=lambda m, level="info": print(
-                                        f"[STARTUP] [memory-cleanup {_run_id}] {m}", flush=True),
-                                )
-                    except Exception as e:
-                        print(f"[STARTUP] memory-cleanup replay failed for {_run_id}: {e}", flush=True)
-        if _reaped:
-            print(f"[STARTUP] Reaped {_reaped} run(s) orphaned by the restart", flush=True)
-    except Exception as e:
-        print(f"[STARTUP] Orphan-run reaper skipped: {e}", flush=True)
-
-    # Upgrade runs are the exclusion the reaper above calls out: the intact
+    # Upgrade runs are the exclusion the reaper calls out: the intact
     # module's own recreate of THIS container is what just restarted us, so
     # a run still 'running' here is expected, not orphaned -- it is driven
     # by a detached sibling container that kept going through the restart.

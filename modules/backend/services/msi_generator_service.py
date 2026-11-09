@@ -7,13 +7,11 @@ import os
 import subprocess
 import json
 import time
-import yaml
-import grpc
 import traceback
 from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
 
-from config import VELOCIRAPTOR_CONTAINER, VELOCIRAPTOR_API_CONFIG_PATH
+from config import VELOCIRAPTOR_CONTAINER
 
 # Client installers directory (mounted from host)
 CLIENT_INSTALLER_DIR = "/app/client_installers"
@@ -28,45 +26,14 @@ _SERVER_COLLECTIONS = "/var./clients/server/collections"
 
 
 def setup_velociraptor_connection():
-    """Setup gRPC connection to Velociraptor API"""
-    try:
-        config_path = "/tmp/api.config.yaml"
-
-        if not os.path.exists(config_path):
-            print("[MSI-GEN] Copying API config from Velociraptor container...", flush=True)
-            result = subprocess.run([
-                "docker", "exec", VELOCIRAPTOR_CONTAINER,
-                "cat", VELOCIRAPTOR_API_CONFIG_PATH
-            ], capture_output=True, text=True, timeout=5)
-
-            if result.returncode == 0:
-                with open(config_path, 'w') as f:
-                    f.write(result.stdout)
-            else:
-                print(f"[MSI-GEN] Failed to copy config: {result.stderr}", flush=True)
-                return None
-
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-
-        creds = grpc.ssl_channel_credentials(
-            root_certificates=config["ca_certificate"].encode("utf8"),
-            private_key=config["client_private_key"].encode("utf8"),
-            certificate_chain=config["client_cert"].encode("utf8"),
-        )
-
-        max_message_size = 100 * 1024 * 1024  # 100MB
-        options = (
-            ("grpc.ssl_target_name_override", "VelociraptorServer"),
-            ("grpc.max_receive_message_length", max_message_size),
-            ("grpc.max_send_message_length", max_message_size),
-        )
-        channel = grpc.secure_channel(config["api_connection_string"], creds, options)
-        return channel
-
-    except Exception as e:
-        print(f"[MSI-GEN] Connection setup failed: {e}", flush=True)
-        return None
+    """gRPC channel from the shared, cached API-config loader. This module used to
+    keep its own /tmp/api.config.yaml copy, written only when missing and never
+    re-read, so after a CA restore or adoption it went stale and MSI generation failed
+    with "Connection failed". Root org: MSI generation is server-wide and must not
+    follow the operator's org dropdown (the old private loader never did)."""
+    from services import velo_org, velociraptor_service
+    with velo_org.root():
+        return velociraptor_service.setup_velociraptor_connection()
 
 
 def generate_msi_via_artifact():

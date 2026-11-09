@@ -490,7 +490,7 @@ def start_multi_client_timesketch():
                 "multi_client": True,
                 "client_count": len(clients),
                 "hostnames": hostnames_list,
-                "clients": [{**c, "kape_status": "pending", "plaso_status": "pending"} for c in clients],
+                "clients": clients,
                 "sketch_name": sketch_name if not sketch_id else f"Existing Sketch #{sketch_id}",
                 "sketch_id": sketch_id,
                 "kape_target": kape_target,

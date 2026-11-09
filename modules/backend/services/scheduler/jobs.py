@@ -349,10 +349,18 @@ def update_scheduled_job(job_id: str, updates: dict) -> Optional[dict]:
     conn.commit()
     conn.close()
 
-    # If any recurrence field changed, rebuild the APScheduler trigger.
-    if any(k in updates for k in ('interval_value', 'interval_unit', 'start_at', 'run_time')):
-        scheduler = get_scheduler()
-        if scheduler:
+    # Rebuild the trigger on any recurrence change AND on every enable. Never
+    # resume_job: a paused month/year DateTrigger past its run_date resumes to
+    # no fire time (APScheduler drops it), and one that fired after an edit
+    # un-paused it is already gone, so "enable" did nothing and the error was
+    # swallowed. A disabled job is paused after any rebuild, since the rebuild
+    # re-adds it unpaused.
+    recurrence_changed = any(k in updates for k in ('interval_value', 'interval_unit', 'start_at', 'run_time'))
+    enabled = bool(updates.get('enabled', job.get('enabled', True)))
+    scheduler = get_scheduler() if (recurrence_changed or 'enabled' in updates) else None
+    if scheduler:
+        next_run = None
+        if recurrence_changed or enabled:
             interval_value = updates.get('interval_value', job.get('interval_value', 1))
             interval_unit = updates.get('interval_unit', job.get('interval_unit', 'days'))
             run_time = updates.get('run_time', job.get('run_time', '02:00'))
@@ -360,26 +368,24 @@ def update_scheduled_job(job_id: str, updates: dict) -> Optional[dict]:
             start_dt = _compose_start_dt(start_at, run_time)
             next_run = _schedule_trigger(scheduler, job_id, updates.get('name', job['name']),
                                          interval_value, interval_unit, start_dt)
-            # keep interval_type + start_at + next_run_at consistent with the rebuild
             conn2 = get_db_connection()
             conn2.execute(
-                "UPDATE scheduled_jobs SET interval_type = ?, start_at = ?, next_run_at = ? WHERE id = ?",
-                (interval_unit if interval_unit in INTERVAL_UNITS else 'days',
-                 start_dt.isoformat(), next_run.isoformat() if next_run else None, job_id))
+                "UPDATE scheduled_jobs SET interval_type = ?, start_at = ? WHERE id = ?",
+                (interval_unit if interval_unit in INTERVAL_UNITS else 'days', start_dt.isoformat(), job_id))
             conn2.commit()
             conn2.close()
-
-    # Handle enable/disable
-    if 'enabled' in updates:
-        scheduler = get_scheduler()
-        if scheduler:
+        if not enabled:
             try:
-                if updates['enabled']:
-                    scheduler.resume_job(job_id)
-                else:
-                    scheduler.pause_job(job_id)
-            except Exception:
-                pass
+                scheduler.pause_job(job_id)
+            except Exception as e:  # already gone (fired one-shot): nothing left to fire
+                print(f"[SCHEDULER] pause_job({job_id}) failed: {e}", flush=True)
+            next_run = None  # a disabled job has no next run; don't show a stale one
+        # keep next_run_at consistent with what APScheduler will actually do
+        conn3 = get_db_connection()
+        conn3.execute("UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?",
+                      (next_run.isoformat() if next_run else None, job_id))
+        conn3.commit()
+        conn3.close()
 
     return get_scheduled_job(job_id)
 

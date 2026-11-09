@@ -141,14 +141,27 @@ def get_legacy_binary(version: Optional[str] = None,
         if os.path.exists(dest) and os.path.getsize(dest) > 1024 * 1024:
             return dest
         url = _github_url(v, platform)
+        # Download to <dest>.part and rename only when complete: writing dest
+        # directly left a truncated binary after a network error or a backend
+        # restart, and the >1 MB check above then served it as cached and it
+        # was repacked into a broken legacy collector.
+        part = dest + ".part"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "intactai-legacy-velociraptor/1.0"})
-            with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as out:
+            with urllib.request.urlopen(req, timeout=120) as resp, open(part, "wb") as out:
                 shutil.copyfileobj(resp, out)
-            os.chmod(dest, 0o755)
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"GitHub returned HTTP {e.code} for {url}") from e
+                want = int(resp.headers.get("Content-Length") or 0)
+            if want and os.path.getsize(part) != want:
+                raise IOError(f"length mismatch: got {os.path.getsize(part)}, expected {want}")
+            os.chmod(part, 0o755)
+            os.replace(part, dest)
         except Exception as e:
+            try:
+                os.remove(part)
+            except OSError:
+                pass
+            if isinstance(e, urllib.error.HTTPError):
+                raise RuntimeError(f"GitHub returned HTTP {e.code} for {url}") from e
             raise RuntimeError(f"Failed to download {url}: {e}") from e
         return dest
 

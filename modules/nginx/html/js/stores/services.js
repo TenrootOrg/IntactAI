@@ -42,14 +42,13 @@ document.addEventListener('alpine:init', () => {
                 }
             } catch (e) {
                 console.error('Error checking service status:', e);
-                // Mark all as not_installed if backend is unreachable —
-                // we can't tell the difference between "stopped" and
-                // "never created" without a docker ps reply, so we
-                // conservatively assume nothing is installed (worst
-                // case: the dashboard hides Total card briefly until
-                // the next successful poll).
+                // Unreachable (Wi-Fi/VPN drop, laptop wake, nginx restarting)
+                // says nothing about the containers. Overwriting with
+                // 'not_installed' hid every module's sidebar entry and Settings
+                // tab until the next poll; keep the last answer instead, and
+                // 'checking' (which has() treats as present) for one we never had.
                 for (const serviceId in window.services) {
-                    this.statuses[serviceId] = 'not_installed';
+                    this.statuses[serviceId] = this.statuses[serviceId] || 'checking';
                 }
             }
             this.updateStats();

@@ -348,9 +348,13 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
                 # output. Level-detection so errors / warnings stand out
                 # in the dashboard. 200-char cap is defensive — Plaso
                 # doesn't emit longer lines in practice.
+                # Never "error": an error-level line flips the run to 'failed' at
+                # the end (update_run_status), and Plaso prints harmless lines
+                # containing "error" (a parser skipping one file). A good timeline
+                # showed red. The exit code below is the verdict, as in volweb_client.
                 if logger:
                     line_lower = line.lower()
-                    level = "error" if 'error' in line_lower else ("warning" if 'warning' in line_lower else "info")
+                    level = "warning" if ('error' in line_lower or 'warning' in line_lower) else "info"
                     try:
                         logger(line[:200], level)
                     except Exception:

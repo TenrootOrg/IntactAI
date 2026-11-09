@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="css/tailwind.css?v=10">
     <!-- Alpine is started by js/bootstrap/partial-loader.js AFTER partials are
          injected (not auto-started here), so it walks the fully-assembled DOM. -->
-    <link rel="stylesheet" href="css/styles.css?v=12">
+    <link rel="stylesheet" href="css/styles.css?v=13">
     <!-- Flatpickr date picker (local) -->
     <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css">
     <link rel="stylesheet" href="vendor/flatpickr/dark.css">
@@ -658,31 +658,31 @@
     <script src="js/api-client.js"></script>
     <!-- App stores (split from the former monolithic app.js) -->
     <script src="js/stores/app.js?v=7"></script>
-    <script src="js/stores/services.js?v=4"></script>
-    <script src="js/stores/workflows.js?v=12"></script>
-    <script src="js/stores/settings.js?v=68"></script>
+    <script src="js/stores/services.js?v=5"></script>
+    <script src="js/stores/workflows.js?v=13"></script>
+    <script src="js/stores/settings.js?v=69"></script>
     <script src="js/legacy/handlers.js?v=1"></script>
-    <script src="js/velociraptor.js?v=10"></script>
-    <script src="js/blueprints.js?v=4"></script>
+    <script src="js/velociraptor.js?v=11"></script>
+    <script src="js/blueprints.js?v=5"></script>
     <!-- Shared client picker — must load BEFORE any module that instantiates
          ClientManager at script scope (blueprints-forensics, scheduler, ...). -->
     <script src="js/utils/client-manager.js?v=10"></script>
-    <script src="js/blueprints-forensics.js?v=11"></script>
+    <script src="js/blueprints-forensics.js?v=12"></script>
     <!-- tus resumable upload protocol (local) -->
     <script src="vendor/tus/tus.min.js"></script>
-    <script src="js/upload.js?v=5"></script>
-    <script src="js/timesketch.js?v=4"></script>
+    <script src="js/upload.js?v=6"></script>
+    <script src="js/timesketch.js?v=5"></script>
     <!-- Must load before the stores/partials that call TabReset.arm(). -->
     <script src="js/components/tab-reset.js?v=1"></script>
-    <script src="js/memory.js?v=25"></script>
-    <script src="js/scheduler.js?v=9"></script>
+    <script src="js/memory.js?v=26"></script>
+    <script src="js/scheduler.js?v=10"></script>
     <!-- Extracted inline helpers (Phase C): downloads copy/availability,
          active-case bar, AWS/Azure flatpickr pickers. -->
     <script src="js/components/downloads.js?v=1"></script>
     <script src="js/components/workspace-bar.js?v=5"></script>
     <script src="js/components/cloud-datepickers.js?v=8"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=277"></script>
+    <script src="js/bootstrap/partial-loader.js?v=278"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

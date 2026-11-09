@@ -14,12 +14,10 @@ import json
 import time
 import yaml
 import requests
-import subprocess
 from typing import Dict, List, Optional, Callable
 from urllib.parse import urlparse
 
 # Import Velociraptor gRPC components
-import grpc
 from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
 
@@ -345,6 +343,12 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                 filename = f"download_{int(time.time())}"
 
         full_path = os.path.join(dest_path, filename)
+        # Bytes stream into <name>.part and are renamed to <name> only once
+        # complete: a backend killed mid-download (restart, upgrade recreate,
+        # OOM) used to leave a truncated <name> that every later run reported
+        # as "Already exists". A leftover .part is from such a crash and of
+        # unknown origin, so it is discarded rather than resumed.
+        part = full_path + '.part'
 
         # Check if already exists
         if os.path.exists(full_path):
@@ -353,6 +357,10 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
             return (filename, True)  # Return tuple: (filename, was_cached)
 
         log(f"  Downloading: {filename}")
+        try:
+            os.remove(part)
+        except OSError:
+            pass
 
         # Retry with resume rather than the previous single-attempt behavior:
         # one timeout used to permanently fail this tool for the run, AND
@@ -369,7 +377,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
         expected_size = None
         while attempt < _RETRIES:
             attempt += 1
-            have = os.path.getsize(full_path) if os.path.exists(full_path) else 0
+            have = os.path.getsize(part) if os.path.exists(part) else 0
             if expected_size is not None:
                 if have > expected_size:
                     # On-disk bytes exceed what the server currently reports.
@@ -377,7 +385,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                     # shape -- discard and let the fresh GET below re-read
                     # Content-Length from scratch.
                     try:
-                        os.remove(full_path)
+                        os.remove(part)
                     except OSError:
                         pass
                     have, expected_size = 0, None
@@ -386,6 +394,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                     # Must return success directly -- falling through to the
                     # retries-exhausted path below would delete this
                     # complete file and report it as failed.
+                    os.replace(part, full_path)
                     _ensure_executable(full_path)
                     log(f"  ✓ Downloaded: {filename}")
                     return (filename, False)
@@ -402,7 +411,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                 if have and response.status_code == 200:
                     response.close()
                     try:
-                        os.remove(full_path)
+                        os.remove(part)
                     except OSError:
                         pass
                     have, mode = 0, 'wb'
@@ -439,24 +448,26 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                     if fname_match:
                         filename = fname_match.group(1).strip('"\'')
                         full_path = os.path.join(dest_path, filename)
+                        part = full_path + '.part'
                         mode, have = 'wb', 0
 
-                with open(full_path, mode) as f:
+                with open(part, mode) as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if cancel_event is not None and cancel_event.is_set():
                             log(f"  ✗ Cancelled mid-download: {filename}")
                             try:
                                 f.close()
-                                os.remove(full_path)
+                                os.remove(part)
                             except OSError:
                                 pass
                             return None
                         if chunk:
                             f.write(chunk)
 
-                got = os.path.getsize(full_path)
+                got = os.path.getsize(part)
                 if expected_size and got != expected_size:
                     raise IOError(f"length mismatch: got {got}, expected {expected_size}")
+                os.replace(part, full_path)
 
                 _ensure_executable(full_path)
                 log(f"  ✓ Downloaded: {filename}")
@@ -466,7 +477,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                 last_exc = e
                 if attempt < _RETRIES:
                     backoff = min(30, 2 ** attempt)
-                    resume_at = os.path.getsize(full_path) if os.path.exists(full_path) else 0
+                    resume_at = os.path.getsize(part) if os.path.exists(part) else 0
                     log(f"  download hiccup ({filename}): {type(e).__name__}: {e} — "
                         f"retry {attempt}/{_RETRIES} in {backoff}s (resume @ {resume_at} bytes)")
                     time.sleep(backoff)
@@ -474,8 +485,8 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
         # Retries exhausted: never leave a partial file for the next run's
         # bare "already exists" check to mistake for a complete download.
         try:
-            if os.path.exists(full_path):
-                os.remove(full_path)
+            if os.path.exists(part):
+                os.remove(part)
         except OSError:
             pass
         if isinstance(last_exc, requests.exceptions.Timeout):
@@ -553,7 +564,9 @@ def download_tools_from_config(tools_dir: str, config: Dict,
     # Build set of existing files ONCE to avoid repeated GitHub API calls
     existing_files = set()
     if os.path.exists(tools_dir):
-        existing_files = set(os.listdir(tools_dir))
+        # A crashed download's <name>.part is not a cached tool, and the
+        # unanchored cache_pattern / pattern regexes below would match it.
+        existing_files = {f for f in os.listdir(tools_dir) if not f.endswith('.part')}
 
     for section in download_sections:
         tools = config.get(section, [])
@@ -654,45 +667,14 @@ def download_tools_from_config(tools_dir: str, config: Dict,
 
 
 def setup_velociraptor_connection():
-    """Setup gRPC connection to Velociraptor API."""
-    try:
-        from config import VELOCIRAPTOR_CONTAINER, VELOCIRAPTOR_API_CONFIG_PATH
-
-        config_path = "/tmp/api.config.yaml"
-
-        if not os.path.exists(config_path):
-            result = subprocess.run([
-                "docker", "exec", VELOCIRAPTOR_CONTAINER,
-                "cat", VELOCIRAPTOR_API_CONFIG_PATH
-            ], capture_output=True, text=True, timeout=5)
-
-            if result.returncode == 0:
-                with open(config_path, 'w') as f:
-                    f.write(result.stdout)
-            else:
-                return None
-
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-
-        creds = grpc.ssl_channel_credentials(
-            root_certificates=config["ca_certificate"].encode("utf8"),
-            private_key=config["client_private_key"].encode("utf8"),
-            certificate_chain=config["client_cert"].encode("utf8"),
-        )
-
-        max_message_size = 100 * 1024 * 1024  # 100MB
-        options = (
-            ("grpc.ssl_target_name_override", "VelociraptorServer"),
-            ("grpc.max_receive_message_length", max_message_size),
-            ("grpc.max_send_message_length", max_message_size),
-        )
-        channel = grpc.secure_channel(config["api_connection_string"], creds, options)
-        return channel
-
-    except Exception as e:
-        print(f"[TOOLS] Connection setup failed: {e}", flush=True)
-        return None
+    """gRPC channel from the shared, cached API-config loader. This module used to
+    keep its own /tmp/api.config.yaml copy, written only when missing and never
+    re-read, so after a CA restore or adoption it went stale and tool inventory setup failed
+    with "Connection failed". Root org: tool inventory setup is server-wide and must not
+    follow the operator's org dropdown (the old private loader never did)."""
+    from services import velo_org, velociraptor_service
+    with velo_org.root():
+        return velociraptor_service.setup_velociraptor_connection()
 
 
 def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
@@ -775,8 +757,11 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
                 # serving 45 tools. Every tool whose file landed in a dropped
                 # batch then looked absent, so it was skipped for configuration
                 # instead of being registered.
+                # A crashed download's <name>.part must not be matched by the
+                # unanchored file_pattern below and served as the tool.
                 available_files.extend(
-                    item.get('Name', '') for item in json.loads(response.Response)
+                    n for n in (item.get('Name', '') for item in json.loads(response.Response))
+                    if not n.endswith('.part')
                 )
         log(f"Found {len(available_files)} files in tools directory")
     except Exception as e:

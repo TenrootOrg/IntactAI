@@ -166,7 +166,7 @@ document.addEventListener('alpine:init', () => {
                 // The fetch runs in the background and logs into this same run,
                 // so send them where they can watch it rather than leaving a
                 // button that looks like it did nothing.
-                this.viewLogs(runId);
+                this.viewLogs(runId, { follow: true });
             } catch (e) {
                 alert('Re-collect failed: ' + e.message);
             } finally {
@@ -181,8 +181,19 @@ document.addEventListener('alpine:init', () => {
         // the arrays by JSON.stringify and re-render every line -- a fleet run's
         // 3k-10k lines froze the tab. "Download Log" still gets the whole log.
         RUN_LOG_KEEP: 5000,
-        async viewLogs(runId) {
+        // Every open of the window takes a new generation; a poll whose
+        // generation is stale writes nothing. Two opens of one run at once (a
+        // double-click, or two reattachToActiveRun() after the mid-upgrade
+        // sign-out) each started a poller, both passed the run-id check, and
+        // every new line showed twice -- forever, since the extra interval was
+        // never cleared.
+        _logGen: 0,
+        TERMINAL_QUIET_POLLS: 5,
+        // `follow`: keep polling after the run is over. Re-collect logs into a
+        // run that is already completed, so its window must not stop on status.
+        async viewLogs(runId, { follow = false } = {}) {
             this.stopAutoRefresh();
+            const gen = ++this._logGen;
             const url = `/api/dashboard/automation/${encodeURIComponent(runId)}/logs`;
             this.selectedRun = { id: runId, name: 'Workflow Logs', logs: [] };
             this.modalOpen = true;
@@ -194,7 +205,7 @@ document.addEventListener('alpine:init', () => {
             // refreshed. Instead: keep polling, show a reconnecting note, and only
             // give up after a SUSTAINED outage (well past a normal backend swap).
             const MAX_CONSECUTIVE_FAILURES = 120;   // ~120s of continuous failure
-            let cursor = null, busy = false, failures = 0;
+            let cursor = null, busy = false, failures = 0, idle = 0;
             const fail = (msg) => {
                 // A failed FIRST read (404, bad id) is an answer, not a blip: say
                 // so instead of the modal's default "UNKNOWN | 0% Complete" /
@@ -205,13 +216,13 @@ document.addEventListener('alpine:init', () => {
                 } else this.selectedRun = { ...this.selectedRun, reconnecting: true };
             };
             const poll = async () => {
-                if (busy || document.hidden || !this.modalOpen || this.currentRunId !== runId) return;
+                if (busy || document.hidden || !this.modalOpen || this._logGen !== gen) return;
                 busy = true;
                 try {
                     const r = await fetch(url + (cursor === null ? `?limit=${this.RUN_LOG_KEEP}`
                                                                  : `?since=${cursor}&limit=${this.RUN_LOG_KEEP}`));
                     const d = await r.json().catch(() => ({}));
-                    if (this.currentRunId !== runId) return;
+                    if (this._logGen !== gen) return;
                     if (!r.ok) return fail(d.error || `HTTP ${r.status}`);
                     failures = 0;
                     // No cursor = a backend from before log paging (the minute of an
@@ -219,12 +230,17 @@ document.addEventListener('alpine:init', () => {
                     // so replace, never append, or every line repeats each second.
                     const first = cursor === null || d.cursor === undefined,
                           fresh = d.logs || [], prev = this.selectedRun;
+                    // Stop already answered 'cancelled' (the server sets it before
+                    // replying); a poll sent before that lands with 'running' and
+                    // flipped the header CANCELLED -> RUNNING -> CANCELLED.
+                    const status = prev.status === 'cancelled' && ['running', 'pending'].includes(d.status)
+                        ? 'cancelled' : d.status;
                     cursor = d.cursor ?? cursor ?? 0;
-                    if (first || fresh.length || prev.reconnecting || prev.status !== d.status ||
+                    if (first || fresh.length || prev.reconnecting || prev.status !== status ||
                         prev.progress !== d.progress) {
                         const all = first ? fresh : prev.logs.concat(fresh);
                         this.selectedRun = {
-                            ...prev, name: d.name || prev.name, type: d.type, status: d.status,
+                            ...prev, name: d.name || prev.name, type: d.type, status,
                             progress: d.progress, error: d.error, error_count: d.error_count,
                             reconnecting: false, fetchError: undefined,
                             truncated: (first ? d.truncated : prev.truncated) || all.length > this.RUN_LOG_KEEP,
@@ -232,13 +248,21 @@ document.addEventListener('alpine:init', () => {
                         };
                         if (this.autoScroll) this.scrollToBottom();
                     }
+                    // A finished run gets no more lines. Allow a few quiet polls for
+                    // the stop/cleanup lines that land just after the status, then
+                    // stop asking once a second for as long as the window is open.
+                    if (!follow && ['completed', 'failed', 'cancelled'].includes(status)) {
+                        if (fresh.length) idle = 0;
+                        else if (++idle >= this.TERMINAL_QUIET_POLLS) this.stopAutoRefresh();
+                    } else idle = 0;
                 } catch (e) {
                     fail(e.message);
                 } finally { busy = false; }
             };
             await poll();
             this.scrollToBottom();
-            if (this.modalOpen && this.currentRunId === runId && !this.selectedRun.fetchError) {
+            if (this.modalOpen && this._logGen === gen && !this.selectedRun.fetchError) {
+                this.stopAutoRefresh();
                 this.refreshInterval = setInterval(poll, 1000);
             }
         },
@@ -250,18 +274,19 @@ document.addEventListener('alpine:init', () => {
         SYSTEM_LOG_KEEP: 5000,
         async viewSystemLog(name) {
             this.stopAutoRefresh();
+            const gen = ++this._logGen;    // one poller per window, see viewLogs()
             const url = `/api/system/logs/${encodeURIComponent(name)}`;
             this.selectedRun = { id: name, name, type: 'container log', is_system_log: true, logs: [] };
             this.modalOpen = true;
             this.currentRunId = name;
             let cursor = '', busy = false, failures = 0;
             const poll = async () => {
-                if (busy || document.hidden || !this.modalOpen || this.currentRunId !== name) return;
+                if (busy || document.hidden || !this.modalOpen || this._logGen !== gen) return;
                 busy = true;
                 try {
                     const r = await fetch(url + (cursor ? `?since=${encodeURIComponent(cursor)}` : ''));
                     const d = await r.json().catch(() => ({}));
-                    if (this.currentRunId !== name) return;
+                    if (this._logGen !== gen) return;
                     if (!r.ok) {
                         if (++failures >= 120 || r.status === 404) {
                             this.selectedRun = { ...this.selectedRun, reconnecting: false, fetchError: d.error || `HTTP ${r.status}` };
@@ -285,7 +310,10 @@ document.addEventListener('alpine:init', () => {
             };
             await poll();
             this.scrollToBottom();
-            if (this.modalOpen && this.currentRunId === name) this.refreshInterval = setInterval(poll, 1000);
+            if (this.modalOpen && this._logGen === gen) {
+                this.stopAutoRefresh();
+                this.refreshInterval = setInterval(poll, 1000);
+            }
         },
 
         stopAutoRefresh() {
@@ -346,6 +374,7 @@ document.addEventListener('alpine:init', () => {
 
         closeModal() {
             this.stopAutoRefresh();
+            this._logGen++;     // a poll still in flight must not write into a closed window
             this.modalOpen = false;
             this.selectedRun = null;
             this.currentRunId = null;

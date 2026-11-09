@@ -395,8 +395,15 @@ function resetTimesketchUpload() {
     const progressBar = document.getElementById('ts-upload-bar');
     const dropzoneText = document.getElementById('ts-dropzone-text');
     const fileInput = document.getElementById('ts-kape-file');
+    const uploadBtn = document.getElementById('ts-upload-btn');
 
     tsSelectedFile = null;
+    // uploadKapeToTimesketch disables the button; nothing turned it back on,
+    // so a second upload in the same session needed a page reload.
+    if (uploadBtn) {
+        uploadBtn.disabled = false;
+        uploadBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+    }
     progressDiv.classList.add('hidden');
     progressBar.style.width = '0%';
     dropzoneText.textContent = 'Drag & drop ZIP file or click to browse';

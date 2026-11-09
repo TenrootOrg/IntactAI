@@ -15,7 +15,10 @@ import base64
 import time
 from datetime import datetime
 
-from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
+from services.workflow_service import (
+    create_automation_run, add_log_to_run, update_run_status,
+    register_cancel_event, unregister_cancel,
+)
 
 upload_bp = Blueprint('uploads', __name__)
 
@@ -91,6 +94,30 @@ def _run_was_stopped(run_id):
         return status in ("cancelled", "canceled", "stopped", "failed")
     except Exception:                       # noqa: BLE001 — never block an upload
         return False
+
+
+def _discard_if_stopped(run_id, file_path):
+    """post-finish for a run that is already over: drop the file, process nothing.
+
+    Stop does not stop tus, so post-finish can land minutes after the run
+    ended. Every purpose, not only memory: a stopped Velociraptor or KAPE
+    upload still imported / ran Plaso, an upgrade package was parked for
+    apply, and post-finish's "running, 10%" reopened a row post-terminate had
+    already failed.
+    """
+    if not _run_was_stopped(run_id):
+        return False
+    for leftover in (file_path, f"{file_path}.info"):
+        try:
+            os.remove(leftover)
+        except OSError:
+            pass
+    # force=True: the outcome, not post-cancel residue (as for memory uploads).
+    add_log_to_run(run_id, "Upload finished after the run was stopped — the "
+                           "file was discarded and nothing was processed.",
+                   "warning", force=True)
+    print(f"[TUS HOOK] {run_id} was stopped — discarded {file_path}", flush=True)
+    return True
 
 
 def decode_tus_metadata(metadata_str):
@@ -286,9 +313,11 @@ def _fuse_offline_import(import_result, upload_run_id):
             "[Import] Data added to the workspace. Open Case Analysis and click "
             "Fusion to build the case graph.", "info")
     except Exception as e:
-        print(f"[OFFLINE IMPORT] fuse of imported data failed: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+        # Raise, never swallow: this used to only print, so a gRPC hiccup or a
+        # full disk on the read-back left the run green "completed" with an
+        # empty case and nothing in the run log. The caller's handler logs it
+        # to the run and marks the run failed.
+        raise RuntimeError(f"Reading imported data into the case failed: {e}") from e
 
 
 def import_offline_collection(file_path, original_filename, run_id, password=None):
@@ -304,6 +333,13 @@ def import_offline_collection(file_path, original_filename, run_id, password=Non
         result = import_results(file_path, original_filename, run_id=run_id,
                                 password=password, finalize=False)
         print(f"[TUS HOOK] Velociraptor import result: {result}", flush=True)
+        if not (isinstance(result, dict) and result.get("success")):
+            # import_results already failed the run with its reason. Falling
+            # through to "completed" below let the error-count safety net
+            # replace that reason with "1 fatal error(s) logged".
+            update_run_status(run_id, "failed",
+                              error=(result or {}).get("error") or "Import failed")
+            return
         # Fuse the imported flow into the Case as a final step of THIS
         # upload run — read the rows back and persist them for the
         # fusion graph. No agent, no LLM (see _fuse_offline_import).
@@ -550,7 +586,10 @@ def handle_tus_hook():
                                   f"{provided_run}: {_be}", flush=True)
                         add_log_to_run(provided_run, f"Upload started: {filename} ({size_mb:.1f} MB)")
                         add_log_to_run(provided_run, f"Upload ID: {upload_id}")
-                        update_run_status(provided_run, "running", progress=0)
+                        # A multi-file upgrade shares one run: the next file's
+                        # create must not reopen a run a Stop already ended.
+                        if not _run_was_stopped(provided_run):
+                            update_run_status(provided_run, "running", progress=0)
                         print(f"[TUS HOOK] Reusing pre-created run {provided_run} "
                               f"for upload {upload_id}", flush=True)
                         return jsonify({"ok": True})
@@ -607,7 +646,6 @@ def handle_tus_hook():
             offset = upload_info.get('Offset', 0)
             total_size = upload_info.get('Size', 0)
 
-            # Get workflow run_id (don't pop, just get)
             run_id = _resolve_upload_run(upload_id)
 
             if upload_id in _finished_uploads:
@@ -617,14 +655,15 @@ def handle_tus_hook():
                 print(f"[TUS HOOK] late post-receive for finished {upload_id} — ignored",
                       flush=True)
                 return jsonify({"ok": True})
+            if run_id and _run_was_stopped(run_id):
+                return jsonify({"ok": True})  # Stopped: "running" would reopen it
 
             if run_id and total_size > 0:
                 percentage = (offset / total_size) * 100
                 offset_mb = offset / (1024 * 1024)
                 total_mb = total_size / (1024 * 1024)
 
-                # Log progress at 10% intervals to avoid spam
-                # Use a simple check: log when percentage crosses a 10% boundary
+                # Log only when a 10% boundary is crossed
                 prev_percentage = ((offset - 5 * 1024 * 1024) / total_size) * 100 if offset > 5 * 1024 * 1024 else 0
 
                 # Log at 10%, 20%, 30%, etc. or every 50MB for large files
@@ -694,6 +733,8 @@ def handle_tus_hook():
             # Close the door on late progress hooks BEFORE writing the first
             # completion line, so none of them can interleave behind it.
             _mark_upload_finished(upload_id)
+            if run_id and _discard_if_stopped(run_id, file_path):
+                return jsonify({"ok": True})
 
             print(f"[TUS HOOK] Upload complete: {original_filename}", flush=True)
             print(f"[TUS HOOK] File path: {file_path}", flush=True)
@@ -812,6 +853,10 @@ def handle_tus_hook():
                     )
                     staging = f"/data/memory_dumps/_uploads/{upload_id}"
                     dest = os.path.join(staging, original_filename)
+                    # Registered before the move and handed to the pipeline: one
+                    # it registers itself after a multi-GB stage/extract never
+                    # saw a Stop that landed during them.
+                    cancel_event = register_cancel_event(run_id)
                     try:
                         os.makedirs(staging, exist_ok=True)
                         add_log_to_run(run_id, f"staging {size_mb:.0f} MB onto the analysis volume…")
@@ -843,11 +888,9 @@ def handle_tus_hook():
                                     f"blueprint {bp_id!r} no longer exists — using the defaults",
                                     "warning")
                         keep = (metadata.get('keep_dump') or '').strip().lower() in ('1', 'true', 'yes', 'on')
-                        # Staging a multi-GB image takes long enough for a Stop
-                        # to land in the middle of it. The pipeline would not
-                        # notice: request_stop() pops the cancel event, so the
-                        # fresh one the pipeline registers is not set and it
-                        # would run to completion against a cancelled row.
+                        # Stopped during the stage/extract: discard the image
+                        # here, even with keep_dump, rather than let the pipeline
+                        # take a slot only to bail out on the set event.
                         if _run_was_stopped(run_id):
                             add_log_to_run(run_id,
                                            "Stopped while the image was being staged — "
@@ -876,6 +919,7 @@ def handle_tus_hook():
                             blueprint=blueprint,
                             from_upload_path=raw_path,
                             keep_dump=keep,
+                            cancel_event=cancel_event,
                         )
                     except UploadExtractError as ue:
                         add_log_to_run(run_id, f"upload: extract failed — {ue}", "error")
@@ -885,6 +929,7 @@ def handle_tus_hook():
                         add_log_to_run(run_id, f"upload: pipeline failed — {e}", "error")
                         update_run_status(run_id, "failed", error=str(e))
                     finally:
+                        unregister_cancel(run_id)   # the pipeline does too; this covers a failed stage/extract
                         # Failed before the pipeline took the image? Then the
                         # staged copy is ours to reclaim — the pipeline's own
                         # cleanup never ran and nothing else knows the path.
@@ -1015,6 +1060,8 @@ def handle_tus_hook():
             # Upload was cancelled/terminated
             upload_id = upload_info.get('ID', '')
             run_id = _resolve_upload_run(upload_id, pop=True)
+            # A terminated upload is over too: drop its late progress hooks.
+            _mark_upload_finished(upload_id)
             print(f"[TUS HOOK] Upload terminated: {upload_id}", flush=True)
 
             # Update workflow status

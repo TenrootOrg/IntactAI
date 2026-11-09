@@ -179,7 +179,7 @@
                          } catch(e) { console.error(e); }
                      }
                  }"
-                 x-init="TabReset.arm($data, 'cloud-azure', { keep: ['azureBlueprints', 'azureStatus', 'azureRunning'] }); checkAzureStatus(); loadCustomRules()">
+                 x-init="TabReset.arm($data, 'cloud-azure', { keep: ['azureBlueprints', 'azureStatus', 'azureRunning', 'customRules', 'customRulesUploading'] }); checkAzureStatus(); loadCustomRules()">
 
                 <h2 class="text-3xl font-bold text-white mb-2">Microsoft 365 Security Automation</h2>
                 <p class="text-gray-400 mb-6">Collect Microsoft 365 logs and run SIGMA detection rules. Findings feed the case for analysis.</p>

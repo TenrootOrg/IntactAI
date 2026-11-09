@@ -390,8 +390,13 @@ async function editSchedule(jobId) {
     }
 }
 
+// A double-click on Save (or a second click during a slow save) POSTed twice,
+// and the duplicate job ran every collection or hunt twice (QA F13).
+let _scheduleSaving = false;
+
 // Save schedule from modal
 async function saveScheduleFromModal() {
+    if (_scheduleSaving) return;
     const editId = document.getElementById('schedule-edit-id').value;
     const name = document.getElementById('schedule-name').value.trim();
     let description = document.getElementById('schedule-description').value.trim();
@@ -472,6 +477,7 @@ async function saveScheduleFromModal() {
         payload.report_types = [];
     }
 
+    _scheduleSaving = true;
     try {
         const url = editId ? `/api/scheduler/jobs/${editId}` : '/api/scheduler/jobs';
         const method = editId ? 'PUT' : 'POST';
@@ -493,6 +499,8 @@ async function saveScheduleFromModal() {
 
     } catch (error) {
         alert('Error: ' + error.message);
+    } finally {
+        _scheduleSaving = false;
     }
 }
 

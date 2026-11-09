@@ -9,6 +9,7 @@ import time
 import shlex
 import shutil
 import subprocess
+import uuid
 import zipfile
 from datetime import datetime
 
@@ -165,7 +166,7 @@ def generate_collector(config_id, os_type="windows",
                        legacy=False, legacy_version=None, legacy_source="offline",
                        musl=False, run_id=None,
                        encryption_scheme="none", encryption_password=None,
-                       progress_timeout=None):
+                       progress_timeout=None, cancel_event=None):
     """`run_id` makes the call honour the workflow's Stop button — between
     each phase (gRPC setup, collection wait, file copy, binary swap,
     repack) we check the cancel event and abort cleanly. Without this,
@@ -201,7 +202,12 @@ def generate_collector(config_id, os_type="windows",
     # Cancellation helper — returns True iff the workflow has been Stopped.
     # Each phase boundary calls this; on True we bail with cancelled=True
     # so the caller can short-circuit cleanly.
+    # The route's own `cancel_event` is checked first: request_stop() used to
+    # pop the registry entry, so a lookup by run_id alone read "not stopped"
+    # and Stop let the build run to the end and leave a ZIP behind (E6).
     def _cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            return True
         if not run_id:
             return False
         try:
@@ -231,6 +237,11 @@ def generate_collector(config_id, os_type="windows",
 
         config_name = config.get("config_name", "Collection")
         safe_name = _sanitize_config_name(config_name)
+        # Per-run suffix on file_id and the ZIP name: a rebuild of the same
+        # blueprint/OS (say with another password) used to overwrite the ZIP,
+        # so an older run's Download served the newer build, and two
+        # concurrent builds deleted each other's file (E6).
+        run_tag = uuid.uuid4().hex[:8]
 
         # Get artifacts and parameters — pick the set appropriate for the TARGET OS.
         # The blueprints are Windows-centric; feeding Windows artifacts to a Linux/
@@ -498,7 +509,7 @@ def generate_collector(config_id, os_type="windows",
                         if "too large" in flow_status.lower():
                             print(f"[OFFLINE] Config too large for official collector, falling back to script-based collector...", flush=True)
                             channel.close()
-                            file_id = f"{safe_name}_{os_type}"
+                            file_id = f"{safe_name}_{os_type}_{run_tag}"
                             output_path = os.path.join(COLLECTOR_OUTPUT_DIR, f"OfflineCollector_{file_id}.zip")
                             return create_collection_script(config, file_id, os_type, output_path)
                         return {"success": False, "error": f"Collector creation failed: {flow_status}"}
@@ -546,7 +557,7 @@ def generate_collector(config_id, os_type="windows",
         print(f"[OFFLINE] Found collector at: {collector_path_in_container}", flush=True)
 
         # Create temp directory for bundle
-        bundle_dir = os.path.join(COLLECTOR_OUTPUT_DIR, f"bundle_generic_{safe_name}_{int(time.time())}")
+        bundle_dir = os.path.join(COLLECTOR_OUTPUT_DIR, f"bundle_generic_{safe_name}_{run_tag}")
         os.makedirs(bundle_dir, exist_ok=True)
 
         if _cancelled():
@@ -755,11 +766,9 @@ echo "============================================"
             return {"success": False, "cancelled": True, "error": "cancelled"}
 
         # Create final ZIP bundle
-        output_filename = f"OfflineCollector_{safe_name}_{os_type}.zip"
+        file_id = f"{safe_name}_{os_type}_{run_tag}"
+        output_filename = f"OfflineCollector_{file_id}.zip"
         output_path = os.path.join(COLLECTOR_OUTPUT_DIR, output_filename)
-
-        if os.path.exists(output_path):
-            os.remove(output_path)
 
         print(f"[OFFLINE] Creating ZIP bundle: {output_filename}", flush=True)
 
@@ -791,7 +800,7 @@ echo "============================================"
 
         return {
             "success": True,
-            "file_id": f"{safe_name}_{os_type}",
+            "file_id": file_id,
             "file_name": output_filename,
             "file_path": output_path,
             "file_size": file_size,
@@ -1053,14 +1062,10 @@ fi
                 f.write(script_content)
             os.chmod(script_path, 0o755)
 
-        # Create ZIP bundle with binary and script (use consistent name to overwrite previous)
-        safe_name = _sanitize_config_name(config_name)
-        zip_filename = f"OfflineCollector_{safe_name}_{os_type}.zip"
+        # Named after the caller's per-run file_id so a rebuild never
+        # overwrites an older run's download (E6).
+        zip_filename = f"OfflineCollector_{file_id}.zip"
         zip_path = os.path.join(COLLECTOR_OUTPUT_DIR, zip_filename)
-
-        # Remove existing file if present
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
 
         print(f"[OFFLINE] Creating ZIP bundle: {zip_path}", flush=True)
 
@@ -1088,9 +1093,6 @@ fi
 
         print(f"[OFFLINE] Verified ZIP bundle ready: {zip_filename} ({zip_size} bytes)", flush=True)
 
-        # Use consistent file_id based on config name and OS (for download URL)
-        consistent_id = f"{safe_name}_{os_type}"
-
         # Build note with skipped artifact info
         note = f"ZIP bundle with velociraptor_client and {script_name} - extract and run as admin"
         if skipped_artifacts:
@@ -1098,7 +1100,7 @@ fi
 
         return {
             "success": True,
-            "file_id": consistent_id,
+            "file_id": file_id,
             "file_name": zip_filename,
             "file_path": zip_path,
             "file_size": zip_size,

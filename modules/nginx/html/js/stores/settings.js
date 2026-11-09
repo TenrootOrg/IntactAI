@@ -253,6 +253,9 @@ document.addEventListener('alpine:init', () => {
         // Settings → Velociraptor. Built for fleets of thousands: the server sends a
         // summary + ONE filtered page (50), never the whole fleet.
         async loadVelociraptor() {
+            // Filter/search/page calls overlap with the 30 s tick; only the
+            // newest may write, or a slow older reply shows the wrong page.
+            const seq = this._veloSeq = (this._veloSeq || 0) + 1;
             this.veloLoading = true;
             this.veloError = '';
             try {
@@ -262,11 +265,15 @@ document.addEventListener('alpine:init', () => {
                 if (!this.veloShowUnknown) qs.set('hide', 'unknown');
                 const r = await fetch('/api/velociraptor/clients/versions?' + qs);
                 const d = await r.json().catch(() => ({}));
+                if (seq !== this._veloSeq) return;
                 if (r.ok) this.velo = d;
                 else this.veloError = d.error || ('HTTP ' + r.status);
                 const u = await fetch('/api/velociraptor/clients/upgrade-state');
-                if (u.ok) this.veloUpgrade = await u.json();
+                const ud = u.ok ? await u.json() : null;
+                if (seq !== this._veloSeq) return;
+                if (ud) this.veloUpgrade = ud;
             } catch (e) {
+                if (seq !== this._veloSeq) return;
                 this.veloError = e.message;
             }
             this.veloLoading = false;
@@ -782,6 +789,9 @@ document.addEventListener('alpine:init', () => {
         // --- Settings → Actions (system-operation run history) ----------------
         actionsInitialLoad: true,
         async loadActions() {
+            // The 1 s tick doesn't wait for a slow reply; don't stack them.
+            if (this._actionsBusy) return;
+            this._actionsBusy = true;
             // Only show the loading spinner on the very first load — the 1s
             // auto-refresh poll otherwise flips actionsLoading true/false
             // every tick, which flashed the spinner and made the whole
@@ -802,6 +812,7 @@ document.addEventListener('alpine:init', () => {
                 if (this.actionsInitialLoad) this.actions = [];
             } finally {
                 this.actionsLoading = false;
+                this._actionsBusy = false;
             }
         },
 
@@ -1208,6 +1219,11 @@ document.addEventListener('alpine:init', () => {
                 // operator saw "Apply" close the modal but no workflow
                 // appeared.
                 const file = this.applyPackage._localFile;
+                // The whole multi-asset set, read now: close() empties
+                // applyPackageFiles, and reading it after that uploaded only
+                // the first asset (an apply naming modules it lacked).
+                const files = (this.applyPackageFiles && this.applyPackageFiles.length)
+                    ? Array.from(this.applyPackageFiles) : [file];
                 const selected = this.applySelectedModules.slice();
                 // Split the ticks the backend cannot re-derive: which of these
                 // are already at the target version and are being re-applied
@@ -1244,8 +1260,6 @@ document.addEventListener('alpine:init', () => {
                 // reassembling it first. Upload each file under the SAME
                 // upload_run_id so they land in one workflow, then apply them
                 // together — the backend merges them into one package.
-                const files = (this.applyPackageFiles && this.applyPackageFiles.length)
-                    ? Array.from(this.applyPackageFiles) : [file];
                 const uploadedPaths = [];
                 let failed = false;
 
@@ -2095,6 +2109,9 @@ document.addEventListener('alpine:init', () => {
 
         async cliRefresh() {
             if (!this.isSubscription()) return;
+            // Each detect spawns two codex processes on the backend; the panel
+            // only lives on Settings, so skip ticks while it can't be seen.
+            if (Alpine.store('app')?.currentTab !== 'settings' || document.hidden) return;
             const provider = this.config.agentic.online_llm.provider;
             try {
                 const r = await fetch('/api/agentic/cli/status?provider=' + encodeURIComponent(provider));
@@ -2268,7 +2285,6 @@ document.addEventListener('alpine:init', () => {
                 // from `codex debug models` (the CLI's own list, which the CLI
                 // actually accepts), not from the vendor's web /models endpoint.
                 this.config.agentic.online_llm.model = '';
-                this._cliStopLogin();
                 this.cliStartPolling();
                 // populate the CLI-backed catalog (no-op until connected)
                 try { await fetch('/api/maintenance/refresh-codex-models', { method: 'POST' }); } catch (e) {}

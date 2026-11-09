@@ -353,7 +353,10 @@ def start_scan():
             if is_cancelled(run_id):
                 return
 
-            if result.get('status') == 'failed':
+            # The pipeline reports failure as 'error'. Checking only 'failed'
+            # let a crashed or all-sources-failed scan finish green; the
+            # offline path below already checks both.
+            if result.get('status') in ('failed', 'error'):
                 update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))
             else:
                 if not is_cancelled(run_id):

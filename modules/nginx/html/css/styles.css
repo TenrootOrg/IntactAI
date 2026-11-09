@@ -197,6 +197,13 @@ select option {
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
+/* Dashboard service-card status light (services.js getStatusClass). The
+   "de-neon" pass dropped these and every card's dot went blank. */
+.status-dot { flex-shrink: 0; background: #6b7280; }
+.status-online { background: #22c55e; }
+.status-offline { background: #ef4444; }
+.status-checking { background: #eab308; animation: pulse 1.5s infinite; }
+
 /* Client tooltip (hover popover on the dashboard client-count card) */
 .client-tooltip {
     display: none;

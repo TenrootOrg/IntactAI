@@ -19,6 +19,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+from routes.blueprint_routes import _refuse_default_write
 from services.file_storage_service import get_workflow as file_get_workflow
 from services.memory import pipeline as memory_pipeline
 from services.memory.upload_extract import (
@@ -35,7 +36,9 @@ from services.storage.config_store import load_frontend_config
 from services.workflow_service import (
     add_log_to_run,
     create_automation_run,
+    register_cancel_event,
     request_stop,
+    unregister_cancel,
     update_run_status,
 )
 
@@ -479,6 +482,10 @@ def upload_memory_dump():
         "info",
     )
     update_run_status(run_id, "running", progress=1)
+    # Registered before the extract and handed to the pipeline: it used to
+    # register its own after the extract, so a Stop during a multi-GB unzip
+    # was lost and the whole pipeline ran on a cancelled row.
+    cancel_event = register_cancel_event(run_id)
 
     # Resolve the raw image (ZIP-extract if needed) in a worker thread
     # so a 5 GB ZIP-decompress doesn't block the route. The pipeline
@@ -507,13 +514,16 @@ def upload_memory_dump():
                 blueprint=blueprint,
                 from_upload_path=raw_path,
                 keep_dump=keep_dump,
-                    )
+                cancel_event=cancel_event,
+            )
         except UploadExtractError as ue:
             add_log_to_run(run_id, f"upload: extract failed — {ue}", "error")
             update_run_status(run_id, "failed", error=str(ue))
         except Exception as e:
             add_log_to_run(run_id, f"upload: pipeline failed — {e}", "error")
             update_run_status(run_id, "failed", error=str(e))
+        finally:
+            unregister_cancel(run_id)   # the pipeline does too; this covers a failed extract
 
     threading.Thread(target=_resolve_and_run, daemon=True).start()
     return jsonify({
@@ -753,7 +763,7 @@ def _memory_runs_in_flight() -> list:
     try:
         from services.storage.workflow_store import load_workflows
         return [w for w in (load_workflows() or []) if w.get("automation_type") == "memory"
-                and w.get("status") in ("running", "pending", "queued")]
+                and w.get("status") in ("running", "pending")]
     except Exception:                        # noqa: BLE001
         return []
 
@@ -952,6 +962,10 @@ def stop_memory_run(run_id):
     run = _get_run(run_id)
     if not run or not _run_visible_in_active_workspace(run):
         return jsonify({"error": "Run not found"}), 404
+    # Same rule as the dashboard Stop: request_stop writes 'cancelled' with no
+    # check, so a Stop on a finished run turned a completed one into cancelled.
+    if run.get("status") not in ("running", "pending"):
+        return jsonify({"error": f"Cannot stop a memory run in '{run.get('status')}' state"}), 409
     request_stop(run_id)
     return jsonify({"ok": True})
 
@@ -980,6 +994,13 @@ def create_memory_blueprint():
     if not data.get("id"):
         import time
         data["id"] = f"custom_{int(time.time() * 1000)}"
+    # Same rule as /api/blueprints/memory (QA D9): this table is INSERT OR
+    # REPLACE, so a default's id here would overwrite it; and a body must not
+    # mint an is_default row, which no delete route would then remove.
+    refused = _refuse_default_write(get_blueprint(_BLUEPRINT_TYPE, data["id"]))
+    if refused:
+        return refused
+    data["is_default"] = False
     bp = save_blueprint(_BLUEPRINT_TYPE, data)
     # A failed save must not report 201. save_blueprint swallows storage errors
     # and returns falsy (it logs "[STORAGE] Error saving ..."), so this returned
@@ -999,14 +1020,24 @@ def update_memory_blueprint(bp_id):
     existing = get_blueprint(_BLUEPRINT_TYPE, bp_id)
     if not existing:
         return jsonify({"error": "blueprint not found"}), 404
+    # Defaults are read-only on every door, not just /api/blueprints (QA D9).
+    refused = _refuse_default_write(existing)
+    if refused:
+        return refused
     data = request.get_json(silent=True) or {}
     data["id"] = bp_id
+    data["is_default"] = False
     bp = save_blueprint(_BLUEPRINT_TYPE, data)
     return jsonify({"blueprint": bp})
 
 
 @memory_bp.route("/api/memory/blueprints/<bp_id>", methods=["DELETE"])
 def delete_memory_blueprint(bp_id):
+    # Mirrors /api/blueprints/memory/<id>: a default re-seeds on boot, so a
+    # delete would only "work" until the next restart.
+    existing = get_blueprint(_BLUEPRINT_TYPE, bp_id)
+    if existing and existing.get("is_default"):
+        return jsonify({"error": "Cannot delete default blueprints"}), 400
     ok = delete_blueprint(_BLUEPRINT_TYPE, bp_id)
     if not ok:
         return jsonify({"error": "blueprint not found"}), 404

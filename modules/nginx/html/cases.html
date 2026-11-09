@@ -318,7 +318,7 @@
 <script src="vendor/flatpickr/flatpickr.min.js"></script>
 <!-- resumable chunked upload, for importing a case bundle (multi-GB) -->
 <script src="vendor/tus/tus.min.js"></script>
-<script src="js/upload.js?v=5"></script>
+<script src="js/upload.js?v=6"></script>
 </head>
 <body>
 <header>
@@ -1760,6 +1760,10 @@ function pollReportGen(id){
   const tick=()=>{
     api('/api/cases/'+id).then(info=>{
       if(_genPollCase!==id) return;              // superseded by a newer poll
+      // api() never looks at the HTTP status, so a 500 or 404 (case deleted in
+      // another tab) arrives here as {error}. With no report_written_at in it,
+      // that read as "the report changed": a reload and a toast every 5 s.
+      if(!info || info.error) return;
       // AI settings changed while this case is open — on ANY tab. The Analysis
       // tab used to be the only place a newly working model was noticed, so an
       // operator on the Log saw nothing until they clicked back. The payload
@@ -1858,6 +1862,9 @@ function regenReport(id, force){
   // use_llm:true -> premium LLM narrative (the only report path that spends tokens)
   api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(force?{use_llm:true,force:true}:{use_llm:true})})
    .then(r=>{
+     // A 500 is still JSON ({error}) and used to toast "Report generation
+     // started." A busy 409 also carries `error` but is not a failure.
+     if(r && r.error && !r.busy) throw new Error(r.error);
      if(r && r.status==='offline'){
        // Already written, synchronously. Nothing is generating; just show it.
        if(!backgroundRefresh(id, null)) pollReportGen(id);
@@ -2025,6 +2032,9 @@ async function doRefusion(id){
   toast('Refusion started. Progress is shown in the Log.');
   try{
     const r = await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    // A crashed rescan is a 500 with a JSON {error}; it used to toast "Refusion
+    // complete" while the Log said it crashed. Busy carries `error` too (below).
+    if(r && r.error && !r.busy) throw new Error(r.error);
     // 409 from the backend's FusionBusy handler: a fuse is already running for this
     // case. Not a failure — the config posted above IS persisted and a retry re-fuses
     // with it — so say so instead of showing the red "failed" toast.
@@ -2782,6 +2792,10 @@ let chatHist=[];
 // the question exists in this tab and nowhere else, and anything that reloads
 // chatHist from the server erases it.
 let _pendingQ=null;
+// Which case that turn was asked in, and which case's history chatHist holds.
+// Both used to be implied: switch from A to B mid-answer and B showed A's
+// "thinking…", then A's answer, then A's whole history after the re-sync.
+let _askCase=null, _chatCase=null;
 // Investigate is HIDDEN for now, by request. Nothing about it is broken and
 // nothing has been deleted: the /investigate route, the agentic tool loop and
 // investigateAsk() below are all intact and still tested. It is hidden because
@@ -2789,6 +2803,7 @@ let _pendingQ=null;
 // model that is minutes per question. Flip this to true to bring it back.
 const SHOW_INVESTIGATE = false;
 function renderChat(id){
+  _chatCase=id;
   $('#tabc').innerHTML=`<div id="chatwrap">
     <div class="chathead"><button class="ghost chatfs" onclick="clearChat('${id}')" title="Clear the conversation">Clear</button><button class="ghost chatfs" id="chatfsbtn" onclick="toggleChatFull()" title="Full screen (Esc to exit)">⛶ Full screen</button></div>
     <div class="chat"><div class="msgs" id="msgs"></div>
@@ -2798,32 +2813,36 @@ function renderChat(id){
   $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask(id);});
   // load the persisted conversation so it survives a page refresh
   $('#msgs').innerHTML='<i style="color:var(--muted)">loading…</i>';
+  // A slow GET for the previous case must not land on the one now open.
   api('/api/cases/'+id+'/chat').then(d=>{
+    if(_chatCase!==id) return;
     chatHist=(d.messages||[]).map(m=>({role:m.role,content:m.content}));
     reattachPendingTurn();
     drawMsgs();
-  }).catch(_=>{chatHist=[];reattachPendingTurn();drawMsgs();});
+  }).catch(_=>{if(_chatCase!==id) return; chatHist=[];reattachPendingTurn();drawMsgs();});
   // Leaving the tab does not cancel the request, so coming back to a fresh
   // Ask button that silently does nothing (because _asking is still true) is
   // worse than showing the truth: a turn is running.
-  if(_asking){ const b=$('#askbtn'); if(b){b.disabled=true; b.textContent='Asking…';} }
+  if(_asking && _askCase===id){ const b=$('#askbtn'); if(b){b.disabled=true; b.textContent='Asking…';} }
 }
 // Agentic deep-dive: routes the question through /investigate — the model calls
 // retrieval tools (list_findings / search / evidence / clusters) over the raw
 // evidence and grounds its answer, then we show the tool trace. On-demand (a few
 // model calls), so this is a separate button from plain Ask.
 function investigateAsk(id){
-  if(_asking) return;
+  if(_asking){ if(_askCase!==id) toast('Still answering a question in another case. Ask again once it is done.'); return; }
   const q=$('#q').value.trim(); if(!q)return; $('#q').value='';
-  _asking=true;
+  _asking=true; _askCase=_chatCase=id;
   const b=$('#invbtn'); if(b){b.disabled=true; b.textContent='🔬 Investigating…';}
   chatHist.push({role:'user',content:q});
   chatHist.push({role:'assistant',content:'_investigating — pulling raw evidence…_',pending:true});
   drawMsgs();
   const done=(content)=>{
+    _asking=false; _askCase=null; if(b){b.disabled=false; b.textContent='🔬 Investigate';}
+    if(_chatCase!==id) return;          // another case is on screen now
     const i=chatHist.findIndex(m=>m.pending);
     if(i>=0) chatHist.splice(i,1,{role:'assistant',content}); else chatHist.push({role:'assistant',content});
-    _asking=false; if(b){b.disabled=false; b.textContent='🔬 Investigate';} drawMsgs();
+    drawMsgs();
   };
   fetch('/api/cases/'+id+'/investigate',{method:'POST',headers:{'Content-Type':'application/json'},
                                          body:JSON.stringify({question:q})})
@@ -2857,7 +2876,9 @@ function _chatFsLabel(on){const b=document.getElementById('chatfsbtn');if(b)b.te
 // close the CSS-fallback maximise too.
 document.addEventListener('fullscreenchange',()=>{const w=document.getElementById('chatwrap');_chatFsLabel(!!(w&&document.fullscreenElement===w));});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){const w=document.getElementById('chatwrap');if(w&&w.classList.contains('chat-max')){w.classList.remove('chat-max');_chatFsLabel(false);}}});
-function drawMsgs(){$('#msgs').innerHTML=chatHist.map(m=>`<div class="msg ${m.role==='user'?'u':'a md'}">${m.role==='user'?escape(m.content):mdToHtml(m.content)}</div>`).join('');
+// Null-safe: an answer can land while another tab (no #msgs) is drawn, and the
+// throw used to fall into ask()'s .catch as a fake "Could not reach the server".
+function drawMsgs(){if(!$('#msgs'))return; $('#msgs').innerHTML=chatHist.map(m=>`<div class="msg ${m.role==='user'?'u':'a md'}">${m.role==='user'?escape(m.content):mdToHtml(m.content)}</div>`).join('');
   const m=$('#msgs'); if(m)m.scrollTop=m.scrollHeight;}
 // A chat turn is a 10s+ round-trip to a model, so this must show that it is
 // working and, above all, must never fail silently: the previous version had no
@@ -2871,15 +2892,18 @@ let _asking=false;
 // placeholder to replace -- so it was appended on its own and the operator saw
 // an answer to a question that was no longer there.
 function reattachPendingTurn(){
-  if(!_asking || !_pendingQ) return;
+  if(!_asking || !_pendingQ || _chatCase!==_askCase) return;
   chatHist.push({role:'user',content:_pendingQ});
   chatHist.push({role:'assistant',content:'_thinking…_',pending:true});
 }
 
 function ask(id){
-  if(_asking) return;                       // no double-submit while one is in flight
+  // One turn at a time. From another case, say so: B's button is enabled (the
+  // turn is not B's), and a click that silently did nothing read as broken.
+  if(_asking){ if(_askCase!==id) toast('Still answering a question in another case. Ask again once it is done.'); return; }
   const q=$('#q').value.trim(); if(!q)return; $('#q').value='';
-  _asking=true; _pendingQ=q;
+  // The input typed into is this case's chat, so chatHist is this case's too.
+  _asking=true; _pendingQ=q; _askCase=_chatCase=id;
   chatHist.push({role:'user',content:q});
   chatHist.push({role:'assistant',content:'_thinking…_',pending:true});
   drawMsgs();
@@ -2887,17 +2911,22 @@ function ask(id){
   // while the model was thinking, in which case the reference captured now is a
   // detached node -- re-enabling THAT left the visible button dead forever.
   const done=(content)=>{
-    const i=chatHist.findIndex(m=>m.pending);
-    if(i>=0) chatHist.splice(i,1,{role:'assistant',content});
-    else {
-      // No placeholder: the history was reloaded under us. Re-pair the answer
-      // with its question rather than orphaning it.
-      if(_pendingQ) chatHist.push({role:'user',content:_pendingQ});
-      chatHist.push({role:'assistant',content});
+    // Another case's chat is on screen: leave it alone. The server saved this
+    // pair under its own case, which shows it when reopened.
+    const here=_chatCase===id;
+    if(here){
+      const i=chatHist.findIndex(m=>m.pending);
+      if(i>=0) chatHist.splice(i,1,{role:'assistant',content});
+      else {
+        // No placeholder: the history was reloaded under us. Re-pair the answer
+        // with its question rather than orphaning it.
+        if(_pendingQ) chatHist.push({role:'user',content:_pendingQ});
+        chatHist.push({role:'assistant',content});
+      }
     }
-    _asking=false; _pendingQ=null;
+    _asking=false; _pendingQ=null; _askCase=null;
     const b=$('#askbtn'); if(b){b.disabled=false; b.textContent='Ask';}
-    drawMsgs();
+    if(here) drawMsgs();
   };
   // On success the server has persisted the pair atomically -- adopt that as the
   // truth rather than trusting a locally reconstructed list. Only on success:
@@ -2912,7 +2941,7 @@ function ask(id){
     done(content);
     api('/api/cases/'+id+'/chat').then(d=>{
       const ms=(d&&d.messages)||[], lastQ=[...ms].reverse().find(m=>m.role==='user');
-      if(lastQ && lastQ.content===q){
+      if(_chatCase===id && lastQ && lastQ.content===q){
         chatHist=ms.map(m=>({role:m.role,content:m.content}));
         drawMsgs();
       }

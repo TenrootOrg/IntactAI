@@ -241,6 +241,7 @@ document.addEventListener('alpine:init', () => {
                     this.symUploading = false; this.symMsgOk = false;
                     this.symMsg = 'Upload failed: ' + ((error && error.message) || error);
                 },
+                onCancel: () => { this.symUploading = false; this.symMsgOk = false; this.symMsg = 'Upload stopped.'; },
             });
             uploader.upload(f);
             input.value = '';
@@ -457,6 +458,8 @@ document.addEventListener('alpine:init', () => {
                     this.uploading = false;
                     alert(`Memory upload failed: ${(error && error.message) || error}`);
                 },
+                // System-guard block or Workflows Stop: neither reaches onError.
+                onCancel: () => { this.uploading = false; },
             });
             uploader.upload(this.uploadFile);
 
@@ -507,9 +510,14 @@ document.addEventListener('alpine:init', () => {
     // reset as normal. `keepDump` is a preference, not leftover input: Start
     // jumps to Workflows, so resetting it sent every next run from the same PC
     // out with keep off and it reclaimed its own image (2026-10-05).
+    // The busy flags are kept too: the symbol upload hands off to Workflows
+    // mid-flight, and coming back reset symUploading, re-enabling Upload for a
+    // second copy of the same 840 MB pack. Their own callbacks clear them.
     TabReset.arm(Alpine.store('memory'), 'modules-memory',
                  { keep: ['blueprints', 'blueprintsLoadedAt', '_pollTimer',
-                          'dispatching', 'dumps', 'keepDump'] });
+                          'dispatching', 'dumps', 'keepDump',
+                          'uploading', 'symUploading', 'symLibLoading',
+                          'dumpsLoading', 'adopting'] });
 
     // Re-scan on entry so an image a run has just kept is listed without the
     // operator having to press Refresh.

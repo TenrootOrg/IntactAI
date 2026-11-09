@@ -980,13 +980,17 @@ _RISK_WORDS = ("malicious", "compromis", "suspicious", "attacker", "bad actor", 
 _SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
-def analyst_verdicts(d) -> dict:
+def analyst_verdicts(d, g=None) -> dict:
     """finding id -> the analyst's verdict ("true_positive" / "false_positive" /
     "known"), from the Timeline and from chat dispositions. Every estimate below
     sends it with each finding and keys its cache on it, so a verdict changes the
-    number: a finding the analyst ruled out must not keep pushing it up."""
+    number: a finding the analyst ruled out must not keep pushing it up.
+    `g` (anything with .findings) drops a benign verdict that new activity
+    re-opened, as the Timeline does. A finding's result depends only on its own
+    watermark, so the graph that computes a cache key and the one that looks it
+    up only need to hold the same findings."""
     from .render import analyst_verdict_map
-    return analyst_verdict_map((d or {}).get("dispositions"), (d or {}).get("timeline_validations"))
+    return analyst_verdict_map((d or {}).get("dispositions"), (d or {}).get("timeline_validations"), g)
 
 
 def _verdict_of(f, verdicts):
@@ -1048,7 +1052,7 @@ def entity_estimates(question, d, g, run_id=None) -> str:
             return ""
         mask = mask_for(d, g)
         kind = {"account": "account", "asset": "host"}
-        verdicts = analyst_verdicts(d)
+        verdicts = analyst_verdicts(d, g)
         answers = ask_each(pairs, lambda p: masked(_entity_state(g, *p, verdicts), mask), lambda k: {
             "type": "noul",
             "instructions": f"items.{k} is one account or host from a forensic case, with the "
@@ -1105,7 +1109,6 @@ def _cards_of_every_scope(case_id, d):
     Each scope's cards are built on a COPY of the case with that scope selected;
     nothing is written. ponytail: the graph is re-read per scope; fine for a handful."""
     from .store import FULL_SCOPE_ID, _active_scope_id, _scopes, scope_cards
-    verdicts = analyst_verdicts(d)
     ids = [_active_scope_id(d)] + [x["id"] for x in _scopes(d)] + [FULL_SCOPE_ID]
     out, seen, g0, g_full = [], set(), None, None
     for sid in dict.fromkeys(ids):
@@ -1118,6 +1121,7 @@ def _cards_of_every_scope(case_id, d):
         if sid == FULL_SCOPE_ID:
             g_full = g                                    # holds every scope's findings
         by_id = {f.id: f for f in g.findings}
+        verdicts = analyst_verdicts(d, g)                 # attach_scope_estimates reads with this scope's graph
         for z in cards:
             sig = None if z.get("rollup") else _scope_sig(z, by_id, verdicts)
             if sig and sig not in seen:
@@ -1130,7 +1134,7 @@ def _cards_of_every_scope(case_id, d):
 
 def suggest_scopes(case_id, d) -> int:
     pairs, g = _cards_of_every_scope(case_id, d)
-    verdicts = analyst_verdicts(d)
+    verdicts = analyst_verdicts(d, g)
     have = cached(d, "scopes")
     todo = [(z, sig) for z, sig, _g in pairs if sig not in have]
     if g is not None:
@@ -1162,7 +1166,7 @@ def attach_scope_estimates(cards, d, g):
     if not enabled("scopes"):
         return
     by_id = {f.id: f for f in g.findings}
-    verdicts = analyst_verdicts(d)
+    verdicts = analyst_verdicts(d, g)
     est, by = shown(d, "scopes")
     for z in cards:
         p = est.get(_scope_sig(z, by_id, verdicts)) if not z.get("rollup") else None
@@ -1193,7 +1197,10 @@ def compromise_estimate(d, account_ids, fs):
     not asked yet, or the evidence changed since)."""
     if not enabled("compromise"):
         return None
-    return shown(d, "compromise")[0].get(compromise_sig(account_ids, fs, analyst_verdicts(d)))
+    import types
+    # Only fs is at hand here; it is all compromise_sig reads (see analyst_verdicts).
+    return shown(d, "compromise")[0].get(compromise_sig(account_ids, fs, analyst_verdicts(
+        d, types.SimpleNamespace(findings=fs))))
 
 
 def _person_state(g, card, fs, verdicts=None):
@@ -1224,7 +1231,6 @@ def suggest_compromise(case_id, d) -> int:
     from . import identities as idf
     from .store import FULL_SCOPE_ID, _active_scope_id, _scopes, identity_view, view_graph
     have = cached(d, "compromise")
-    verdicts = analyst_verdicts(d)
     todo, live, g_full = [], set(), None
     for sid in dict.fromkeys([_active_scope_id(d)] + [x["id"] for x in _scopes(d)] + [FULL_SCOPE_ID]):
         dd = dict(d, active_scope=sid)
@@ -1236,6 +1242,7 @@ def suggest_compromise(case_id, d) -> int:
             continue
         if sid == FULL_SCOPE_ID:
             g_full = g
+        verdicts = analyst_verdicts(d, g)
         for c in cards:
             ids = [a["id"] for a in c.get("accounts") or [] if not a.get("disabled")]
             fs = idf.person_findings(g, ids)
@@ -1247,7 +1254,8 @@ def suggest_compromise(case_id, d) -> int:
     new = {k: v for k, v in have.items() if k in live}      # people whose evidence changed everywhere
     if todo:
         mask = mask_for(d, g_full or todo[0][3])
-        answers = ask_each(todo, lambda t: masked(_person_state(t[3], t[0], t[1], verdicts), mask),
+        answers = ask_each(todo, lambda t: masked(_person_state(t[3], t[0], t[1],
+                                                                 analyst_verdicts(d, t[3])), mask),
                            _compromised_question, run_id=case_id)
         for (c, fs, sig, _g), a in zip(todo, answers):
             if isinstance(a, dict) and isinstance(a.get("noul"), (int, float)):

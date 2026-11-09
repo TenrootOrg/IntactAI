@@ -311,30 +311,59 @@ main() {
     # process that actually finishes -- there is no gap where a second
     # invocation could slip in between "handing over" and the target
     # release's own upgrade.sh resuming.
-    if [[ -z "${INTACT_UPGRADE_REEXEC:-}" ]]; then
+    #
+    # THE FAR SIDE OF THE HOP LOCKS TOO. The dashboard's helper container runs
+    # bootstrap_upgrade.sh directly, which execs this file with
+    # INTACT_UPGRADE_REEXEC=1 and NO fd 9 -- so every dashboard upgrade used to
+    # skip this lock, and _upgrade_gate / _upgrade_in_flight (which probe this
+    # same file) never saw one running: a second tab, a CLI run or the boot-time
+    # engine refresh could start on top of it. So an inherited fd 9 that already
+    # is this lock is re-locked (flock on the open file that holds it is a
+    # no-op, so the CLI hop cannot deadlock on its own lock), and anything else
+    # opens it fresh. Done here, in the TARGET's code, not in the frozen
+    # bootstrap, so it holds whichever old bootstrap handed over.
+    #
+    # Not for a hopped --dry-run: the dashboard's package preview and preflight
+    # run one synchronously, and holding the lock through a multi-GB extraction
+    # would 409 an Apply clicked meanwhile. A dry-run changes nothing.
+    local _lock="${SCRIPT_DIR}/data/tmp/upgrade.lock"
+    U_LOCK_HELD=0
+    if [[ -z "${INTACT_UPGRADE_REEXEC:-}" ]] || (( ! UPGRADE_DRY_RUN )); then
         mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
-        # The braces matter. `exec` with redirections and NO command applies
-        # them to the SHELL, permanently -- so writing this as
-        # `exec 9>"$LOCK" 2>/dev/null` points fd 2 at /dev/null for the whole
-        # rest of the upgrade, and every process it execs inherits that. It
-        # did exactly that: an engine-less package exited 2 having printed a
-        # 505-byte, fully actionable explanation to a stderr nobody could see,
-        # while the same failure run through bootstrap_upgrade.sh printed it
-        # in full. Docker errors and stray tracebacks went the same way.
-        # Wrapping only the open in a group scopes 2>/dev/null to the group;
-        # the fd-9 open still lands on the shell, which is the part we want.
-        { exec 9>"${SCRIPT_DIR}/data/tmp/upgrade.lock"; } 2>/dev/null || true
+        local _fd9 _want
+        _fd9="$(readlink "/proc/$$/fd/9" 2>/dev/null)"
+        _want="$(readlink -f "$_lock" 2>/dev/null)"
+        if [[ -z "${INTACT_UPGRADE_REEXEC:-}" || -z "$_fd9" || "$_fd9" != "$_want" ]]; then
+            # The braces matter. `exec` with redirections and NO command applies
+            # them to the SHELL, permanently -- so writing this as
+            # `exec 9>"$LOCK" 2>/dev/null` points fd 2 at /dev/null for the whole
+            # rest of the upgrade, and every process it execs inherits that. It
+            # did exactly that: an engine-less package exited 2 having printed a
+            # 505-byte, fully actionable explanation to a stderr nobody could see,
+            # while the same failure run through bootstrap_upgrade.sh printed it
+            # in full. Docker errors and stray tracebacks went the same way.
+            # Wrapping only the open in a group scopes 2>/dev/null to the group;
+            # the fd-9 open still lands on the shell, which is the part we want.
+            { exec 9>"$_lock"; } 2>/dev/null || true
+        fi
         if ! flock -n 9; then
             log_error "Another upgrade is already running against this appliance."
             log_error "  If you are certain nothing is running, remove:"
-            log_error "  ${SCRIPT_DIR}/data/tmp/upgrade.lock"
+            log_error "  ${_lock}"
             return 2
         fi
+        # Read by _u_exit_cleanup: only the lock holder owns the per-run state.
+        U_LOCK_HELD=1
         # Reclaim scratch a KILLED earlier run left behind before this run's
         # own acquire adds more -- upkg_cleanup only ever knows what ITS OWN
         # process extracted, so a run that never reached it (kill -9, OOM, a
         # lost SSH session) leaked its extraction forever until now.
-        upkg_sweep_stale_scratch
+        [[ -z "${INTACT_UPGRADE_REEXEC:-}" ]] && upkg_sweep_stale_scratch
+        # The keep-for-retry marker and the freed-tars tally are per RUN, but
+        # only the no-keep exit ever cleared them -- so after one failed image
+        # load every later run kept its ~15 GB extraction and the "Reclaimed"
+        # figure summed across runs. Under the lock, so it cannot wipe a live run's.
+        u_clear_run_state
     fi
 
     # ------------------------------------------------------- velo-refresh ---
@@ -585,6 +614,16 @@ main() {
             *)       continue ;;
         esac
 
+        # Stop ends the loop here. u_begin resets U_FAILED per module, so a
+        # cancel used to be re-discovered by each later module's first u_do:
+        # its undo stack ran against a module nothing had touched (IRIS and
+        # VolWeb even took a pg_dump first) and it was reported "ROLLED_BACK,
+        # restored to <from>".
+        if [[ -n "${LOG_FILE:-}" && -f "${LOG_FILE%.log}.cancel" ]]; then
+            u_skip "$m" "cancelled before it started"
+            continue
+        fi
+
         local dep
         if dep="$(_u_failed_requirement "$m")"; then
             log_warn "${m}: not upgraded -- ${dep} did not reach ${PLAN_TARGET[$dep]:-its target}, and ${m} needs it"
@@ -659,7 +698,13 @@ main() {
 
     refresh_nginx_upstreams
     fix_source_permissions
+    # What the gate finds goes only into INSTALL_ERRORS, which the exit code
+    # never read: a backend that did not swap or a crash-looping container
+    # still exited 0 and the dashboard said "completed". Counted as a delta
+    # because every log_error also lands in INSTALL_ERRORS.
+    local _errs_before=${#INSTALL_ERRORS[@]}
     u_post_upgrade_gate
+    U_POST_GATE_ERRORS=$(( ${#INSTALL_ERRORS[@]} - _errs_before ))
 
     print_upgrade_report
     print_final_issues_report

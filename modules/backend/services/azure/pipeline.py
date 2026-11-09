@@ -444,14 +444,27 @@ def run_azure_pipeline(
             add_log_to_run(run_id, f"[AZURE] {error}", "warning")
 
         if not collected_data:
-            total_errors = len(collection_status.get('errors', []))
-            if total_errors > 0:
-                add_log_to_run(run_id, "[AZURE] No data collected. Some sources were skipped - check license tier and API permissions.", "warning")
-            else:
-                add_log_to_run(run_id, "[AZURE] No events found in the selected time range.", "warning")
-            result['status'] = 'completed'
-            result['message'] = 'No data collected'
             phase_end("collection")
+            collection_errors = collection_status.get('errors', [])
+            if collection_errors:
+                # Zero records AND errors is a failed run, not a clean one.
+                # It used to end green as 'completed' / "No data collected",
+                # which an analyst reads as a clean tenant. Same fix as AWS.
+                result['phases']['collection']['status'] = 'failed'
+                result['status'] = 'error'
+                # Not "every source failed": a source can succeed empty next to
+                # a skipped one, and the message must not blame it.
+                result['error'] = (
+                    f"No data collected — {len(collection_errors)} source error(s) (check "
+                    f"license tier and API permissions). First cause: {collection_errors[0]}"
+                )
+                result['end_time'] = datetime.utcnow().isoformat()
+                add_log_to_run(run_id, f"[AZURE] {result['error']}", "error")
+                return result
+            add_log_to_run(run_id, "[AZURE] No events found in the selected time range and no "
+                                   "collection errors.", "info")
+            result['status'] = 'completed'
+            result['message'] = 'No records in the selected window (no collection errors)'
             return result
 
         phase_end("collection")
