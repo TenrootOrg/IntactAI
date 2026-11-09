@@ -245,6 +245,9 @@ for _ in $(seq 1 90); do
     [[ "$(docker ps --format '{{.Names}}' | sort)" == "$RUNNING_BEFORE" ]] && break; sleep 5
 done
 set_config_data_path "$TARGET" || echo "could not record data_path in config.yaml" | tee -a "$LOG"
+# Rollback backups are for THIS move only: a .before-move file left in
+# docker.service.d/ or /etc is clutter an operator has to wonder about.
+rm -f "$STORAGE_DAEMON_JSON.before-move-$TS" "$STORAGE_FSTAB.before-move-$TS" ${DROPIN_BAK:+"$DROPIN_BAK"}
 missing="$(comm -23 <(echo "$RUNNING_BEFORE") <(docker ps --format '{{.Names}}' | sort) | tr '\n' ' ')"
 copies="$(IFS='|'; echo "${OLD_COPIES[*]}")"
 if [[ -n "${missing// }" ]]; then
