@@ -47,7 +47,9 @@
                             <div>
                                 <p class="text-sm text-gray-400">Velociraptor Clients</p>
                                 <p class="text-4xl font-bold mt-2 text-white tabular-nums" x-text="$store.services.clientCount || '-'"></p>
-                                <p class="text-xs text-gray-500 mt-2 tabular-nums" x-text="$store.services.onlineClientCount + ' online / ' + $store.services.clientCount + ' total'"></p>
+                                <p class="text-xs text-gray-500 mt-2 tabular-nums" x-text="$store.services.onlineClientCount + ' online / ' + $store.services.clientCount + ' total' + ($store.services.clientsByOrg ? ' (all orgs)' : '')"></p>
+                                <p x-show="$store.services.clientsByOrg" class="text-xs text-gray-500 mt-1 tabular-nums" title="Online / total per Velociraptor org"
+                                   x-text="$store.services.clientsByOrg"></p>
                             </div>
                             <svg class="w-10 h-10 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>

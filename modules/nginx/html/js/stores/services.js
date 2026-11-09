@@ -14,6 +14,7 @@ document.addEventListener('alpine:init', () => {
         // index.html).
         installedCount: 0,
         onlineClientCount: 0,
+        clientsByOrg: "",       // "root 1/2 · intact-test 1/1" when there is more than one org
 
         async checkAll() {
             try {
@@ -103,6 +104,11 @@ document.addEventListener('alpine:init', () => {
                     const s = await summary.json();
                     this.clientCount = s.total || 0;
                     this.onlineClientCount = s.online || 0;
+                    // Every Velociraptor org is counted; with more than one, the
+                    // card says how they split ("root 1/2 · intact-test 1/1").
+                    const orgs = s.by_org || [];
+                    this.clientsByOrg = orgs.length > 1
+                        ? orgs.map(o => `${o.name} ${o.online}/${o.total}`).join(' · ') : '';
                     return;
                 }
                 // 404 = a backend older than the summary route (mid-upgrade): fall

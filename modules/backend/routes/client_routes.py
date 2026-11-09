@@ -45,6 +45,19 @@ def _fetch_fleet():
     return rows
 
 
+# Orgs change rarely, and the dashboard polls the summary every 10 s per tab.
+_ORGS_MAX_AGE = 60
+_ORGS_CACHE = {"at": 0.0, "orgs": None}
+
+
+def _org_names():
+    """[(org id, name)] of every Velociraptor org, at most _ORGS_MAX_AGE old."""
+    if _ORGS_CACHE["orgs"] is None or time.time() - _ORGS_CACHE["at"] >= _ORGS_MAX_AGE:
+        from services.velociraptor_clients import org_list
+        _ORGS_CACHE.update(at=time.time(), orgs=org_list())
+    return _ORGS_CACHE["orgs"]
+
+
 def _fleet_as_of():
     from services import velo_org
     return (_FLEET_CACHE.get(velo_org.current()) or {}).get("at", 0.0)
@@ -132,11 +145,24 @@ def get_clients_summary():
     (offline-collection imports excluded, as in /api/clients); online = seen in the
     last ONLINE_SECONDS. Served from a fleet query at most SUMMARY_MAX_AGE old;
     as_of is when that query ran (epoch seconds)."""
+    # Every Velociraptor org, not just the one this browser has selected: the
+    # dashboard is the overview, and it has no org picker. by_org breaks it down.
     try:
-        clients = [c for c in _cached_fleet() if not c.get('imported')]
+        from services import velo_org
         now = time.time()
-        return jsonify({"online": sum(1 for c in clients if _online(c, now)),
-                        "total": len(clients), "as_of": int(_fleet_as_of())})
+        try:
+            orgs = _org_names()
+        except Exception:  # noqa: BLE001 -- Velociraptor down: the selected org's cached count
+            orgs = [(velo_org.current() or "root", velo_org.current() or "root")]
+        by_org, as_of = [], []
+        for org, name in orgs:
+            with velo_org.use("" if org == "root" else org):
+                clients = [c for c in _cached_fleet() if not c.get('imported')]
+                as_of.append(_fleet_as_of())
+            by_org.append({"org": org, "name": name, "total": len(clients),
+                           "online": sum(1 for c in clients if _online(c, now))})
+        return jsonify({"online": sum(o["online"] for o in by_org), "total": sum(o["total"] for o in by_org),
+                        "by_org": by_org, "as_of": int(min(as_of) if as_of else 0)})
     except Exception as e:
         print(f"API Error: {e}")
         return jsonify({"error": str(e), "online": 0, "total": 0}), 500
