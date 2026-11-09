@@ -92,6 +92,34 @@ class StartMove(unittest.TestCase):
             dl.start_move("/mnt/intact-data")
 
 
+class StartUndo(unittest.TestCase):
+    """Undo switches back to the backup the last move kept, with no copy, so it
+    must only start when that move recorded one, and never under running work."""
+    setUp = StartMove.setUp
+    DONE = {"state": "done", "undo_path": "", "undo_root_backup": "/var/lib/docker.before-move-1",
+            "undo_data_backup": "/opt/intact/data.before-move-1", "old_copies": ["/var/lib/docker.before-move-1"]}
+
+    def test_runs_the_script_with_undo(self):
+        dl.status.return_value = dict(self.DONE)
+        self.assertEqual("starting", dl.start_undo()["state"])
+        self.assertEqual(["bash", dl.SCRIPT, "--undo"], self.host_calls[-1][-3:])
+
+    def test_nothing_to_undo(self):
+        for st in ({"state": "none"}, {"state": "failed", "undo_root_backup": "/x"},
+                   {"state": "done", "old_copies": ["/x"]}):   # after a cleanup or an undo
+            dl.status.return_value = st
+            with self.assertRaisesRegex(ValueError, "no move to undo"):
+                dl.start_undo()
+        self.assertEqual([], self.host_calls)
+
+    def test_asks_before_cutting_off_running_work(self):
+        dl.status.return_value = dict(self.DONE)
+        dl.active_runs.return_value = [{"automation_type": "velociraptor_collection", "name": "Collect", "status": "running"}]
+        with self.assertRaisesRegex(ValueError, "still going"):
+            dl.start_undo()
+        self.assertEqual("starting", dl.start_undo(force=True)["state"])
+
+
 class DiskLevels(unittest.TestCase):
     def test_levels(self):
         for used, level in ((50, "ok"), (80, "warning"), (89, "warning"), (90, "critical")):

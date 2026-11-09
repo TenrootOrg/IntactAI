@@ -243,15 +243,31 @@
                                         this.info = Object.assign({}, this.info, { status: d });
                                         this.timer = setTimeout(() => this.load(), 5000);
                                     },
+                                    async undo(force) {
+                                        const st = (this.info || {}).status || {};
+                                        const where = st.undo_path ? 'the disk at ' + st.undo_path : 'the system disk';
+                                        if (!force && !confirm('Undo the move and go back to ' + where + '?\n\nThis switches back to the backup, as it was before the move. Anything added since the move (cases, collections, uploads) will NOT be there.\n\nIntact restarts (about a minute). The copy on the current location is kept as a backup until you delete it.')) return;
+                                        this.busy = true; this.err = '';
+                                        const r = await fetch('/api/system/data-location/undo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: !!force }) });
+                                        const d = await r.json().catch(() => ({}));
+                                        this.busy = false;
+                                        if (!r.ok) {
+                                            if (!force && /still going/.test(d.error || '') && confirm(d.error + '\n\nUndo anyway?')) return this.undo(true);
+                                            this.err = d.error || ('Error ' + r.status); return;
+                                        }
+                                        this.info = Object.assign({}, this.info, { status: d });
+                                        this.timer = setTimeout(() => this.load(), 5000);
+                                    },
                                     async deleteBackup() {
-                                        if (!confirm('Delete the backup of the previous location?\n\nIt is a full copy of the data from before the move, kept in case something went wrong. Delete it once you have checked that everything works.')) return;
+                                        const canUndo = !!(((this.info || {}).status || {}).undo_root_backup);
+                                        if (!confirm('Delete the backup?\n\nIt is a full copy of the data from the other location, kept in case something went wrong.' + (canUndo ? ' Without it you can no longer undo the move.' : '') + ' Delete it once you have checked that everything works.')) return;
                                         const r = await fetch('/api/system/data-location/cleanup', { method: 'POST' });
                                         const d = await r.json().catch(() => ({}));
                                         this.note = r.ok ? 'Deleting the backup…' : ''; this.err = r.ok ? '' : (d.error || 'Error ' + r.status);
                                         setTimeout(() => { this.note = ''; this.load(); }, 5000);
                                     }
                                  }"
-                                 x-init="load(); loadDisks()">
+                                 x-init="load().then(() => { pick = (info && info.data_path) ? '' : '__other'; }); loadDisks()">
                                 <h4 class="text-white font-medium">Data storage</h4>
                                 <p class="text-gray-400 text-sm">Where Intact keeps everything: cases, evidence, collections and databases.</p>
                                 <template x-if="info">
@@ -280,8 +296,14 @@
                                              x-text="'The move did not finish, so nothing was changed. ' + ((info.status || {}).message || '')"></div>
                                         <div x-show="(info.status || {}).state === 'done' && ((info.status || {}).old_copies || []).length"
                                              class="rounded px-3 py-2 bg-gray-800 text-gray-300 flex items-center justify-between gap-3">
-                                            <span>✓ Moved. A backup of the previous location is kept until you delete it (it takes disk space).</span>
-                                            <button @click="deleteBackup()" class="shrink-0 text-red-300 hover:text-red-200 underline">Delete backup</button>
+                                            <span x-text="(info.status || {}).undo_root_backup
+                                                ? '✓ Moved. The previous location is kept as a backup until you delete it (it takes disk space).'
+                                                : '✓ A backup of the other location is kept until you delete it (it takes disk space).'"></span>
+                                            <span class="shrink-0 flex gap-3">
+                                                <button x-show="(info.status || {}).undo_root_backup" @click="undo(false)" :disabled="busy"
+                                                        class="text-blue-300 hover:text-blue-200 underline disabled:opacity-50">Undo move</button>
+                                                <button @click="deleteBackup()" class="text-red-300 hover:text-red-200 underline">Delete backup</button>
+                                            </span>
                                         </div>
 
                                         <!-- move -->
@@ -289,9 +311,10 @@
                                             <span class="text-gray-300 shrink-0">Move to</span>
                                             <select x-model="pick" @change="err = ''"
                                                     class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
-                                                <option value="">System disk</option>
+                                                <option value="" :disabled="!info.data_path" x-text="'System disk' + (!info.data_path ? ' (current)' : '')"></option>
                                                 <template x-for="d in disks" :key="d.path">
-                                                    <option :value="d.path" x-text="'Disk at ' + d.path + ' (' + gb(d.free) + ' free of ' + gb(d.size) + ')'"></option>
+                                                    <option :value="d.path" :disabled="d.path === info.data_path"
+                                                            x-text="'Disk at ' + d.path + ' (' + gb(d.free) + ' free of ' + gb(d.size) + ')' + (d.path === info.data_path ? ' (current)' : '')"></option>
                                                 </template>
                                                 <option value="__other">Other folder…</option>
                                             </select>

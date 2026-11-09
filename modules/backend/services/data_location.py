@@ -107,10 +107,8 @@ def active_runs():
             if r.get("status") in ("running", "pending") and r.get("automation_type") not in _BOOKKEEPING_TYPES]
 
 
-def start_move(path, force=False):
-    """Check, then start the move on the host. Returns what to show; raises
-    ValueError with the operator's reason, RuntimeError when the host refused."""
-    path = clean_path(path)
+def _refuse_if_busy(force):
+    """Raise ValueError when a move or an undo must not start now: both stop every service."""
     if status().get("state") == "running":
         raise ValueError("A data move is already running.")
     busy = active_runs()
@@ -122,6 +120,13 @@ def start_move(path, force=False):
         names = ", ".join((r.get("name") or r.get("run_id") or "?") for r in busy[:5])
         raise ValueError(f"{len(busy)} run(s) are still going ({names}). The move stops every service and "
                          "would cut them off -- wait for them, or confirm to move anyway.")
+
+
+def start_move(path, force=False):
+    """Check, then start the move on the host. Returns what to show; raises
+    ValueError with the operator's reason, RuntimeError when the host refused."""
+    path = clean_path(path)
+    _refuse_if_busy(force)
     chk = check(path)
     if not chk.get("ok"):
         raise ValueError(chk.get("reason") or "That location cannot be used.")
@@ -133,6 +138,21 @@ def start_move(path, force=False):
     return {"state": "starting", "unit": unit, "copy_bytes": chk.get("used_bytes"),
             "message": f"Moving the data to {path or 'the system disk'}. Every service stops while it "
                        "copies; this page reconnects when Intact is back."}
+
+
+def start_undo(force=False):
+    """Switch back to the backup the last move kept (move-data.sh --undo): no
+    copy, and anything written since the move is not there."""
+    st = status()
+    if st.get("state") != "done" or not st.get("undo_root_backup"):
+        raise ValueError("There is no move to undo.")
+    _refuse_if_busy(force)
+    unit = f"intact-data-undo-{int(time.time())}"
+    rc, out, err = host_run(["systemd-run", f"--unit={unit}", "--collect", "bash", SCRIPT, "--undo"], timeout=60)
+    if rc != 0:
+        raise RuntimeError(f"Could not start the undo on the host: {(err or out).strip()[:300]}")
+    return {"state": "starting", "unit": unit,
+            "message": "Switching back to where the data was before the move; this page reconnects when Intact is back."}
 
 
 def start_cleanup():

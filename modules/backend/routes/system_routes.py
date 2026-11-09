@@ -169,6 +169,19 @@ def data_location_move():
         return jsonify({"error": str(e)}), 500
 
 
+@system_bp.route('/api/system/data-location/undo', methods=['POST'])
+def data_location_undo():
+    """Switch back to the backup the last move kept. body.force as for move."""
+    from services import data_location as dl
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(dl.start_undo(force=body.get('force') is True)), 202
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
 @system_bp.route('/api/system/data-location/cleanup', methods=['POST'])
 def data_location_cleanup():
     """Delete the old copy a finished move kept."""
