@@ -124,6 +124,53 @@ def get_system_actions():
     # the list as history; they simply have no download button.
     return jsonify({"actions": actions})
 
+# --- Data location (config.yaml data_path; services/data_location.py) ---------
+@system_bp.route('/api/system/data-location', methods=['GET'])
+def data_location_get():
+    """Where the data is, the last move's status, and the data disk's usage
+    (with the 80% / 90% warning level the dashboard shows)."""
+    from services import data_location as dl
+    return jsonify(dl.overview())
+
+
+@system_bp.route('/api/system/data-location/check', methods=['POST'])
+def data_location_check():
+    """Can the data go to body.path ('' = the system disk)? Changes nothing."""
+    from services import data_location as dl
+    try:
+        path = dl.clean_path((request.get_json(silent=True) or {}).get('path'))
+    except ValueError as e:
+        return jsonify({"ok": False, "reason": str(e)}), 400
+    return jsonify(dl.check(path))
+
+
+@system_bp.route('/api/system/data-location/move', methods=['POST'])
+def data_location_move():
+    """Move every module's data and data/ to body.path ('' = back to the system
+    disk). Every service stops while it copies; body.force goes ahead although
+    runs are still going (they are cut off)."""
+    from services import data_location as dl
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(dl.start_move(body.get('path'), force=body.get('force') is True)), 202
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
+@system_bp.route('/api/system/data-location/cleanup', methods=['POST'])
+def data_location_cleanup():
+    """Delete the old copy a finished move kept."""
+    from services import data_location as dl
+    try:
+        return jsonify(dl.start_cleanup()), 202
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
 @system_bp.route('/api/system/containers', methods=['GET'])
 def get_container_status():
     """Get status of core system containers.

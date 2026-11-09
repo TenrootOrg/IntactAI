@@ -184,6 +184,22 @@ main() {
     ensure_core_dependencies
 
     # -------------------------------------------------------------------------
+    # Data location -- config.yaml `data_path` (empty = the system disk).
+    # Applied here, BEFORE the release images load: on a fresh box there is next
+    # to nothing to copy and everything lands on the chosen drive from the
+    # start. On a box with data it is the same move Settings → General → Data
+    # location runs (scripts/move-data.sh): copy, switch, keep the old copy.
+    # -------------------------------------------------------------------------
+    local _data_path
+    _data_path="$(read_config "['data_path']" 2>/dev/null)"
+    [[ "$_data_path" == "None" ]] && _data_path=""
+    if ! storage_apply_data_path "$SCRIPT_DIR" "$_data_path"; then
+        log_error "Could not put the data on ${_data_path:-the system disk} -- see ${SCRIPT_DIR}/data-move.log"
+        log_error "Fix it (or clear data_path in config.yaml) and run the installer again."
+        exit 1
+    fi
+
+    # -------------------------------------------------------------------------
     # Release Assets — Docker is guaranteed present and verified above.
     # -------------------------------------------------------------------------
     if [[ "$INTACT_AIRGAP" == "1" ]]; then

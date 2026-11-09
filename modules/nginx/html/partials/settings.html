@@ -198,6 +198,94 @@
                                 </button>
                             </div>
 
+                            <!-- Data location (config.yaml data_path; scripts/move-data.sh). Moves
+                                 every module's data + data/ to another drive/folder and back. -->
+                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700"
+                                 x-data="{
+                                    info: null, path: '', chk: null, busy: false, msg: '', err: '', timer: null,
+                                    fmt(b) { if (b == null) return '?'; const u = ['B','KB','MB','GB','TB']; let i = 0; while (b >= 1024 && i < 4) { b /= 1024; i++; } return b.toFixed(i > 2 ? 1 : 0) + ' ' + u[i]; },
+                                    async load() {
+                                        try {
+                                            const r = await fetch('/api/system/data-location');
+                                            if (!r.ok) throw new Error('HTTP ' + r.status);
+                                            this.info = await r.json(); this.err = '';
+                                        } catch (e) { if (this.info && this.info.status) this.info.status.message = 'Intact is restarting on the new location...'; }
+                                        const st = (this.info && this.info.status && this.info.status.state) || '';
+                                        clearTimeout(this.timer);
+                                        if (st === 'running' || st === 'starting') this.timer = setTimeout(() => this.load(), 5000);
+                                    },
+                                    async check() {
+                                        this.busy = true; this.chk = null; this.err = '';
+                                        try {
+                                            const r = await fetch('/api/system/data-location/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: this.path }) });
+                                            this.chk = await r.json(); this.chk.path = this.path;
+                                        } catch (e) { this.err = 'Check failed: ' + e.message; }
+                                        this.busy = false;
+                                    },
+                                    async move(force) {
+                                        const where = this.path || 'the system disk';
+                                        if (!force && !confirm('Move ALL of Intact\'s data (' + this.fmt(this.chk.used_bytes) + ') to ' + where + '?\n\nEvery service stops while it copies (a few minutes per 10 GB) and comes back on the new location. The old copy is kept until you delete it.')) return;
+                                        this.busy = true; this.err = '';
+                                        const r = await fetch('/api/system/data-location/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: this.path, force: !!force }) });
+                                        const d = await r.json().catch(() => ({}));
+                                        this.busy = false;
+                                        if (!r.ok) {
+                                            if (!force && /still going/.test(d.error || '') && confirm(d.error + '\n\nMove anyway?')) return this.move(true);
+                                            this.err = d.error || ('HTTP ' + r.status); return;
+                                        }
+                                        this.info = Object.assign({}, this.info, { status: d }); this.chk = null;
+                                        this.timer = setTimeout(() => this.load(), 5000);
+                                    },
+                                    async cleanup() {
+                                        if (!confirm('Delete the old copy for good?\n\n' + ((this.info.status.old_copies || []).join('\n')))) return;
+                                        const r = await fetch('/api/system/data-location/cleanup', { method: 'POST' });
+                                        const d = await r.json().catch(() => ({}));
+                                        this.msg = r.ok ? 'Deleting the old copy in the background.' : (d.error || 'HTTP ' + r.status);
+                                        setTimeout(() => this.load(), 4000);
+                                    }
+                                 }"
+                                 x-init="load()">
+                                <h4 class="text-white font-medium">Data location</h4>
+                                <p class="text-gray-400 text-sm">Where Intact keeps all its data: every module's volumes (evidence, Velociraptor, search indexes, memory dumps, reports) and the data folder (cases, database). Point it at another drive or folder; <code>data_path</code> in config.yaml is the same setting.</p>
+                                <template x-if="info">
+                                    <div class="mt-3 space-y-2 text-sm">
+                                        <div class="text-gray-300">Now: <span class="text-white font-mono" x-text="info.location"></span></div>
+                                        <template x-if="info.disk">
+                                            <div>
+                                                <div class="h-2 rounded bg-gray-700 overflow-hidden"><div class="h-2"
+                                                     :class="{ok: 'bg-green-500', warning: 'bg-yellow-500', critical: 'bg-red-500'}[info.disk.level]"
+                                                     :style="'width:' + info.disk.pct + '%'"></div></div>
+                                                <div class="text-xs mt-1" :class="{ok: 'text-gray-400', warning: 'text-yellow-400', critical: 'text-red-400'}[info.disk.level]"
+                                                     x-text="info.disk.pct + '% used — ' + fmt(info.disk.free) + ' free of ' + fmt(info.disk.total) + (info.disk.level === 'critical' ? ' — almost full: purge old data or move to a bigger drive' : info.disk.level === 'warning' ? ' — getting full' : '')"></div>
+                                            </div>
+                                        </template>
+                                        <template x-if="info.status && info.status.state && info.status.state !== 'none'">
+                                            <div class="rounded px-3 py-2 text-xs"
+                                                 :class="{running: 'bg-blue-900/40 text-blue-200', starting: 'bg-blue-900/40 text-blue-200', done: 'bg-gray-800 text-gray-300', failed: 'bg-red-900/40 text-red-200'}[info.status.state] || 'bg-gray-800 text-gray-300'">
+                                                <span x-text="(info.status.state === 'running' || info.status.state === 'starting' ? '⏳ ' : info.status.state === 'failed' ? '✗ ' : '') + (info.status.message || '')"></span>
+                                                <template x-if="info.status.state === 'done' && (info.status.old_copies || []).length">
+                                                    <div class="mt-1">Old copy: <span class="font-mono" x-text="info.status.old_copies.join(', ')"></span>
+                                                        <button @click="cleanup()" class="ml-2 text-red-300 hover:text-red-200 underline">Delete old copy</button></div>
+                                                </template>
+                                            </div>
+                                        </template>
+                                        <div class="flex gap-2 items-center pt-1">
+                                            <input type="text" x-model="path" placeholder="/mnt/intact-data  (empty = the system disk)" @input="chk = null"
+                                                   class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white font-mono focus:border-blue-500 focus:outline-none">
+                                            <button @click="check()" :disabled="busy || ['running', 'starting'].includes((info.status || {}).state)"
+                                                    class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1.5 rounded text-sm">Check</button>
+                                            <button @click="move(false)" :disabled="busy || !chk || !chk.ok || chk.path !== path"
+                                                    class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 rounded text-sm text-white"
+                                                    title="Check the folder first">Move data</button>
+                                        </div>
+                                        <div x-show="chk" class="text-xs" :class="chk && chk.ok ? 'text-green-400' : 'text-red-400'"
+                                             x-text="chk ? (chk.ok ? '✓ Can move here: copies ' + fmt(chk.used_bytes) + ', ' + fmt(chk.free_bytes) + ' free (' + (chk.fstype || '?') + ')' : '✗ ' + chk.reason) : ''"></div>
+                                        <div x-show="err" class="text-xs text-red-400" x-text="err"></div>
+                                        <div x-show="msg" class="text-xs text-gray-300" x-text="msg"></div>
+                                    </div>
+                                </template>
+                            </div>
+
                             <!-- Online Upgrade (combined prepare + apply, no tar.gz round-trip) -->
                             <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div>

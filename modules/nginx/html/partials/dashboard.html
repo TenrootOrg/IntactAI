@@ -4,6 +4,16 @@
                     <p class="text-gray-400 mt-1 text-sm">Real-time system overview and security operations status</p>
                 </div>
 
+                <!-- Data disk filling up (80% warning, 90% critical): running out mid-collection
+                     is what actually loses evidence. Checked when the dashboard opens and every 5 min. -->
+                <div x-data="{ d: null, async get() { try { const r = await fetch('/api/system/data-location'); if (r.ok) this.d = (await r.json()).disk; } catch (e) {} } }"
+                     x-init="get(); setInterval(() => get(), 300000)"
+                     x-show="d && d.level !== 'ok'" class="mb-6 rounded-lg px-4 py-3 text-sm border"
+                     :class="d && d.level === 'critical' ? 'bg-red-900/40 border-red-700 text-red-200' : 'bg-yellow-900/30 border-yellow-700 text-yellow-200'">
+                    <span x-text="d ? ('Data disk ' + d.pct + '% full (' + (d.free / 1073741824).toFixed(1) + ' GB free). ' + (d.level === 'critical' ? 'Collections and uploads may fail soon: ' : '') + 'Purge old data or move it to a bigger drive in ') : ''"></span>
+                    <button @click="$store.app.switchTab('settings')" class="underline">Settings → General → Data location</button>.
+                </div>
+
                 <!-- Stats Overview — Total + Online cards hide together when
                      no modules are installed (via online/offline upgrade or
                      install.sh seed). When nothing's installed, surfacing

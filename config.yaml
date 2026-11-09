@@ -28,6 +28,17 @@ first_login: true
 
 domain: CHANGE-ME
 
+# Where Intact keeps its data: every module's Docker volumes (evidence, the
+# Velociraptor datastore, search indexes, memory dumps, reports) and the
+# install's data/ folder (cases, the database, Velociraptor's CA).
+# Empty = the system disk. Set a folder -- usually on another drive, mounted and
+# formatted ext4/xfs/btrfs, e.g. /mnt/intact-data -- to keep the data there.
+# A fresh install uses it from the start. On a running box change it in
+# Settings → General → Data location (or: sudo bash scripts/move-data.sh <folder>):
+# every service stops while the data is copied; the old copy is kept until you
+# delete it.
+data_path: ""
+
 # Installation options
 options:
   # Download OPTIONAL forensic tools beyond the default set.

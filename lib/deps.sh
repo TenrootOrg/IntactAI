@@ -11,6 +11,10 @@
 # exercised with a stubbed apt-get -- is testable independent of the image
 # pull / registry half that remains there.
 
+# storage_daemon_json_merge: every daemon.json write goes through it.
+# shellcheck source=lib/storage.sh
+source "$(dirname "${BASH_SOURCE[0]}")/storage.sh"
+
 # The probe is what actually decides — a package can be half-configured, and
 # `dpkg -s` would call that installed. python3-pip is probed via `python3 -m
 # pip` rather than `command -v pip3` because the two disagree on plenty of
@@ -233,13 +237,9 @@ install_docker_online() {
     # This is required for docker save to work properly with multi-platform images
     log_info "Configuring Docker daemon..."
     mkdir -p /etc/docker
-    cat > /etc/docker/daemon.json << 'EOF'
-{
-  "features": {
-    "containerd-snapshotter": false
-  }
-}
-EOF
+    # MERGE, never overwrite (lib/storage.sh): a rewrite would drop a
+    # "data-root" and start Docker on an empty /var/lib/docker.
+    storage_daemon_json_merge
     log_success "Docker daemon configured (containerd-snapshotter disabled)"
 
     # Start and enable Docker with error checking
@@ -393,13 +393,9 @@ install_docker_from_package() {
     fi
 
     mkdir -p /etc/docker
-    cat > /etc/docker/daemon.json << 'EOF'
-{
-  "features": {
-    "containerd-snapshotter": false
-  }
-}
-EOF
+    # MERGE, never overwrite (lib/storage.sh): a rewrite would drop a
+    # "data-root" and start Docker on an empty /var/lib/docker.
+    storage_daemon_json_merge
     if ! systemctl start docker 2>> "$LOG_FILE"; then
         log_error "  Docker installed from the bundle but failed to start"
         return 1
@@ -453,13 +449,9 @@ install_docker() {
         if [[ ! -f /etc/docker/daemon.json ]] || ! grep -q "containerd-snapshotter" /etc/docker/daemon.json 2>/dev/null; then
             log_info "Configuring Docker daemon for proper image export..."
             mkdir -p /etc/docker
-            cat > /etc/docker/daemon.json << 'EOF'
-{
-  "features": {
-    "containerd-snapshotter": false
-  }
-}
-EOF
+            # MERGE, never overwrite (lib/storage.sh): a rewrite would drop a
+            # "data-root" and start Docker on an empty /var/lib/docker.
+            storage_daemon_json_merge
             log_info "Restarting Docker to apply configuration..."
             systemctl restart docker 2>> "$LOG_FILE" || true
             log_success "Docker daemon configured"
