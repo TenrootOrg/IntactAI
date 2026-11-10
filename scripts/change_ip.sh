@@ -296,8 +296,10 @@ log_success "Platform IP changed: $OLD_IP → $NEW_IP"
 echo
 echo "  Access:"
 echo "    Dashboard:   https://${NEW_IP}"
-echo "    IRIS:        https://${NEW_IP}:8443"
-echo "    Timesketch:  https://${NEW_IP}:5000"
+echo "    IRIS:        https://${NEW_IP}:8444"
+echo "    Timesketch:  https://${NEW_IP}:5443"
+echo "    Kibana:      https://${NEW_IP}/kibana/"
+echo "    Portainer:   https://${NEW_IP}/portainer/"
 echo
 log_warn "Already-deployed Velociraptor agents baked in the OLD IP ($OLD_IP) and"
 log_warn "will NOT reconnect. Redeploy endpoints with the freshly generated"

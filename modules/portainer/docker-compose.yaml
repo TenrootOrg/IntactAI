@@ -1,5 +1,6 @@
 # Portainer - Docker Management UI
-# Port: 9443 (Web UI - HTTPS)
+# Port: 9443 (Web UI - HTTPS) on 127.0.0.1 only; browsers use the main nginx
+# at /portainer/.
 
 services:
   portainer-agent:
@@ -71,7 +72,10 @@ services:
     env_file:
       - ./secrets/agent.env
     ports:
-      - "9443:9443"
+      # Loopback-only: public access goes through nginx (/portainer/,
+      # login-gated). No --base-url: the upgrade engine probes
+      # https://127.0.0.1:9443/ at the root, so nginx strips the prefix instead.
+      - "127.0.0.1:9443:9443"
     restart: unless-stopped
     depends_on:
       - portainer-agent

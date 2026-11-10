@@ -585,8 +585,10 @@ def _first_published_port(root, module):
         text = open(compose, encoding="utf-8").read()
     except OSError:
         return None
-    m = re.search(r'^\s*-\s*"?(?:127\.0\.0\.1:)?(\d{2,5}):\d{2,5}"?\s*$',
-                  text, re.M)
+    # Since the nginx move the port is "127.0.0.1:9443:9443". _hold_port binds
+    # 0.0.0.0, which still collides with a 127.0.0.1 bind, so the trap holds.
+    m = re.search(r'^\s*-\s*["\']?(?:127\.0\.0\.1:)?(\d{2,5}):\d{2,5}'
+                  r'(?:/tcp)?["\']?\s*(?:#.*)?$', text, re.M)
     return int(m.group(1)) if m else None
 
 

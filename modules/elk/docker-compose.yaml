@@ -1,5 +1,7 @@
 # ELK Stack - Elasticsearch, Logstash, Kibana
-# Ports: 9200 (Elasticsearch), 5601 (Kibana), 5044 (Logstash Beats)
+# Ports: 9200 (Elasticsearch), 5601 (Kibana), 5044 (Logstash Beats) -- all on
+# 127.0.0.1 only. Browsers reach Kibana through the main nginx at /kibana/;
+# Elasticsearch has no browser UI and is box-only.
 
 services:
   elasticsearch:
@@ -23,7 +25,10 @@ services:
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
     ports:
-      - "9200:9200"
+      # Loopback-only: the install/upgrade probes call 127.0.0.1:9200 from the
+      # host, and nothing off-box needs Elasticsearch (callers use the docker
+      # network).
+      - "127.0.0.1:9200:9200"
       # 9300 (the inter-node TRANSPORT port) is deliberately NOT published.
       # This is a discovery.type=single-node cluster, so there is no peer node
       # to talk to and no legitimate external consumer -- transport is only for
@@ -120,9 +125,14 @@ services:
       - SERVER_NAME=kibana
       - SERVER_SHOWINSECURECLUSTERWARNING=false
       - TELEMETRY_ENABLED=false
-      # - SERVER_BASEPATH=/kibana
-      # - SERVER_REWRITEBASEPATH=true
-      # Serve the Kibana UI over HTTPS using Kibana's native TLS (no proxy).
+      # Served at https://<host>/kibana/ by the main nginx, which strips the
+      # prefix. REWRITEBASEPATH=false keeps Kibana answering at its root, so the
+      # host-side 127.0.0.1:5601 calls (install/upgrade data-view setup, the
+      # healthcheck below) keep working unchanged; the base path only prefixes
+      # the URLs Kibana writes into its pages.
+      - SERVER_BASEPATH=/kibana
+      - SERVER_REWRITEBASEPATH=false
+      # Kibana keeps its own TLS: nginx proxies to https://intact_kibana:5601.
       # Reuses the shared self-signed cert (CN=domain) that install.sh /
       # change_ip.sh already generate + rotate. Kibana->Elasticsearch stays
       # plain http on the internal docker network (ELASTICSEARCH_HOSTS above).
@@ -139,7 +149,8 @@ services:
       - ../nginx/ssl/nginx-cert.crt:/certs/cert.crt:ro
       - ../nginx/ssl/nginx-cert.key:/certs/key.key:ro
     ports:
-      - "5601:5601"
+      # Loopback-only: public access goes through nginx (/kibana/, login-gated).
+      - "127.0.0.1:5601:5601"
     restart: unless-stopped
     depends_on:
       elasticsearch:

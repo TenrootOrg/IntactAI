@@ -100,17 +100,27 @@ LOOPBACK_ONLY = [
     (5044, "logstash beats input — no TLS, no auth, forgeable evidence"),
     (9600, "logstash monitoring"),
     (50000, "logstash tcp input"),
+    # Published to the LAN until every web UI moved behind the main nginx. They
+    # stay bound on 127.0.0.1 because the install and upgrade probes call them
+    # from the host; from the LAN each one would bypass the Intact login.
+    (9200, "Elasticsearch — every forensic document on the box"),
+    (5601, "Kibana — reached via https://<host>/kibana/ now"),
+    (8443, "IRIS — reached via nginx :8444 now"),
+    (9443, "Portainer — the Docker socket, i.e. host root"),
+    (5000, "Timesketch — reached via nginx :5443 now"),
 ]
 
-# Ports that ARE published to the LAN on purpose and therefore have to defend
-# themselves. 9300 (the Elasticsearch transport port) is asserted CLOSED
-# elsewhere; 9200 is its HTTP API and is deliberately open — so the assertion
-# for it is that it demands credentials. Measured: an unauthenticated
-# /_cat/indices answers 401 security_exception. This is the check that fails the
-# day someone disables ES security "to debug something", on a store that holds
-# every forensic document the appliance has ingested.
-LAN_OPEN_MUST_AUTH = [
-    (9200, "/_cat/indices", "Elasticsearch — every forensic document on the box"),
+# The nginx entry points for those services, as (port, path, what). Each must
+# send an unauthenticated browser to the Intact login: an nginx 404 or a
+# service's own login page here means the gate is missing. The extra ports have
+# to redirect to login.html on 443, since the login page only lives there.
+NGINX_GATED = [
+    (443, "/kibana/", "Kibana"),
+    (443, "/portainer/", "Portainer"),
+    (443, "/velociraptor/", "Velociraptor"),
+    (8444, "/", "IRIS"),
+    (5443, "/", "Timesketch"),
+    (8002, "/", "VolWeb"),
 ]
 
 # Services that must NOT be reachable from another container on the box. Each
@@ -698,27 +708,23 @@ def register(runner, cfg):
                        "auth for a service that holds case data and can task "
                        "every endpoint on the network")
 
-        # --- and the ports that ARE open must defend themselves -------------
-        for port, probe_path, why in LAN_OPEN_MUST_AUTH:
-            if not _tcp_open(cfg.platform_host, port):
-                detail.setdefault("lan_open", {})[port] = "closed"
-                continue
+        # --- and the nginx entry points must demand the Intact login --------
+        for port, path, what in NGINX_GATED:
+            url = f"https://{cfg.platform_host}:{port}{path}"
             try:
-                import requests as _rq
-                r = _rq.get(f"http://{cfg.platform_host}:{port}{probe_path}",
-                            timeout=15)
-                code = r.status_code
+                r = c.s.get(url, timeout=15, allow_redirects=False)
+                code, loc = r.status_code, r.headers.get("Location", "")
             except Exception as exc:                          # noqa: BLE001
-                code = f"error: {str(exc)[:60]}"
-            detail.setdefault("lan_open", {})[port] = code
-            ctx.check(f"port {port} is reachable from the LAN but demands "
-                      f"credentials",
-                      code in (401, 403),
-                      expected="401/403", actual=code,
-                      note=f"{why}. This port is published on purpose, so the "
-                           f"only thing standing in front of it is its own "
-                           f"authentication — and that is exactly what a "
-                           f"'temporarily disable security' change removes")
+                code, loc = f"error: {str(exc)[:60]}", ""
+            detail.setdefault("nginx_gated", {})[f"{port}{path}"] = \
+                f"{code} {loc}".strip()
+            ctx.check(f"{what} ({port}{path}) sends an unauthenticated caller "
+                      f"to the Intact login",
+                      _is_login_redirect(code, url, loc),
+                      expected="302 -> login.html on 443",
+                      actual=f"{code} {loc}".strip(),
+                      note="the service's own port is loopback-only now, so this "
+                           "gate is the only thing in front of it from the LAN")
 
         return detail
 
@@ -1006,6 +1012,17 @@ def _peer_can_reach(target_container, port, timeout=6):
         " ; ".join(f"nc -z -w 2 {ip} {port} && echo REACHABLE_{ip}" for ip in ips),
     ], timeout=timeout + 30)
     return "REACHABLE_" in probe.out
+
+
+def _is_login_redirect(code, url, location):
+    """True when `location` (as sent for `url`) lands on login.html on port 443."""
+    from urllib.parse import urljoin, urlsplit
+    if code not in (301, 302, 303, 307) or not location:
+        return False
+    # Relative Location resolves against the request's port, so a bare
+    # "/login.html" from :8444 is the wrong-port bug, not a pass.
+    target = urlsplit(urljoin(url, location))
+    return target.path == "/login.html" and target.port in (None, 443)
 
 
 def _tcp_open(host, port, timeout=4):

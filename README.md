@@ -97,19 +97,21 @@ is internet → `import` back on the box) — see
 
 ## Services & Ports
 
-Everything terminates TLS through the main nginx. Access is `https://YOUR_IP`
-unless a port is listed. `install.sh` starts containers only for enabled
-modules.
+Every web UI sits behind the main nginx, which terminates TLS and asks for
+the Intact login before proxying. Access is `https://YOUR_IP` unless a port is
+listed. The modules' own ports (5000, 5601, 8443, 9200, 9443) are bound to
+`127.0.0.1` for on-box use only. `install.sh` starts containers only for
+enabled modules.
 
 | Module | What it does | Access | Containers |
 |---|---|---|---|
 | **Dashboard** | Web UI — workflows, blueprints, reports, settings | `/` | `intact_backend`, `intact_tusd`, `intact_nginx` |
 | **Velociraptor** | Endpoint forensics + remote collection | `/velociraptor/` (proxied — not the upstream port) | `intact_velociraptor` |
-| **TimeSketch** | Timeline analysis — ingests Plaso super-timelines, pivots across hosts from one view | `:5000` | `intact_timesketch_web`, `_web_v3`, `_web_legacy`, `_worker`, `_nginx`, `_postgres`, `_redis`, `_opensearch` |
-| **ELK** | Searchable log store + Kibana. Indexes Velociraptor hunts and Sigma matches | `:5601` | `intact_elasticsearch`, `intact_logstash`, `intact_kibana` |
-| **IRIS** | Case management — incidents, assignees, evidence chains, runbook progress | `:8443` | `intact_iris_app`, `_db`, `_worker`, `_rabbitmq`, `_nginx` |
+| **TimeSketch** | Timeline analysis — ingests Plaso super-timelines, pivots across hosts from one view | `:5443` | `intact_timesketch_web`, `_web_v3`, `_web_legacy`, `_worker`, `_nginx`, `_postgres`, `_redis`, `_opensearch` |
+| **ELK** | Searchable log store + Kibana. Indexes Velociraptor hunts and Sigma matches | `/kibana/` (Elasticsearch is box-only) | `intact_elasticsearch`, `intact_logstash`, `intact_kibana` |
+| **IRIS** | Case management — incidents, assignees, evidence chains, runbook progress | `:8444` | `intact_iris_app`, `_db`, `_worker`, `_rabbitmq`, `_nginx` |
 | **VolWeb** | Memory forensics (Volatility 3 + YARA) | `:8002` | `intact_volweb_frontend`, `_backend`, `_workers`, `_workers_yarascan`, `_postgresdb`, `_redis` |
-| **Portainer** | Container management — inspect, restart, tail logs | `:9443` | `intact_portainer`, `intact_portainer_agent` |
+| **Portainer** | Container management — inspect, restart, tail logs | `/portainer/` | `intact_portainer`, `intact_portainer_agent` |
 | **Case Analysis (Fusion)** | Correlates every host + module into one incident graph → fused report, advisory, timeline, Identities, and grounded chat | in Dashboard | — |
 | **Memory** | Remote acquisition (AVML / WinPmem), analysed in the VolWeb stack | in Dashboard | — |
 | **Cloud DFIR** | AWS **CloudTrail** and Microsoft 365 / Azure AD **(DFIR-O365RC)** collection + SIGMA detections | in Dashboard | in `intact_backend` |
@@ -125,7 +127,8 @@ modules.
 **Firewall.** `443` in from analysts (Dashboard, `/velociraptor/`, `/api/`) and
 `8000` in from endpoint subnets — Velociraptor agents phone home on 8000, and if
 it is blocked they silently never appear in the Clients list. `80` redirects to
-HTTPS. The module ports above should be locked to the analyst subnet.
+HTTPS. The nginx module ports above (5443, 8444, 8002) should be locked to the
+analyst subnet.
 
 `443` outbound is used during install and upgrade, and by enabled modules that
 call out (LLM providers, Microsoft Graph, AWS). It can be skipped entirely if

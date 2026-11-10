@@ -8,8 +8,23 @@ services:
     # older config without the pin is still reproducible. install/upgrade stamp
     # NGINX_VERSION from versions.nginx in config.yaml.
     image: nginx:${NGINX_VERSION:-1.31.2-alpine}
+    # Check nginx.conf before starting and fall back to the safe config when it
+    # fails, so a broken nginx.conf never takes the dashboard down. An upgrade
+    # cannot repair a bad nginx.conf by itself (it reverts the image version,
+    # not the config). The log says so loudly; fix nginx.conf and restart.
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        if nginx -t -q; then exec nginx -g 'daemon off;'; fi;
+        echo '[intact] nginx.conf FAILED its check -- starting the SAFE config
+        (dashboard, API, Velociraptor, uploads, VolWeb only). Fix nginx.conf and
+        restart intact_nginx.' >&2;
+        nginx -t;
+        exec nginx -c /etc/nginx/nginx-safe.conf -g 'daemon off;'
     volumes:
       - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/nginx-safe.conf:/etc/nginx/nginx-safe.conf:ro
       - ./html:/usr/share/nginx/html:ro
       - ./ssl/nginx-cert.crt:/etc/nginx/cert.crt:ro
       - ./ssl/nginx-cert.key:/etc/nginx/cert.key:ro
@@ -26,6 +41,10 @@ services:
       # terminates TLS here and proxies to intact_volweb_frontend:80.
       # See modules/nginx/config/nginx.conf for the matching server block.
       - "8002:8002"
+      # IRIS and Timesketch: their own host ports are 127.0.0.1-only, so the
+      # browser comes in here and gets the Intact login gate (nginx.conf).
+      - "8444:8444"
+      - "5443:5443"
     restart: unless-stopped
     networks:
       - intact_network

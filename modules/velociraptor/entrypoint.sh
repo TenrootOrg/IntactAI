@@ -38,7 +38,7 @@ if [ ! -f server.config.yaml ]; then
         "GUI": {
             "bind_address": "0.0.0.0",
             "base_path": "/velociraptor",
-            "public_url": "http://'$VELOX_FRONTEND_HOSTNAME'/velociraptor/app/index.html",
+            "public_url": "https://'$VELOX_FRONTEND_HOSTNAME'/velociraptor/app/index.html",
             "use_plain_http": true
         },
         "Monitoring": {"bind_address": "0.0.0.0"},
@@ -166,7 +166,7 @@ if [ -f client.config.yaml ] && [ -f /opt/velociraptor/windows/velociraptor_clie
         echo ""
         echo "SOLUTION: Use the Server.Utils.CreateMSI artifact instead:"
         echo ""
-        echo "1. Access Velociraptor GUI at: http://$VELOX_FRONTEND_HOSTNAME/velociraptor/"
+        echo "1. Access Velociraptor GUI at: https://$VELOX_FRONTEND_HOSTNAME/velociraptor/"
         echo "2. Go to: Server Artifacts (sidebar)"
         echo "3. Click: '+ New Collection'"
         echo "4. Search for: Server.Utils.CreateMSI"

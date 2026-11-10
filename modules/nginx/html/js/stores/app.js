@@ -7,10 +7,13 @@
 window.baseHost = window.location.hostname;
 window.services = {
     velociraptor: { path: '/velociraptor/', protocol: 'https' },
-    timesketch: { port: 5000, protocol: 'https' },
-    kibana: { port: 5601, protocol: 'https' },
-    iris: { port: 8443, protocol: 'https' },
-    portainer: { port: 9443, protocol: 'https' },
+    // Behind the main nginx and the Intact login. Kibana and Portainer take a
+    // sub-path; IRIS and Timesketch get their own nginx ports because their
+    // apps hardcode root-relative URLs. The old ports are box-only now.
+    timesketch: { port: 5443, protocol: 'https' },
+    kibana: { path: '/kibana/', protocol: 'https' },
+    iris: { port: 8444, protocol: 'https' },
+    portainer: { path: '/portainer/', protocol: 'https' },
     // VolWeb — main nginx terminates TLS on host port 8002 and
     // proxies to the internal intact_volweb_frontend:80. URL stays
     // clean (no sub-path) so Vue's hardcoded /assets/ paths work.
