@@ -5,7 +5,7 @@
 services:
   portainer-agent:
     container_name: intact_portainer_agent
-    image: portainer/agent:${PORTAINER_AGENT_VERSION:-2.39.5}
+    image: portainer/agent:${PORTAINER_AGENT_VERSION:-2.45.3}
     # Only the real docker.sock mount is needed for the agent to manage
     # containers/images/networks/volumes via the Docker API. The
     # /var/lib/docker/volumes host mount (dropped here) only powers
@@ -47,7 +47,7 @@ services:
 
   portainer:
     container_name: intact_portainer
-    image: portainer/portainer-ce:${PORTAINER_VERSION:-2.39.5}
+    image: portainer/portainer-ce:${PORTAINER_VERSION:-2.45.3}
     # Serve the UI with the shared Nginx TLS cert so Portainer presents the
     # same certificate as the rest of the stack on :443, instead of the
     # self-signed cert Portainer generates internally on first run.

@@ -160,7 +160,7 @@ def get_dfir_o365rc_image():
 # Presidio PII NER — our own CI-built image, run ON DEMAND (services/presidio_masker.py
 # `docker run`s it for a report's masking, it self-stops when idle). Pinned to
 # presidio-analyzer's own version (versions.presidio -> PRESIDIO_VERSION in .env).
-PRESIDIO_VERSION = os.environ.get('PRESIDIO_VERSION', '2.2.364')
+PRESIDIO_VERSION = os.environ.get('PRESIDIO_VERSION', '2.2.366')
 PRESIDIO_IMAGE = f"intact-presidio:{PRESIDIO_VERSION}"
 
 

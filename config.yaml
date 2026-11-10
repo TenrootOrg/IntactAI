@@ -179,10 +179,10 @@ modules:
     port: 8002
 project_name: intact
 versions:
-  elk: '9.5.5'
+  elk: '9.5.6'
   iris: v2.4.29
-  plaso: '20260720'
-  portainer: '2.45.2'
+  plaso: '20261027'
+  portainer: '2.45.3'
   timesketch: '20261014'
   velociraptor: '0.77.3'
   # Kept for older releases' packages and upgrade bookkeeping only: a release no
@@ -249,7 +249,7 @@ versions:
   # track their upstream versions — not the release tag (that is only for `backend`,
   # which is our code). Bump when the presidio-analyzer pin in modules/presidio/
   # requirements.txt moves.
-  presidio: '2.2.364'
+  presidio: '2.2.366'
   # Which spaCy model CI bakes into the image (no GPU anywhere, so the transformer
   # model is not an option). lg = best recall, ~740MB RAM; md = lighter (~360MB),
   # same result on typical payloads — switch to md for 16GB boxes. Its version
