@@ -869,6 +869,7 @@ def handle_tus_hook():
                         raw_path = extract_memory_from_upload(
                             dest, staging_dir=staging,
                             logger=lambda m, level="info": add_log_to_run(run_id, m, level),
+                            should_cancel=cancel_event.is_set,   # Stop ends a multi-GB unzip
                         )
                         if raw_path != dest:
                             try:

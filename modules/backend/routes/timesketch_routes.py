@@ -358,6 +358,10 @@ def run_timesketch_import():
                         'error': None
                     })
                     # process_kape_upload already logged the warning; no further action
+                elif result and result.get('status') == 'cancelled':
+                    # Stopped by the operator, not a failure: the run row is already 'cancelled'.
+                    update_job(flow_id, {'status': 'cancelled', 'phase': 'Stopped by user', 'error': None})
+                    workflow_logger("Pipeline stopped by user", "warning")
                 else:
                     err = (result or {}).get('error', 'Unknown error')
                     update_job(flow_id, {

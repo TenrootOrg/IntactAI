@@ -100,12 +100,17 @@ def _run_scheduled_blueprint(job_id: str):
                 }
             )
 
-            # Run in background thread
-            thread = threading.Thread(
-                target=run_agentic_pipeline,
-                args=(run_id, blueprint_id, client_ids, collection_minutes),
-                daemon=True
-            )
+            # Registered like the manual route (agentic_routes) does: without it
+            # Stop on a scheduled collection only changed the label while the
+            # Velociraptor flows kept collecting.
+            from services.workflow_service import register_cancel_event
+            cancel_event = register_cancel_event(run_id)
+
+            def _agentic():
+                run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, cancel_event)
+                count_if_completed(job_id, run_id)
+
+            thread = threading.Thread(target=_agentic, daemon=True)
             thread.start()
             print(f"[SCHEDULER] Started agentic pipeline: run_id={run_id}", flush=True)
 
@@ -123,13 +128,14 @@ def _run_scheduled_blueprint(job_id: str):
         elif blueprint_type == 'aws':
             # AWS (CloudTrail) — account-based/env-wide (no clients). blueprint +
             # regions/scope_mode from options. Runs in its own thread.
-            run_aws_scheduled(job_meta['name'], blueprint_id, options, case_id=case_id)
+            run_aws_scheduled(job_meta['name'], blueprint_id, options, case_id=case_id, job_id=job_id)
             print(f"[SCHEDULER] Started AWS scan (env-wide)", flush=True)
 
         else:
             # Velociraptor Hunt (env-wide) — legacy 'velociraptor' + explicit 'hunt'.
             # include_labels / per_artifact from options.
-            run_velociraptor_hunt(job_meta['name'], blueprint_id, client_ids, options, case_id=case_id)
+            run_velociraptor_hunt(job_meta['name'], blueprint_id, client_ids, options, case_id=case_id,
+                                  job_id=job_id)
             print(f"[SCHEDULER] Started velociraptor hunt: blueprint={blueprint_id}", flush=True)
 
         # Update job metadata
@@ -149,7 +155,7 @@ def _run_scheduled_blueprint(job_id: str):
 
 
 def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list, options: dict = None,
-                          case_id: str = None):
+                          case_id: str = None, job_id: str = None):
     """Execute a Velociraptor hunt from a blueprint.
 
     options: {include_labels: [str] (target-label scoping — empty = all clients)}.
@@ -206,7 +212,8 @@ def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list, op
             "blueprint_id": blueprint_id,
             "blueprint": blueprint_name,
             "artifact_count": len(artifacts),
-            "client_ids": client_ids
+            "client_ids": client_ids,
+            "scheduled_job_id": job_id
         }
     )
 
@@ -277,6 +284,7 @@ SELECT HuntId FROM collection
         if hunt_id:
             add_log_to_run(run_id, f"Hunt created: {hunt_id}", "success")
             update_run_status(run_id, "completed", progress=100)
+            count_if_completed(job_id, run_id)
             print(f"[SCHEDULER] Hunt created: {hunt_id}", flush=True)
         else:
             error_msg = response_log or "No HuntId returned from Velociraptor"
@@ -290,7 +298,8 @@ SELECT HuntId FROM collection
         print(f"[SCHEDULER] Hunt error: {e}", flush=True)
 
 
-def run_aws_scheduled(job_name: str, blueprint_id: str, options: dict = None, case_id: str = None):
+def run_aws_scheduled(job_name: str, blueprint_id: str, options: dict = None, case_id: str = None,
+                      job_id: str = None):
     """Scheduled AWS (CloudTrail) scan — account-based/env-wide (no Velociraptor
     clients). Resolves the AWS blueprint, loads AWS config, and runs
     run_aws_pipeline in a daemon thread. Mirrors routes/aws_routes.start_scan.
@@ -322,7 +331,7 @@ def run_aws_scheduled(job_name: str, blueprint_id: str, options: dict = None, ca
         automation_type='aws_scan',
         name=f"Scheduled: {job_name}",
         details={"source": "scheduler", "blueprint": blueprint_id,
-                 "scope_mode": scope_mode, "regions": regions},
+                 "scope_mode": scope_mode, "regions": regions, "scheduled_job_id": job_id},
     )
 
     def _worker():
@@ -346,6 +355,7 @@ def run_aws_scheduled(job_name: str, blueprint_id: str, options: dict = None, ca
                 'time_filter': None,
             }
             run_aws_pipeline(run_id, aws_config, blueprint, pipe_options)
+            count_if_completed(job_id, run_id)
         except Exception as e:
             print(f"[SCHEDULER] AWS scheduled run error: {e}", flush=True)
             try:
@@ -480,6 +490,7 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
     def _worker():
         try:
             run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, timeout_seconds, cancel_event)
+            count_if_completed(job_id, run_id)
         finally:
             if job_id:
                 with _TIMESKETCH_ACTIVE_LOCK:
@@ -489,17 +500,48 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
 
 
 def update_job_run_stats(job_id: str):
-    """Update last_run_at and run_count for a job."""
+    """Stamp last_run_at when a run is dispatched. run_count is NOT bumped here:
+    it counted dispatches, so a schedule failing every night still read
+    "Runs: 30". count_if_completed() bumps it when a run ends well."""
     conn = get_db_connection()
     cursor = conn.cursor()
     now = datetime.utcnow().isoformat()
     cursor.execute("""
         UPDATE scheduled_jobs
-        SET last_run_at = ?, run_count = run_count + 1, updated_at = ?
+        SET last_run_at = ?, updated_at = ?
         WHERE id = ?
     """, (now, now, job_id))
     conn.commit()
     conn.close()
+
+
+def count_if_completed(job_id, run_id):
+    """Add one to the schedule's run_count when its run ended 'completed' (read
+    back from the DB: update_run_status may have demoted it to failed). Called
+    by each pipeline's worker after it returns. Never raises."""
+    if not job_id or not run_id:
+        return
+    try:
+        from services.workflow_service import get_automation_run
+        if (get_automation_run(run_id, with_logs=False) or {}).get("status") not in ("completed", "success"):
+            return
+        conn = get_db_connection()
+        conn.execute("UPDATE scheduled_jobs SET run_count = COALESCE(run_count, 0) + 1 WHERE id = ?", (job_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:  # noqa: BLE001 -- a counter must never fail the run
+        print(f"[SCHEDULER] run_count update failed for {job_id}: {e}", flush=True)
+
+
+def active_run(job_id):
+    """The run_id of this schedule's run still pending/running, else None. Read
+    from the runs table (details.scheduled_job_id), not memory, so it still holds
+    after a backend restart -- the boot reaper fails the runs a restart killed."""
+    from services.file_storage_service import load_workflows
+    for wf in load_workflows(with_logs=False, statuses=("pending", "running")):
+        if job_id and (wf.get("details") or {}).get("scheduled_job_id") == job_id:
+            return wf.get("run_id")
+    return None
 
 
 def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None) -> None:
@@ -623,6 +665,7 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
                     update_run_status(batch_id, "running", progress=max(1, done * 100 // total - 1))
             add_log_to_run(batch_id, f"all {total} host(s) done", "success")
             update_run_status(batch_id, "completed", progress=100)
+            count_if_completed(job_meta.get("id"), batch_id)
         except Exception as e:
             add_log_to_run(batch_id, f"batch stopped by an error after {done}/{total}: {e}", "error")
             update_run_status(batch_id, "failed", error=str(e))

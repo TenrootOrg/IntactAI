@@ -78,7 +78,10 @@ def run_pinfo(plaso_file, logger=None, run_id=None):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            # Own process group: Stop kills the group (terminate_subprocess), and
+            # without this that group was the backend's own.
+            start_new_session=True,
         )
 
         cancel_event = get_cancel_event(run_id) if run_id else None

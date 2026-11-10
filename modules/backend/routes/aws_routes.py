@@ -598,7 +598,12 @@ def upload_logs():
 @aws_bp.route('/api/aws/analyze-offline', methods=['POST'])
 def analyze_offline():
     """Run the post-collection pipeline against already-uploaded data."""
-    from services.workflow_service import update_run_status
+    from services.workflow_service import (
+        is_cancelled,
+        register_cancel_event,
+        unregister_cancel,
+        update_run_status,
+    )
     try:
         data = request.json or {}
         run_id = data.get('run_id')
@@ -623,6 +628,10 @@ def analyze_offline():
             'aws_config': data.get('aws_config') or {},
         }
 
+        # Registered so Stop reaches the pipeline's is_cancelled checks. Without
+        # it Stop relabelled the row and the analysis ran on to 'complete'.
+        register_cancel_event(run_id)
+
         import threading
 
         def run_offline():
@@ -638,14 +647,19 @@ def analyze_offline():
                         json.dump(merged, f, default=str)
                 except Exception as persist_err:
                     print(f"[AWS] persist failed: {persist_err}", flush=True)
+                if is_cancelled(run_id):
+                    return
                 if result.get('status') == 'error':
                     update_run_status(run_id, 'failed', error=result.get('error', 'Unknown'))
                 else:
                     update_run_status(run_id, 'completed', progress=100)
             except Exception as e:
-                add_log_to_run(run_id, f"[AWS] Offline analysis failed: {e}", "error")
-                update_run_status(run_id, 'failed', error=str(e))
+                if not is_cancelled(run_id):
+                    add_log_to_run(run_id, f"[AWS] Offline analysis failed: {e}", "error")
+                    update_run_status(run_id, 'failed', error=str(e))
                 traceback.print_exc()
+            finally:
+                unregister_cancel(run_id)
 
         threading.Thread(target=run_offline, daemon=True).start()
         return jsonify({'run_id': run_id, 'status': 'running', 'message': 'Offline analysis started'})

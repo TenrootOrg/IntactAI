@@ -28,6 +28,9 @@ from services.workflow_service import (
     update_run_status,
     register_cleanup,
     get_cancel_event,
+    is_cancelled,
+    register_cancel_event,
+    unregister_cancel,
     terminate_subprocess,
 )
 from services.plaso_service import run_pinfo
@@ -131,13 +134,14 @@ def extract_client_info(zip_path, format_type, original_filename=None):
         return 'UnknownClient'
 
 
-def decompress_velociraptor_uploads(uploads_dir, dest_dir, logger=None):
+def decompress_velociraptor_uploads(uploads_dir, dest_dir, logger=None, should_stop=None):
     """Decompress Velociraptor's zlib-compressed files
 
     Args:
         uploads_dir: Path to the uploads/ folder from Velociraptor ZIP
         dest_dir: Destination directory for decompressed files
         logger: Optional logger callback
+        should_stop: Optional callable; True ends the walk early (workflow Stop)
 
     Returns:
         tuple (success, file_count, error_count)
@@ -163,7 +167,12 @@ def decompress_velociraptor_uploads(uploads_dir, dest_dir, logger=None):
     skip_extensions = {'.chunk', '.idx'}
 
     for root, dirs, files in os.walk(uploads_dir):
+        if should_stop and should_stop():
+            log("Stopped by user — decompression abandoned", "warning")
+            break
         for filename in files:
+            if should_stop and should_stop():
+                break
             # Skip metadata files
             if any(filename.endswith(ext) for ext in skip_extensions):
                 skipped_count += 1
@@ -249,14 +258,19 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
         # ZIP-supplied text, so it is also reduced to a safe file name before
         # it lands in a host path that is bind-mounted into the container.
         safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', str(client_name or 'Unknown')).strip('.')[:64] or 'Unknown'
-        plaso_name = f"{safe_name}_{uuid.uuid4().hex[:12]}_Artifacts.plaso"
+        tag = uuid.uuid4().hex[:12]
+        plaso_name = f"{safe_name}_{tag}_Artifacts.plaso"
         plaso_file = f"{PLASO_OUTPUT_DIR}/{plaso_name}"
+        # Named so Stop can remove it: killing the docker CLI does not always
+        # stop the container, and an unnamed one kept running log2timeline.
+        # Not "intact_*": health checks, live logs and clean.sh match that prefix.
+        container = f"plaso_run_{tag}"
 
         # Build Plaso command
         num_workers = str(workers) if workers else PLASO_CPUS
 
         plaso_cmd = [
-            'docker', 'run', '--rm',
+            'docker', 'run', '--rm', '--name', container,
             # PYTHONUNBUFFERED disables Python's stdout/stderr block buffering
             # inside the Plaso container. Without it, log2timeline.py's status
             # lines sit in a 4 KB pipe buffer until the buffer fills or the
@@ -316,17 +330,24 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            # Own process group: terminate_subprocess() signals the whole group,
+            # which without this is the backend's own -- Stop would hit the
+            # backend and every other docker CLI it runs.
+            start_new_session=True,
         )
 
         # Wire workflow Stop into the Plaso subprocess. The cleanup callback
         # fires when the user clicks Stop in the dashboard; terminate_subprocess
         # is idempotent so it's safe even if the process already exited.
-        # The `--rm` flag on the docker run means the container vanishes once
-        # the parent docker CLI is killed.
-        cancel_event = get_cancel_event(run_id) if run_id else None
+        # The worker then removes the named container (below).
+        # is_cancelled(), not an Event looked up here: a run that never
+        # registered one (TUS uploads) had None, and the loop never saw Stop.
+        stopped = lambda: bool(run_id) and is_cancelled(run_id)
         if run_id:
             register_cleanup(run_id, lambda p=process: terminate_subprocess(p))
+            if stopped():   # Stop landed before the callback was registered
+                terminate_subprocess(process)
 
         # Stream output
         line_count = 0
@@ -334,7 +355,7 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
             # Bail fast if Stop was clicked. The cleanup callback above is
             # already terminating the subprocess; we just stop reading so
             # this loop exits and the caller returns to the workflow runner.
-            if cancel_event and cancel_event.is_set():
+            if stopped():
                 log("Stop requested by user — exiting log2timeline read loop", "warning")
                 break
             line = line.strip()
@@ -360,10 +381,21 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
                     except Exception:
                         pass
 
-        return_code = process.wait()
-        if cancel_event and cancel_event.is_set():
+        if stopped():
+            terminate_subprocess(process)
+            try:
+                subprocess.run(['docker', 'rm', '-f', container],
+                               capture_output=True, timeout=60)
+            except Exception:
+                pass
+            # The half-written .plaso is never returned, so nothing else deletes it.
+            try:
+                os.remove(plaso_file)
+            except OSError:
+                pass
             log("log2timeline aborted by user", "warning")
             return None
+        return_code = process.wait()
 
         if return_code == 0:
             log("Plaso processing completed successfully", "success")
@@ -422,6 +454,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             update_run_status(run_id, status, **kw)
     temp_dir = None
     plaso_file = None  # Track for cleanup
+    owns_cancel = False
     held = []          # [True] while this call holds a Plaso slot
     stage_over = []    # end_plaso_stage() runs once
 
@@ -467,6 +500,23 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         else:
             add_log_to_run(run_id, "=== Starting KAPE Processing ===")
 
+        # TUS uploads never registered a cancel Event, so Stop only relabelled
+        # the run while extraction, Plaso and the Timesketch import carried on.
+        # A caller that registered one (start-multi, single-client) keeps it.
+        if get_cancel_event(run_id) is None:
+            register_cancel_event(run_id)
+            owns_cancel = True
+
+        def stopped(where):
+            # The row is already 'cancelled' (request_stop); just stop working.
+            if not is_cancelled(run_id):
+                return False
+            add_log_to_run(run_id, f"Stopped by user {where}", "warning")
+            return True
+
+        if stopped("before processing started"):
+            return {"run_id": run_id, "status": "cancelled"}
+
         # Check file exists
         if not os.path.exists(zip_path):
             raise Exception(f"File not found: {zip_path}")
@@ -492,12 +542,12 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         if not _PLASO_SLOTS.acquire(blocking=False):
             add_log_to_run(run_id, f"Waiting for a Plaso slot ({PLASO_MAX_CONCURRENT} at a time "
                                    f"across all Timesketch runs; PLASO_MAX_CONCURRENT)")
-            cancel_event = get_cancel_event(run_id) if run_id else None
             while not _PLASO_SLOTS.acquire(timeout=5):
-                if cancel_event and cancel_event.is_set():
-                    add_log_to_run(run_id, "Stopped by user while waiting for a Plaso slot", "warning")
+                if stopped("while waiting for a Plaso slot"):
                     return {"run_id": run_id, "status": "cancelled"}
         held.append(True)
+        if stopped("before extraction"):
+            return {"run_id": run_id, "status": "cancelled"}
 
         # Create temp directory for extraction inside PLASO_OUTPUT_DIR (shared with host via Docker volume)
         # Must be under /tmp/plaso/ so the Plaso Docker container can access the files
@@ -524,7 +574,11 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         add_log_to_run(run_id, "Extracting ZIP file...")
         with zipfile.ZipFile(zip_path, 'r') as zf:
             file_count = stats["members"]
-            zf.extractall(extract_dir)
+            # Member by member (what extractall does) so Stop is seen mid-archive.
+            for member in zf.infolist():
+                if stopped("during extraction"):
+                    return {"run_id": run_id, "status": "cancelled"}
+                zf.extract(member, extract_dir)
             add_log_to_run(run_id, f"Extracted {file_count} files from archive")
 
         _status("running", progress=20)
@@ -546,8 +600,11 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
 
                 success, count, errors = decompress_velociraptor_uploads(
                     uploads_dir, decompress_dir,
-                    logger=lambda msg, lvl: add_log_to_run(run_id, msg, lvl)
+                    logger=lambda msg, lvl: add_log_to_run(run_id, msg, lvl),
+                    should_stop=lambda: is_cancelled(run_id),
                 )
+                if stopped("during decompression"):
+                    return {"run_id": run_id, "status": "cancelled"}
 
                 if success:
                     source_dir = decompress_dir
@@ -564,6 +621,8 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             add_log_to_run(run_id, "Using raw KAPE files directly")
 
         _status("running", progress=30)
+        if stopped("before Plaso"):
+            return {"run_id": run_id, "status": "cancelled"}
 
         # Run Plaso
         add_log_to_run(run_id, "=== Processing with Plaso ===")
@@ -580,9 +639,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         # If Stop was clicked mid-Plaso, plaso_file is None — bail out
         # cleanly without raising, so the workflow ends as 'cancelled'
         # (already set by request_stop) instead of 'failed'.
-        cancel_event = get_cancel_event(run_id) if run_id else None
-        if cancel_event and cancel_event.is_set():
-            add_log_to_run(run_id, "Plaso stage stopped by user", "warning")
+        if stopped("during Plaso"):
             return {"run_id": run_id, "status": "cancelled"}
 
         if not plaso_file:
@@ -597,6 +654,9 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             logger=lambda msg, lvl: add_log_to_run(run_id, msg, lvl),
             run_id=run_id,
         )
+        # Before reading the count: a pinfo cut short by Stop can look like "no events".
+        if stopped("before the Timesketch import"):
+            return {"run_id": run_id, "status": "cancelled"}
 
         if pinfo_result:
             event_count = pinfo_result.get('event_count', 0)
@@ -642,6 +702,8 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             run_id=run_id,  # enables Stop-button cancel during upload + indexing-wait
         )
 
+        if stopped("during the Timesketch import"):
+            return {"run_id": run_id, "status": "cancelled"}
         if result:
             add_log_to_run(run_id, f"Import complete! Sketch ID: {result.get('sketch_id')}", "success")
             add_log_to_run(run_id, f"Timeline ID: {result.get('timeline_id')}", "success")
@@ -658,6 +720,11 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             raise Exception("Timesketch import failed")
 
     except Exception as e:
+        # A step that broke because Stop pulled its files or process away is
+        # not a failure to report.
+        if run_id and is_cancelled(run_id):
+            add_log_to_run(run_id, f"Stopped by user ({e})", "warning")
+            return {"run_id": run_id, "status": "cancelled"}
         error_msg = str(e)
         print(f"[KAPE] Error: {error_msg}", flush=True)
         traceback.print_exc()
@@ -670,6 +737,8 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
 
     finally:
         end_plaso_stage()
+        if owns_cancel:
+            unregister_cancel(run_id)
 
         # Cleanup plaso file (after Timesketch import, no longer needed)
         if plaso_file and os.path.exists(plaso_file):

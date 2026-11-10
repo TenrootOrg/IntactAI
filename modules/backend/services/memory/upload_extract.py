@@ -53,6 +53,26 @@ class UploadExtractError(Exception):
     """Raised when the upload can't be turned into a usable raw dump."""
 
 
+class UploadExtractCancelled(UploadExtractError):
+    """Stop landed mid-extract. A subclass so every caller's existing
+    ``except UploadExtractError`` path handles it unchanged."""
+
+
+class _CancellableReader:
+    """Raise on the next read once ``should_cancel()`` is true.
+
+    copy_bounded reads one chunk at a time, so this stops a multi-GB unzip
+    within one chunk of Stop instead of running it to the end."""
+
+    def __init__(self, src, should_cancel):
+        self._src, self._should_cancel = src, should_cancel
+
+    def read(self, n=-1):
+        if self._should_cancel():
+            raise UploadExtractCancelled("stopped by the operator during the ZIP extract")
+        return self._src.read(n)
+
+
 def _sniff_raw(path: str) -> None:
     """Read the first 8 bytes and reject if they look compressed.
 
@@ -89,6 +109,7 @@ def extract_memory_from_upload(
     *,
     staging_dir: str,
     logger: Optional[Callable[[str, str], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> str:
     """Turn ``upload_path`` into a path to a usable raw memory image.
 
@@ -100,6 +121,9 @@ def extract_memory_from_upload(
         staging_dir: writable directory where extracted dumps land.
             The caller is responsible for cleanup.
         logger: optional ``logger(message, level)`` for progress lines.
+        should_cancel: optional ``() -> bool`` polled between chunks of the
+            ZIP extract; when true the partial output is removed and
+            ``UploadExtractCancelled`` is raised.
 
     Returns:
         Absolute path to a raw memory image ready for VolWeb upload.
@@ -179,12 +203,16 @@ def extract_memory_from_upload(
             )
             try:
                 with z.open(zip_member, "r") as src, open(out_path, "wb") as dst:
+                    if should_cancel:
+                        src = _CancellableReader(src, should_cancel)
                     copy_bounded(src, dst, raw_size, what=f"{zip_member!r}")
-            except ArchiveRejected as e:
+            except (ArchiveRejected, UploadExtractCancelled) as e:
                 try:
                     os.remove(out_path)
                 except OSError:
                     pass
+                if isinstance(e, UploadExtractCancelled):
+                    raise
                 raise UploadExtractError(str(e)) from e
 
         _sniff_raw(out_path)
@@ -197,4 +225,4 @@ def extract_memory_from_upload(
     return upload_path
 
 
-__all__ = ["extract_memory_from_upload", "UploadExtractError"]
+__all__ = ["extract_memory_from_upload", "UploadExtractError", "UploadExtractCancelled"]

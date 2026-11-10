@@ -496,6 +496,9 @@ def upload_memory_dump():
                 upload_path,
                 staging_dir=upload_dir,
                 logger=lambda m, level="info": add_log_to_run(run_id, m, level),
+                # The held Event, not is_cancelled(run_id): it stays set even
+                # if the registration is dropped mid-extract.
+                should_cancel=cancel_event.is_set,
             )
             # If the helper extracted a NEW file from a ZIP, drop the
             # original ZIP — we don't need both on disk.

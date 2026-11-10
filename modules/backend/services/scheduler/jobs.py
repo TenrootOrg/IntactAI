@@ -420,20 +420,45 @@ def toggle_scheduled_job(job_id: str, enabled: bool) -> Optional[dict]:
     return update_scheduled_job(job_id, {'enabled': enabled})
 
 
+class JobBusy(Exception):
+    """Run now refused: the schedule's previous run (run_id, or None while it is
+    still being started) has not finished."""
+    def __init__(self, run_id=None):
+        super().__init__(run_id or "starting")
+        self.run_id = run_id
+
+
+# Jobs whose Run now thread has not created its run row yet (a double click).
+_DISPATCHING = set()
+_DISPATCHING_LOCK = threading.Lock()
+
+
 def run_job_now(job_id: str) -> bool:
-    """Manually trigger a job to run immediately."""
-    from .executor import run_scheduled_blueprint
+    """Manually trigger a job to run immediately. Raises JobBusy while its
+    previous run is still going: Run now used to start a second copy of the
+    same pipeline on the same clients."""
+    from .executor import run_scheduled_blueprint, active_run
 
     job = get_scheduled_job(job_id)
     if not job:
         return False
 
-    # Run in background thread
-    thread = threading.Thread(
-        target=run_scheduled_blueprint,
-        args=[job_id],
-        daemon=True
-    )
+    with _DISPATCHING_LOCK:
+        if job_id in _DISPATCHING:
+            raise JobBusy(None)
+        busy = active_run(job_id)
+        if busy:
+            raise JobBusy(busy)
+        _DISPATCHING.add(job_id)
+
+    def _run():
+        try:
+            run_scheduled_blueprint(job_id)
+        finally:
+            with _DISPATCHING_LOCK:
+                _DISPATCHING.discard(job_id)
+
+    thread = threading.Thread(target=_run, daemon=True)
     thread.start()
     print(f"[SCHEDULER] Manual trigger: {job_id}", flush=True)
     return True

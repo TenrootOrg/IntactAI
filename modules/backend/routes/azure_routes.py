@@ -332,7 +332,9 @@ def start_scan():
                 run_id=run_id,
                 azure_config=azure_config,
                 blueprint=blueprint,
-                options=options
+                options=options,
+                # Registered above and never handed on: Stop only relabelled the row.
+                cancel_event=cancel_event,
             )
 
             # Store and persist FIRST. Behind the cancel check, stopping a

@@ -391,6 +391,11 @@ def collect_azure_logs(
         log(f"Target IPs: {', '.join(target_ips)}", "info")
 
     for source in available_sources:
+        if run_id:
+            from services.workflow_service import is_cancelled
+            if is_cancelled(run_id):   # Stop: skip the remaining sources, keep what was collected
+                log("Stopped by user - skipping the remaining sources", "warning")
+                break
         source_info = LOG_SOURCES.get(source, {})
         source_name = source_info.get('name', source)
         graph_info = GRAPH_ENDPOINTS.get(source)

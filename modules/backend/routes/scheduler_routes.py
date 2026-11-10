@@ -286,10 +286,16 @@ def toggle_job(job_id):
 @scheduler_bp.route('/api/scheduler/jobs/<job_id>/run', methods=['POST'])
 def trigger_job(job_id):
     """Manually trigger a job to run now."""
+    from services.scheduler.jobs import JobBusy
     try:
         success = run_job_now(job_id)
         if not success:
             return jsonify({"error": "Job not found"}), 404
         return jsonify({"success": True, "message": "Job triggered"})
+    except JobBusy as busy:
+        msg = (f"This schedule's previous run ({busy.run_id}) is still running. Wait for it to "
+               f"finish, or stop it in Workflows, then try again." if busy.run_id
+               else "This schedule is already starting a run. Wait a moment, then check Workflows.")
+        return jsonify({"error": msg, "run_id": busy.run_id}), 409
     except Exception as e:
         return jsonify({"error": str(e)}), 500

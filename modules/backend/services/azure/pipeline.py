@@ -106,6 +106,11 @@ def _run_post_collection_phases(
     """
     from services.workflow_service import is_cancelled, record_sigma_rule_tally, update_run_status
 
+    # Hold the records first, as AWS does: a Stop right after normalisation
+    # returned before the time filter set this, and the stopped scan's blob had
+    # no collected data at all.
+    result['collected_data'] = collected_data
+
     # Apply timestamp normalisation right at the entry — every downstream
     # phase (SIGMA matching, LLM prompt, report writer) sees one canonical
     # format. Same helper the on-prem (Velociraptor) flow uses.
@@ -271,6 +276,17 @@ def _run_post_collection_phases(
     return result
 
 
+def _mark_cancelled(result: Dict, run_id: str) -> Dict:
+    """A stopped run's blob says so. The post-collection phases return early on
+    Stop, and the result was then stamped 'complete' -- /api/azure/status showed a
+    finished scan over partial data. What was collected stays on it: evidence."""
+    result['status'] = 'cancelled'
+    result['end_time'] = datetime.utcnow().isoformat()
+    kept = sum(len(v) for v in (result.get('collected_data') or {}).values())
+    add_log_to_run(run_id, f"[AZURE] Stopped -- {kept} record(s) collected before Stop are kept", "warning")
+    return result
+
+
 # =============================================================================
 # Main Pipeline Entry Points
 # =============================================================================
@@ -279,7 +295,8 @@ def run_azure_pipeline(
     run_id: str,
     azure_config: Dict[str, str],
     blueprint: Dict[str, Any],
-    options: Dict[str, Any]
+    options: Dict[str, Any],
+    cancel_event=None,
 ) -> Dict[str, Any]:
     """
     Run the full Azure security pipeline (online mode).
@@ -289,10 +306,14 @@ def run_azure_pipeline(
         azure_config: Azure credentials (tenant_id, client_id, client_secret)
         blueprint: Blueprint configuration with sources and settings
         options: Pipeline options (time_filter, min_severity, scope_mode, etc.)
+        cancel_event: the route's registered Event. It used to be registered and
+            dropped, so a stopped scan ran on and its blob said 'complete'.
 
     Returns:
         Pipeline result dict with collected data, findings, analysis, and report
     """
+    from services.workflow_service import is_cancelled
+    stopped = cancel_event.is_set if cancel_event is not None else (lambda: is_cancelled(run_id))
     result = {
         'run_id': run_id,
         'mode': 'online',
@@ -445,6 +466,10 @@ def run_azure_pipeline(
 
         if not collected_data:
             phase_end("collection")
+            if stopped():
+                # Stop kills the UAL container, which then reads as a source
+                # error: this is a stopped run, not a failed or a clean one.
+                return _mark_cancelled(result, run_id)
             collection_errors = collection_status.get('errors', [])
             if collection_errors:
                 # Zero records AND errors is a failed run, not a clean one.
@@ -486,6 +511,8 @@ def run_azure_pipeline(
         # =====================================================================
         # Complete (phases 3-7 ran in _run_post_collection_phases above)
         # =====================================================================
+        if stopped():
+            return _mark_cancelled(result, run_id)
         result['status'] = 'complete'
         result['end_time'] = datetime.utcnow().isoformat()
         add_log_to_run(run_id, "[AZURE] Pipeline completed successfully", "info")
@@ -578,6 +605,9 @@ def run_azure_on_existing(
             result=result,
         )
 
+        from services.workflow_service import is_cancelled
+        if is_cancelled(run_id):
+            return _mark_cancelled(result, run_id)
         result['status'] = 'complete'
         result['end_time'] = datetime.utcnow().isoformat()
         add_log_to_run(run_id, "[AZURE] Offline analysis completed", "info")
