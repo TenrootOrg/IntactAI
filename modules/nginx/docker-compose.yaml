@@ -37,14 +37,16 @@ services:
       - "80:80"
       - "8080:8080"
       - "443:443"
-      # VolWeb dashboard tile opens https://<host>:8002/ — main nginx
-      # terminates TLS here and proxies to intact_volweb_frontend:80.
-      # See modules/nginx/config/nginx.conf for the matching server block.
-      - "8002:8002"
-      # IRIS and Timesketch: their own host ports are 127.0.0.1-only, so the
-      # browser comes in here and gets the Intact login gate (nginx.conf).
-      - "8444:8444"
-      - "5443:5443"
+      # The web tools, each on its own nginx server block behind the Intact
+      # login (config/nginx.conf). nginx listens on fixed container ports;
+      # only the host side comes from config.yaml (modules.<tool>.port and
+      # modules.elk.kibana_port, rendered into .env). Defaults cover a box
+      # whose config.yaml or .env predates the keys.
+      - "${KIBANA_PORT:-5602}:5602"
+      - "${PORTAINER_PORT:-9444}:9444"
+      - "${IRIS_PORT:-8444}:8444"
+      - "${TIMESKETCH_PORT:-5443}:5443"
+      - "${VOLWEB_PORT:-8002}:8002"
     restart: unless-stopped
     networks:
       - intact_network

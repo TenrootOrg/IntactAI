@@ -25,14 +25,27 @@ test_web_ports_are_loopback_only() {
     _assert_loopback timesketch/docker-compose.yaml 5000
 }
 
-# nginx serves Kibana at /kibana/ and strips the prefix; rewriteBasePath must be
-# false or Kibana stops answering at its root, which the host-side probes and
-# the container healthcheck (https://localhost:5601/api/status) rely on.
-test_kibana_base_path_without_rewrite() {
+# Kibana sits at the root of its own nginx port (its own browser origin), so
+# no basePath: a /kibana/ prefix would 404 every asset through nginx. The
+# container healthcheck still probes the root on 5601.
+test_kibana_has_no_base_path() {
     local f="${M}/elk/docker-compose.yaml"
-    assert_true grep -qE '^\s+- SERVER_BASEPATH=/kibana$' "$f"
-    assert_true grep -qE '^\s+- SERVER_REWRITEBASEPATH=false$' "$f"
+    assert_false grep -qE '^\s+- SERVER_(BASEPATH|REWRITEBASEPATH)=' "$f"
     assert_true grep -q 'https://localhost:5601/api/status' "$f"
+}
+
+# The public ports are per module in config.yaml, but only the HOST side: nginx
+# listens on fixed container ports so nginx.conf never changes per box, and the
+# defaults are the old ports so an upgraded box without the keys is unchanged.
+test_public_ports_host_side_configurable() {
+    local n v
+    n="$(cat "${M}/nginx/docker-compose.yaml")"
+    for m in KIBANA_PORT:-5602:5602 PORTAINER_PORT:-9444:9444 IRIS_PORT:-8444:8444 \
+             TIMESKETCH_PORT:-5443:5443 VOLWEB_PORT:-8002:8002; do
+        assert_contains "$n" "\"\${${m%:*}}:${m##*:}\"" "nginx publishes ${m}"
+    done
+    v="$(cat "${M}/velociraptor/docker-compose.yaml")"
+    assert_contains "$v" '"${VELOX_AGENT_PORT:-8000}:8000"' "velociraptor agent port"
 }
 
 test_portainer_has_no_base_url() {

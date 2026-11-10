@@ -104,23 +104,26 @@ LOOPBACK_ONLY = [
     # stay bound on 127.0.0.1 because the install and upgrade probes call them
     # from the host; from the LAN each one would bypass the Intact login.
     (9200, "Elasticsearch — every forensic document on the box"),
-    (5601, "Kibana — reached via https://<host>/kibana/ now"),
+    (5601, "Kibana — reached via nginx :5602 now"),
     (8443, "IRIS — reached via nginx :8444 now"),
     (9443, "Portainer — the Docker socket, i.e. host root"),
     (5000, "Timesketch — reached via nginx :5443 now"),
 ]
 
-# The nginx entry points for those services, as (port, path, what). Each must
-# send an unauthenticated browser to the Intact login: an nginx 404 or a
-# service's own login page here means the gate is missing. The extra ports have
-# to redirect to login.html on 443, since the login page only lives there.
+# The nginx entry points for those services, as (module, config.yaml key,
+# default port, path, what). Each must send an unauthenticated browser to the
+# Intact login: an nginx 404 or a service's own login page here means the gate
+# is missing. The extra ports have to redirect to login.html on 443, since the
+# login page only lives there. Each tool sits at the root of its own port (its
+# own browser origin, apart from the dashboard); the operator picks the host
+# port per module in config.yaml, so read it there -- see _gated_entry_points.
 NGINX_GATED = [
-    (443, "/kibana/", "Kibana"),
-    (443, "/portainer/", "Portainer"),
-    (443, "/velociraptor/", "Velociraptor"),
-    (8444, "/", "IRIS"),
-    (5443, "/", "Timesketch"),
-    (8002, "/", "VolWeb"),
+    (None, None, 443, "/velociraptor/", "Velociraptor"),
+    ("elk", "kibana_port", 5602, "/", "Kibana"),
+    ("portainer", "port", 9444, "/", "Portainer"),
+    ("iris", "port", 8444, "/", "IRIS"),
+    ("timesketch", "port", 5443, "/", "Timesketch"),
+    ("volweb", "port", 8002, "/", "VolWeb"),
 ]
 
 # Services that must NOT be reachable from another container on the box. Each
@@ -709,7 +712,7 @@ def register(runner, cfg):
                        "every endpoint on the network")
 
         # --- and the nginx entry points must demand the Intact login --------
-        for port, path, what in NGINX_GATED:
+        for port, path, what in _gated_entry_points(REPO_DIR):
             url = f"https://{cfg.platform_host}:{port}{path}"
             try:
                 r = c.s.get(url, timeout=15, allow_redirects=False)
@@ -1012,6 +1015,26 @@ def _peer_can_reach(target_container, port, timeout=6):
         " ; ".join(f"nc -z -w 2 {ip} {port} && echo REACHABLE_{ip}" for ip in ips),
     ], timeout=timeout + 30)
     return "REACHABLE_" in probe.out
+
+
+def _gated_entry_points(root):
+    """NGINX_GATED as (port, path, what), each port from root's config.yaml.
+
+    An absent key (every box whose config.yaml predates the per-module ports)
+    falls back to the compose default, which is the port nginx publishes then.
+    """
+    try:
+        import yaml
+        with open(os.path.join(root, "config.yaml"), encoding="utf-8") as fh:
+            mods = (yaml.safe_load(fh) or {}).get("modules") or {}
+    except Exception:                                         # noqa: BLE001
+        mods = {}
+    out = []
+    for mod, key, default, path, what in NGINX_GATED:
+        spec = mods.get(mod) if mod else None
+        val = spec.get(key) if isinstance(spec, dict) else None
+        out.append((int(val) if str(val).isdigit() else default, path, what))
+    return out
 
 
 def _is_login_redirect(code, url, location):

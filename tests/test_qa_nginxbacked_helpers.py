@@ -61,7 +61,7 @@ class TestLoginRedirect(unittest.TestCase):
                       ["_is_login_redirect"])
 
     def test_relative_redirect_on_443(self):
-        self.assertTrue(self.ok(302, "https://h:443/kibana/",
+        self.assertTrue(self.ok(302, "https://h:443/velociraptor/",
                                 "/login.html?reason=expired"))
 
     def test_extra_port_must_go_to_443(self):
@@ -70,25 +70,58 @@ class TestLoginRedirect(unittest.TestCase):
         self.assertFalse(self.ok(302, "https://h:8444/", "/login.html"))
         self.assertFalse(self.ok(302, "https://h:5443/",
                                  "https://h:5443/login.html"))
+        # Kibana and Portainer left the 443 paths for their own ports
+        self.assertTrue(self.ok(302, "https://h:5602/", "https://h/login.html"))
+        self.assertFalse(self.ok(302, "https://h:9444/", "/login.html"))
 
     def test_not_a_gate(self):
-        self.assertFalse(self.ok(200, "https://h:443/portainer/", ""))
-        self.assertFalse(self.ok(404, "https://h:443/kibana/", "/login.html"))
+        self.assertFalse(self.ok(200, "https://h:9444/", ""))
+        self.assertFalse(self.ok(404, "https://h:5602/", "/login.html"))
         self.assertFalse(self.ok(302, "https://h:8444/", "/login"))  # IRIS' own
         self.assertFalse(self.ok("error: refused", "https://h:5443/", ""))
 
 
 class TestPortLists(unittest.TestCase):
+    got = _load("platform.py", "LOOPBACK_ONLY", "NGINX_GATED",
+                "_gated_entry_points")
+
+    def _gated(self, config_yaml=None):
+        root = tempfile.mkdtemp()
+        if config_yaml is not None:
+            with open(os.path.join(root, "config.yaml"), "w") as fh:
+                fh.write(config_yaml)
+        return {(p, path) for p, path, _ in
+                self.got["_gated_entry_points"](root)}
+
     def test_moved_ports_are_loopback_only_and_gated(self):
-        got = _load("platform.py", "LOOPBACK_ONLY", "NGINX_GATED")
-        loopback = {p for p, _ in got["LOOPBACK_ONLY"]}
+        loopback = {p for p, _ in self.got["LOOPBACK_ONLY"]}
         self.assertLessEqual({9200, 5601, 8443, 9443, 5000}, loopback)
-        gated = {(p, path) for p, path, _ in got["NGINX_GATED"]}
-        self.assertLessEqual({(443, "/kibana/"), (443, "/portainer/"),
-                              (8444, "/"), (5443, "/"), (8002, "/")}, gated)
+        # no config.yaml: the compose defaults, every tool at its port's root
+        gated = self._gated()
+        self.assertEqual({(443, "/velociraptor/"), (5602, "/"), (9444, "/"),
+                          (8444, "/"), (5443, "/"), (8002, "/")}, gated)
         self.assertFalse(loopback & {p for p, _ in gated},
                          "a port cannot be both loopback-only and an entry point")
 
+    def test_config_without_port_keys_keeps_defaults(self):
+        # every box upgraded from a release before the per-module ports
+        self.assertEqual(self._gated(), self._gated(
+            "modules:\n  elk:\n    enabled: true\n  iris: true\n"))
+
+    def test_ports_come_from_each_module(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML not installed; the harness box has it")
+        gated = self._gated(
+            "modules:\n"
+            "  elk:\n    enabled: true\n    kibana_port: 15602\n"
+            "  portainer:\n    port: 19444\n"
+            "  iris:\n    port: '18444'\n"
+            "  timesketch:\n    port: 15443\n"
+            "  volweb:\n    port: 18002\n")
+        self.assertEqual({(443, "/velociraptor/"), (15602, "/"), (19444, "/"),
+                          (18444, "/"), (15443, "/"), (18002, "/")}, gated)
 
 if __name__ == "__main__":
     unittest.main()

@@ -270,7 +270,10 @@ def run_startup_initialization():
                              and _w.get("automation_type") == "azure_scan"))
                     # Created by THIS process: Flask serves during boot work, and
                     # a run started in that window is ours, not orphaned.
-                    and created_before_boot(_w)):
+                    and created_before_boot(_w)
+                    # A network change runs on the host and restarts us on
+                    # purpose; reattach_running() below picks it up again.
+                    and (_w.get("details") or {}).get("kind") != "network"):
                 _run_id = _w["run_id"]
                 _why = ("Interrupted by a backend restart — the task's worker did "
                         "not survive. Please re-run/re-upload.")
@@ -488,6 +491,14 @@ def run_startup_initialization():
         reconcile_on_boot()
     except Exception as e:
         print(f"[STARTUP] Upgrade-run reconciliation skipped: {e}", flush=True)
+
+    # Same reason for a Settings -> Network change: change_ip.sh restarts this
+    # container mid-run, and its log tailer died with the old process.
+    try:
+        from services.network_settings import reattach_running
+        reattach_running()
+    except Exception as e:  # noqa: BLE001 — never block boot on housekeeping
+        print(f"[STARTUP] Network-change reattach skipped: {e}", flush=True)
 
     # Heal a box that arrived here without an upgrade engine.
     #

@@ -108,10 +108,10 @@ enabled modules.
 | **Dashboard** | Web UI — workflows, blueprints, reports, settings | `/` | `intact_backend`, `intact_tusd`, `intact_nginx` |
 | **Velociraptor** | Endpoint forensics + remote collection | `/velociraptor/` (proxied — not the upstream port) | `intact_velociraptor` |
 | **TimeSketch** | Timeline analysis — ingests Plaso super-timelines, pivots across hosts from one view | `:5443` | `intact_timesketch_web`, `_web_v3`, `_web_legacy`, `_worker`, `_nginx`, `_postgres`, `_redis`, `_opensearch` |
-| **ELK** | Searchable log store + Kibana. Indexes Velociraptor hunts and Sigma matches | `/kibana/` (Elasticsearch is box-only) | `intact_elasticsearch`, `intact_logstash`, `intact_kibana` |
+| **ELK** | Searchable log store + Kibana. Indexes Velociraptor hunts and Sigma matches | `:5602` (Elasticsearch is box-only) | `intact_elasticsearch`, `intact_logstash`, `intact_kibana` |
 | **IRIS** | Case management — incidents, assignees, evidence chains, runbook progress | `:8444` | `intact_iris_app`, `_db`, `_worker`, `_rabbitmq`, `_nginx` |
 | **VolWeb** | Memory forensics (Volatility 3 + YARA) | `:8002` | `intact_volweb_frontend`, `_backend`, `_workers`, `_workers_yarascan`, `_postgresdb`, `_redis` |
-| **Portainer** | Container management — inspect, restart, tail logs | `/portainer/` | `intact_portainer`, `intact_portainer_agent` |
+| **Portainer** | Container management — inspect, restart, tail logs | `:9444` | `intact_portainer`, `intact_portainer_agent` |
 | **Case Analysis (Fusion)** | Correlates every host + module into one incident graph → fused report, advisory, timeline, Identities, and grounded chat | in Dashboard | — |
 | **Memory** | Remote acquisition (AVML / WinPmem), analysed in the VolWeb stack | in Dashboard | — |
 | **Cloud DFIR** | AWS **CloudTrail** and Microsoft 365 / Azure AD **(DFIR-O365RC)** collection + SIGMA detections | in Dashboard | in `intact_backend` |
@@ -127,8 +127,25 @@ enabled modules.
 **Firewall.** `443` in from analysts (Dashboard, `/velociraptor/`, `/api/`) and
 `8000` in from endpoint subnets — Velociraptor agents phone home on 8000, and if
 it is blocked they silently never appear in the Clients list. `80` redirects to
-HTTPS. The nginx module ports above (5443, 8444, 8002) should be locked to the
-analyst subnet.
+HTTPS. The nginx module ports above (5602, 9444, 8444, 5443, 8002) should be
+locked to the analyst subnet.
+
+**Changing a port.** Each tool's public port lives under its module in
+`config.yaml`; a missing key means the default:
+
+| Tool | `config.yaml` key | Default |
+|---|---|---|
+| Kibana | `modules.elk.kibana_port` | `5602` |
+| Portainer | `modules.portainer.port` | `9444` |
+| IRIS | `modules.iris.port` | `8444` |
+| TimeSketch | `modules.timesketch.port` | `5443` |
+| VolWeb | `modules.volweb.port` | `8002` |
+| Velociraptor agents | `modules.velociraptor.agent_port` | `8000` |
+
+To change one on an installed box, see
+[Changing the IP or ports after install](#changing-the-ip-or-ports-after-install).
+The dashboard stays on `443`, and the box-only module ports are fixed. An
+upgrade keeps the ports the box already uses.
 
 `443` outbound is used during install and upgrade, and by enabled modules that
 call out (LLM providers, Microsoft Graph, AWS). It can be skipped entirely if
@@ -255,19 +272,37 @@ Notes:
 
 ## Scripts
 
-### Change Platform IP
+### Changing the IP or ports after install
 
-Repoints an installed platform to a new IP — and doubles as the repair tool:
-re-run it with the **current** IP to regenerate certs, configs and containers
-when something is broken.
+One run applies whatever changed: the IP, the ports (the
+[`config.yaml` keys above](#services--ports)), or both. If nothing changed it
+says so and leaves the containers alone. Intact restarts its services and is
+offline for a few minutes.
+
+**From Settings.** Settings → General → **Network** → **Change IP / ports**.
+Enter the new IP and ports and press Save. Intact writes them into
+`config.yaml` and runs `scripts/change_ip.sh` on the host. The run and its
+log are in **Settings → Actions**. If the IP changed, open Intact at
+`https://NEW_IP/` once it is back.
+
+**From a shell.** Edit the port keys in `config.yaml` if you are changing
+ports, then from the `intact` folder:
 
 ```bash
-sudo bash scripts/change_ip.sh 192.168.120.11
+sudo bash scripts/change_ip.sh 192.168.120.11   # new IP (and any port changes)
+sudo bash scripts/change_ip.sh                  # ports only: keeps the IP in config.yaml
 ```
 
-> Velociraptor agents already on endpoints have the old IP baked in and will
-> **not** reconnect. Redeploy them with the new installers in
-> `client_installers/`, or keep the old IP reachable as an alias.
+Add `-y` to skip the prompt. An invalid port in `config.yaml` stops the run
+before it changes anything. The script also repairs a broken box: run it with
+the **current** IP to regenerate certs, configs and containers.
+
+> **Velociraptor agents.** Agents already on endpoints have the old IP and
+> `agent_port` baked into their config, and they will **not** reconnect after
+> either one changes. Redeploy them with the new installers in
+> `client_installers/`, or keep the old IP reachable as an alias. Changing
+> `agent_port` edits only the agent URL lines of Velociraptor's
+> `server.config.yaml` and keeps a backup. The CA is not touched.
 
 ### Clean/Uninstall
 

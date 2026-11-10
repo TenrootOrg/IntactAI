@@ -59,7 +59,9 @@ services:
       # name. Kept as loopback rather than removed so lib/health.sh's
       # localhost:8001 probe still works.
       - "127.0.0.1:8889:8889"   # GUI (HTTP) — analysts use nginx /velociraptor/
-      - "8000:8000"             # TLS Frontend (client connections) — public
+      # Host side is modules.velociraptor.agent_port (config.yaml); the server
+      # keeps listening on 8000 inside the container.
+      - "${VELOX_AGENT_PORT:-8000}:8000"   # TLS Frontend (client connections) — public
       - "127.0.0.1:8001:8001"   # gRPC API — backend uses the container name
     restart: unless-stopped
     # Velociraptor raises its own file-descriptor limit at startup and, with no

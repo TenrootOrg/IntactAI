@@ -7,16 +7,14 @@
 window.baseHost = window.location.hostname;
 window.services = {
     velociraptor: { path: '/velociraptor/', protocol: 'https' },
-    // Behind the main nginx and the Intact login. Kibana and Portainer take a
-    // sub-path; IRIS and Timesketch get their own nginx ports because their
-    // apps hardcode root-relative URLs. The old ports are box-only now.
+    // Behind the main nginx and the Intact login, each on its own port so the
+    // tool runs in a separate origin from the dashboard. These are the
+    // defaults; the operator can move them in config.yaml (modules.*), and
+    // loadServicePorts() picks the real ones up after login.
     timesketch: { port: 5443, protocol: 'https' },
-    kibana: { path: '/kibana/', protocol: 'https' },
+    kibana: { port: 5602, protocol: 'https' },
     iris: { port: 8444, protocol: 'https' },
-    portainer: { path: '/portainer/', protocol: 'https' },
-    // VolWeb — main nginx terminates TLS on host port 8002 and
-    // proxies to the internal intact_volweb_frontend:80. URL stays
-    // clean (no sub-path) so Vue's hardcoded /assets/ paths work.
+    portainer: { port: 9444, protocol: 'https' },
     volweb: { port: 8002, protocol: 'https' }
 };
 
@@ -36,6 +34,18 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Any failure keeps the defaults above: a stale port beats no link at all.
+async function loadServicePorts() {
+    try {
+        const r = await fetch('/api/system/service-ports');
+        if (!r.ok) return;
+        const ports = await r.json();
+        for (const id of ['kibana', 'portainer', 'iris', 'timesketch', 'volweb']) {
+            if (Number.isInteger(ports[id]) && window.services[id]) window.services[id].port = ports[id];
+        }
+    } catch (e) { /* keep defaults */ }
 }
 
 function openService(serviceId) {
@@ -203,6 +213,7 @@ document.addEventListener('alpine:init', () => {
 document.addEventListener('alpine:initialized', () => {
     {
         // Initial load
+        loadServicePorts();
         Alpine.store('services').checkAll();
         Alpine.store('services').loadClients();
 

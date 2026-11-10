@@ -60,7 +60,97 @@ check_config() {
         fi
     fi
 
+    # Public ports: refused on install (a bad one stops nginx or Velociraptor
+    # from starting); on upgrade the ports already in the .env files are kept.
+    local _port_errs _l
+    if ! _port_errs="$(config_public_ports 2>&1 >/dev/null)"; then
+        if [[ "${INTACT_CONFIG_DOMAIN_SOFT:-0}" == "1" ]]; then
+            while IFS= read -r _l; do log_warn "config.yaml: $_l"; done <<< "$_port_errs"
+            log_warn "  Keeping the ports already in use. Fix config.yaml, then run:"
+            log_warn "    sudo bash scripts/change_ip.sh"
+        else
+            log_error "config.yaml has an unusable public port:"
+            while IFS= read -r _l; do log_error "  $_l"; done <<< "$_port_errs"
+            log_error "  Ports must be 1-65535, all different, and not 80/443/8080"
+            log_error "  (the dashboard) or a port a module keeps on 127.0.0.1."
+            exit 1
+        fi
+    fi
+
     log_success "Config file found"
+}
+
+# Public (browser- and agent-facing) host ports, set per module in config.yaml.
+# Prints VAR=port for each one, a missing key meaning today's default so a box
+# whose config predates the keys keeps its ports. Problems go to stderr and the
+# call fails; callers must not write anything then.
+config_public_ports() {
+    python3 - "$CONFIG_FILE" <<'PYPORTS'
+import sys, yaml
+SPECS = [  # .env var, module, key, default
+    ("KIBANA_PORT", "elk", "kibana_port", 5602),
+    ("PORTAINER_PORT", "portainer", "port", 9444),
+    ("IRIS_PORT", "iris", "port", 8444),
+    ("TIMESKETCH_PORT", "timesketch", "port", 5443),
+    ("VOLWEB_PORT", "volweb", "port", 8002),
+    ("VELOX_AGENT_PORT", "velociraptor", "agent_port", 8000),
+]
+# A public bind on any of these collides with the dashboard or with a module's
+# 127.0.0.1-only publish (0.0.0.0:N cannot bind while 127.0.0.1:N is held).
+RESERVED = {80: "the dashboard", 443: "the dashboard", 8080: "the dashboard",
+            9200: "Elasticsearch", 5601: "Kibana (box-only)", 5044: "Logstash",
+            9600: "Logstash", 50000: "Logstash", 8443: "IRIS (box-only)",
+            9443: "Portainer (box-only)", 5000: "Timesketch (box-only)",
+            5001: "the backend", 8889: "the Velociraptor GUI", 8001: "the Velociraptor API"}
+try:
+    mods = (yaml.safe_load(open(sys.argv[1])) or {}).get("modules") or {}
+except Exception as e:
+    sys.exit(f"cannot read {sys.argv[1]}: {e}")
+errs, seen = [], {}
+for var, mod, key, default in SPECS:
+    name, raw = f"modules.{mod}.{key}", (mods.get(mod) or {}).get(key)
+    if raw is None:
+        port = default
+    elif isinstance(raw, int) and not isinstance(raw, bool):
+        port = raw
+    elif isinstance(raw, str) and raw.strip().isdigit():
+        port = int(raw)
+    else:
+        port = None
+    print(f"{var}={port if port is not None else raw}")
+    if port is None or not 1 <= port <= 65535:
+        errs.append(f"{name}: '{raw}' is not a port number (1-65535)")
+    elif port in RESERVED:
+        errs.append(f"{name}: {port} is already used by {RESERVED[port]}")
+    elif port in seen:
+        errs.append(f"{name}: {port} is also {seen[port]}")
+    else:
+        seen[port] = name
+for e in errs:
+    print(e, file=sys.stderr)
+sys.exit(1 if errs else 0)
+PYPORTS
+}
+
+# One public port by .env var name, for printed URLs (prints even when invalid).
+public_port() { config_public_ports 2>/dev/null | sed -n "s/^$1=//p"; }
+
+# Write the public ports into the .env files compose reads. nginx and
+# Velociraptor listen on fixed container ports; only the host side moves.
+write_public_port_env() {
+    local lines var val
+    lines="$(config_public_ports)" || return 1
+    local nginx_env="${SCRIPT_DIR}/modules/nginx/.env"
+    local velo_env="${SCRIPT_DIR}/modules/velociraptor/.env"
+    [[ -f "$nginx_env" ]] || touch "$nginx_env"
+    while IFS='=' read -r var val; do
+        if [[ "$var" == VELOX_AGENT_PORT ]]; then
+            [[ -f "$velo_env" ]] && update_env_var "$velo_env" "$var" "$val"
+        else
+            update_env_var "$nginx_env" "$var" "$val"
+        fi
+    done <<< "$lines"
+    return 0
 }
 
 # Read value from config.yaml
@@ -647,6 +737,18 @@ update_env_files() {
 
     local domain=$(read_config "['domain']")
 
+    # Public ports first: VELOX_SERVER_URL below needs the agent port. An
+    # unusable config keeps the ports the .env files already have.
+    local agent_port
+    if write_public_port_env; then
+        agent_port="$(public_port VELOX_AGENT_PORT)"
+        log_success "Updated public ports (modules/nginx/.env, modules/velociraptor/.env)"
+    else
+        log_warn "config.yaml has an unusable public port (above); keeping the current ones"
+        agent_port="$(sed -n 's/^VELOX_AGENT_PORT=//p' "${SCRIPT_DIR}/modules/velociraptor/.env" 2>/dev/null | tail -1)"
+    fi
+    agent_port="${agent_port:-8000}"
+
     # Velociraptor - update domain/IP and version
     local velo_enabled=$(read_config "['modules']['velociraptor']['enabled']")
     if is_enabled "$velo_enabled"; then
@@ -673,7 +775,7 @@ update_env_files() {
             update_env_var "$velo_env" "VELOX_PASSWORD_2" "$velo_api_pass"
             update_env_var "$velo_env" "VELOX_FRONTEND_HOSTNAME" "$domain"
             update_env_var "$velo_env" "VELOX_PUBLIC_IP" "$domain"
-            update_env_var "$velo_env" "VELOX_SERVER_URL" "https://${domain}:8000/"
+            update_env_var "$velo_env" "VELOX_SERVER_URL" "https://${domain}:${agent_port}/"
             [[ -n "$es_user" && "$es_user" != "None" ]] && update_env_var "$velo_env" "ELASTIC_USER" "$es_user"
             [[ -n "$es_pass" && "$es_pass" != "None" ]] && update_env_var "$velo_env" "ELASTIC_PASSWORD" "$es_pass"
             log_success "Updated Velociraptor .env"

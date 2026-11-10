@@ -69,45 +69,60 @@ for block in open(path).read().split("\n    server {")[1:]:
 EOF
 }
 
-# Every web tool is reached through this nginx and only behind the Intact login.
+# Every web tool is reached through this nginx, on its own port (its own
+# browser origin) and only behind the Intact login.
 test_every_proxied_tool_is_gated() {
-    local main loc
+    local main
     main="$(_server_block "listen 443 ssl")"
-    for loc in "location /kibana/" "location /portainer/" "location /portainer/api/websocket/"; do
-        assert_contains "$main" "$loc" "443 server has: $loc"
-        # The location's own body, up to its closing brace.
-        assert_contains "$(sed -n "\|${loc} {|,\|^        }|p" "${NGX_DIR}/config/nginx.conf" | head -n 30)" \
-            "auth_request /api/auth/verify;" "$loc is gated"
-    done
-    assert_contains "$main" 'proxy_pass https://$kibana_upstream;' "kibana via variable upstream"
-    assert_contains "$main" 'rewrite ^/kibana/(.*)$ /$1 break;' "kibana prefix stripped"
-    assert_contains "$main" 'proxy_pass https://$portainer_upstream;' "portainer via variable upstream"
-    assert_contains "$main" 'rewrite ^/portainer/(.*)$ /$1 break;' "portainer prefix stripped"
+    # Path-mounted tools would share the dashboard's origin (cookies, storage).
+    assert_not_contains "$main" "location /kibana/" "no /kibana/ path on 443"
+    assert_not_contains "$main" "location /portainer/" "no /portainer/ path on 443"
 
     local port blk
-    for port in 8444 5443 8002; do
+    for port in 5602 9444 8444 5443 8002; do
         blk="$(_server_block "listen ${port} ssl")"
         assert_contains "$blk" "location = /__intact_auth_verify" "${port} has its own verify location"
         assert_contains "$blk" "internal;" "${port} verify location is internal"
         assert_contains "$blk" "auth_request /__intact_auth_verify;" "${port} is gated"
         assert_contains "$blk" 'return 302 https://$host/login.html?reason=expired;' "${port} redirects to the 443 login"
     done
-    for port in 8444 5443; do
+    for port in 5602 9444 8444 5443; do
         blk="$(_server_block "listen ${port} ssl")"
         assert_contains "$blk" "Strict-Transport-Security" "${port} sends HSTS"
         assert_contains "$blk" 'proxy_set_header Host $http_host;' "${port} passes Host with the port"
-        assert_contains "$blk" 'proxy_set_header Upgrade $http_upgrade;' "${port} passes WebSocket upgrades"
     done
+    for port in 9444 8444 5443; do
+        assert_contains "$(_server_block "listen ${port} ssl")" 'proxy_set_header Upgrade $http_upgrade;' "${port} passes WebSocket upgrades"
+    done
+    assert_contains "$(_server_block "listen 5602 ssl")" 'proxy_pass https://$kibana_upstream$request_uri;' "5602 proxies Kibana at its root"
+    assert_contains "$(_server_block "listen 5602 ssl")" '"intact_kibana:5601"' "5602 proxies to Kibana"
+    assert_contains "$(_server_block "listen 9444 ssl")" 'proxy_pass https://$portainer_upstream$request_uri;' "9444 proxies Portainer at its root"
+    assert_contains "$(_server_block "listen 9444 ssl")" '"intact_portainer:9443"' "9444 proxies to Portainer"
     assert_contains "$(_server_block "listen 8444 ssl")" '"intact_iris_nginx:8443"' "8444 proxies to IRIS"
     assert_contains "$(_server_block "listen 5443 ssl")" '"intact_timesketch_nginx:5000"' "5443 proxies to Timesketch"
 
     # A literal hostname or upstream block would stop nginx starting when the
     # module is not installed.
     assert_false grep -qE '^\s*upstream\s' "${NGX_DIR}/config/nginx.conf"
+}
 
-    local c; c="$(cat "$COMPOSE")"
-    assert_contains "$c" '"8444:8444"' "compose publishes 8444"
-    assert_contains "$c" '"5443:5443"' "compose publishes 5443"
+# Kibana is back at its root: a leftover base path would make it write
+# /kibana/ links that nothing serves any more.
+test_kibana_has_no_base_path() {
+    assert_false grep -qE -- "- SERVER_(REWRITE)?BASEPATH=" ../modules/elk/docker-compose.yaml
+    assert_contains "$(cat ../modules/elk/docker-compose.yaml)" '"127.0.0.1:5601:5601"' "Kibana's own port stays box-only"
+}
+
+# Only the host side of each publish is configurable, defaulting to the
+# built-in port, so a box with no port keys in config.yaml or .env is unchanged.
+test_compose_publishes_configurable_host_ports() {
+    local c pub
+    c="$(cat "$COMPOSE")"
+    for pub in '"${KIBANA_PORT:-5602}:5602"' '"${PORTAINER_PORT:-9444}:9444"' \
+               '"${IRIS_PORT:-8444}:8444"' '"${TIMESKETCH_PORT:-5443}:5443"' \
+               '"${VOLWEB_PORT:-8002}:8002"' '"80:80"' '"8080:8080"' '"443:443"'; do
+        assert_contains "$c" "$pub" "compose publishes $pub"
+    done
 }
 
 test_both_configs_pass_nginx_t() {
