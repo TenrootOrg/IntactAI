@@ -71,6 +71,23 @@ The chosen verdict is skewed to "attack", but the probabilities rank well, so th
 is there. Caveat: these are network IDS/WAF alerts, not Intact's usual endpoint and cloud
 findings, so the numbers say how the verdict question behaves, not how it does on our cases.
 
+**A result (2026-11-12, not built: no value to add).** Measured before writing any code,
+on the provider in use (`codex-subscription`, codex-cli 0.163.0), with three imported cases:
+
+- **Chat:** 30/30 answers clean. 13 of the 20 inspected used tool fetches. None showed raw
+  tool JSON, none came back empty, none hit a "could not finish" fallback. Median 25 s.
+- **Customer checklist** (the only strict-JSON output): complete on every case (10 / 5 /
+  20 items), none empty or unparsed.
+- **Reports** are Markdown sections, so a JSON schema has nothing to enforce there.
+
+The tolerant parsers (`_chat_tool_call`, `_parse_json`) already absorb the shapes that used
+to break. Structured output across all eight agentic providers would protect against
+failures we cannot find. If it is ever revisited, it must try each provider's native mode
+(`--output-schema` for codex, `response_format` for OpenAI-shaped, `responseSchema` for
+Gemini, a forced tool for Claude, `format` for Ollama) and fall back to today's path on any
+rejection, changed syntax or invalid reply, so it can only help and never break a call.
+Re-measure first: build it only if real failures show up.
+
 ---
 
 ## Ranked by value for effort
