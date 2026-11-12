@@ -60,8 +60,18 @@ class Score(unittest.TestCase):
         t90 = [row for row in s["sweep"] if abs(row[0] - 0.9) < 1e-9][0]
         self.assertEqual(t90[1:], [0.75, 0.0, 0.5])   # accuracy, FPR, recall at p >= 0.9
 
+    def test_unlabelled_answers_count_in_the_whole_view(self):
+        pairs = [(True, ans("true_positive", 0.9)), (True, ans(None, 0.75)),
+                 (False, ans(None, 0.6)), (False, ans("known", 0.1)), (False, ans("true_positive", 0.85))]
+        w = E.score(pairs, 0.2)["whole"]
+        self.assertEqual(w["no_label"], 2)
+        self.assertEqual(w["non_attacks_called_attack"], [1, 3])
+        self.assertEqual(w["attacks_called_attack"], [1, 2])
+        self.assertEqual(w["attacks_called_benign"], [0, 2])
+
     def test_no_answers(self):
-        self.assertEqual(E.score([(True, None)], 0.5), {"asked": 1, "answered": 0})
+        s = E.score([(True, None)], 0.5)
+        self.assertEqual((s["asked"], s["answered"], s["whole"]["answered"]), (1, 0, 0))
 
 
 if __name__ == "__main__":

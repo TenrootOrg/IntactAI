@@ -115,6 +115,30 @@ Using p(true_positive) ≥ ~0.80 instead of the choice gives:
 That is a small, measurable change in `_answer_to_suggestion`, and the natural next item
 to try: measure it on both sets, keep it or revert it.
 
+**Probability-band chip (2026-11-12, kept).** `_answer_to_suggestion` now follows
+p(true_positive):
+
+- **≥ 0.80:** "true positive";
+- **≤ 0.50:** the likelier of known / false positive;
+- **in between:** no chip. It is recorded, so the finding is not re-asked until it changes.
+
+A single 0.80 cut was tried first. It gave a real attack step (DLL sideloading,
+p 0.74–0.76) a "false positive" chip, which is worse than the false alarms it removed.
+The band shows no chip there instead. Over everything answered, what an analyst sees:
+
+| | Before (chip = model's pick) | After (band) |
+|---|---|---|
+| Fixtures: clean findings with an "attack" chip | 66% (19/29) | 7–10% (2–3/29) |
+| Fixtures: attacks with an "attack" chip / a benign chip | 5/5 / 0 | 4/5 / **0** (1 no chip) |
+| Fixtures: chips that are right | 44% | 88% |
+| SecAlertBench: non-attacks with an "attack" chip | 92% (242/262) | 24–25% |
+| SecAlertBench: attacks with an "attack" chip / a benign chip | 138/138 / 0 | 120–124/138 / **0** |
+| SecAlertBench: chips that are right | 40% | 69% |
+
+The figures come from re-scoring the 7 saved baseline runs (same answers, new rule) plus
+two fresh runs per set. The price is that about 40% of findings get no chip and are judged
+cold, as they were before chips existed. No real attack got a benign chip in any run.
+
 ---
 
 ## Ranked by value for effort

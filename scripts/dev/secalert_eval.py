@@ -75,9 +75,20 @@ def as_shown(dm, ans):
 
 
 def score(pairs: list, threshold: float) -> dict:
-    """pairs: (is_attack, answer-dict-or-None). Binary metrics for 'attack'."""
-    ok = [(y, a) for y, a in pairs if isinstance(a, dict) and a.get("choice")]
+    """pairs: (is_attack, answer-dict-or-None). Binary metrics for 'attack', over the
+    answers that got a label; `whole` counts every answered item, including those the
+    chip leaves unlabelled (choice None: the uncertain band), which is what a person sees."""
+    answered = [(y, a) for y, a in pairs if isinstance(a, dict)]
+    ok = [(y, a) for y, a in answered if a.get("choice")]
     out = {"asked": len(pairs), "answered": len(ok)}
+    n_att = sum(1 for y, _ in answered if y)
+    out["whole"] = {
+        "answered": len(answered), "no_label": len(answered) - len(ok),
+        "non_attacks_called_attack": [sum(1 for y, a in ok if not y and a["choice"] == "true_positive"),
+                                      len(answered) - n_att],
+        "attacks_called_attack": [sum(1 for y, a in ok if y and a["choice"] == "true_positive"), n_att],
+        "attacks_called_benign": [sum(1 for y, a in ok if y and a["choice"] != "true_positive"), n_att],
+    }
     if not ok:
         return out
     tp = sum(1 for y, a in ok if y and a["choice"] == "true_positive")
@@ -118,7 +129,15 @@ def score(pairs: list, threshold: float) -> dict:
 
 def report(s: dict) -> str:
     pct = lambda v: "n/a" if v is None else f"{v:.0%}"  # noqa: E731
-    lines = [f'{s["answered"]}/{s["asked"]} alerts answered']
+    lines = [f'{s["answered"]}/{s["asked"]} alerts got a label']
+    w = s.get("whole")
+    if w:
+        frac = lambda p: f"{p[0]}/{p[1]} ({pct(p[0] / p[1]) if p[1] else 'n/a'})"  # noqa: E731
+        lines += [f'  over everything answered ({w["answered"]}, {w["no_label"]} left without a label):',
+                  f'    non-attacks labelled attack  {frac(w["non_attacks_called_attack"])}',
+                  f'    attacks labelled attack      {frac(w["attacks_called_attack"])}',
+                  f'    attacks labelled benign      {frac(w["attacks_called_benign"])}',
+                  "  among the labelled ones:"]
     if s["answered"]:
         lines += [
             f'  attack caught (recall)       {pct(s["recall"])}   ({s["tp"]} of {s["tp"] + s["fn"]})',
