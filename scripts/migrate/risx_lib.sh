@@ -208,6 +208,9 @@ graceful_stop_legacy_velo() {
 
     say "stopping legacy velociraptor gracefully (flushing the client_info \
 snapshot so the fleet list survives the migration)"
+    # A snapshot from an EARLIER stop must not count as this one's flush.
+    local snap="$VELO_DATA/client_info/snapshot.json" before
+    before=$(stat -c %Y "$snap" 2>/dev/null || echo 0)
     # the container restarts itself when the server exits — disable that first
     docker update --restart=no velociraptor >/dev/null 2>&1 || true
     # Match on /proc/<pid>/comm (the executable name) rather than the command
@@ -231,7 +234,7 @@ container; falling back to docker stop"
     # file lands — bailing out on container-exit alone reports a false miss.
     local t=0 gone=0
     while (( t < 120 )); do
-        [[ -f "$VELO_DATA/client_info/snapshot.json" ]] && break
+        (( $(stat -c %Y "$snap" 2>/dev/null || echo 0) > before )) && break
         if ! docker ps --format '{{.Names}}' | grep -qx velociraptor; then
             ((gone+=1))
             (( gone > 5 )) && break      # ~15s of grace after the exit
@@ -240,7 +243,7 @@ container; falling back to docker stop"
     done
     docker stop velociraptor >/dev/null 2>&1 || true
 
-    if [[ -f "$VELO_DATA/client_info/snapshot.json" ]]; then
+    if (( $(stat -c %Y "$snap" 2>/dev/null || echo 0) > before )); then
         say "client_info snapshot flushed (${t}s) — the fleet list will \
 appear in intact immediately"
     else
