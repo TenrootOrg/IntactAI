@@ -54,6 +54,23 @@ the commit before it. **D is not relevant until we have an offline model server*
 embedding model would otherwise be a hosted one over masked case text, so it waits with
 the parked local models.
 
+**B result (2026-11-12, kept).** `scripts/dev/secalert_eval.py`, 400 SecAlertBench
+alerts (seed 20261112: 138 attack / 262 non-attack), OpenRouter `jev-latest`, three
+runs that agree within a point. This is the baseline C must beat:
+
+| Measure | Value |
+|---|---|
+| Model's choice is "attack" | 379–382 of 400 |
+| Attacks caught (recall) | 100% |
+| Non-attacks called attack (FPR) | 92–93% |
+| Accuracy / Brier | 39–40% / 0.32 (worse than always guessing 50%) |
+| **Ranking: AUC of p(attack)** | **0.86–0.87** |
+| If "attack" meant p(attack) ≥ 0.80 | accuracy 80%, FPR 23%, recall 86% |
+
+The chosen verdict is skewed to "attack", but the probabilities rank well, so the signal
+is there. Caveat: these are network IDS/WAF alerts, not Intact's usual endpoint and cloud
+findings, so the numbers say how the verdict question behaves, not how it does on our cases.
+
 ---
 
 ## Ranked by value for effort
