@@ -170,12 +170,15 @@ apt3_empire (holdout):
   The judges cited evidence preserved before isolation, a single coordinated eviction,
   DC-wide credential scope and the double krbtgt reset.
 
-Found on the way (not skill-related, open):
-- The model decodes `-enc` PowerShell payloads itself and gets them wrong. 5 of 9
-  apt3_empire reports give the C2 as 100.0.100.106; the payload says 10.0.10.106. That
-  error also misled all three judges in one pair. Fix: decode `-enc` payloads
-  deterministically and hand the model the decoded text.
-- The `A.dcshadow` trap regex also matches a report that rejects DCShadow.
+Found on the way (not skill-related):
+- **Fixed:** the prompts told the model to decode `-enc` PowerShell itself, and it got
+  digits wrong. 5 of 9 apt3_empire reports gave the C2 as 100.0.100.106; the payload
+  says 10.0.10.106. That error also misled all three judges in one pair. Now
+  `llm_sim._with_decoded` decodes each blob in code, before masking, in every report,
+  checklist and chat payload, and the prompts say to quote that text. After the fix the
+  wrong address appeared in 0 of 3 reports and the right one in 3 of 3; steps 11–13,
+  as before.
+- **Open:** the `A.dcshadow` trap regex also matches a report that rejects DCShadow.
 
 Not measured, so not written yet: Linux, memory, Azure/M365 and AWS cards. No
 answer-keyed case exists for them on the box.

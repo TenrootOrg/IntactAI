@@ -13,6 +13,7 @@ No graph/correlation code changes — only this boundary swaps.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import threading
@@ -324,8 +325,8 @@ REPORT_SYSTEM_PROMPT_FOCUSED = (
     "The single most likely intrusion story, reconstructed STEP BY STEP in order — deeper "
     "than a candidate-scenario summary. For each step give the exact host, account, "
     "process, path, file as `name` (`hash`), and timestamp from the graph, and quote the "
-    "specific command line behind it (DECODE any -EncodedCommand / base64 the evidence "
-    "provides). Follow the parent->child process ancestry wherever the graph supplies it; "
+    "specific command line behind it (for an -EncodedCommand, quote the script Intact "
+    "decoded next to it; never decode base64 yourself -- one wrong digit is a wrong IOC). Follow the parent->child process ancestry wherever the graph supplies it; "
     "where a link is inferred across a gap, say the gap out loud. If several hosts are in "
     "scope, walk each host's part of the sequence. Where one finding "
     "corroborates another, say so. Commit to the MOST LIKELY reading, but grade confidence "
@@ -1595,7 +1596,8 @@ PHASE_SYSTEM_PROMPT = (
     "\n"
     "**What happened:** name the hosts, accounts, tools and times from the evidence "
     "and say what was done here, in order. Go as far as the evidence supports — "
-    "decode any -EncodedCommand or base64 it gives you, follow parent->child process "
+    "quote the script Intact decoded next to any -EncodedCommand (never decode base64 "
+    "yourself), follow parent->child process "
     "ancestry where present, and say out loud where a link is inferred across a gap. "
     "Do not pad, and do not stop short of what the evidence shows.\n"
     "**Why it matters:** what it would mean if confirmed, and what it puts at risk.\n"
@@ -1998,6 +2000,47 @@ def _with_deadline(fn, seconds, what):
         pool.shutdown(wait=False)
 
 
+# PowerShell's -EncodedCommand (any prefix of it, or -ec) followed by its base64 blob.
+_ENC_RX = re.compile(r"(?i)(?<![\w-])(-e(?:c|n\w*)?)\s+['\"]?([A-Za-z0-9+/]{20,}={0,2})")
+
+
+def _decode_ps(text):
+    """Replace each -EncodedCommand blob in `text` with its decoded script. The model
+    used to be told to decode base64 itself and got digits wrong: 5 of 9 holdout
+    reports named 100.0.100.106 as the C2 when the payload said 10.0.10.106. It runs
+    before masking, so names and IPs in the decoded script are masked like any other."""
+    if "-e" not in text.lower():
+        return text
+
+    def one(m):
+        flag, blob = m.group(1), m.group(2)
+        word = flag[1:].lower()
+        if word != "ec" and not "encodedcommand".startswith(word):
+            return m.group(0)
+        cut = len(blob) - len(blob) % 4            # a blob cut short still decodes up to here
+        try:
+            raw = base64.b64decode(blob[:cut])
+            script = raw[:len(raw) - len(raw) % 2].decode("utf-16-le")
+        except (ValueError, UnicodeDecodeError):
+            return m.group(0)
+        if len(script) < 8 or sum(c.isprintable() or c in "\r\n\t" for c in script) < 0.95 * len(script):
+            return m.group(0)                      # not a UTF-16 script: leave the blob as it is
+        cut_note = ", blob cut short so decoded only as far as it goes" if cut < len(blob) else ""
+        return f"{flag} <base64, {len(blob)} chars> [decoded by Intact{cut_note}: {script.strip()}]"
+    return _ENC_RX.sub(one, text)
+
+
+def _with_decoded(obj):
+    """`obj` (payload dict/list/str) with every -EncodedCommand blob decoded."""
+    if isinstance(obj, str):
+        return _decode_ps(obj)
+    if isinstance(obj, dict):
+        return {k: _with_decoded(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_with_decoded(v) for v in obj]
+    return obj
+
+
 def _family_skills(base, graph, final=False):
     """Domain-knowledge cards for the case's artifact families (Windows, Linux, cloud...)."""
     from services.agentic.skills import family_skills_prompt
@@ -2079,7 +2122,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         z["_detail"] = chosen          # reported, so a thin section is never ambiguous
         if analyst:
             p = {**p, **analyst}
-        body = json.dumps(p)
+        body = json.dumps(_with_decoded(p))
         if mask:
             body = _apply_mask(body, mask)
         sys_p = _family_skills(PHASE_SYSTEM_PROMPT, graph) + "\n\n" + WEIGHTING_RULE
@@ -2248,6 +2291,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             _crit = render.critical_details(graph, _scoped_r, also_ids=[v.get("finding_id") for v in (validations or []) if v.get("status") == "true_positive"])
             if _crit:
                 payload["key_finding_details"] = _crit
+            payload = _with_decoded(payload)
             payload_str = json.dumps(payload)
             _unmasked_payload = payload_str           # keep for the grounding guard (pre-mask)
             if mask:                                  # anonymize the LLM input too
@@ -2308,7 +2352,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                            "outside_phases": render.outside_phases_digest(graph, _outside),
                            **({"key_finding_details": _crit} if _crit else {}),
                            **_analyst}
-                payload_str = json.dumps(payload)
+                payload_str = json.dumps(_with_decoded(payload))
                 if mask:
                     # The phase write-ups are the MODEL's own words: it saw only
                     # pseudonyms, and any name found earlier is already in the mapping
@@ -2607,7 +2651,7 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
         payload = render.distilled(graph, window=window, min_severity=min_severity,
                                    max_entities=budget.REPORT_MAX_ENTITIES,
                                    budget_chars=budget.REPORT_BUDGET_CHARS)
-        payload_str = json.dumps(payload)
+        payload_str = json.dumps(_with_decoded(payload))
         system = CHECKLIST_SYSTEM_PROMPT
         if mask:                                  # anonymize the LLM input too
             _build_mask_mapping(graph, mask)
@@ -2936,7 +2980,7 @@ def _chat_fetch_loop(case_id, system, user, ans, *, mask=None, run_id=None, max_
         args = _inv._revert_obj(call["args"], mask)
         res = _inv._safe_tool(case_id, call["tool"], args)
         _inv._enrich_mask_from_result(mask, res)
-        res_txt = json.dumps(res, default=str)[:_inv._MAX_TOOL_RESULT_CHARS * 2]
+        res_txt = json.dumps(_with_decoded(res), default=str)[:_inv._MAX_TOOL_RESULT_CHARS * 2]
         if mask:
             res_txt = _apply_mask(res_txt, mask)
         fetched.append(_FETCH_LABEL.get(call["tool"], call["tool"]))
@@ -3066,6 +3110,7 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                 # Taken out of the analysis in Configuration: say so rather than
                 # answering that the host does not exist.
                 payload["hosts_excluded_from_analysis_by_operator"] = list(excluded_hosts)
+            payload = _with_decoded(payload)
             turns = "".join(f"{m.get('role')}: {m.get('content')}\n" for m in (history or []))
             user = f"{json.dumps(payload)}\n\n{turns}Q: {question}"
             system = CHAT_SYSTEM_PROMPT
