@@ -88,6 +88,33 @@ Gemini, a forced tool for Claude, `format` for Ollama) and fall back to today's 
 rejection, changed syntax or invalid reply, so it can only help and never break a call.
 Re-measure first: build it only if real failures show up.
 
+**C result (2026-11-12, tried and reverted: no value).** A deterministic context builder in
+`finding_state` sent, with each verdict question, the other findings on the same hosts,
+the findings sharing an actor, and how widely each actor appears. It was measured on two
+sets, each before and after, two runs per side:
+
+| | Before C | After C |
+|---|---|---|
+| Own fixtures (`scripts/dev/fixture_verdict_eval.py`, 34 findings: 29 clean-box, 5 attack) — chip FPR | 66% / 66% | 66% / 59% |
+| Own fixtures — ranking AUC | 0.95 / 0.92 | 1.00 / 0.99 |
+| SecAlertBench 400, same idea from same-source alerts — chip FPR | 92% / 92% | 92% / 92% |
+| SecAlertBench 400 — ranking AUC | 0.87 / 0.86 | 0.86 / 0.87 |
+
+The chip's chosen verdict did not move on either set. The only gain was ranking on 34
+findings with just 5 attacks, which is too few to trust, and the 400-alert set shows no
+gain at all. The preprint's drop from 25–30% to 14% did not reproduce here.
+
+**The lead both sets agree on.** Both the fixtures and SecAlertBench say the model's chosen
+verdict is skewed to "true positive", while its probability ranks well (AUC 0.86–0.95).
+Using p(true_positive) ≥ ~0.80 instead of the choice gives:
+
+- fixtures: FPR 7–10%, recall 80%;
+- SecAlertBench: FPR 23–26%, recall 87–88%;
+- against today's 66% and 92% FPR.
+
+That is a small, measurable change in `_answer_to_suggestion`, and the natural next item
+to try: measure it on both sets, keep it or revert it.
+
 ---
 
 ## Ranked by value for effort
