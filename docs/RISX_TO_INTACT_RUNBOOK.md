@@ -7,6 +7,35 @@ touched; every client keeps its existing `client_id`.
 This is the step-by-step version. The design notes and the lab evidence behind
 it are in [RISX_MIGRATION.md](RISX_MIGRATION.md).
 
+## The quick way: one script
+
+`scripts/migrate/risx_to_intact.sh` runs every step below in order. It stops
+only where you need to decide something. Clone Intact on the box, then from the
+checkout, as your normal login user (not root, and run it rather than piping it
+into `bash`):
+
+```
+bash scripts/migrate/risx_to_intact.sh            # air-gapped: add --package <tar>
+```
+
+It asks which case you are in: **1** same machine, **2** new machine (this is
+the old risx box), or **3** new machine (this is the new box). Then:
+
+| Step | What it does | Asks you |
+|---|---|---|
+| Find | Locates risx and prints the CA fingerprint, the address clients dial and the nonce check | **y/n** is this the right identity |
+| Back up | Stops risx's Velociraptor gracefully (so the fleet list is flushed), copies `server.config.yaml`, archives the datastore without the repacked installers | new machine only: **y/n** stop it now |
+| Copy off | Prints `scp` lines for PowerShell and bash | **y** copied / **s** skip / **n** stop |
+| Remove risx | Same machine only: runs risx's own `cleanup.sh`; offers `--force` and a reboot | type **REMOVE**; **y/n** `--force`; **y/n** reboot |
+| Config | Sets `domain` (and `agent_port` where the key exists) to what clients dial, opens `nano config.yaml`, then checks it | **y** install / **e** edit again / **n** stop |
+| Install | `sudo bash install.sh` | (skipped if Intact already runs: **y/n**) |
+| Adopt | `scripts/adopt_velociraptor_identity.sh`, with the old history if you want it | **Y/n** bring the history; the adopt script's own **y/N** |
+| Verify | CA in use matches the backup, lists returning clients | **y/n** shred the working copy of the config |
+
+Every finished step is recorded in `~/velociraptor_backup/.risx_to_intact.state`.
+Re-running after a failure, a stop or a reboot carries on from the next step.
+The sections below are the same procedure by hand, and explain each step.
+
 ---
 
 ## Read this first — the one thing that will break the migration
