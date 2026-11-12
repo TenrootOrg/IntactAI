@@ -139,6 +139,47 @@ The figures come from re-scoring the 7 saved baseline runs (same answers, new ru
 two fresh runs per set. The price is that about 40% of findings get no chip and are judged
 cold, as they were before chips existed. No real attack got a benign chip in any run.
 
+**Family skill cards in reports (2026-11-12, two kept).** The macro skills were loaded at
+boot but nothing called them. Reports now get one card per artifact family found in the
+case (`services/agentic/skills.py:case_families`, from the evidence locators). A card
+declares `families:` in its frontmatter, and `report_only: true` keeps it out of the
+per-phase prompts.
+
+How the content was chosen: 45 agents read all 432 candidate skills in
+mukul975/Anthropic-Cybersecurity-Skills in full, plus our 9 macros and the Microsoft set.
+One agent per family composed a card, and an adversarial reviewer checked the cited
+sections and the facts. Most sources are tool tutorials or carry invented IOCs, so both
+cards are written in our own words.
+
+Measured with codex, 3 runs per arm, `groundtruth_eval` on Szechuan (tuned) and
+apt3_empire (holdout):
+
+| | Steps in report | Runs with a false claim |
+|---|---|---|
+| Szechuan: none / Windows card / + recovery card | 5.0 / 4.67 / 5.0 | 2 of 3 / 0 of 3 / 0 of 3 |
+| apt3_empire: none / Windows card / + recovery card | 12 / 12 / 12.3 | 1 of 3 / 0 of 3 / 1 of 3 |
+
+- **Windows/AD card: kept.** It finds no more steps, because the fused graph caps that at
+  5 of 12 and 12 of 20. It does cut false claims: 0 of 6 runs against 3 of 6. An earlier
+  draft said "call initial access unknown unless shown", and the model then hedged in 3 of
+  3 runs although it had the external RDP logon. The card now asks for the most likely
+  vector with its confidence.
+- **Recovery & hardening card: kept.** Steps cannot measure it, so three blind judge
+  agents compared the Impact and Recommendations sections in 6 shuffled A/B pairs. The
+  card won 14 of 18 judgments. Corrected for one judging error (below), it won 17 of 18.
+  The judges cited evidence preserved before isolation, a single coordinated eviction,
+  DC-wide credential scope and the double krbtgt reset.
+
+Found on the way (not skill-related, open):
+- The model decodes `-enc` PowerShell payloads itself and gets them wrong. 5 of 9
+  apt3_empire reports give the C2 as 100.0.100.106; the payload says 10.0.10.106. That
+  error also misled all three judges in one pair. Fix: decode `-enc` payloads
+  deterministically and hand the model the decoded text.
+- The `A.dcshadow` trap regex also matches a report that rejects DCShadow.
+
+Not measured, so not written yet: Linux, memory, Azure/M365 and AWS cards. No
+answer-keyed case exists for them on the box.
+
 ---
 
 ## Ranked by value for effort
