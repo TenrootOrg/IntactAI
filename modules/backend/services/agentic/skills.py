@@ -283,3 +283,65 @@ def select_macro_skill(
 
     scored.sort(key=lambda x: (-x[0], x[1]))
     return scored[0][1]
+
+
+# ---------------------------------------------------------------------------
+# Family skills: one card per artifact family found in a fused case
+# ---------------------------------------------------------------------------
+
+# Evidence module / locator prefix -> family. Locators carry the collected
+# artifact name ("Windows.EventLogs.Evtx/row=3") or "<provider>/finding=N".
+_FAMILY_BY_PREFIX = (
+    ("windows.", "windows_ad"), ("linux.", "linux"),
+    ("azure/", "azure_m365"), ("aws/", "aws"),
+)
+_RANSOMWARE_MITRE = ("T1486", "T1490")    # data encrypted for impact / inhibit recovery
+FAMILY_MIN_SHARE = 0.15                   # a stray row should not pull in a whole card
+
+
+def case_families(graph) -> List[str]:
+    """Artifact families in a fused case, most findings first. A family counts once
+    per finding and needs FAMILY_MIN_SHARE of the findings (ransomware: any one)."""
+    from collections import Counter
+    findings = list(graph.findings.values()) if isinstance(graph.findings, dict) else list(graph.findings)
+    counts: Counter = Counter()
+    ransom = False
+    for f in findings:
+        fams = set()
+        for ev in f.evidence or ():
+            if ev.module == "memory":
+                fams.add("memory_malware")
+                continue
+            loc = (ev.locator or "").lower()
+            fams.update(fam for pre, fam in _FAMILY_BY_PREFIX if loc.startswith(pre))
+        counts.update(fams)
+        ransom = ransom or any(str(m).split(".")[0] in _RANSOMWARE_MITRE for m in (f.mitre or ()))
+    floor = max(1, int(len(findings) * FAMILY_MIN_SHARE))
+    out = [fam for fam, n in counts.most_common() if n >= floor]
+    return (["ransomware"] if ransom else []) + out
+
+
+def family_skill_names(families: List[str], final: bool = False) -> List[str]:
+    """Macros whose frontmatter `families:` matches one of `families`. A macro marked
+    `report_only: true` (recovery advice) goes only into the final write-up, and
+    `families: [any]` matches every case that has evidence."""
+    names = []
+    for name, m in _MACRO_INDEX.items():
+        fams = m.get("families") or []
+        if not fams or (m.get("report_only") and not final):
+            continue
+        if any(f in families for f in fams) or ("any" in fams and families):
+            names.append(name)
+    return sorted(names, key=lambda n: min((families.index(f) for f in _MACRO_INDEX[n]["families"]
+                                            if f in families), default=len(families)))
+
+
+def family_skills_prompt(base_prompt: str, graph, final: bool = False) -> str:
+    """`base_prompt` plus the skill cards for this case's families; never raises,
+    so a bad skill file or odd graph only costs the cards."""
+    try:
+        load_macro_index_at_boot()
+        return compose_system_prompt(base_prompt, family_skill_names(case_families(graph), final))
+    except Exception as e:                      # the report must still go out
+        logger.warning("%s family skills skipped: %s", LOG_PREFIX_SKILLS, e)
+        return base_prompt

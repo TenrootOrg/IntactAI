@@ -1998,6 +1998,12 @@ def _with_deadline(fn, seconds, what):
         pool.shutdown(wait=False)
 
 
+def _family_skills(base, graph, final=False):
+    """Domain-knowledge cards for the case's artifact families (Windows, Linux, cloud...)."""
+    from services.agentic.skills import family_skills_prompt
+    return family_skills_prompt(base, graph, final)
+
+
 def _phase_retries() -> int:
     """How many times a failed report phase is retried (AI settings key
     `report_phase_retries`, default 1, 0-3)."""
@@ -2076,7 +2082,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         body = json.dumps(p)
         if mask:
             body = _apply_mask(body, mask)
-        sys_p = PHASE_SYSTEM_PROMPT + "\n\n" + WEIGHTING_RULE
+        sys_p = _family_skills(PHASE_SYSTEM_PROMPT, graph) + "\n\n" + WEIGHTING_RULE
         if (analyst or {}).get("automated_estimates"):
             sys_p = sys_p + "\n\n" + ESTIMATES_RULE
         if master_prompt:
@@ -2316,8 +2322,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                         payload_str = _apply_mask(payload_str, mask)
                     finally:
                         mask._ner_skip = set()
-            system = (SYNTHESIS_SYSTEM_PROMPT if altitude == "macro"
-                      else REPORT_SYSTEM_PROMPT_FOCUSED) + "\n\n" + WEIGHTING_RULE
+            system = _family_skills(SYNTHESIS_SYSTEM_PROMPT if altitude == "macro"
+                                    else REPORT_SYSTEM_PROMPT_FOCUSED, graph, final=True) + "\n\n" + WEIGHTING_RULE
             if altitude == "macro" and _zt and any((_phase_out.get(z["n"]) or {}).get("error")
                                                    for z in render.analysable(_zt)):
                 system += ("\n\nSome phases carry `not_analysed` instead of an analysis: the "
