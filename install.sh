@@ -224,7 +224,10 @@ main() {
             log_error "=============================================="
             exit 1
         fi
-        if ! download_release_assets "$_rel_tag" "${SCRIPT_DIR}/data/tmp/install-pkg"; then
+        # Only what this box will run (see install_release_modules in lib/args.sh).
+        local _only; _only="$(install_release_modules "$CONFIG_FILE" "${SCRIPT_DIR}/lib/upgrade/plan.sh")"
+        [[ -n "$_only" ]] && log_info "Fetching only the enabled modules: ${_only}"
+        if ! INTACT_RELEASE_ONLY_MODULES="$_only" download_release_assets "$_rel_tag" "${SCRIPT_DIR}/data/tmp/install-pkg"; then
             log_error "=============================================="
             log_error "Could not obtain the release assets for ${_rel_tag}."
             log_error ""

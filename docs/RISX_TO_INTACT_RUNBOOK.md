@@ -7,34 +7,44 @@ touched; every client keeps its existing `client_id`.
 This is the step-by-step version. The design notes and the lab evidence behind
 it are in [RISX_MIGRATION.md](RISX_MIGRATION.md).
 
-## The quick way: one script
+## The quick way: same machine, one script
 
-`scripts/migrate/risx_to_intact.sh` runs every step below in order. It stops
-only where you need to decide something. Clone Intact on the box, then from the
-checkout, as your normal login user (not root, and run it rather than piping it
-into `bash`):
+To replace risx with Intact **on the same machine**, run one script. It works
+from any folder: inside an Intact checkout it uses that checkout; anywhere else
+it clones the latest release into `~/intact` first. Run it as your normal login
+user (not root, not piped into `bash`):
 
 ```
-bash scripts/migrate/risx_to_intact.sh            # air-gapped: add --package <tar>
+bash risx_to_intact.sh                 # or: bash ~/intact/scripts/migrate/risx_to_intact.sh
+                                       # air-gapped: add --package <tar>
 ```
 
-It asks which case you are in: **1** same machine, **2** new machine (this is
-the old risx box), or **3** new machine (this is the new box). Then:
+A normal run asks you **twice**:
 
-| Step | What it does | Asks you |
+| Step | What it does | You |
 |---|---|---|
-| Find | Locates risx and prints the CA fingerprint, the address clients dial and the nonce check | **y/n** is this the right identity |
-| Back up | Stops risx's Velociraptor gracefully (so the fleet list is flushed), copies `server.config.yaml`, archives the datastore without the repacked installers | new machine only: **y/n** stop it now |
-| Copy off | Prints `scp` lines for PowerShell and bash | **y** copied / **s** skip / **n** stop |
-| Remove risx | Same machine only: runs risx's own `cleanup.sh`; offers `--force` and a reboot | type **REMOVE**; **y/n** `--force`; **y/n** reboot |
-| Config | Sets `domain` (and `agent_port` where the key exists) to what clients dial, opens `nano config.yaml`, then checks it | **y** install / **e** edit again / **n** stop |
-| Install | `sudo bash install.sh` | (skipped if Intact already runs: **y/n**) |
-| Adopt | `scripts/adopt_velociraptor_identity.sh`, with the old history if you want it | **Y/n** bring the history; the adopt script's own **y/N** |
-| Verify | CA in use matches the backup, lists returning clients | **y/n** shred the working copy of the config |
+| 1 Find | Locates risx; prints the CA fingerprint, the address clients dial and the nonce check (stops by itself if any is missing) | — |
+| 2 Back up | Stops risx's Velociraptor gracefully (so the fleet list is saved), copies `server.config.yaml`, archives the datastore into `~/velociraptor_backup` | — |
+| 3 Pause | Prints `scp` lines for PowerShell and bash to copy the backup off the box; the next step removes risx | press **r** |
+| 4 Remove risx | risx's own `cleanup.sh` (asks about `--force` only if containers are left) | — |
+| 5 Config | Sets `domain` (and `agent_port`) to what clients dial, opens `nano config.yaml`, shows a summary | **y** install / **e** edit again |
+| 6 Install | `sudo bash install.sh` — downloads only the modules you enabled | — |
+| 7 Adopt | `scripts/adopt_velociraptor_identity.sh` with the old history (hunts, flows, fleet list) | — |
+| 8 Verify | The CA in use matches the backup; prints how many clients the server knows | — |
 
-Every finished step is recorded in `~/velociraptor_backup/.risx_to_intact.state`.
-Re-running after a failure, a stop or a reboot carries on from the next step.
-The sections below are the same procedure by hand, and explain each step.
+Other questions appear only when something is wrong: the domain or port does not
+match what clients dial, `python3-yaml` is missing, or containers survive the
+cleanup. No reboot is needed.
+
+Every finished step is recorded, so after a failure or Ctrl+C, run the script
+again and it continues from the next step. Everything printed, and every answer,
+goes to `~/velociraptor_backup/risx_to_intact-<host>-<time>.log`; on an error the
+script lists that log, the `install_*.log` and the adopt log to send.
+
+**Moving to another machine** is not scripted: follow the steps below by hand
+with **Path A** — back up on the risx box (Step 1, or the one-paste appendix),
+copy `~/velociraptor_backup` to the new box, install Intact there (Step 3), then
+adopt the identity (Step 4) and move the IP/DNS over.
 
 ---
 
@@ -282,12 +292,11 @@ state that `cleanup.sh` restarts the daemon to fix.
 Requirements: Ubuntu, **16 GB RAM** (32 recommended), 4+ cores, 100 GB+ disk, a
 static IP.
 
-> **Budget for the download.** The installer fetches and extracts the complete
-> module set **regardless of which modules you enable in `config.yaml`** — the
-> enabled flags decide what gets loaded and deployed, not what gets downloaded.
-> Expect roughly **6 GB pulled**, ~13 GB extracted and up to **22 GB of scratch
-> space** in use partway through, even on a trimmed-down install. On a metered
-> or slow link, plan for it.
+> **Budget for the download.** An online install downloads only the modules
+> `config.yaml` enables (plus the core: the platform and Presidio). The full set
+> is about 7.5 GB; a Velociraptor-only box needs about 1.7 GB. Enabling a module
+> later and re-running `install.sh` fetches it then. On a metered or slow link,
+> disable what you do not need before installing.
 
 ```
 # 1. Clone the LATEST RELEASE (resolved from GitHub, so this never goes stale)

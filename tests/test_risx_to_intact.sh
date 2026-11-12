@@ -1,11 +1,11 @@
 #!/bin/bash
-# scripts/migrate/risx_to_intact.sh -- the guided risx-mssp -> Intact migration.
+# scripts/migrate/risx_to_intact.sh -- risx-mssp -> Intact on the same machine.
 #
 # The real script runs end to end against a fake risx box and a fake Intact
 # checkout. sudo, docker, install.sh and the adopt script are stubs that record
 # what they were asked to do; every answer is fed on stdin exactly as an
-# operator would type it. What cannot run here is install.sh and the identity
-# swap themselves -- both have their own suites (test_adopt_velo_identity.sh).
+# operator would type it. A normal run asks exactly twice: "r" at the pause,
+# and "y" on the config. install.sh and the identity swap have their own suites.
 
 source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
 
@@ -20,7 +20,7 @@ _world() {
     local velo="$W/risx/setup_platform/workdir/velociraptor/velociraptor"
     mkdir -p "$velo/clients/C.1234/collections" "$velo/clients/linux" \
              "$W/risx/setup_platform/scripts" "$W/intact/scripts/migrate" \
-             "$W/intact/data/velociraptor" "$W/bin" "$W/log"
+             "$W/intact/data/velociraptor" "$W/bin" "$W/log" "$W/home"
     cat > "$velo/server.config.yaml" <<'YAML'
 Client:
   server_urls: ["https://10.9.8.7:8000/"]
@@ -50,13 +50,15 @@ echo "adopt \$*" >> "$W/log/calls"
 # record what the datastore dir held, then "adopt": install the backed-up config
 [[ "\$*" == *--datastore* ]] && find "\${@: -1}" -type f | sed 's|.*/velociraptor/|ds: |' >> "$W/log/calls"
 [[ -n "\${ADOPT_NOOP:-}" ]] && exit 0
-cp "\$2/server.config.yaml" "$W/intact/data/velociraptor/server.config.yaml"
+# write into the checkout this stub lives in (a cloned one in the clone test)
+d="\$(dirname "\$0")/../data/velociraptor"; mkdir -p "\$d"
+cp "\$2/server.config.yaml" "\$d/server.config.yaml"
 EOF
     printf '#!/bin/bash\n[[ "$1" == reboot ]] && { echo "reboot" >> %q; exit 0; }\nexec "$@"\n' "$W/log/calls" > "$W/bin/sudo"
     cat > "$W/bin/docker" <<EOF
 #!/bin/bash
 echo "docker \$*" >> "$W/log/calls"
-[[ "\$1" == exec ]] && echo "C.1234  endpoint-1"
+[[ "\$1" == exec ]] && echo '[{"client_id": "C.1234", "host": "endpoint-1"}, {"client_id": "C.5678", "host": "endpoint-2"}]'
 [[ "\$*" == *--filter* ]] && echo "Up 2 minutes"
 exit 0
 EOF
@@ -74,32 +76,34 @@ _run() {
            bash "$W/intact/scripts/migrate/risx_to_intact.sh" --backup-dir "$W/backup" "$@" 2>&1)" || RC=$?
 }
 
-# mode 1, find y, copied y, REMOVE, reboot n, install y, history Y, shred y
-SAME_MACHINE='1\ny\ny\nREMOVE\nn\ny\n\ny\ny\n'
+# The only two answers a normal run needs: r at the pause, y on the config.
+NORMAL='r\ny\n'
 
-test_same_machine_runs_every_step_in_order() {
-    _world; mkdir -p "$W/home"
-    _run "$SAME_MACHINE"
+test_a_normal_run_asks_twice_and_does_every_step_in_order() {
+    _world
+    _run "$NORMAL"
     assert_eq "$RC" "0" "the whole run must succeed: $(tail -5 <<<"$OUT")"
     local calls; calls="$(cat "$W/log/calls")"
     assert_contains "$calls" "cleanup " "risx removed with its own cleanup.sh"
     assert_contains "$calls" "install " "install.sh ran"
-    assert_contains "$calls" "adopt --from $W/backup -y --datastore" "adopted from the backup, with history"
-    # order: remove before install before adopt
+    assert_contains "$calls" "adopt --from $W/backup -y --datastore" "adopted, always with the history"
+    assert_not_contains "$calls" "reboot" "no reboot"
     local c i a
     c=$(grep -n '^cleanup' "$W/log/calls" | cut -d: -f1); i=$(grep -n '^install' "$W/log/calls" | cut -d: -f1)
     a=$(grep -n '^adopt' "$W/log/calls" | cut -d: -f1)
     assert_true test "$c" -lt "$i"; assert_true test "$i" -lt "$a"
     assert_eq "$(sed -n 's/^domain: //p' "$W/intact/config.yaml")" "10.9.8.7" "domain pre-set to what clients dial"
-    assert_contains "$OUT" "CA in use matches the backup" "verified against the backup"
+    assert_contains "$OUT" "CA in use matches the backup"
     for s in find backup copied removed config installed adopted verified; do
         assert_true grep -qx "$s" "$(_state)"
     done
+    # exactly two answers were read
+    assert_eq "$(grep -c 'answer:' "$W"/backup/risx_to_intact-*.log)" "2" "a normal run asks twice"
 }
 
 test_the_archive_keeps_history_and_drops_the_installers() {
-    _world; mkdir -p "$W/home"
-    _run "$SAME_MACHINE"
+    _world
+    _run "$NORMAL"
     local tarball; tarball="$(ls "$W"/backup/velociraptor-full-*.tar.gz)"
     local list; list="$(tar -tzf "$tarball")"
     assert_contains "$list" "velociraptor/server.config.yaml"
@@ -109,148 +113,124 @@ test_the_archive_keeps_history_and_drops_the_installers() {
     assert_eq "$(stat -c %a "$tarball")" "600" "the archive holds the CA key"
 }
 
-test_the_scp_pause_prints_powershell_and_bash_lines() {
-    _world; mkdir -p "$W/home"
-    _run '1\ny\nn\n'                       # stop at the copy prompt
-    assert_eq "$RC" "0" "stopping at the pause is not an error"
+test_the_pause_shows_scp_lines_and_waits_for_r() {
+    _world
+    _run 'c\nx\n'                            # anything but r keeps waiting; then end of input
+    assert_ne "$RC" "0"
     assert_contains "$OUT" "PowerShell:"
     assert_contains "$OUT" "bash (Linux/macOS):"
     assert_contains "$OUT" "scp -r \"$(id -un)@"
+    assert_contains "$OUT" "NEXT: risx-mssp is REMOVED"
     assert_eq "$(stat -c %a "$W/backup/server.config.yaml")" "600" "the config copy is a credential"
-    assert_false grep -q '^cleanup' "$W/log/calls"
-}
-
-test_anything_but_REMOVE_removes_nothing() {
-    _world; mkdir -p "$W/home"
-    _run '1\ny\ny\nremove\n'
-    assert_ne "$RC" "0"
     assert_false grep -q '^cleanup' "$W/log/calls"
     assert_true test -f "$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml"
 }
 
-test_a_rerun_continues_after_risx_is_gone() {
-    _world; mkdir -p "$W/home"
-    _run '1\ny\ny\nREMOVE\nn\nn\n'           # stop at the config review
+test_the_client_count_is_reported() {
+    _world
+    _run "$NORMAL"
+    assert_contains "$OUT" "clients known to the new server: 2 (e.g. endpoint-1, endpoint-2)"
+}
+
+test_a_rerun_after_risx_is_gone_continues() {
+    _world
+    _run 'r\n'                               # removed, then end of input at the config
     assert_true grep -qx removed "$(_state)"
     assert_false grep -qx config "$(_state)"
-    _run 'y\n\ny\ny\n'                       # re-run: install y, history Y, adopt y, shred y
+    _run 'y\n'
     assert_eq "$RC" "0" "the re-run must finish: $(tail -5 <<<"$OUT")"
-    assert_contains "$OUT" "resuming the 'same' migration"
     assert_eq "$(grep -c '^cleanup' "$W/log/calls")" "1" "risx is not removed twice"
     assert_contains "$(cat "$W/log/calls")" "install "
 }
 
+test_a_removal_cut_off_midway_continues_from_the_backup() {
+    _world
+    _run ''                                  # backed up, stopped at the pause
+    rm -rf "$W/risx/setup_platform/workdir/"*  # cleanup ran but was never recorded
+    _run 'y\n'
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_contains "$OUT" "no longer on this box"
+    assert_contains "$(cat "$W/log/calls")" "install "
+}
+
 test_a_wrong_domain_is_caught_before_install() {
-    _world; mkdir -p "$W/home"
+    _world
     printf '#!/bin/bash\nsed -i "s/^domain:.*/domain: elsewhere.example/" "$1"\n' > "$W/bin/ed-wrong"
     chmod +x "$W/bin/ed-wrong"
     RC=0
-    OUT="$(printf '1\ny\ny\nREMOVE\nn\ny\nn\nn\n' | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=ed-wrong \
+    OUT="$(printf 'r\ny\nn\n' | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=ed-wrong \
            RISX_ROOT="$W/risx/setup_platform" \
            bash "$W/intact/scripts/migrate/risx_to_intact.sh" --backup-dir "$W/backup" 2>&1)" || RC=$?
     assert_contains "$OUT" "NOT what the clients dial (10.9.8.7)"
     assert_false grep -q '^install' "$W/log/calls"
 }
 
-test_new_box_waits_for_the_backup_then_installs_and_adopts() {
-    _world; mkdir -p "$W/home"
-    cp "$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml" "$W/old.yaml"
-    rm -rf "$W/risx"                         # there is no risx on the new box
-    _run '3\nn\n'                            # no backup yet: stop
-    assert_contains "$OUT" "No backup at $W/backup yet"
-    assert_false grep -q '^install' "$W/log/calls"
-    # the backup arrives, as scp would bring it from the old box (config only)
-    cp "$W/old.yaml" "$W/backup/server.config.yaml"
-    _run 'y\ny\ny\ny\n'                      # identity y, install y, adopt y, shred y
-    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
-    assert_contains "$OUT" "resuming the 'new' migration"
-    assert_contains "$(cat "$W/log/calls")" "adopt --from $W/backup"
-    assert_not_contains "$(cat "$W/log/calls")" "--datastore" "no archive: identity only"
-    assert_contains "$OUT" "powered off, NOT wiped"
-    assert_false test -e "$W/backup/server.config.yaml" "working copy shredded"
-}
-
-test_old_box_backs_up_and_stops_without_removing() {
-    _world; mkdir -p "$W/home"
-    _run '2\ny\nn\ny\n'                      # mode 2, find y, don't stop velo, copied y
-    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
-    assert_contains "$OUT" "on the NEW box"
-    assert_false grep -q '^cleanup' "$W/log/calls"
-    assert_false grep -q '^install' "$W/log/calls"
-    assert_true test -s "$W/backup/server.config.yaml"
-}
-
-test_help_and_root_guard() {
-    local out; out="$(bash "$REPO/scripts/migrate/risx_to_intact.sh" --help)"
-    assert_contains "$out" "server_urls"
-    assert_contains "$out" "--package"
-    assert_true grep -q 'not root' "$REPO/scripts/migrate/risx_to_intact.sh"
-}
-
-# --- what the review found ---------------------------------------------------
-
-test_the_backup_carried_to_the_new_box_does_not_resume_as_the_old_box() {
-    _world; mkdir -p "$W/home"
-    RISX_MIG_MACHINE=oldbox _run '2\ny\nn\ny\n'           # old box: back up, copied
-    assert_eq "$RC" "0" "$(tail -3 <<<"$OUT")"
-    rm -rf "$W/risx"                                        # now on the new box
-    RISX_MIG_MACHINE=newbox _run '3\ny\ny\n\ny\ny\n'    # new box: 3, identity, install, history, adopt, shred
-    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
-    assert_not_contains "$OUT" "resuming the 'old'"
-    assert_contains "$(cat "$W/log/calls")" "adopt --from $W/backup -y --datastore"
-}
-
-test_saying_no_at_adopt_changes_nothing_and_is_not_recorded() {
-    _world; mkdir -p "$W/home"
-    _run '1\ny\ny\nREMOVE\nn\ny\n\nn\n'               # ... history Y, adopt N
-    assert_ne "$RC" "0"
-    assert_false grep -q '^adopt' "$W/log/calls"
-    assert_false grep -qx adopted "$(_state)"
-}
-
 test_an_adopt_that_did_not_take_is_not_recorded() {
-    _world; mkdir -p "$W/home"
-    ADOPT_NOOP=1 _run "$SAME_MACHINE"
+    _world
+    ADOPT_NOOP=1 _run "$NORMAL"
     assert_ne "$RC" "0"
     assert_contains "$OUT" "does not run"
     assert_false grep -qx adopted "$(_state)"
 }
 
-test_a_removal_cut_off_midway_continues_from_the_backup() {
-    _world; mkdir -p "$W/home"
-    _run '1\ny\nn\n'                       # backed up, stopped at the copy pause
-    rm -rf "$W/risx/setup_platform/workdir/"*  # cleanup.sh ran but the script never recorded it
-    _run 'y\n\ny\ny\n'                     # install y, history Y, adopt y, shred y
-    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
-    assert_contains "$OUT" "no longer on this box"
-    assert_contains "$(cat "$W/log/calls")" "install "
-}
-
 test_a_finished_migration_rerun_is_a_noop() {
-    _world; mkdir -p "$W/home"
-    _run "$SAME_MACHINE"
+    _world
+    _run "$NORMAL"
     _run ''
     assert_eq "$RC" "0"
     assert_contains "$OUT" "already complete"
 }
 
-test_a_relative_backup_dir_still_works_after_changing_directory() {
-    _world; mkdir -p "$W/home"
+test_a_relative_backup_dir_still_works() {
+    _world
     RC=0
-    OUT="$(cd "$W" && printf '%b' "$SAME_MACHINE" | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=true \
+    OUT="$(cd "$W" && printf '%b' "$NORMAL" | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=true \
            RISX_ROOT="$W/risx/setup_platform" \
            bash "$W/intact/scripts/migrate/risx_to_intact.sh" --backup-dir rel-backup 2>&1)" || RC=$?
     assert_eq "$RC" "0" "$(tail -3 <<<"$OUT")"
     assert_contains "$(cat "$W/log/calls")" "adopt --from $W/rel-backup"
 }
 
+# --- run from anywhere --------------------------------------------------------
+
+test_a_copy_of_the_script_runs_from_any_folder_using_the_intact_checkout() {
+    _world
+    mkdir -p "$W/elsewhere" && cp "$REPO/scripts/migrate/risx_to_intact.sh" "$W/elsewhere/"
+    RC=0
+    OUT="$(cd /tmp && printf '%b' "$NORMAL" | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=true \
+           RISX_ROOT="$W/risx/setup_platform" INTACT_DIR="$W/intact" \
+           bash "$W/elsewhere/risx_to_intact.sh" --backup-dir "$W/backup" 2>&1)" || RC=$?
+    assert_eq "$RC" "0" "$(tail -3 <<<"$OUT")"
+    assert_contains "$OUT" "at $W/intact"
+    assert_contains "$(cat "$W/log/calls")" "install "
+}
+
+test_without_a_checkout_it_clones_the_release_first() {
+    _world
+    # a "release" repo holding the fake checkout, tagged
+    local src="$W/src"; cp -r "$W/intact" "$src"
+    git -C "$src" init -q && git -C "$src" add -A && \
+        git -C "$src" -c user.email=t@t -c user.name=t commit -qm r && git -C "$src" tag intact-29990101
+    mkdir -p "$W/elsewhere" && cp "$REPO/scripts/migrate/risx_to_intact.sh" "$W/elsewhere/"
+    RC=0
+    OUT="$(cd /tmp && printf '%b' "$NORMAL" | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=true \
+           RISX_ROOT="$W/risx/setup_platform" INTACT_DIR="$W/home/intact" \
+           INTACT_RELEASE_TAG=intact-29990101 INTACT_GIT_URL="$src" \
+           bash "$W/elsewhere/risx_to_intact.sh" --backup-dir "$W/backup" 2>&1)" || RC=$?
+    assert_eq "$RC" "0" "$(tail -3 <<<"$OUT")"
+    assert_contains "$OUT" "Fetching Intact intact-29990101 into $W/home/intact"
+    assert_true test -f "$W/home/intact/scripts/migrate/risx_to_intact.sh"
+}
+
+# --- logging ------------------------------------------------------------------
+
 test_the_log_has_output_answers_and_steps_but_no_secrets() {
-    _world; mkdir -p "$W/home"
-    _run "$SAME_MACHINE"
+    _world
+    _run "$NORMAL"
     local log; log="$(ls "$W"/backup/risx_to_intact-*.log)"
     assert_eq "$(stat -c %a "$log")" "600" "the log is owner-only"
     local body; body="$(cat "$log")"
-    assert_contains "$body" "answer: REMOVE" "typed answers are logged"
+    assert_contains "$body" "answer: r" "typed answers are logged"
     assert_contains "$body" "=== 4. Remove risx-mssp" "steps are logged"
     assert_contains "$body" "CA in use matches the backup" "output is logged"
     assert_not_contains "$body" "FAKENONCE" "the nonce never reaches the log"
@@ -258,11 +238,18 @@ test_the_log_has_output_answers_and_steps_but_no_secrets() {
 }
 
 test_an_error_lists_the_logs_to_collect() {
-    _world; mkdir -p "$W/home"
-    _run '1\ny\ny\nremove\n'
+    _world
+    _run ''
     assert_ne "$RC" "0"
     assert_contains "$OUT" "Logs to collect"
     assert_contains "$OUT" "$W/backup/risx_to_intact-"
+}
+
+test_help() {
+    local out; out="$(bash "$REPO/scripts/migrate/risx_to_intact.sh" --help)"
+    assert_contains "$out" "server_urls"
+    assert_contains "$out" "SAME machine"
+    assert_true grep -q 'not root' "$REPO/scripts/migrate/risx_to_intact.sh"
 }
 
 run_all_tests

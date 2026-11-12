@@ -1,50 +1,71 @@
 #!/bin/bash
-# risx_to_intact.sh — guided risx-mssp -> Intact.AI migration, end to end.
+# risx_to_intact.sh — replace risx-mssp with Intact.AI on the SAME machine.
 #
-# The operator runbook (docs/RISX_TO_INTACT_RUNBOOK.md) as one script. It keeps
-# the deployed Velociraptor fleet: every client keeps its client_id and nothing
-# is touched on an endpoint. Everything else from risx starts fresh in Intact.
+# The deployed Velociraptor fleet is kept: every client keeps its client_id and
+# nothing is touched on an endpoint. Everything else from risx starts fresh.
+# (Moving to ANOTHER machine is a manual procedure: docs/RISX_TO_INTACT_RUNBOOK.md.)
 #
-# Run it from an Intact checkout, as your normal login user (sudo is used where
-# needed). Run it — do not pipe it into bash: the prompts read your answers.
+# Run it as your normal login user (sudo is used where needed), from anywhere:
 #
-#   bash scripts/migrate/risx_to_intact.sh [--backup-dir DIR] [--package TAR]
+#   bash risx_to_intact.sh [--backup-dir DIR] [--package TAR]
 #
-# It asks which of three cases you are in:
-#   1  same machine       risx is replaced on this box (no rollback once removed)
-#   2  new machine, OLD   back up on the risx box, then go to the new box
-#   3  new machine, NEW   install Intact here and adopt the backed-up identity
+# Outside an Intact checkout it clones the latest Intact release into ~/intact
+# (or $INTACT_DIR) and carries on from there. Run it; do not pipe it into bash.
 #
-# Steps (the ones that ask you are marked ?):
-#   find risx ?   back up   copy it off ? (scp lines for PowerShell and bash)
-#   remove risx ? (type REMOVE)   config.yaml in nano ?   install.sh
-#   adopt the identity ? (scripts/adopt_velociraptor_identity.sh)   verify
+# What it does — it stops only twice:
+#   1 find risx and show the fleet's identity
+#   2 back up (graceful stop, server.config.yaml, the datastore)
+#   3 PAUSE: scp lines to copy the backup off; press r to continue  <- you
+#   4 remove risx (its own cleanup.sh)
+#   5 config.yaml in nano, then: y = install / e = edit again        <- you
+#   6 install.sh   7 adopt the identity, with the old history   8 verify
+# Other questions appear only when something is wrong (the address clients dial
+# does not match, containers are left after the cleanup, ...).
 #
-# Each finished step is recorded in <backup-dir>/.risx_to_intact.<machine>.state
-# (one file per machine, so the backup can be copied to the new box with it),
-# and a re-run after a failure, a stop or a reboot carries on where it stopped.
-#
-# Everything it prints, and every answer typed, is logged to
-# <backup-dir>/risx_to_intact-<host>-<time>.log (mode 600). On an error it lists
-# every log to collect: this one, install.sh's and the adopt script's.
+# Each finished step is recorded in <backup-dir>/.risx_to_intact.<machine>.state,
+# so a re-run after a failure or Ctrl+C carries on where it stopped. Everything
+# printed, and every answer, is logged to <backup-dir>/risx_to_intact-*.log
+# (mode 600); on an error it lists every log to collect.
 #
 # Options:
 #   --backup-dir DIR   where the backup lives (default ~/velociraptor_backup)
 #   --package TAR      air-gapped: passed to install.sh --package
 # Environment: RISX_ROOT (the risx setup_platform dir, if discovery fails),
-#              EDITOR (default nano).
+#              INTACT_DIR (where to clone Intact, default ~/intact), EDITOR.
 #
 # THE ONE THING NO SCRIPT CAN FIX: clients dial Client.server_urls verbatim
-# (normally https://<old-host>:8000/). The Intact box must answer at that
-# address on that port — take over the old box's IP/DNS, or repoint DNS.
+# (normally https://<this-host>:8000/). This box keeps answering there because
+# it is the same machine — keep its IP/DNS name.
 
 set -u
 set -o pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
+ROOT="$(cd "$HERE/../.." 2>/dev/null && pwd)"
+
+# --- run from anywhere: find or fetch an Intact checkout, then run from it ---
+if [[ ! -f "$ROOT/install.sh" || ! -f "$HERE/risx_lib.sh" ]]; then
+    INTACT_DIR="${INTACT_DIR:-$HOME/intact}"
+    if [[ ! -f "$INTACT_DIR/scripts/migrate/risx_to_intact.sh" ]]; then
+        command -v git >/dev/null || { echo "git is required to fetch Intact" >&2; exit 1; }
+        tag="${INTACT_RELEASE_TAG:-}"
+        if [[ -z "$tag" ]]; then
+            tag="$(curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: token $GITHUB_TOKEN"} \
+                   https://api.github.com/repos/TenrootOrg/IntactAI/releases/latest 2>/dev/null \
+                   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)"
+        fi
+        [[ -n "$tag" ]] || { echo "Could not find the latest Intact release; set INTACT_RELEASE_TAG=<tag>" >&2; exit 1; }
+        echo "Fetching Intact $tag into $INTACT_DIR ..."
+        git clone --quiet --branch "$tag" "${INTACT_GIT_URL:-https://github.com/TenrootOrg/IntactAI.git}" "$INTACT_DIR" \
+            || { echo "git clone failed" >&2; exit 1; }
+        [[ -f "$INTACT_DIR/scripts/migrate/risx_to_intact.sh" ]] \
+            || { echo "Intact $tag has no scripts/migrate/risx_to_intact.sh" >&2; exit 1; }
+    fi
+    exec bash "$INTACT_DIR/scripts/migrate/risx_to_intact.sh" "$@"
+fi
+
 # shellcheck source=risx_lib.sh
-source "$HERE/risx_lib.sh"      # say warn die confirm discover_risx graceful_stop_legacy_velo
+source "$HERE/risx_lib.sh"      # say warn die discover_risx graceful_stop_legacy_velo
 
 BACKUP_DIR="${BACKUP_DIR:-$HOME/velociraptor_backup}"
 PACKAGE=""
@@ -102,14 +123,10 @@ ask() {  # ask VAR "prompt" — dies on end of input instead of looping forever
     local _a; read -r -p "$2" _a || die "no answer (end of input) — stopped"
     log_answer "$_a"; printf -v "$1" '%s' "$_a"
 }
-confirm() {  # risx_lib's confirm, plus the answer in the log
+confirm() {  # y/N, with the answer in the log
     local _a; read -r -p "$1 [y/N] " _a || _a=""
     log_answer "${_a:-<none>}"
     [[ "$_a" == y || "$_a" == Y || "$_a" == yes ]]
-}
-velo_restart_hint() {
-    say "risx's Velociraptor is stopped. To start it again:"
-    say "  docker update --restart=unless-stopped velociraptor && docker start velociraptor"
 }
 risx_present() {
     if [[ -n "${RISX_ROOT:-}" ]]; then
@@ -162,30 +179,7 @@ print(hashlib.sha256(((d.get('CA') or {}).get('private_key') or '').encode()).he
 PYEOF
 }
 
-# Is HOST one of this box's addresses (or a name resolving to one)?
-is_here() {
-    local ip ips; ips=" $(hostname -I 2>/dev/null) "
-    [[ "$ips" == *" $1 "* ]] && return 0
-    for ip in $(getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u); do
-        [[ "$ips" == *" $ip "* || "$ip" == 127.* ]] && return 0
-    done
-    return 1
-}
-
 # --- steps -------------------------------------------------------------------
-
-choose_mode() {
-    MODE="$(sed -n 's/^mode=//p' "$STATE" 2>/dev/null | head -1)"
-    if [[ -n "$MODE" ]]; then say "resuming the '$MODE' migration recorded in $STATE"; return; fi
-    echo
-    echo "  Where are you?"
-    echo "    1) same machine      — replace risx on THIS box (no rollback once risx is removed)"
-    echo "    2) new machine, OLD  — this is the risx box: back it up, then go to the new box"
-    echo "    3) new machine, NEW  — this is the new box: install Intact and adopt the backup"
-    local ans; ask ans "  Choose 1, 2 or 3: "
-    case "$ans" in 1) MODE=same ;; 2) MODE=old ;; 3) MODE=new ;; *) die "no choice made" ;; esac
-    echo "mode=$MODE" >> "$STATE"
-}
 
 find_risx() {
     if done_step find; then          # re-run: re-read what later steps need
@@ -193,11 +187,9 @@ find_risx() {
     fi
     step find "1. Find risx-mssp and its Velociraptor identity"
     discover_risx
-    echo; sudo ls -la "$VELO_DATA" | head -15
-    echo; say "this is the identity your whole fleet is pinned to:"
+    say "this is the identity your whole fleet is pinned to (write the fingerprint down):"
     identity "$VELO_DATA/server.config.yaml" sudo
     show_identity
-    confirm "Is that the Velociraptor directory and identity you want to move?" || die "stopped — nothing was changed"
     mark find
 }
 
@@ -205,20 +197,7 @@ backup() {
     step backup "2. Back up the Velociraptor files to $BACKUP_DIR" || return 0
     # A graceful stop flushes the fleet list (client_info/snapshot.json); without
     # it Intact shows an EMPTY client list until each endpoint re-enrols.
-    local live_opts=()
-    if [[ "$MODE" == same ]]; then
-        graceful_stop_legacy_velo
-    else
-        echo "  Stopping risx's Velociraptor now keeps the fleet list and history"
-        echo "  complete, but the clients have no server until the new box takes over."
-        if confirm "Stop the risx Velociraptor gracefully before the backup?"; then
-            graceful_stop_legacy_velo; velo_restart_hint
-        else
-            # a live server writes while tar reads; GNU tar then exits 1
-            live_opts=(--warning=no-file-changed --ignore-failed-read)
-            warn "backing up a running server: history up to now is kept, but the fleet list may be stale"
-        fi
-    fi
+    graceful_stop_legacy_velo
     mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
     local need have
     need=$(sudo du -sk --exclude=clients/linux --exclude=clients/mac --exclude=clients/windows "$VELO_DATA" | cut -f1)
@@ -235,14 +214,10 @@ backup() {
     # installers are left out: Intact builds its own, and they are most of the size.
     local tarball rc=0; tarball="$BACKUP_DIR/velociraptor-full-$(date +%Y%m%d-%H%M%S).tar.gz"
     say "archiving the datastore ($((need/1024)) MB; this can take a few minutes)…"
-    sudo tar -czf "$tarball" "${live_opts[@]}" -C "$(dirname "$VELO_DATA")" \
+    sudo tar -czf "$tarball" -C "$(dirname "$VELO_DATA")" \
         --exclude='velociraptor/clients/linux' --exclude='velociraptor/clients/mac' \
         --exclude='velociraptor/clients/windows' "$(basename "$VELO_DATA")" || rc=$?
-    if (( rc == 1 && ${#live_opts[@]} )); then
-        warn "some files changed while archiving (the server is running) — kept"
-    elif (( rc != 0 )); then
-        sudo rm -f "$tarball"; die "the archive failed (tar exit $rc) — nothing else was done"
-    fi
+    if (( rc != 0 )); then sudo rm -f "$tarball"; die "the archive failed (tar exit $rc) — nothing else was done"; fi
     sudo chown "$(id -un):$(id -gn)" "$tarball" && chmod 600 "$tarball"
     tar -tzf "$tarball" "velociraptor/server.config.yaml" >/dev/null 2>&1 \
         || die "the archive is not readable — nothing else was done"
@@ -251,35 +226,27 @@ backup() {
     mark backup
 }
 
-copy_out() {
-    step copied "3. Copy the backup OFF this machine (just in case)" || return 0
-    local ip="$ID_HOST" dst; dst="$(basename "$BACKUP_DIR")"
-    is_here "$ip" || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+pause_for_copy() {
+    step copied "3. Copy the backup off this machine (optional), then continue" || return 0
+    local ip; ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    local src; src="$(id -un)@${ip:-<this-box-ip>}:${BACKUP_DIR}"
     cat <<EOF
 
-  The backup holds the Velociraptor CA private key: treat it as a credential.
-  From your laptop:
+  The backup is ready in ${BACKUP_DIR} (it holds the fleet's CA key: a credential).
+  To keep a copy off this box, run on your laptop:
 
-    PowerShell:
-      scp -r "$(id -un)@${ip:-<this-box-ip>}:${BACKUP_DIR}" .
-      dir ".\\${dst}"
+    PowerShell:              scp -r "${src}" .
+    bash (Linux/macOS):      scp -r "${src}" .
 
-    bash (Linux/macOS):
-      scp -r "$(id -un)@${ip:-<this-box-ip>}:${BACKUP_DIR}" .
-      ls -l "./${dst}"
+  NEXT: risx-mssp is REMOVED from this box.
+  (Ctrl+C stops here; risx's Velociraptor is stopped — to start it again:
+   docker update --restart=unless-stopped velociraptor && docker start velociraptor)
 
 EOF
     local ans
     while true; do
-        ask ans "  Copied? [y]es / [s]kip copying / [n]o, stop here: "
-        case "$ans" in
-            y|Y) say "good — keep that copy until the migration is verified"; break ;;
-            s|S) warn "no off-box copy: if this box dies, the fleet's identity dies with it"
-                 confirm "Continue WITHOUT an off-box copy?" && break ;;
-            n|N) say "stopped. Re-run the script to continue from here."
-                 [[ "$MODE" == same ]] && velo_restart_hint
-                 exit 0 ;;
-        esac
+        ask ans "  Press r to continue: "
+        [[ "$ans" == r || "$ans" == R ]] && break
     done
     mark copied
 }
@@ -288,14 +255,8 @@ remove_risx_box() {
     step removed "4. Remove risx-mssp from this machine" || return 0
     local cleanup="$RISX_ROOT/scripts/cleanup.sh"
     [[ -f "$cleanup" ]] || die "no $cleanup — remove risx by hand, then re-run"
-    echo "  About to PERMANENTLY remove risx-mssp with its own cleanup.sh:"
-    docker ps -a --format '    container: {{.Names}} ({{.Image}})' | grep -v ' intact_' || true
-    echo "    directory: $RISX_ROOT/workdir ($(sudo du -sh "$RISX_ROOT/workdir" 2>/dev/null | cut -f1))"
-    echo "  Kept: $BACKUP_DIR"
     [[ -s "$BACKUP_DIR/server.config.yaml" ]] && compgen -G "$BACKUP_DIR/velociraptor-full-*.tar.gz" >/dev/null \
         || die "the backup is incomplete — refusing to remove risx"
-    local ans; ask ans "  Type REMOVE to continue: "
-    [[ "$ans" == REMOVE ]] || die "stopped (you typed '$ans') — nothing was removed"
     (cd "$RISX_ROOT/scripts" && bash cleanup.sh) || warn "cleanup.sh reported a problem"
     mark removed      # from here risx is gone even if the rest is interrupted
     local left; left="$(docker ps -a --format '{{.Names}}' | grep -v '^intact_' || true)"
@@ -307,15 +268,11 @@ remove_risx_box() {
             (cd "$RISX_ROOT/scripts" && bash cleanup.sh --force) || warn "cleanup.sh --force reported a problem"
         fi
     fi
-    echo "  A reboot now clears the Docker network state risx leaves behind (the runbook's advice)."
-    if confirm "Reboot now? Re-run this script after it comes back to continue."; then
-        sudo reboot; exit 0
-    fi
 }
 
 edit_config() {
     step config "5. Configure Intact (config.yaml)" || return 0
-    [[ -f "$CFG" ]] || die "$CFG not found — run this from an Intact checkout"
+    [[ -f "$CFG" ]] || die "$CFG not found"
     # Pre-set the values that MUST match what clients dial. Written in place:
     # the backend mounts config.yaml by inode, so never write-and-rename it.
     python3 - "$CFG" "$ID_HOST" "$ID_PORT" <<'PYEOF' || die "could not write $CFG (is it yours to edit?)"
@@ -330,7 +287,7 @@ PYEOF
     say "pre-set domain: $ID_HOST (the host every deployed client dials)"
     grep -qE '^\s*agent_port:' "$CFG" && say "pre-set modules.velociraptor.agent_port: $ID_PORT"
     while true; do
-        say "opening config.yaml — check the IP/domain, choose modules, set passwords; save and exit"
+        say "opening config.yaml — choose modules, set passwords; save and exit"
         # the editor needs the real terminal, not the logging pipe
         if { : >/dev/tty; } 2>/dev/null; then ${EDITOR:-nano} "$CFG" </dev/tty >/dev/tty 2>&1
         else ${EDITOR:-nano} "$CFG"; fi
@@ -356,21 +313,18 @@ PYEOF
         echo "  enabled modules    : ${mods:-none}"
         echo "  default passwords  : ${weak:-none}"
         echo "  ------------------------------"
-        local bad=0
-        [[ "$velo_on" == yes ]] || { warn "Velociraptor is DISABLED — the migration needs it"; bad=1; }
         [[ "$domain" == "$ID_HOST" ]] || warn "domain $domain is NOT what the clients dial ($ID_HOST): every deployed client would be stranded"
         [[ "$port" == "$ID_PORT" ]] || warn "Velociraptor port $port is NOT the port the clients dial ($ID_PORT)"
         [[ -n "$weak" ]] && warn "these modules still use the default password 123123: $weak"
-        local ans; ask ans "  Install with this config? [y]es / [e]dit again / [n]o, stop: "
-        case "$ans" in
-            y|Y) (( bad )) && { warn "fix the problem above first"; continue; }
-                 if [[ "$domain" != "$ID_HOST" || "$port" != "$ID_PORT" ]]; then
-                     confirm "Are you SURE? Clients will only arrive if you repoint DNS/IP to $domain:$port yourself." || continue
-                 fi
-                 break ;;
-            n|N) say "stopped. Re-run the script to continue from here."; exit 0 ;;
-            *)   ;;
-        esac
+        if [[ "$velo_on" != yes ]]; then
+            warn "Velociraptor is DISABLED — the migration needs it; enable it"; continue
+        fi
+        local ans; ask ans "  y = install with this config / e = edit again: "
+        [[ "$ans" == y || "$ans" == Y ]] || continue
+        if [[ "$domain" != "$ID_HOST" || "$port" != "$ID_PORT" ]]; then
+            confirm "Are you SURE? Clients will only arrive if you repoint DNS/IP to $domain:$port yourself." || continue
+        fi
+        break
     done
     mark config
 }
@@ -381,53 +335,37 @@ install_intact() {
             && ! confirm "Intact is already running on this box. Re-run install.sh anyway?"; then
         say "keeping the running install"; mark installed; return 0
     fi
-    say "running install.sh${PACKAGE:+ --package $PACKAGE} (this takes a while; it downloads ~6 GB online)"
+    say "running install.sh${PACKAGE:+ --package $PACKAGE} (this takes a while)"
     (cd "$ROOT" && sudo bash install.sh ${PACKAGE:+--package "$PACKAGE"}) \
         || die "install.sh failed — fix the cause and re-run this script; it continues from the install"
     mark installed
 }
 
 adopt() {
-    step adopted "7. Adopt the Velociraptor identity" || return 0
-    local cur; cur="$(live_fp)"
-    echo "  incoming CA (the fleet's) : $ID_FP"
-    echo "  CA on this box now        : ${cur:-<none>}"
-    echo "  clients dial              : $ID_URL"
-    if ! is_here "$ID_HOST"; then
-        warn "THIS BOX DOES NOT ANSWER AT $ID_HOST YET (its addresses: $(hostname -I 2>/dev/null))."
-        warn "  Clients only arrive once that address is moved here (IP or DNS)."
-    fi
-    local tarball extract="" ds=() ans
+    step adopted "7. Adopt the fleet's Velociraptor identity, with its history" || return 0
+    echo "  the fleet's CA     : $ID_FP"
+    echo "  CA on this box now : $(live_fp || true)"
+    local tarball extract="" ds=()
     tarball="$(ls -t "$BACKUP_DIR"/velociraptor-full-*.tar.gz 2>/dev/null | head -1)"
-    if [[ -n "$tarball" ]]; then
-        echo "  Bring the old history (hunts, flows, results and the fleet list) across?"
-        echo "  Clients reconnect either way; without it Intact starts with an empty history."
-        ask ans "  Bring the history? [Y/n] "
-        if [[ ! "$ans" =~ ^[Nn] ]]; then
-            # Unpacked here, then copied into the datastore volume: about 2x its size.
-            local dskb; dskb="$(sed -n 's/^dskb=//p' "$STATE" | tail -1)"
-            dskb="${dskb:-$(( $(stat -c %s "$tarball") * 3 / 1024 ))}"
-            if (( $(free_kb "$BACKUP_DIR") < dskb * 2 )); then
-                warn "about $((dskb*2/1024)) MB is needed to bring the history; $(( $(free_kb "$BACKUP_DIR")/1024 )) MB is free"
-                confirm "Continue WITHOUT the history?" || die "stopped — free some space and re-run"
-            else
-                extract="$BACKUP_DIR/.datastore-extract"
-                say "unpacking $tarball…"
-                sudo rm -rf "$extract"; mkdir -p "$extract"
-                sudo tar -xzf "$tarball" -C "$extract" || die "could not unpack $tarball"
-                ds=(--datastore "$extract/velociraptor")
-            fi
-        fi
-    else
+    if [[ -z "$tarball" ]]; then
         warn "no datastore archive in $BACKUP_DIR: only the identity moves, history starts empty"
+    else
+        # Unpacked here, then copied into the datastore volume: about 2x its size.
+        local dskb; dskb="$(sed -n 's/^dskb=//p' "$STATE" | tail -1)"
+        dskb="${dskb:-$(( $(stat -c %s "$tarball") * 3 / 1024 ))}"
+        if (( $(free_kb "$BACKUP_DIR") < dskb * 2 )); then
+            warn "not enough free space to bring the old history (about $((dskb*2/1024)) MB needed)."
+            warn "  The identity still moves and clients reconnect; the history stays in $tarball."
+        else
+            extract="$BACKUP_DIR/.datastore-extract"
+            say "unpacking $tarball…"
+            sudo rm -rf "$extract"; mkdir -p "$extract"
+            sudo tar -xzf "$tarball" -C "$extract" || die "could not unpack $tarball"
+            ds=(--datastore "$extract/velociraptor")
+        fi
     fi
-    if ! confirm "Adopt the fleet's identity $ID_FP on this box now?"; then
-        [[ -n "$extract" ]] && sudo rm -rf "$extract"
-        die "stopped — nothing was changed"
-    fi
-    # -y: we asked above, and the address check is ours (the adopt script would
-    # refuse whenever domain differs from what clients dial, even when the
-    # operator is repointing DNS separately and confirmed that in step 5).
+    # -y: the address check is this script's (step 5), and there is nothing on a
+    # fresh install to protect from the swap.
     local rc=0
     (cd "$ROOT" && sudo bash scripts/adopt_velociraptor_identity.sh --from "$BACKUP_DIR" -y "${ds[@]}") || rc=$?
     [[ -n "$extract" ]] && sudo rm -rf "$extract"
@@ -448,77 +386,46 @@ verify() {
     (cd $ROOT && sudo docker compose -f modules/velociraptor/docker-compose.yaml up -d --no-build --pull never)"
     fi
     say "intact_velociraptor is up"
-    say "clients known to the new server (a large fleet trickles in over minutes to hours):"
-    docker exec intact_velociraptor ./velociraptor --config /velociraptor/server.config.yaml \
-        query "SELECT client_id, os_info.hostname AS host, last_seen_at FROM clients() LIMIT 20" 2>/dev/null \
-        || warn "could not query the clients yet — try again in a minute"
-    mark verified
-    if confirm "Shred the working copy of server.config.yaml in $BACKUP_DIR? (the archive is kept)"; then
-        shred -u "$BACKUP_DIR/server.config.yaml" "$BACKUP_DIR/client.config.yaml" 2>/dev/null || true
+    local out rc=0
+    out="$(docker exec intact_velociraptor ./velociraptor --config /velociraptor/server.config.yaml \
+           query "SELECT client_id, os_info.hostname AS host FROM clients()" 2>&1)" || rc=$?
+    if (( rc != 0 )); then
+        warn "could not list the clients (exit $rc):"; tail -5 <<<"$out" | sed 's/^/    /'
+    else
+        python3 -c '
+import json, re, sys
+raw = sys.stdin.read()
+rows = []
+for chunk in re.findall(r"\[[\s\S]*?\]", raw):
+    try: rows += json.loads(chunk)
+    except ValueError: pass
+hosts = [r.get("host") or r.get("client_id") for r in rows if isinstance(r, dict)]
+print("[migrate] clients known to the new server: %d" % len(hosts)
+      + (" (e.g. %s)" % ", ".join(map(str, hosts[:5])) if hosts else
+         " -- the old fleet list did not come across; clients re-appear as they reconnect"))
+' <<<"$out" || warn "could not read the client list: $(tail -1 <<<"$out")"
     fi
+    mark verified
     cat <<EOF
 
   Done. Next:
     - open https://${ID_HOST}/ and finish the first-login setup
-    - check that a collection reaches one returning client
-    - keep $(ls -t "$BACKUP_DIR"/velociraptor-full-*.tar.gz 2>/dev/null | head -1) safe until the
-      customer is satisfied (it still contains the CA)
+    - a large fleet reconnects over minutes to hours; check that a collection reaches one client
+    - ${BACKUP_DIR}/server.config.yaml is a plain copy of the fleet's CA key: delete it
+      (shred -u) once you are satisfied; keep the velociraptor-full-*.tar.gz archive safe
 EOF
-    if [[ "$MODE" == new ]]; then echo "    - leave the old risx box powered off, NOT wiped, for a week"; fi
     echo; list_logs
-}
-
-new_box_backup() {
-    if risx_present && ! done_step find; then
-        warn "risx-mssp is installed on THIS box. Option 3 is for a NEW machine;"
-        warn "  to replace risx here, delete $STATE and choose 1."
-        confirm "Continue as the new box anyway?" || die "stopped"
-    fi
-    # On the new box the backup has to arrive from the old one first.
-    while [[ ! -s "$BACKUP_DIR/server.config.yaml" ]]; do
-        cat <<EOF
-
-  No backup at $BACKUP_DIR yet. Copy the backup folder here from the old box, e.g. on THIS box:
-      scp -r "<user>@<old-box-ip>:<backup folder on the old box>" "$BACKUP_DIR"
-  or from your laptop (PowerShell or bash):
-      scp -r "./$(basename "$BACKUP_DIR")" "$(id -un)@$(hostname -I 2>/dev/null | awk '{print $1}'):$(dirname "$BACKUP_DIR")/"
-EOF
-        confirm "Copied it? (check again)" || { say "stopped. Re-run the script once the backup is here."; exit 0; }
-    done
-    chmod 700 "$BACKUP_DIR"; chmod 600 "$BACKUP_DIR"/server.config.yaml
-    identity "$BACKUP_DIR/server.config.yaml"
-    say "backup found — the identity it carries:"; show_identity
-    done_step find || { confirm "Is this the identity your fleet is pinned to?" || die "stopped"; mark find; }
 }
 
 # --- main --------------------------------------------------------------------
 
 ensure_yaml
-choose_mode
 if done_step verified; then say "this migration is already complete (see $STATE)"; exit 0; fi
-if [[ "$MODE" != new ]]; then
-    docker ps >/dev/null 2>&1 || die "this user cannot run docker — add it to the docker group and log in again"
+docker ps >/dev/null 2>&1 || die "this user cannot run docker — add it to the docker group and log in again"
+# risx already removed (finished, or cut off mid-removal): work from the backup.
+if done_step backup && ! risx_present && ! done_step removed; then
+    warn "risx-mssp is no longer on this box — continuing from the backup"; mark removed
 fi
-case "$MODE" in
-    same)
-        # risx already removed (finished, or cut off mid-removal): work from the backup.
-        if done_step backup && ! risx_present && ! done_step removed; then
-            warn "risx-mssp is no longer on this box — continuing from the backup"; mark removed
-        fi
-        done_step removed || { find_risx; backup; copy_out; remove_risx_box; }
-        identity "$BACKUP_DIR/server.config.yaml"
-        edit_config; install_intact; adopt; verify ;;
-    old)
-        find_risx; backup; copy_out
-        cat <<EOF
-
-  The old box is backed up. Next, on the NEW box:
-    1. clone Intact and copy $(basename "$BACKUP_DIR") into the home folder there
-    2. run:  bash scripts/migrate/risx_to_intact.sh   and choose 3
-  Leave this box running until the new one is up, then move its IP/DNS over.
-EOF
-        echo; list_logs
-        ;;
-    new)
-        new_box_backup; edit_config; install_intact; adopt; verify ;;
-esac
+done_step removed || { find_risx; backup; pause_for_copy; remove_risx_box; }
+identity "$BACKUP_DIR/server.config.yaml"
+edit_config; install_intact; adopt; verify
