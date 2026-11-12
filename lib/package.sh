@@ -607,7 +607,16 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
     export INTACT_FROM_PACKAGE
 
     log_info "  Images are now local; config.yaml's enabled flags still decide"
-    log_info "  which modules are deployed. Disabled modules keep their images"
-    log_info "  on disk so they can be enabled later without internet access."
+    log_info "  which modules are deployed."
+    # Nothing of a disabled module stays on the box: its tars go with $work above
+    # and the downloads are deleted after the load. Only an air-gapped install
+    # still holds them -- in the package file the operator brought.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_info "  To enable a module later without internet: set it in config.yaml and"
+        log_info "  re-run install.sh --package with this same package."
+    else
+        log_info "  To enable a module later: set it in config.yaml and re-run install.sh;"
+        log_info "  it downloads that module then."
+    fi
     return 0
 }
