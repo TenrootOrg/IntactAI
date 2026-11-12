@@ -26,7 +26,9 @@ Client:
   server_urls: ["https://10.9.8.7:8000/"]
   ca_certificate: "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----"
   nonce: "FAKENONCE="
-CA: {private_key: "-----BEGIN RSA PRIVATE KEY-----\nFAKEKEY\n-----END RSA PRIVATE KEY-----"}
+# Not a PEM block on purpose: the release build's gitleaks scan rejects any
+# PEM private-key header, fake or not, and the script never parses the key.
+CA: {private_key: "FAKEKEY-not-a-real-key"}
 Datastore: {location: ".", filestore_directory: "."}
 YAML
     echo record > "$velo/clients/C.1234/collections/flow.json"
