@@ -732,13 +732,38 @@ def _verdict_question(k):
                             "Classify it from its detection, hosts and evidence."}
 
 
+# The model's own pick leans hard to "true_positive" -- 92% of SecAlertBench's
+# non-attacks, 66% of a clean box's findings -- while its p(true_positive) ranks
+# them well (AUC 0.86-0.95). So the chip follows that probability:
+#   >= TP_MIN_P      true positive
+#   <= BENIGN_MAX_P  the likelier of known / false positive
+#   in between       no chip (uncertain)
+# The band is what keeps real attacks from a "benign" chip: a DLL-sideloading
+# attack step sat at p=0.74-0.76, and a single 0.80 cut-off labelled it
+# false positive. With the band, 0 of 700 attacks across both measured sets got a
+# benign chip. Measured 2026-11-12: docs/AI_TECHNOLOGY_RESEARCH.md.
+TP_MIN_P = 0.80
+BENIGN_MAX_P = 0.50
+
+
 def _answer_to_suggestion(ans):
     if not isinstance(ans, dict) or ans.get("choice") not in VERDICTS:
         return None
     label = ans["choice"]
     probs = ans.get("probabilities") or {}
-    return {"label": label, "p": float(probs.get(label, 0.0)),
-            "confidence": float(ans.get("confidence") or 0.0)}
+    conf = float(ans.get("confidence") or 0.0)
+    if probs:  # no probabilities (a provider that omits them): keep the model's pick
+        tp = float(probs.get("true_positive", 0.0))
+        if BENIGN_MAX_P < tp < TP_MIN_P:
+            # Recorded, so the finding is not re-asked until it changes, but never shown:
+            # suggestion_for hides anything under the confidence floor.
+            return {"label": None, "p": tp, "confidence": 0.0}
+        best = "true_positive" if tp >= TP_MIN_P else max(
+            ("known", "false_positive"), key=lambda k: float(probs.get(k, 0.0)))
+        if best != label:
+            # The model's confidence was in its own pick, not in this one.
+            label, conf = best, float(probs.get(best, 0.0))
+    return {"label": label, "p": float(probs.get(label, 0.0)), "confidence": conf}
 
 
 NOTICE_NAMES = 5          # findings named in the Log's "not reviewed yet" line

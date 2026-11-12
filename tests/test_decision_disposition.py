@@ -34,8 +34,12 @@ def _f(fid, occ=1, kind="single"):
 
 
 def _ans(label, conf=0.9):
+    # The rest of the mass split over the other two -- the picked label really is the
+    # likeliest. (This used to set true_positive to 1-conf AFTER the label, so a
+    # "true_positive" answer said p=0.05; harmless while the chip ignored probabilities.)
+    rest = (1 - conf) / 2
     return {"choice": label, "confidence": conf,
-            "probabilities": {label: conf, "true_positive": 1 - conf}}
+            "probabilities": {k: (conf if k == label else rest) for k in dm.VERDICTS}}
 
 
 class SuggestDispositions(unittest.TestCase):
@@ -257,6 +261,41 @@ console.log(JSON.stringify(out));""")
         self.assertIn("event.stopPropagation();tlValidate('f1','known')", chip)
         self.assertEqual((none, bad), ("", ""))
 
+
+
+class ChipThreshold(unittest.TestCase):
+    """The chip says true positive only when p(true_positive) >= TP_MIN_P (the model's own
+    pick leans to it; its probability ranks well). Measured 2026-11-12."""
+    def s(self, choice, probs, conf=0.9):
+        return dm._answer_to_suggestion({"choice": choice, "probabilities": probs, "confidence": conf})
+
+    def test_confident_true_positive_stays(self):
+        self.assertEqual(self.s("true_positive", {"true_positive": 0.9, "known": 0.05, "false_positive": 0.05})["label"],
+                         "true_positive")
+
+    def test_low_true_positive_becomes_the_likelier_other(self):
+        r = self.s("true_positive", {"true_positive": 0.4, "known": 0.1, "false_positive": 0.5})
+        self.assertEqual((r["label"], r["p"], r["confidence"]), ("false_positive", 0.5, 0.5))
+        self.assertEqual(self.s("true_positive", {"true_positive": 0.3, "known": 0.6, "false_positive": 0.1})["label"],
+                         "known")
+
+    def test_uncertain_band_is_recorded_but_never_shown(self):
+        # The DLL-sideloading attack step sat at 0.74-0.76: it must not get a benign chip.
+        r = self.s("true_positive", {"true_positive": 0.75, "known": 0.05, "false_positive": 0.2})
+        self.assertEqual((r["label"], r["confidence"]), (None, 0.0))
+        self.assertIsNone(dm.suggestion_for({"f": {"wm": "w", **r}}, "f", "w"))
+
+    def test_benign_pick_with_high_tp_probability_is_true_positive(self):
+        self.assertEqual(self.s("known", {"true_positive": 0.85, "known": 0.1, "false_positive": 0.05})["label"],
+                         "true_positive")
+
+    def test_no_probabilities_keeps_the_pick(self):
+        r = dm._answer_to_suggestion({"choice": "true_positive", "confidence": 0.7})
+        self.assertEqual((r["label"], r["confidence"]), ("true_positive", 0.7))
+
+    def test_bad_answers_still_none(self):
+        self.assertIsNone(dm._answer_to_suggestion({"choice": "banana"}))
+        self.assertIsNone(dm._answer_to_suggestion(None))
 
 if __name__ == "__main__":
     unittest.main()
