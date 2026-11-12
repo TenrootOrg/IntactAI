@@ -242,3 +242,31 @@ parse_install_args() {
 
     export INTACT_AIRGAP
 }
+
+# The modules an ONLINE install should fetch, space separated -- or nothing when
+# every module is enabled, which keeps the old behaviour: fetch everything.
+#
+# An install used to download the whole release (7.5 GB) and then skip loading
+# the images of every disabled module: on a Velociraptor-only box 19 of 24
+# images were downloaded, extracted and thrown away (risx migration, 2026-11-12).
+# The rule is the upgrade plan's (lib/upgrade/plan.sh): the ALWAYS_INSTALLED
+# modules, plus every module config.yaml does not explicitly disable, plus Plaso
+# whenever Timesketch runs (Timesketch reads .plaso files with its own Plaso).
+# ALWAYS_INSTALLED is read from plan.sh rather than copied, so the two cannot
+# drift. Enabling a module later and re-running install.sh fetches it then.
+install_release_modules() {
+    local cfg="$1" plan="$2" always
+    always="$(sed -n 's/^ALWAYS_INSTALLED=(\(.*\))$/\1/p' "$plan" 2>/dev/null)"
+    python3 - "$cfg" "${always:-intact presidio}" <<'PYEOF'
+import sys, yaml
+mods = (yaml.safe_load(open(sys.argv[1])) or {}).get('modules') or {}
+def off(v):
+    return isinstance(v, dict) and str(v.get('enabled', True)).strip().lower() in ('false', 'no', '0', 'off')
+disabled = {k for k, v in mods.items() if off(v)}
+if disabled:
+    keep = set(sys.argv[2].split()) | (set(mods) - disabled)
+    if 'timesketch' in keep:
+        keep.add('plaso')
+    print(' '.join(sorted(keep)))
+PYEOF
+}
