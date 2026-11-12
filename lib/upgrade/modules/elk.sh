@@ -26,6 +26,9 @@ upgrade_module_elk() {
     # systemctl call), so unconditional here rather than gated to only the
     # first-ever deploy of this module.
     u_do "host preflight" -- preflight_host_check "ELK Stack"
+    # Before anything is backed up, loaded or stopped: a refusal here leaves
+    # ELK exactly as it was. See _u_elk_disk_headroom.
+    u_do "elasticsearch disk headroom" -- _u_elk_disk_headroom
     u_do "shared TLS cert" -- _u_ensure_nginx_cert
     u_do "elasticsearch credentials" -- ensure_elk_credentials
     # Same reasoning as ensure_elk_credentials directly above: seeded on BOTH
@@ -122,6 +125,50 @@ _u_elk_status() {
     pass="$(read_env_var "$envf" ELASTIC_PASSWORD 2>/dev/null || echo '')"
     curl -s --max-time 6 -u "${user}:${pass}" "http://127.0.0.1:9200/_cluster/health" 2>/dev/null \
         | grep -o '"status"[[:space:]]*:[[:space:]]*"[a-z]*"' | grep -o '[a-z]*"$' | tr -d '"'
+}
+
+# Elasticsearch stops placing NEW shards once its disk passes the high
+# watermark (90% unless configured otherwise), and Kibana's version migration
+# needs one (.tasks). 2026-11-12, 9.5.5 -> 9.5.6 on a box at 95%: this module
+# logged "elk is UP (cluster green)", then .tasks stayed UNASSIGNED, the cluster
+# went red and Kibana unhealthy until disk was freed and allocation retried by
+# hand. The run's own disk check only asks whether the images fit, so ask ES
+# itself (it measures its own data path, which the helper may not even mount),
+# and count the new images: they sit beside the old ones until the run ends.
+_u_elk_disk_headroom() {
+    local envf user pass alloc avail total high=90 need=0 w c img sz
+    envf="$(_u_env_file elk)"
+    user="$(read_env_var "$envf" ELASTIC_USER 2>/dev/null || echo elastic)"
+    pass="$(read_env_var "$envf" ELASTIC_PASSWORD 2>/dev/null || echo '')"
+    alloc="$(curl -s --max-time 6 -u "${user}:${pass}" \
+        "http://127.0.0.1:9200/_cat/allocation?bytes=b&h=disk.avail,disk.total" 2>/dev/null | head -1)"
+    read -r avail total <<<"$alloc"
+    if ! [[ "$avail" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ ]] || (( total == 0 )); then
+        log_warn "  could not read Elasticsearch's disk use; skipping its watermark check"
+        return 0
+    fi
+    w="$(curl -s --max-time 6 -u "${user}:${pass}" \
+        "http://127.0.0.1:9200/_cluster/settings?include_defaults=true&flat_settings=true&filter_path=*.cluster.routing.allocation.disk.watermark.high" \
+        2>/dev/null | grep -o '"[0-9.]*%"' | head -1 | tr -d '"%')"
+    [[ "$w" =~ ^[0-9]+(\.[0-9]+)?$ ]] && high="${w%.*}"
+    for c in intact_elasticsearch intact_kibana intact_logstash; do
+        img="$("${DOCKER_BIN:-docker}" inspect "$c" --format '{{.Config.Image}}' 2>/dev/null)" || continue
+        sz="$("${DOCKER_BIN:-docker}" image inspect "$img" --format '{{.Size}}' 2>/dev/null)"
+        [[ "$sz" =~ ^[0-9]+$ ]] && need=$((need + sz))
+    done
+    local used=$((total - avail))
+    local now=$((used * 100 / total)) after=$(((used + need) * 100 / total))
+    if (( after >= high )); then
+        # Enough to land 2 points under the watermark, rounded up to a whole GB.
+        local free_gb=$(( (used + need - total * (high - 2) / 100) / 1000000000 + 1 ))
+        log_error "  Elasticsearch's disk is at ${now}% and would reach ~${after}% with the new"
+        log_error "  ELK images loaded. Above ${high}% it stops placing new indices, and Kibana's"
+        log_error "  upgrade needs one: the cluster turns red and Kibana never comes up."
+        log_error "  Free about ${free_gb}G and re-run. ELK has not been touched."
+        return 1
+    fi
+    log_info "  Elasticsearch disk: ${now}% now, ~${after}% with the new images (limit ${high}%)"
+    return 0  # a pass must not hinge on the log write succeeding
 }
 
 # NEVER ROTATES. Elasticsearch fixes the `elastic` password at initdb, so
