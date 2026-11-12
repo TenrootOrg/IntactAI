@@ -24,6 +24,10 @@
 # (one file per machine, so the backup can be copied to the new box with it),
 # and a re-run after a failure, a stop or a reboot carries on where it stopped.
 #
+# Everything it prints, and every answer typed, is logged to
+# <backup-dir>/risx_to_intact-<host>-<time>.log (mode 600). On an error it lists
+# every log to collect: this one, install.sh's and the adopt script's.
+#
 # Options:
 #   --backup-dir DIR   where the backup lives (default ~/velociraptor_backup)
 #   --package TAR      air-gapped: passed to install.sh --package
@@ -48,7 +52,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --backup-dir) BACKUP_DIR="${2:?--backup-dir needs a directory}"; shift ;;
         --package)    PACKAGE="${2:?--package needs a file}"; shift ;;
-        -h|--help)    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
     shift
@@ -63,6 +67,27 @@ CFG="$ROOT/config.yaml"
 command -v python3 >/dev/null || die "python3 is required"
 [[ -n "$PACKAGE" && ! -e "$PACKAGE" ]] && die "--package $PACKAGE: not found"
 
+# --- log: everything printed goes to the terminal AND the log ----------------
+mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
+LOG="$BACKUP_DIR/risx_to_intact-$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M%S).log"
+( umask 077; : > "$LOG" ) || die "cannot write the log $LOG"
+exec > >(tee -a "$LOG") 2>&1
+list_logs() {
+    echo "  Logs to collect (they may name hosts and accounts; check before sending):"
+    echo "    $LOG"
+    local f
+    for f in "$(ls -t "$ROOT"/install_*.log 2>/dev/null | head -1)" \
+             "$(ls -t "$ROOT"/adopt_velo_identity_*.log 2>/dev/null | head -1)"; do
+        if [[ -n "$f" ]]; then echo "    $f"; fi
+    done
+}
+on_exit() {
+    local rc=$?
+    if (( rc != 0 )); then echo; warn "stopped with exit $rc at $(date '+%F %T')"; list_logs; fi
+}
+trap on_exit EXIT
+echo "risx_to_intact.sh: $(date '+%F %T') on $(hostname) as $(id -un); Intact $(git -C "$ROOT" describe --tags --always 2>/dev/null || echo '?') at $ROOT"
+
 # --- small helpers -----------------------------------------------------------
 
 done_step() { grep -qx "$1" "$STATE" 2>/dev/null; }
@@ -70,11 +95,17 @@ mark()      { echo "$1" >> "$STATE"; }
 # Each step runs once; on a re-run a finished step is skipped with a note.
 step() {
     if done_step "$1"; then say "step '$1' already done — skipping"; return 1; fi
-    echo; say "=== $2 ==="; return 0
+    echo; say "=== $2 === ($(date '+%F %T'))"; return 0
 }
+log_answer() { printf '[%s] answer: %s\n' "$(date +%T)" "$1" >> "$LOG"; }
 ask() {  # ask VAR "prompt" — dies on end of input instead of looping forever
     local _a; read -r -p "$2" _a || die "no answer (end of input) — stopped"
-    printf -v "$1" '%s' "$_a"
+    log_answer "$_a"; printf -v "$1" '%s' "$_a"
+}
+confirm() {  # risx_lib's confirm, plus the answer in the log
+    local _a; read -r -p "$1 [y/N] " _a || _a=""
+    log_answer "${_a:-<none>}"
+    [[ "$_a" == y || "$_a" == Y || "$_a" == yes ]]
 }
 velo_restart_hint() {
     say "risx's Velociraptor is stopped. To start it again:"
@@ -153,7 +184,6 @@ choose_mode() {
     echo "    3) new machine, NEW  — this is the new box: install Intact and adopt the backup"
     local ans; ask ans "  Choose 1, 2 or 3: "
     case "$ans" in 1) MODE=same ;; 2) MODE=old ;; 3) MODE=new ;; *) die "no choice made" ;; esac
-    mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
     echo "mode=$MODE" >> "$STATE"
 }
 
@@ -301,7 +331,9 @@ PYEOF
     grep -qE '^\s*agent_port:' "$CFG" && say "pre-set modules.velociraptor.agent_port: $ID_PORT"
     while true; do
         say "opening config.yaml — check the IP/domain, choose modules, set passwords; save and exit"
-        ${EDITOR:-nano} "$CFG"
+        # the editor needs the real terminal, not the logging pipe
+        if { : >/dev/tty; } 2>/dev/null; then ${EDITOR:-nano} "$CFG" </dev/tty >/dev/tty 2>&1
+        else ${EDITOR:-nano} "$CFG"; fi
         local summary
         summary="$(python3 - "$CFG" <<'PYEOF'
 import sys, yaml
@@ -433,6 +465,7 @@ verify() {
       customer is satisfied (it still contains the CA)
 EOF
     if [[ "$MODE" == new ]]; then echo "    - leave the old risx box powered off, NOT wiped, for a week"; fi
+    echo; list_logs
 }
 
 new_box_backup() {
@@ -484,6 +517,7 @@ case "$MODE" in
     2. run:  bash scripts/migrate/risx_to_intact.sh   and choose 3
   Leave this box running until the new one is up, then move its IP/DNS over.
 EOF
+        echo; list_logs
         ;;
     new)
         new_box_backup; edit_config; install_intact; adopt; verify ;;

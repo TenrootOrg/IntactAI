@@ -242,4 +242,25 @@ test_a_relative_backup_dir_still_works_after_changing_directory() {
     assert_contains "$(cat "$W/log/calls")" "adopt --from $W/rel-backup"
 }
 
+test_the_log_has_output_answers_and_steps_but_no_secrets() {
+    _world; mkdir -p "$W/home"
+    _run "$SAME_MACHINE"
+    local log; log="$(ls "$W"/backup/risx_to_intact-*.log)"
+    assert_eq "$(stat -c %a "$log")" "600" "the log is owner-only"
+    local body; body="$(cat "$log")"
+    assert_contains "$body" "answer: REMOVE" "typed answers are logged"
+    assert_contains "$body" "=== 4. Remove risx-mssp" "steps are logged"
+    assert_contains "$body" "CA in use matches the backup" "output is logged"
+    assert_not_contains "$body" "FAKENONCE" "the nonce never reaches the log"
+    assert_not_contains "$body" "FAKEKEY" "the CA key never reaches the log"
+}
+
+test_an_error_lists_the_logs_to_collect() {
+    _world; mkdir -p "$W/home"
+    _run '1\ny\ny\nremove\n'
+    assert_ne "$RC" "0"
+    assert_contains "$OUT" "Logs to collect"
+    assert_contains "$OUT" "$W/backup/risx_to_intact-"
+}
+
 run_all_tests
