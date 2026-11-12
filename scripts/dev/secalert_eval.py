@@ -66,6 +66,14 @@ def sample(rows: list, n: int, seed: int) -> list:
     return [(i, rows[i]) for i in sorted(idx[:n] if n else idx)]
 
 
+def as_shown(dm, ans):
+    """The answer with `choice` replaced by the label production's chip shows
+    (decision_model._answer_to_suggestion), so the eval measures the chip, not the raw pick."""
+    if not isinstance(ans, dict):
+        return ans
+    return dict(ans, choice=(dm._answer_to_suggestion(ans) or {}).get("label"))
+
+
 def score(pairs: list, threshold: float) -> dict:
     """pairs: (is_attack, answer-dict-or-None). Binary metrics for 'attack'."""
     ok = [(y, a) for y, a in pairs if isinstance(a, dict) and a.get("choice")]
@@ -152,7 +160,8 @@ def main():
     answers = dm.ask_each([r for _, r in picked], lambda r: json.dumps(alert_state(r), ensure_ascii=False),
                           dm._verdict_question)
     secs = time.time() - t0
-    s = score([(r.get("Label") == "Attack", ans) for (_, r), ans in zip(picked, answers)], dm.min_confidence())
+    s = score([(r.get("Label") == "Attack", as_shown(dm, ans)) for (_, r), ans in zip(picked, answers)],
+              dm.min_confidence())
     s["seconds"] = round(secs, 1)
     print(report(s))
     print(f"  {secs:.0f}s")

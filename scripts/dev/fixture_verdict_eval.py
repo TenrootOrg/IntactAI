@@ -67,7 +67,7 @@ def main():
         mask = dm.mask_for({}, g)
         answers = dm.ask_each([r[2] for r in rows], lambda f: dm.masked(dm.finding_state(g, f), mask),
                                dm._verdict_question)
-        pairs += [(r[3], ans) for r, ans in zip(rows, answers)]
+        pairs += [(r[3], E.as_shown(dm, ans)) for r, ans in zip(rows, answers)]
         saved += [{"fixture": r[0], "title": r[2].title, "attack": r[3], "answer": ans}
                   for r, ans in zip(rows, answers)]
     s = E.score(pairs, dm.min_confidence())
