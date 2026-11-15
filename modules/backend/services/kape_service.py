@@ -605,9 +605,11 @@ def _run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monit
             if status == 'completed':
                 log(f"[Plaso/{name}] ✓ Imported (sketch {result.get('sketch_id')}, timeline {result.get('timeline_id')})", "success")
                 update_job(c['flow_id'], {'status': 'completed', 'phase': 'Completed', 'sketch_id': result.get('sketch_id'), 'timeline_id': result.get('timeline_id')})
+                c['ok'] = True
             elif status == 'no_events':
                 log(f"[Plaso/{name}] Completed — no events to import", "warning")
                 update_job(c['flow_id'], {'status': 'completed', 'phase': 'Completed (no events)'})
+                c['ok'] = True
             elif status != 'cancelled':
                 err = (result or {}).get('error', 'unknown error')
                 log(f"[Plaso/{name}] ✗ Failed: {err}", "error")
@@ -700,8 +702,17 @@ def _run_kape_timesketch_pipeline(run_id, clients, kape_args, ts_settings, monit
             log("✗ No KAPE collections could be started", "error")
             update_run_status(run_id, "failed", progress=0, error="No KAPE collections could be started")
             return
-        log(f"✓✓✓ Multi-client pipeline complete: KAPE {state['kape_done']}/{state['total']}, "
-            f"Plaso {state['plaso_done']}/{state['total']}", "success")
+        # plaso_done counts finished attempts, not successes: a run where every
+        # host timed out or failed import used to end green "completed, Plaso N/N".
+        ok = sum(1 for c in live if c.get('ok'))
+        total = state['total']
+        if not ok:
+            log(f"✗ Multi-client pipeline failed: all {total} clients failed", "error")
+            update_run_status(run_id, "failed", progress=100, error=f"All {total} clients failed")
+            return
+        failed = total - ok
+        log(f"✓✓✓ Multi-client pipeline complete: {ok}/{total} imported"
+            + (f", {failed}/{total} failed" if failed else ""), "warning" if failed else "success")
         update_run_status(run_id, "completed", progress=100)
     except Exception as e:
         log(f"Orchestrator exception: {e}", "error")

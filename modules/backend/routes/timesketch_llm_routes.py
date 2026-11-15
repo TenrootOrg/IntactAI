@@ -21,8 +21,16 @@ from services import (
     add_log_to_run,
     update_run_status
 )
+from services import openrouter_key
+# Moved to the service so the shared-key adoption reads the conf the same way.
+from services.openrouter_key import read_conf_value as _read_conf_value
 
 timesketch_llm_bp = Blueprint('timesketch_llm', __name__)
+
+# One settings save at a time. Two overlapping workers each read, edit and
+# rewrite timesketch.conf and restart all four containers twice. Taken by the
+# PUT, released by the worker when it ends.
+_settings_save_lock = threading.Lock()
 
 TIMESKETCH_CONFIG_PATH = '/app/config/timesketch/timesketch.conf'
 TIMESKETCH_CONFIG_DIR = os.path.dirname(TIMESKETCH_CONFIG_PATH)
@@ -63,21 +71,12 @@ _TS_PROVIDERS = {
     )),
 }
 
-DEFAULT_LLM_MODE = 'google'
-
-
-def _read_conf_value(content, ts_provider, conf_key):
-    """Pull one provider field out of timesketch.conf, '' if absent.
-
-    Same shape as the aistudio/ollama scrapes this file has always used:
-    find the provider dict, then the key inside it. `[^}]*` keeps the match
-    from wandering past the end of that provider's block.
-    """
-    match = re.search(
-        r"'" + re.escape(ts_provider) + r"':\s*\{[^}]*'"
-        + re.escape(conf_key) + r"':\s*'([^']*)'",
-        content)
-    return match.group(1) if match else ''
+# OpenRouter, like Settings -> Agentic: one key there now serves both sections
+# (services/openrouter_key.py). Was 'google'.
+DEFAULT_LLM_MODE = 'openrouter'
+# Its model until one is chosen: Claude Sonnet, newest, through OpenRouter (the
+# `~` alias follows the latest Sonnet). Same id Settings -> Agentic suggests.
+DEFAULT_OPENROUTER_MODEL = '~anthropic/claude-sonnet-latest'
 
 
 def _mask_secret(value):
@@ -99,6 +98,11 @@ def _detect_llm_mode(content):
     if match:
         for mode, (ts_provider, _fields) in _TS_PROVIDERS.items():
             if ts_provider == match.group(1):
+                # aistudio with no key is the shipped template, not a choice
+                # anyone saved (a keyless Google config does nothing), so it
+                # shows the default. A saved provider is always kept.
+                if ts_provider == 'aistudio' and not _read_conf_value(content, 'aistudio', 'api_key'):
+                    return DEFAULT_LLM_MODE
                 return mode
     return DEFAULT_LLM_MODE
 
@@ -218,7 +222,7 @@ def get_timesketch_llm_config():
             'ollama_url': '',
             'ollama_model': '',
             'openrouter_key': '',
-            'openrouter_model': '',
+            'openrouter_model': DEFAULT_OPENROUTER_MODEL,
             'litellm_url': '',
             'litellm_model': '',
             'litellm_key': '',
@@ -243,7 +247,18 @@ def get_timesketch_llm_config():
             config['llm_mode'] = _detect_llm_mode(content)
 
         except FileNotFoundError:
+            content = ''
             print(f"[TIMESKETCH] Config file not found: {TIMESKETCH_CONFIG_PATH}", flush=True)
+
+        # The OpenRouter key is the one shared with Settings -> Agentic, not
+        # only what this file holds: a key entered there has to show up here.
+        shared = openrouter_key.get()
+        config['openrouter_key'] = _mask_secret(shared)
+        # True while Timesketch is not running on that key yet: the file is
+        # only rewritten (and Timesketch restarted) by a save on this tab.
+        in_force = (_read_conf_value(content, 'openrouter', 'api_key')
+                    if re.search(r"'nl2q':\s*\{\s*'openrouter'", content) else '')
+        config['openrouter_key_pending'] = bool(shared) and in_force != shared
 
         return jsonify(config)
 
@@ -489,9 +504,13 @@ def _run_timesketch_settings_workflow(run_id, config_data):
             update_run_status(run_id, "completed", progress=100)
             add_log_to_run(run_id, "Timesketch settings update completed successfully", "success")
         elif containers_ok:
-            # Containers running but web not accessible yet - might still be starting
-            update_run_status(run_id, "completed", progress=100)
-            add_log_to_run(run_id, "Settings saved. Containers running but web interface may still be initializing.", "warning")
+            # Not green: a 'completed' here sent operators to a Timesketch that
+            # would not load, with only a warning line to say why.
+            update_run_status(run_id, "failed",
+                              error=f"Settings saved and containers running, but the "
+                                    f"Timesketch web UI was not reachable after {max_wait}s")
+            add_log_to_run(run_id, "Settings saved, but the Timesketch web interface is not reachable. "
+                                   "Check the intact_timesketch_web logs.", "error")
         else:
             update_run_status(run_id, "failed", error="Containers failed to start properly")
             add_log_to_run(run_id, "Settings workflow failed - containers not running", "error")
@@ -500,6 +519,8 @@ def _run_timesketch_settings_workflow(run_id, config_data):
         add_log_to_run(run_id, f"Error: {str(e)}", "error")
         update_run_status(run_id, "failed", error=str(e))
         traceback.print_exc()
+    finally:
+        _settings_save_lock.release()
 
 
 @timesketch_llm_bp.route('/api/timesketch/config/llm', methods=['PUT'])
@@ -519,6 +540,20 @@ def update_timesketch_llm_config():
                          f"Expected one of: {', '.join(sorted(_TS_PROVIDERS))}."
             }), 400
         data['llm_mode'] = llm_mode
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    if not _settings_save_lock.acquire(blocking=False):
+        return jsonify({"error": "A Timesketch settings save is already running. "
+                                 "Wait for it to finish in Settings -> Actions."}), 409
+    started = False
+    try:
+        # Resolved here, not in the worker: the shared key (Settings ->
+        # Agentic sees it too) must be stored before this returns, and a
+        # masked key must become the shared one rather than this file's old one.
+        if llm_mode == 'openrouter':
+            data['openrouter_key'] = openrouter_key.save(data.get('openrouter_key'),
+                                                         from_timesketch=True)
 
         _ts_provider, _fields = _TS_PROVIDERS[llm_mode]
 
@@ -544,6 +579,7 @@ def update_timesketch_llm_config():
         )
         thread.daemon = True
         thread.start()
+        started = True
 
         return jsonify({
             "success": True,
@@ -555,3 +591,7 @@ def update_timesketch_llm_config():
         print(f"[TIMESKETCH] Error starting settings workflow: {e}", flush=True)
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+    finally:
+        # The worker owns the lock once it is running; otherwise give it back.
+        if not started:
+            _settings_save_lock.release()

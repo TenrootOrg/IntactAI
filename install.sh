@@ -184,6 +184,22 @@ main() {
     ensure_core_dependencies
 
     # -------------------------------------------------------------------------
+    # Data location -- config.yaml `data_path` (empty = the system disk).
+    # Applied here, BEFORE the release images load: on a fresh box there is next
+    # to nothing to copy and everything lands on the chosen drive from the
+    # start. On a box with data it is the same move Settings → General → Data
+    # location runs (scripts/move-data.sh): copy, switch, keep the old copy.
+    # -------------------------------------------------------------------------
+    local _data_path
+    _data_path="$(read_config "['data_path']" 2>/dev/null)"
+    [[ "$_data_path" == "None" ]] && _data_path=""
+    if ! storage_apply_data_path "$SCRIPT_DIR" "$_data_path"; then
+        log_error "Could not put the data on ${_data_path:-the system disk} -- see ${SCRIPT_DIR}/data-move.log"
+        log_error "Fix it (or clear data_path in config.yaml) and run the installer again."
+        exit 1
+    fi
+
+    # -------------------------------------------------------------------------
     # Release Assets — Docker is guaranteed present and verified above.
     # -------------------------------------------------------------------------
     if [[ "$INTACT_AIRGAP" == "1" ]]; then
@@ -249,14 +265,27 @@ main() {
     # -------------------------------------------------------------------------
     # Timeline Processing (Plaso/Timesketch) - Air-gap Support
     # -------------------------------------------------------------------------
-    local timesketch_enabled
+    # Plaso follows its OWN flag. It used to be pulled whenever TimeSketch was on,
+    # so `modules.plaso.enabled: false` still downloaded it (QA 2026-11-08). The
+    # upgrade plan and --package installs already honoured the flag.
+    local timesketch_enabled plaso_enabled
     timesketch_enabled=$(read_config "['modules']['timesketch']['enabled']")
-    if is_enabled "$timesketch_enabled"; then
+    plaso_enabled=$(read_config "['modules']['plaso']['enabled']")
+    # A config from before modules.plaso existed has no key: keep the old rule.
+    [[ -z "$plaso_enabled" ]] && plaso_enabled="$timesketch_enabled"
+    if is_enabled "$plaso_enabled"; then
         pull_plaso_image
-        pull_python_alpine_image
+        pull_python_alpine_image        # only Plaso's decompression step uses it
+    else
+        log_info "Plaso pre-download: SKIPPED (Plaso disabled)"
+        if is_enabled "$timesketch_enabled"; then
+            log_warn "TimeSketch is enabled but Plaso is not: timeline imports need Plaso. Set modules.plaso.enabled: true to install it."
+        fi
+    fi
+    if is_enabled "$timesketch_enabled"; then
         download_timesketch_packages
     else
-        log_info "Timeline Processing pre-downloads: SKIPPED (TimeSketch disabled)"
+        log_info "TimeSketch pre-downloads: SKIPPED (TimeSketch disabled)"
     fi
 
     # -------------------------------------------------------------------------

@@ -247,6 +247,18 @@ test_the_download_dir_is_registered_for_cleanup() {
 
 # --- the EXIT trap --------------------------------------------------------
 
+test_the_exit_trap_is_set_before_acquire() {
+    # The leak: the trap sat below upkg_acquire, so an extraction that ran out
+    # of disk returned with no trap and left the unwrap copy and the partial
+    # tree behind. Two such runs filled a 61G box to 100% on 2026-10-28.
+    local trap_line acquire_line
+    trap_line="$(grep -n '^ *u_install_exit_cleanup_trap$' "${ROOT}/scripts/upgrade.sh" | head -1 | cut -d: -f1)"
+    acquire_line="$(grep -n 'upkg_acquire "\${assets' "${ROOT}/scripts/upgrade.sh" | head -1 | cut -d: -f1)"
+    assert_ne "$trap_line" "" "upgrade.sh must install the EXIT trap"
+    assert_ne "$acquire_line" "" "upgrade.sh must call upkg_acquire"
+    assert_true test "${trap_line:-0}" -lt "${acquire_line:-0}"
+}
+
 test_a_refused_precheck_leaves_no_scratch_behind() {
     _setup
     # The incident in lib/upgrade/interrupt.sh: a refusal for want of disk left

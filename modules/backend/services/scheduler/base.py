@@ -142,6 +142,9 @@ def init_scheduled_jobs_table():
         # The case the schedule's runs belong to (NULL = Default, as every
         # schedule from before 2026-10-21 behaves).
         ("case_id", "TEXT"),
+        # The Velociraptor org the schedule's clients belong to (NULL = root, as
+        # every schedule from before orgs were supported behaves).
+        ("velo_org", "TEXT"),
     ]
     for col_name, col_def in time_filter_columns:
         try:

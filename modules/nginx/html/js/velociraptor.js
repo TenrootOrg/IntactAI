@@ -11,7 +11,9 @@ const artifactNames = {
 async function runArtifact(artifactId) {
     const artifactName = artifactNames[artifactId] || artifactId;
 
-    const veloUrl = `https://${window.baseHost}/velociraptor/app/index.html#/hunts/new?artifact=${encodeURIComponent(artifactName)}`;
+    const hash = `#/hunts/new?artifact=${encodeURIComponent(artifactName)}`;
+    const veloUrl = window.VeloOrg ? window.VeloOrg.guiUrl(hash)      // in the top-bar org
+        : `https://${window.baseHost}/velociraptor/app/index.html${hash}`;
 
     if (confirm(`This will open Velociraptor to create a hunt for ${artifactName}.\n\nContinue?`)) {
         window.open(veloUrl, '_blank');
@@ -528,8 +530,10 @@ function importOfflineResults() {
 // Reset offline import UI
 function resetOfflineImport() {
     selectedImportFile = null;
-    const progressDiv = document.getElementById('offline-progress-container');
-    const progressBar = document.getElementById('offline-progress-bar');
+    // Same ids importOfflineResults shows; the old offline-progress-* ids exist
+    // nowhere, so the stale progress box never hid.
+    const progressDiv = document.getElementById('offline-upload-progress');
+    const progressBar = document.getElementById('offline-upload-bar');
     const importBtn = document.getElementById('offline-import-btn');
     const dropzoneText = document.getElementById('offline-dropzone-text');
     const fileInput = document.getElementById('offline-import-file');

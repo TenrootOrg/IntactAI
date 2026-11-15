@@ -64,7 +64,7 @@ BLUEPRINTS = {
 # budget, and the Linux collection sits on the critical path of every scenario.
 # Halving its CPU would buy nothing and cost wall-clock in eleven jobs at once.
 #
-# So the harness raises the caps it is about to use, and SAYS SO in the report
+# So the harness raises the cap on the run it dispatches, and SAYS SO in the report
 # (`cpu_limit_override` in the phase detail) -- a run that silently diverged
 # from the shipped defaults would be reporting on a configuration no customer
 # has. This changes only the throttle; artifacts, timeouts and flow limits stay
@@ -117,8 +117,6 @@ def register(runner, cfg):
                       note="each item is chosen from the mapper's own scoring "
                            "branches and crosses the severity floor by design")
 
-        detail["cpu_limit_override"] = _raise_cpu_limits(ctx, c)
-
         _velociraptor_linux(ctx, c, detail)
         _offline_collector(ctx, c, detail)
         _timesketch(ctx, c, cfg, detail)
@@ -131,57 +129,14 @@ def register(runner, cfg):
 
 
 # --- CI-only throttle override ---------------------------------------------
-
-
-def _raise_cpu_limits(ctx, c):
-    """Raise the shipped cpu_limit to E2E_CPU_LIMIT on the collection blueprints.
-
-    PUT, not a config file: it works the same whether the box installed this
-    ref's backend image or a release's, which no edit to the tree in the
-    workspace can claim. Non-fatal -- a blueprint that will not take the
-    override still runs, just slower, and the report records what happened.
-
-    NOT durable, and does not need to be. seed_default_blueprints re-syncs a
-    shipped blueprint's whole `settings` block from the image's YAML on every
-    backend start, so this survives exactly until the next restart. No restart
-    happens between here and the collection: the upgrade phases are done by the
-    time `pipelines` runs.
-    """
-    applied, skipped = [], []
-    try:
-        listing = c.get("/api/blueprints/velociraptor", expect=(200,))
-    except Exception as exc:                                  # noqa: BLE001
-        ctx.check("CI: the collection blueprints were raised to "
-                  f"{E2E_CPU_LIMIT}% CPU", True,
-                  actual=f"could not list blueprints: {str(exc)[:120]}",
-                  note="not a failure — the run proceeds at the shipped 50%")
-        return {"applied": [], "error": str(exc)[:180]}
-
-    items = listing if isinstance(listing, list) else (listing or {}).get("blueprints", [])
-    for bp in items:
-        if not isinstance(bp, dict) or not bp.get("id"):
-            continue
-        settings = dict(bp.get("settings") or {})
-        if settings.get("cpu_limit") == E2E_CPU_LIMIT:
-            continue
-        was = settings.get("cpu_limit")
-        settings["cpu_limit"] = E2E_CPU_LIMIT
-        body = dict(bp)
-        body["settings"] = settings
-        try:
-            c.request("PUT", f"/api/blueprints/velociraptor/{bp['id']}",
-                      json=body, expect=(200, 201))
-            applied.append({"id": bp["id"], "from": was, "to": E2E_CPU_LIMIT})
-        except Exception as exc:                              # noqa: BLE001
-            skipped.append({"id": bp["id"], "reason": str(exc)[:120]})
-
-    ctx.check(f"CI: the collection blueprints were raised to {E2E_CPU_LIMIT}% CPU",
-              not skipped,
-              expected=f"{len(items)} blueprint(s) at {E2E_CPU_LIMIT}%",
-              actual=f"{len(applied)} raised, {len(skipped)} refused",
-              note="a CI-only throttle change; the product ships cpu_limit: 50 "
-                   "so a real collection stays polite on a customer endpoint")
-    return {"applied": applied, "skipped": skipped}
+#
+# Per run, not per blueprint. This used to PUT cpu_limit onto every shipped
+# blueprint; defaults are read-only now (QA D9) and that PUT answers 403. The
+# per-run `cpu_limit` is the same override the Collection page sends: it
+# changes this one run, leaves the shipped blueprint as it is, and is stored in
+# the run's details.run_settings, where the report reads it back. A backend
+# older than per-run settings ignores the key and runs at the shipped 50% --
+# slower, not wrong -- and the recorded value says which one happened.
 
 
 # --- Velociraptor ----------------------------------------------------------
@@ -209,6 +164,7 @@ def _velociraptor_linux(ctx, c, detail):
             "blueprint_id": BLUEPRINTS["velociraptor_linux"],
             "client_ids": [client_id],
             "collection_minutes": 5,
+            "cpu_limit": E2E_CPU_LIMIT,     # CI-only; see the throttle note above
         }, expect=(200, 201, 202))
     except Exception as exc:                                  # noqa: BLE001
         ctx.check(f"Velociraptor: {BLUEPRINTS['velociraptor_linux']} dispatches",
@@ -224,6 +180,8 @@ def _velociraptor_linux(ctx, c, detail):
     run = c.wait_for_run(run_id, TIMEOUT_COLLECTION_S, ctx.tl,
                          what="agentic linux triage")
     ok = api_lib.run_succeeded(run)
+    detail["cpu_limit_override"] = (
+        ((run or {}).get("details") or {}).get("run_settings") or {}).get("cpu_limit")
     ctx.check("Velociraptor: the collection run completed", ok,
               expected="completed", actual=(run or {}).get("status"),
               note="a None status means the wait timed out — the run is still "

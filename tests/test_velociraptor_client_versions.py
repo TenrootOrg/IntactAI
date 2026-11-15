@@ -351,6 +351,68 @@ class PackagesBuiltByTheRun(unittest.TestCase):
         self.assertTrue(any("NOT safe to push" in m for m in logs))
 
 
+class EveryOrgIsUpgraded(unittest.TestCase):
+    """One run upgrades the clients of every Velociraptor org: a client enrols into
+    the org whose config its package carries, and labels, hunts and tools are per
+    org -- so each org gets its own package, labels and hunt, made in that org."""
+
+    def test_packages_labels_and_hunts_are_made_in_each_org(self):
+        import threading
+        from unittest import mock
+        from services import velociraptor_clients as vc
+        from services import velo_org
+        from services import workflow_service as ws
+        hunts, labels, org_pkgs, details = [], [], [], {}
+
+        def query(vql, timeout=120):
+            if "hunt(" in vql:
+                hunts.append((velo_org.current(), vql))
+                return [{"HuntId": f"H.{velo_org.current() or 'ROOT'}"}]
+            return []
+        stop = threading.Event(); stop.set()
+        targets = [{"client_id": "C.1", "hostname": "A", "os": "windows", "from": "0.77.1", "org": "root"},
+                   {"client_id": "C.2", "hostname": "B", "os": "linux", "from": "0.77.1", "org": "OFM5G",
+                    "org_name": "intact-test"}]
+        run = {"details": {"stage": "rest", "package_version": "0.77.3", "label": "intact-upgrade-0.77.3-rest",
+                           "targets": targets, "watch_until": 9e12}}
+        with mock.patch.object(vc, "packages_ready", return_value={"package_id": "p1"}), \
+             mock.patch.object(vc, "prepare_org_packages", side_effect=lambda org, server, log=print: org_pkgs.append(org)), \
+             mock.patch.object(vc, "_query", side_effect=query), \
+             mock.patch.object(vc, "_label_clients", side_effect=lambda ids, label, op: labels.append((velo_org.current(), tuple(ids), op))), \
+             mock.patch.object(ws, "get_automation_run", return_value=run), \
+             mock.patch.object(ws, "add_log_to_run"), \
+             mock.patch.object(ws, "update_run_status", side_effect=lambda rid, st, **kw: details.update(kw.get("details") or {})), \
+             mock.patch.object(ws, "register_cancel_event", return_value=stop), \
+             mock.patch.object(ws, "unregister_cancel"):
+            vc._run_upgrade("run1")
+        self.assertEqual(["OFM5G"], org_pkgs)                 # root keeps its verified packages
+        self.assertEqual({"", "OFM5G"}, {org for org, _ in hunts})
+        self.assertTrue(any(org == "OFM5G" and "Intact.Client.Upgrade.Linux" in v for org, v in hunts))
+        self.assertTrue(any(org == "" and "Admin.Client.Upgrade.Windows" in v for org, v in hunts))
+        self.assertEqual({"windows": "H.ROOT", "OFM5G:linux": "H.OFM5G"}, details["hunts"])
+        self.assertIn(("", ("C.1",), "set"), labels)
+        self.assertIn(("OFM5G", ("C.2",), "set"), labels)
+
+    def test_clients_of_every_org_are_listed_with_their_org(self):
+        from unittest import mock
+        from services import velociraptor_clients as vc
+        from services import velo_org
+
+        def query(vql, timeout=120):
+            if "FROM config" in vql:
+                return [{"v": "0.77.3"}]
+            if "FROM clients()" in vql:
+                return [{"client_id": f"C.{velo_org.current() or 'root'}", "hostname": "h", "os": "windows",
+                         "version": "0.77.2", "last_ip": "1.2.3.4", "agent": "velociraptor"}]
+            return []
+        with mock.patch.object(vc, "org_list", return_value=[("root", "root"), ("OFM5G", "intact-test")]), \
+             mock.patch.object(vc, "_query", side_effect=query):
+            st = vc.client_versions()
+        self.assertEqual({("C.root", "root"), ("C.OFM5G", "OFM5G")},
+                         {(c["client_id"], c["org"]) for c in st["clients"]})
+        self.assertEqual("intact-test", next(c for c in st["clients"] if c["org"] == "OFM5G")["org_name"])
+
+
 class WindowsPackageComesFromTheImage(unittest.TestCase):
     """The VelociraptorWindowsMSI tool kept serving the 0.77.2 MSI under a 0.77.3
     name, and that was repacked and pushed as 0.77.3 (msiexec 1603: Windows saw a

@@ -20,13 +20,24 @@ schema_version: 3
 # access IS the authentication for a password reset. Don't leave it true on a
 # box you haven't just set up.
 #
-# The login gates the dashboard, /api/, the upload endpoint and the
-# /velociraptor/ proxy. The other bundled tools (Kibana, IRIS, Portainer,
-# Timesketch, VolWeb) listen on their own ports and keep their own separate
-# logins — see the `modules:` section below.
+# The login gates the dashboard, /api/, the upload endpoint, the /velociraptor/
+# proxy, and every other bundled tool: Kibana, IRIS, Portainer, Timesketch and
+# VolWeb are reached through nginx on their own ports (set per module below as
+# `port` / `kibana_port`) and still keep their own login behind this one.
 first_login: true
 
 domain: CHANGE-ME
+
+# Where Intact keeps its data: every module's Docker volumes (evidence, the
+# Velociraptor datastore, search indexes, memory dumps, reports) and the
+# install's data/ folder (cases, the database, Velociraptor's CA).
+# Empty = the system disk. Set a folder -- usually on another drive, mounted and
+# formatted ext4/xfs/btrfs, e.g. /mnt/intact-data -- to keep the data there.
+# A fresh install uses it from the start. On a running box change it in
+# Settings → General → Data storage (or: sudo bash scripts/move-data.sh <folder>):
+# every service stops while the data is copied; the old copy is kept until you
+# delete it.
+data_path: ""
 
 # Installation options
 options:
@@ -105,10 +116,14 @@ modules:
     enabled: true
     id: elastic
     password: '123123'
+    # Browser port for Kibana (served by nginx behind the Intact login).
+    kibana_port: 5602
   iris:
     enabled: true
     id: administrator #Cant be changed
     password: '123123'
+    # Browser port for IRIS (served by nginx behind the Intact login).
+    port: 8444
   # Portainer — container infrastructure management UI. On by default: it is
   # the operator's window into the container layer (logs, restarts, resource
   # use) and is the first thing wanted when something on the box misbehaves.
@@ -133,16 +148,24 @@ modules:
     # modules/portainer/secrets/admin_password) -- see
     # generate_portainer_secrets in lib/modules/portainer.sh.
     password: 'Ch4nge-Me!Intact2026'
+    # Browser port for Portainer (served by nginx behind the Intact login).
+    port: 9444
   timesketch:
     enabled: true
     id: tenroot
     password: '123123'
+    # Browser port for Timesketch (served by nginx behind the Intact login).
+    port: 5443
   velociraptor:
     api_id: api
     api_password: '123123'
     enabled: true
     id: tenroot
     password: '123123'
+    # Port every Velociraptor agent connects to. It is baked into the agent
+    # installers: changing it after agents are deployed cuts them off until
+    # they are redeployed with the new installers.
+    agent_port: 8000
   # VolWeb (memory-forensics analysis stack). The platform's admin
   # user is seeded with these creds at install time by
   # `lib/modules.sh:seed_volweb_admin`; the IntactAI backend
@@ -152,12 +175,14 @@ modules:
     enabled: true
     id: tenroot
     password: '123123'
+    # Browser port for VolWeb (served by nginx behind the Intact login).
+    port: 8002
 project_name: intact
 versions:
-  elk: '9.5.5'
+  elk: '9.5.6'
   iris: v2.4.29
-  plaso: '20260720'
-  portainer: '2.45.2'
+  plaso: '20261027'
+  portainer: '2.45.3'
   timesketch: '20261014'
   velociraptor: '0.77.3'
   # Kept for older releases' packages and upgrade bookkeeping only: a release no
@@ -224,7 +249,7 @@ versions:
   # track their upstream versions — not the release tag (that is only for `backend`,
   # which is our code). Bump when the presidio-analyzer pin in modules/presidio/
   # requirements.txt moves.
-  presidio: '2.2.364'
+  presidio: '2.2.366'
   # Which spaCy model CI bakes into the image (no GPU anywhere, so the transformer
   # model is not an option). lg = best recall, ~740MB RAM; md = lighter (~360MB),
   # same result on typical payloads — switch to md for 16GB boxes. Its version

@@ -99,13 +99,37 @@ def detect(collected_data: Dict[str, List[Dict]], min_level: str = "low", log=No
         corrs = [c for c in loaded.get("correlations") or []
                  if all(b.get("product") == "aws" for b in c.get("bases") or [])]
         rules_n = len(rules) + len(corrs)
+        # Only an event that matches a count rule's BASE can count: keep just those for the
+        # count step. It used to get every event and rebuild each one's field index --
+        # 2.6 GB and minutes on 300k events (2026-10-26). One evaluation covers both.
+        bases = list({b["id"]: b for c in corrs for b in c.get("bases") or []}.values())
+        base_ids = {b["id"] for b in bases}
+        rule_ids = {r["id"] for r in rules}
+        both = rules + [b for b in bases if b["id"] not in rule_ids]
         cache, items, t0 = {}, [], time.time()
-        for rec in ct:
-            ev = sigma_event(rec)
-            items.append((_epoch(rec.get("eventTime") or rec.get("_timestamp")), ev))
-            for h in s.evaluate(ev, rules, cache):
-                add(_key(h["title"]), _finding(h["title"], h["level"], h.get("description") or h["title"], ev,
-                                               rule_id=h["id"], mitre=h.get("mitre")))
+        # Python's cycle collector re-walks every live object each time it runs, and
+        # 100k+ events are millions of them: matching took 0.48 ms an event at 30k and
+        # 0.71 at 100k. Paused for the loop (it builds no cycles worth collecting) and
+        # always restored: 71 s -> 39 s on 100k events (2026-11-08).
+        import gc
+        _gc_was = gc.isenabled()
+        gc.disable()
+        try:
+            for rec in ct:
+                ev = sigma_event(rec)
+                counted = False
+                for h in s.evaluate(ev, both, cache):
+                    if h["id"] in base_ids:
+                        counted = True
+                        if h["id"] not in rule_ids:
+                            continue
+                    add(_key(h["title"]), _finding(h["title"], h["level"], h.get("description") or h["title"], ev,
+                                                   rule_id=h["id"], mitre=h.get("mitre")))
+                if counted:
+                    items.append((_epoch(rec.get("eventTime") or rec.get("_timestamp")), ev))
+        finally:
+            if _gc_was:
+                gc.enable()
         for hit in s.correlate(items, corrs):
             c = hit["rule"]
             first = items[hit["members"][0]][1] if hit["members"] else {}
@@ -210,6 +234,12 @@ def behaviours(recs: List[Dict]) -> List[Dict]:
         if r.get("eventName") == "CreateUser" and ok(r) and rp.get("userName"):
             created.setdefault(str(rp["userName"]).lower(), (_epoch(r.get("eventTime")), r))
     seen = set()
+    # each actor's own changes, once: rescanning every row per created user was
+    # quadratic (minutes on 100k events with many created users, 2026-10-26)
+    changes_by = {}
+    for x in rows:
+        if ok(x) and str(x.get("readOnly")).lower() != "true":
+            changes_by.setdefault(actor(x).lower(), []).append(x)
     for r in rows:
         u = actor(r).lower()
         if not u or u not in created or u in seen or not ok(r) or str(r.get("readOnly")).lower() == "true":
@@ -219,8 +249,7 @@ def behaviours(recs: List[Dict]) -> List[Dict]:
         if t0 is None or t is None or not (t0 < t <= t0 + NEW_USER_WINDOW_S):
             continue
         seen.add(u)
-        later = [x for x in rows if actor(x).lower() == u and ok(x) and str(x.get("readOnly")).lower() != "true"
-                 and (_epoch(x.get("eventTime")) or 0) >= t]
+        later = [x for x in changes_by.get(u, ()) if (_epoch(x.get("eventTime")) or 0) >= t]
         names = ", ".join(dict.fromkeys(str(x.get("eventName")) for x in later))[:300]
         creator = actor(cr) or str((cr.get("userIdentity") or {}).get("type") or "?")
         out.append(_finding(

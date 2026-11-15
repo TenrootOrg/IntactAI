@@ -235,7 +235,12 @@ deploy_iris() {
         log_info "  IRIS should be accessible at https://localhost:8443 once ready"
         capture_diagnostic_logs "IRIS web (post-deploy timeout)" \
             intact_iris_nginx intact_iris_app intact_iris_db intact_iris_rabbitmq
-        track_module_success "IRIS"
+        # Deployed (containers up) but not answering yet: count it as deployed so
+        # the summary still lists it -- verify_installation then puts it under
+        # "not responding" if it is still down -- but don't log "deployed
+        # successfully" straight after the timeout warning (QA B9).
+        SUCCEEDED_MODULES+=("IRIS")
+        log_warn "IRIS containers deployed; web interface not answering yet"
     fi
 
     # bootstrap_iris_api_key is intentionally NOT called here — it writes

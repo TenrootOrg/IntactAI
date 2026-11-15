@@ -12,6 +12,7 @@ import traceback
 from services import get_clients_from_snapshot
 from services.velociraptor_clients import ONLINE_SECONDS
 from services.msi_generator_service import download_client_installer
+from services.velociraptor_clients import ORG_INSTALLER_SOURCES, build_org_installer
 from services.legacy_velociraptor_service import (
     build_legacy_client,
     build_modern_musl_linux_client,
@@ -32,22 +33,43 @@ def _online(c, now):
 # /api/clients/summary answers from this instead, at most SUMMARY_MAX_AGE old.
 # Any full /api/clients fetch refreshes it; the pickers' ↻ always fetches live.
 SUMMARY_MAX_AGE = 30
-_FLEET_CACHE = {"at": 0.0, "rows": None}
+_FLEET_CACHE = {}                # Velociraptor org -> {"at", "rows"}: each org has its own fleet
 _FLEET_LOCK = threading.Lock()   # summary misses only: N tabs missing together cost one query
 
 
 def _fetch_fleet():
     """Every enrolled client (offline ones too), live; refreshes the cache."""
+    from services import velo_org
     rows = get_clients_from_snapshot(include_offline=True)
-    _FLEET_CACHE.update(at=time.time(), rows=rows)
+    _FLEET_CACHE[velo_org.current()] = {"at": time.time(), "rows": rows}
     return rows
+
+
+# Orgs change rarely, and the dashboard polls the summary every 10 s per tab.
+_ORGS_MAX_AGE = 60
+_ORGS_CACHE = {"at": 0.0, "orgs": None}
+
+
+def _org_names():
+    """[(org id, name)] of every Velociraptor org, at most _ORGS_MAX_AGE old."""
+    if _ORGS_CACHE["orgs"] is None or time.time() - _ORGS_CACHE["at"] >= _ORGS_MAX_AGE:
+        from services.velociraptor_clients import org_list
+        _ORGS_CACHE.update(at=time.time(), orgs=org_list())
+    return _ORGS_CACHE["orgs"]
+
+
+def _fleet_as_of():
+    from services import velo_org
+    return (_FLEET_CACHE.get(velo_org.current()) or {}).get("at", 0.0)
 
 
 def _cached_fleet():
     """The fleet, at most SUMMARY_MAX_AGE old."""
+    from services import velo_org
     with _FLEET_LOCK:
-        if _FLEET_CACHE["rows"] is not None and time.time() - _FLEET_CACHE["at"] < SUMMARY_MAX_AGE:
-            return _FLEET_CACHE["rows"]
+        hit = _FLEET_CACHE.get(velo_org.current())
+        if hit and time.time() - hit["at"] < SUMMARY_MAX_AGE:
+            return hit["rows"]
         return _fetch_fleet()
 
 
@@ -123,11 +145,24 @@ def get_clients_summary():
     (offline-collection imports excluded, as in /api/clients); online = seen in the
     last ONLINE_SECONDS. Served from a fleet query at most SUMMARY_MAX_AGE old;
     as_of is when that query ran (epoch seconds)."""
+    # Every Velociraptor org, not just the one this browser has selected: the
+    # dashboard is the overview, and it has no org picker. by_org breaks it down.
     try:
-        clients = [c for c in _cached_fleet() if not c.get('imported')]
+        from services import velo_org
         now = time.time()
-        return jsonify({"online": sum(1 for c in clients if _online(c, now)),
-                        "total": len(clients), "as_of": int(_FLEET_CACHE["at"])})
+        try:
+            orgs = _org_names()
+        except Exception:  # noqa: BLE001 -- Velociraptor down: the selected org's cached count
+            orgs = [(velo_org.current() or "root", velo_org.current() or "root")]
+        by_org, as_of = [], []
+        for org, name in orgs:
+            with velo_org.use("" if org == "root" else org):
+                clients = [c for c in _cached_fleet() if not c.get('imported')]
+                as_of.append(_fleet_as_of())
+            by_org.append({"org": org, "name": name, "total": len(clients),
+                           "online": sum(1 for c in clients if _online(c, now))})
+        return jsonify({"online": sum(o["online"] for o in by_org), "total": sum(o["total"] for o in by_org),
+                        "by_org": by_org, "as_of": int(min(as_of) if as_of else 0)})
     except Exception as e:
         print(f"API Error: {e}")
         return jsonify({"error": str(e), "online": 0, "total": 0}), 500
@@ -138,6 +173,16 @@ def get_client(client_id):
     """Get specific client details"""
     # This endpoint would require VQL query implementation
     return jsonify({"error": "Not implemented yet"}), 501
+
+def _org_named(filename):
+    """An installer built for a non-root Velociraptor org says so in its name."""
+    from services import velo_org
+    org = velo_org.current()
+    if not org:
+        return filename
+    base, dot, ext = filename.rpartition('.')
+    return f"{base}-{org}.{ext}" if dot and ext in ('exe', 'msi') else f"{filename}-{org}"
+
 
 @client_bp.route('/api/clients/download/<platform>')
 def download_client(platform):
@@ -159,6 +204,26 @@ def download_client(platform):
         version : legacy version (defaults to versions.velociraptor_legacy
                   in config.yaml). Only honoured when source='online'.
     """
+    # A host enrols into the org whose client config its installer carries. The
+    # files below are root's; for another org each is repacked on demand with
+    # that org's config (the legacy / musl builds read it in
+    # legacy_velociraptor_service._client_config_bytes).
+    from services import velo_org
+    org = velo_org.current()
+    if org and platform in ORG_INSTALLER_SOURCES:
+        import shutil
+        import tempfile
+        work = tempfile.mkdtemp(prefix="intact-org-installer-")
+        try:
+            path, name, mime = build_org_installer(platform, org, work)
+        except Exception as e:  # noqa: BLE001
+            shutil.rmtree(work, ignore_errors=True)
+            print(f"[CLIENT-ROUTE] ✗ {platform} installer for org {org}: {e}", flush=True)
+            return jsonify({"error": f"Could not build the {platform} installer for org {org}: {e}"}), 500
+        print(f"[CLIENT-ROUTE] Serving {name} (org {org})", flush=True)
+        resp = send_file(path, mimetype=mime, as_attachment=True, download_name=name)
+        resp.call_on_close(lambda: shutil.rmtree(work, ignore_errors=True))
+        return resp
     try:
         print(f"[CLIENT-ROUTE] Download request for platform: {platform}", flush=True)
 
@@ -179,7 +244,7 @@ def download_client(platform):
                 result['path'],
                 mimetype='application/octet-stream',
                 as_attachment=True,
-                download_name=result['filename'],
+                download_name=_org_named(result['filename']),
             )
 
         # --- Legacy builds: repack on demand --------------------------------
@@ -201,7 +266,7 @@ def download_client(platform):
                 result['path'],
                 mimetype='application/octet-stream' if target == 'linux' else 'application/x-msdownload',
                 as_attachment=True,
-                download_name=result['filename'],
+                download_name=_org_named(result['filename']),
             )
 
         # --- Modern builds (existing behavior) ------------------------------

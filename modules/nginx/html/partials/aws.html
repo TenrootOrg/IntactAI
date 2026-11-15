@@ -208,12 +208,21 @@
                                  event.target.value = '';
                                  return;
                              }
-                             await fetch('/api/aws/analyze-offline', {
+                             const anRes = await fetch('/api/aws/analyze-offline', {
                                  method: 'POST',
                                  headers: { 'Content-Type': 'application/json' },
                                  body: JSON.stringify({ run_id: upData.run_id, enable_llm: false, blueprint: this.awsBlueprint }),
                              });
-                         } catch(e) { console.error(e); alert('Upload failed: ' + e.message); }
+                             // Unchecked, a refused analyze still sent the operator to
+                             // Workflows to watch an `uploaded` row that never moves.
+                             if (!anRes.ok) throw new Error('analysis did not start: ' + ((await anRes.json()).error || anRes.status));
+                         } catch(e) {
+                             console.error(e);
+                             alert('Upload failed: ' + e.message);
+                             this.awsRunning = false;
+                             event.target.value = '';
+                             return;
+                         }
                          this.awsRunning = false;
                          event.target.value = '';
                          this.$store.app.switchTab('workflows');
@@ -409,7 +418,7 @@
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-2">Upload AWS logs</label>
                             <p class="text-xs text-gray-500 mb-2">CloudTrail JSON, GuardDuty exports, AccessAnalyzer findings, or a ZIP from a previous run.</p>
-                            <input type="file" @change="uploadAwsLogs($event)" multiple
+                            <input type="file" @change="uploadAwsLogs($event)" multiple :disabled="awsRunning"
                                    accept=".json,.jsonl,.csv,.zip"
                                    class="w-full text-sm text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-orange-600 file:text-white hover:file:bg-orange-700">
                         </div>

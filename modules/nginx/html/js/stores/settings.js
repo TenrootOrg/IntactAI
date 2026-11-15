@@ -18,7 +18,10 @@ document.addEventListener('alpine:init', () => {
                 decision_model: { enabled: false, mode: '', provider: 'openrouter', model: 'jev-latest', url: '', context_tokens: 0, min_confidence: 0.2, api_key: '', uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true, injection: true, chat_confidence: true, scopes: true, compromise: true, report: true } }
             },
             timesketch: {
-                llm_mode: 'google',
+                // OpenRouter by default, like Agentic: the two share one key
+                // (services/openrouter_key.py). Must match DEFAULT_LLM_MODE in
+                // routes/timesketch_llm_routes.py.
+                llm_mode: 'openrouter',
                 google_ai_key: '',
                 google_ai_model: 'gemini-2.5-flash',
                 ollama_url: 'http://localhost:11434',
@@ -27,13 +30,17 @@ document.addEventListener('alpine:init', () => {
                 // installs into the Timesketch container at start-up — see
                 // modules/timesketch/llm_providers/README.md.
                 openrouter_key: '',
-                openrouter_model: 'anthropic/claude-3.5-sonnet',
+                openrouter_key_pending: false,
+                openrouter_model: '~anthropic/claude-sonnet-latest',   // Timesketch default (timesketch_llm_routes.DEFAULT_OPENROUTER_MODEL)
                 litellm_url: '',
                 litellm_model: '',
                 litellm_key: ''
             },
             cloud: {
                 provider: 'aws',
+                // Credentials are deleted this many days after they are saved
+                // (0 = never); the dates come from GET /api/config/cloud.
+                credentials_ttl_days: 30, credentials_saved_at: '', credentials_expire_at: '', credentials_expired_at: '',
                 aws: {
                     access_key_id: '',
                     secret_access_key: '',
@@ -55,6 +62,11 @@ document.addEventListener('alpine:init', () => {
         offlineModelsError: '',
         llmTesting: false,
         llmTestResult: null,
+        tsLlmTesting: false,
+        tsLlmTestResult: null,
+        // The online provider + (masked) key as last loaded/saved, so switching
+        // the provider away and back in the picker gives the saved key back.
+        _savedOnline: {},
         velo: null,
         veloLoading: false,
         veloRefreshing: false,
@@ -111,13 +123,16 @@ document.addEventListener('alpine:init', () => {
                 if (tsResponse.ok) {
                     const tsData = await tsResponse.json();
                     this.config.timesketch = {
-                        llm_mode: tsData.llm_mode || 'google',
+                        llm_mode: tsData.llm_mode || 'openrouter',
                         google_ai_key: tsData.google_ai_key || '',
                         google_ai_model: tsData.google_ai_model || 'gemini-2.5-flash',
                         ollama_url: tsData.ollama_url || '',
                         ollama_model: tsData.ollama_model || '',
+                        // The OpenRouter key shared with Agentic (masked);
+                        // listed here or this page would drop the flag.
                         openrouter_key: tsData.openrouter_key || '',
-                        openrouter_model: tsData.openrouter_model || 'anthropic/claude-3.5-sonnet',
+                        openrouter_key_pending: !!tsData.openrouter_key_pending,
+                        openrouter_model: tsData.openrouter_model || '~anthropic/claude-sonnet-latest',
                         litellm_url: tsData.litellm_url || '',
                         litellm_model: tsData.litellm_model || '',
                         litellm_key: tsData.litellm_key || ''
@@ -131,10 +146,12 @@ document.addEventListener('alpine:init', () => {
                     this.config.cloud = {
                         provider: cloudData.provider || 'aws',
                         aws: { ...this.config.cloud.aws, ...cloudData.aws },
-                        azure: { ...this.config.cloud.azure, ...cloudData.azure }
+                        azure: { ...this.config.cloud.azure, ...cloudData.azure },
+                        ...this._cloudDates(cloudData)
                     };
                 }
 
+                this._savedOnline = { ...this.config.agentic.online_llm };
                 window.currentConfig = this.config;
 
                 // If the saved provider is a subscription (CLI) one, begin the
@@ -236,6 +253,9 @@ document.addEventListener('alpine:init', () => {
         // Settings → Velociraptor. Built for fleets of thousands: the server sends a
         // summary + ONE filtered page (50), never the whole fleet.
         async loadVelociraptor() {
+            // Filter/search/page calls overlap with the 30 s tick; only the
+            // newest may write, or a slow older reply shows the wrong page.
+            const seq = this._veloSeq = (this._veloSeq || 0) + 1;
             this.veloLoading = true;
             this.veloError = '';
             try {
@@ -245,11 +265,15 @@ document.addEventListener('alpine:init', () => {
                 if (!this.veloShowUnknown) qs.set('hide', 'unknown');
                 const r = await fetch('/api/velociraptor/clients/versions?' + qs);
                 const d = await r.json().catch(() => ({}));
+                if (seq !== this._veloSeq) return;
                 if (r.ok) this.velo = d;
                 else this.veloError = d.error || ('HTTP ' + r.status);
                 const u = await fetch('/api/velociraptor/clients/upgrade-state');
-                if (u.ok) this.veloUpgrade = await u.json();
+                const ud = u.ok ? await u.json() : null;
+                if (seq !== this._veloSeq) return;
+                if (ud) this.veloUpgrade = ud;
             } catch (e) {
+                if (seq !== this._veloSeq) return;
                 this.veloError = e.message;
             }
             this.veloLoading = false;
@@ -303,7 +327,8 @@ document.addEventListener('alpine:init', () => {
                 who = this.veloPilot.hostname;
             } else {
                 body = { stage };
-                who = (this.veloUpgrade.eligible || 0).toLocaleString() + ' client(s)';
+                // One run: every Velociraptor org's clients, each with its own org's package.
+                who = (this.veloUpgrade.eligible || 0).toLocaleString() + ' client(s) in every Velociraptor org';
                 // The pilot is optional: it is the cheap way to catch a bad package on
                 // one machine, not a lock on the fleet. Without one, say so once.
                 if (!this.veloUpgrade.pilot_passed) {
@@ -483,6 +508,11 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Agentic settings saved', 'success');
+                    // The shared OpenRouter key is in force here now; Timesketch
+                    // may now be behind it (its tab says so).
+                    this.config.agentic.online_llm.key_from_shared = false;
+                    this._savedOnline = { ...this.config.agentic.online_llm };
+                    this._refreshTimesketchKey();
                     // Deliberately does NOT touch Case Analysis. Reloading it made
                     // saving a model kick a report generation on every case whose
                     // report was a template — minutes of model time and real tokens
@@ -579,6 +609,11 @@ document.addEventListener('alpine:init', () => {
                                  'success');
                 window.dispatchEvent(new CustomEvent('llm-catalog-refreshed',
                     { detail: { provider: this.config.agentic?.online_llm?.provider } }));
+                // Settings -> Timesketch reads the same OpenRouter catalog, whatever
+                // Agentic's provider is: tell its model picker too.
+                if (this.config.agentic?.online_llm?.provider !== 'openrouter') {
+                    window.dispatchEvent(new CustomEvent('llm-catalog-refreshed', { detail: { provider: 'openrouter' } }));
+                }
                 this._refreshCaseAnalysis();
             } else {
                 this.showMessage('No catalog could be updated — previous lists kept. '
@@ -605,6 +640,59 @@ document.addEventListener('alpine:init', () => {
             } catch (e) { /* cross-origin or not loaded — nothing to refresh */ }
         },
 
+        // Agentic and Timesketch share ONE OpenRouter key (the models stay
+        // separate). Typing it in either field shows it in the other at once,
+        // not only after a save and a reload -- the QA ticket was exactly
+        // "entered it in Agentic, Timesketch asked for it again".
+        shareOpenrouterKey(value, from) {
+            const on = this.config.agentic.online_llm;
+            if (from === 'agentic' && on.provider !== 'openrouter') return;   // another vendor's key
+            this.config.timesketch.openrouter_key = value;
+            if (on.provider === 'openrouter') on.api_key = value;
+        },
+
+        // The key an online provider should show when picked: OpenRouter's is
+        // the shared one; another provider's is the saved key only if it was
+        // saved for that provider (the backend applies the same rule to a
+        // masked key, so what is shown is what Save keeps).
+        _onlineKeyFor(provider) {
+            if (provider === 'openrouter') return this.config.timesketch.openrouter_key || '';
+            return this._savedOnline.provider === provider ? (this._savedOnline.api_key || '') : '';
+        },
+
+        async _refreshTimesketchKey() {
+            try {
+                const r = await fetch('/api/timesketch/config/llm');
+                if (!r.ok) return;
+                const d = await r.json();
+                this.config.timesketch.openrouter_key = d.openrouter_key || '';
+                this.config.timesketch.openrouter_key_pending = !!d.openrouter_key_pending;
+            } catch (e) { /* the tab shows the last value; a reload fixes it */ }
+        },
+
+        // Settings -> Timesketch's Test: the same one-token probe as Agentic's
+        // (/api/config/llm/test), pointed at this tab's OpenRouter key and model.
+        // OpenRouter only -- the backend calls the provider itself, and the other
+        // Timesketch providers are addressed from inside the Timesketch container.
+        async testTimesketchLlm() {
+            if (this.tsLlmTesting) return;
+            const ts = this.config.timesketch;
+            this.tsLlmTesting = true;
+            this.tsLlmTestResult = null;
+            try {
+                const r = await fetch('/api/config/llm/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agentic: { llm_mode: 'online',
+                        online_llm: { provider: 'openrouter', api_key: ts.openrouter_key, model: ts.openrouter_model } } }),
+                });
+                this.tsLlmTestResult = await r.json();
+            } catch (e) {
+                this.tsLlmTestResult = { success: false, error: e.message };
+            }
+            this.tsLlmTesting = false;
+        },
+
         async saveTimesketch() {
             this.saving = true;
             try {
@@ -616,6 +704,7 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Timesketch settings saved - containers restarting...', 'success');
+                    if (this.config.timesketch.llm_mode === 'openrouter') this.config.timesketch.openrouter_key_pending = false;
                     // Same fire-and-forget catalog refresh saveAgentic() does, so
                     // the model combobox on this tab works for an operator who has
                     // never opened Agentic. The OpenRouter catalog is shared and
@@ -658,6 +747,16 @@ document.addEventListener('alpine:init', () => {
             } catch (e) { /* services store not registered yet */ }
         },
 
+        // The credential dates GET /api/config/cloud reports (no credential).
+        _cloudDates(d) {
+            d = d || {};
+            const n = parseInt(d.credentials_ttl_days, 10);
+            return { credentials_ttl_days: Number.isFinite(n) ? n : 30,
+                     credentials_saved_at: d.credentials_saved_at || '',
+                     credentials_expire_at: d.credentials_expire_at || '',
+                     credentials_expired_at: d.credentials_expired_at || '' };
+        },
+
         async saveCloud() {
             this.saving = true;
             try {
@@ -669,6 +768,9 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Cloud settings saved', 'success');
+                    // the save restarted or cleared the credential clock: show it
+                    try { const r = await fetch('/api/config/cloud');
+                          if (r.ok) Object.assign(this.config.cloud, this._cloudDates(await r.json())); } catch (e) { /* dates only */ }
                 } else {
                     this.showMessage('Failed to save Cloud config', 'error');
                 }
@@ -687,6 +789,9 @@ document.addEventListener('alpine:init', () => {
         // --- Settings → Actions (system-operation run history) ----------------
         actionsInitialLoad: true,
         async loadActions() {
+            // The 1 s tick doesn't wait for a slow reply; don't stack them.
+            if (this._actionsBusy) return;
+            this._actionsBusy = true;
             // Only show the loading spinner on the very first load — the 1s
             // auto-refresh poll otherwise flips actionsLoading true/false
             // every tick, which flashed the spinner and made the whole
@@ -707,6 +812,7 @@ document.addEventListener('alpine:init', () => {
                 if (this.actionsInitialLoad) this.actions = [];
             } finally {
                 this.actionsLoading = false;
+                this._actionsBusy = false;
             }
         },
 
@@ -901,8 +1007,6 @@ document.addEventListener('alpine:init', () => {
         showPreparePackageModal: false,
         prepareLoading: false,
         prepareRunId: null,
-        preparePackageReady: false,
-        preparePackageSize: '',
         // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
         // 'online'  → POST /api/upgrade/online (combined prepare + apply)
         prepareModalMode: 'prepare',
@@ -1113,6 +1217,11 @@ document.addEventListener('alpine:init', () => {
                 // operator saw "Apply" close the modal but no workflow
                 // appeared.
                 const file = this.applyPackage._localFile;
+                // The whole multi-asset set, read now: close() empties
+                // applyPackageFiles, and reading it after that uploaded only
+                // the first asset (an apply naming modules it lacked).
+                const files = (this.applyPackageFiles && this.applyPackageFiles.length)
+                    ? Array.from(this.applyPackageFiles) : [file];
                 const selected = this.applySelectedModules.slice();
                 // Split the ticks the backend cannot re-derive: which of these
                 // are already at the target version and are being re-applied
@@ -1149,8 +1258,6 @@ document.addEventListener('alpine:init', () => {
                 // reassembling it first. Upload each file under the SAME
                 // upload_run_id so they land in one workflow, then apply them
                 // together — the backend merges them into one package.
-                const files = (this.applyPackageFiles && this.applyPackageFiles.length)
-                    ? Array.from(this.applyPackageFiles) : [file];
                 const uploadedPaths = [];
                 let failed = false;
 
@@ -1290,7 +1397,6 @@ document.addEventListener('alpine:init', () => {
         optedInReinstall: [],       // ONLINE mode: no-change module IDs ticked to FORCE a reinstall (bug recovery)
         fetchingRefs: false,
         computingPlan: false,
-        showingPrepareModules: false,
         // Current installed Intact tag, fetched on modal open. Used
         // by the dropdown filter so older releases are NOT selectable
         // — prevents the operator from accidentally picking a
@@ -1492,10 +1598,14 @@ document.addEventListener('alpine:init', () => {
             // GitHub days. selectedRef intentionally left empty —
             // the operator picks one, and the @change handler fires
             // the next step. No auto-pick + no auto-plan.
+            // Reopening the modal mid-fetch starts a second one; only the newest may land.
+            const seq = this._refsSeq = (this._refsSeq || 0) + 1;
             this.fetchingRefs = true;
             this.upgradeRefs = [];
             this.selectedRef = '';
             this.upgradePlan = null;
+            // Any plan still loading is for a release that is no longer picked.
+            this.computingPlan = false;
             try {
                 // force: always ask GitHub. Both callers are explicit operator
                 // actions (opening the modal, pressing refresh), and the 30-min
@@ -1508,6 +1618,7 @@ document.addEventListener('alpine:init', () => {
                     body: JSON.stringify({ force: true }),
                 });
                 const d = await r.json();
+                if (seq !== this._refsSeq) return;
                 if (d && d.success) {
                     this.upgradeRefs = d.refs || [];
                     // The backend serves the last known list when a live fetch
@@ -1529,6 +1640,7 @@ document.addEventListener('alpine:init', () => {
                     this.showTopToast('Could not fetch releases: ' + (d.error || 'unknown'), 'error');
                 }
             } catch (e) {
+                if (seq !== this._refsSeq) return;
                 const msg = e.name === 'AbortError'
                     ? 'Fetch releases timed out after 60s — GitHub may be slow; try again in a minute.'
                     : 'Fetch releases failed: ' + e.message;
@@ -1542,6 +1654,7 @@ document.addEventListener('alpine:init', () => {
                 this.showTopToast('Pick a release first', 'error');
                 return;
             }
+            const ref = this.selectedRef;
             this.computingPlan = true;
             this.upgradePlan = null;
             this.optedInOptional = [];
@@ -1550,15 +1663,19 @@ document.addEventListener('alpine:init', () => {
                 const r = await this._fetchWithTimeout('/api/upgrade/plan', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({target: this.selectedRef}),
+                    body: JSON.stringify({target: ref}),
                 });
                 const d = await r.json();
+                // The operator picked another release while this loaded: a late
+                // reply would show the old release's plan under the new pick.
+                if (this.selectedRef !== ref) return;
                 if (d && d.success) {
                     this.upgradePlan = d.plan;
                 } else {
                     this.showTopToast('Plan failed: ' + (d.error || 'unknown'), 'error');
                 }
             } catch (e) {
+                if (this.selectedRef !== ref) return;
                 const msg = e.name === 'AbortError'
                     ? 'Plan compute timed out after 60s — GitHub may be slow; try again.'
                     : 'Plan request failed: ' + e.message;
@@ -1648,8 +1765,6 @@ document.addEventListener('alpine:init', () => {
             this.showPreparePackageModal = true;
             this.prepareLoading = false;
             this.prepareRunId = null;
-            this.preparePackageReady = false;
-            this.preparePackageSize = '';
             this.upgradeRefs = [];
             this.selectedRef = '';
             this.upgradePlan = null;
@@ -1682,37 +1797,18 @@ document.addEventListener('alpine:init', () => {
             await this.fetchUpgradeRefs();
         },
 
-        // Operator picked a different release in the dropdown — re-run
-        // the matching step automatically (plan for online, modules
-        // for prepare). Saves a click; matches the "auto-show" UX.
+        // Operator picked a different release in the dropdown — re-plan
+        // automatically in online mode. Prepare mode needs no step: it
+        // downloads the whole package for the picked release.
         async onSelectedRefChange() {
-            if (!this.selectedRef) return;
-            if (this.prepareModalMode === 'online') {
+            if (this.selectedRef && this.prepareModalMode === 'online') {
                 await this.computeUpgradePlan();
-            } else {
             }
         },
 
         closePreparePackageModal() {
             this.showPreparePackageModal = false;
-            this.preparePackageReady = false;
             this.prepareRunId = null;
-        },
-
-        async downloadPreparedPackage() {
-            if (!this.prepareRunId) {
-                this.showMessage('No package ready for download', 'error');
-                return;
-            }
-
-            // Trigger download via new window/tab
-            window.open(`/api/upgrade/prepare/${this.prepareRunId}/download`, '_blank');
-
-            // Close modal after download initiated
-            setTimeout(() => {
-                this.closePreparePackageModal();
-                this.showMessage('Package download started', 'success');
-            }, 1000);
         },
 
         // ===== OFFLINE UPGRADE =====
@@ -2000,6 +2096,9 @@ document.addEventListener('alpine:init', () => {
 
         async cliRefresh() {
             if (!this.isSubscription()) return;
+            // Each detect spawns two codex processes on the backend; the panel
+            // only lives on Settings, so skip ticks while it can't be seen.
+            if (Alpine.store('app')?.currentTab !== 'settings' || document.hidden) return;
             const provider = this.config.agentic.online_llm.provider;
             try {
                 const r = await fetch('/api/agentic/cli/status?provider=' + encodeURIComponent(provider));
@@ -2157,6 +2256,10 @@ document.addEventListener('alpine:init', () => {
             // Route name mapping: the UI uses `claude` but the catalog
             // route is `/api/config/anthropic/models` — translate.
             const provider = this.config.agentic.online_llm.provider;
+            // A masked (or empty) key belonged to the provider picked before; show
+            // this one's instead. A key the operator typed is left alone.
+            const k = this.config.agentic.online_llm.api_key || '';
+            if (!k || k.startsWith('••••')) this.config.agentic.online_llm.api_key = this._onlineKeyFor(provider);
 
             // Subscription providers have no model catalog endpoint (there is no
             // key to enumerate models with), so skip the fetch entirely — it
@@ -2169,7 +2272,6 @@ document.addEventListener('alpine:init', () => {
                 // from `codex debug models` (the CLI's own list, which the CLI
                 // actually accepts), not from the vendor's web /models endpoint.
                 this.config.agentic.online_llm.model = '';
-                this._cliStopLogin();
                 this.cliStartPolling();
                 // populate the CLI-backed catalog (no-op until connected)
                 try { await fetch('/api/maintenance/refresh-codex-models', { method: 'POST' }); } catch (e) {}

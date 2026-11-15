@@ -139,13 +139,16 @@ def run_timesketch_collection():
         register_cancel_event(run_id)
         # Cleanup callback cancels the Velociraptor flow when Stop is
         # clicked — so the endpoint stops collecting + uploading too.
-        # `cid` is shape-validated above (^C\.[0-9a-f]+$); `fid` came
+        # `cid` is shape-validated above (vql_safety.is_valid_client_id); `fid` came
         # from `run_kape_collection_grpc` (server-generated, not
         # operator input). Subprocess is arg-list form + shell=False
         # as defense-in-depth — even if a future code change drops the
         # validator, the args never pass through a shell parser so
         # injection via $(...)/backtick/quotes can't reach the host.
-        def _cancel_velo_flow(cid=client_id, fid=flow_id):
+        # The org is captured now: Stop runs this from the Stop request, which
+        # may come from a browser with another org selected.
+        from services import velo_org
+        def _cancel_velo_flow(cid=client_id, fid=flow_id, org=velo_org.current()):
             try:
                 import subprocess as _sp
                 _sp.run(
@@ -153,7 +156,7 @@ def run_timesketch_collection():
                         "docker", "exec", "intact_velociraptor",
                         "/velociraptor/velociraptor",
                         "--api_config", "/velociraptor/api.config.yaml",
-                        "--nobanner", "query",
+                        "--nobanner", *velo_org.cli_args(org), "query",
                         f"SELECT cancel_flow(client_id='{cid}', flow_id='{fid}') FROM scope()",
                     ],
                     shell=False, capture_output=True, timeout=10,
@@ -715,6 +718,43 @@ def get_client_labels():
         return jsonify({"labels": []})
 
 
+@velociraptor_bp.route('/api/velociraptor/orgs', methods=['GET'])
+def list_orgs():
+    """Velociraptor organizations for the top-bar org dropdown, root first.
+
+    Intact's own API user gets the same roles it has in root in any org it is not
+    in yet: an org made in Velociraptor's GUI does not include it, and every query
+    there then fails with "User api requires permission ANY_QUERY" (checked on
+    0.77.3). It is already a server admin in root, so this grants nothing it
+    could not grant itself."""
+    from services import velo_org
+    from services.velociraptor_clients import _query
+    try:
+        with velo_org.root():
+            orgs = _query("SELECT OrgId AS id, Name AS name FROM orgs()", timeout=30) or []
+            me = (_query("SELECT whoami() AS u FROM scope()", timeout=30) or [{}])[0].get("u") or "api"
+            have = {r.get("org_id") for r in (_query(
+                f"SELECT org_id FROM gui_users(all_orgs=TRUE) WHERE name = '{me}'", timeout=30) or [])}
+            missing = [o["id"] for o in orgs if o.get("id") and o["id"] not in have]
+            if missing:
+                _query(f"SELECT user_grant(user='{me}', roles=['administrator', 'api'], "
+                       f"orgs={json.dumps(missing)}) AS g FROM scope()", timeout=30)
+                print(f"[ORGS] granted {me} access to org(s) {missing}", flush=True)
+                # A new org: give it root's tools too (a minute or two of copies,
+                # so not in this request).
+                from services.velociraptor_clients import sync_tools_to_orgs
+                threading.Thread(target=sync_tools_to_orgs, args=(missing,), daemon=True,
+                                 name="org-tool-sync").start()
+    except Exception as e:
+        print(f"[ORGS] ✗ Error listing orgs: {e}", flush=True)
+        return jsonify({"orgs": [{"id": "root", "name": "root"}], "current": velo_org.current() or "root",
+                        "error": str(e)})
+    out = [{"id": o["id"], "name": "root" if o["id"] == "root" else (o.get("name") or o["id"])}
+           for o in orgs if o.get("id")]
+    out.sort(key=lambda o: (o["id"] != "root", o["name"].lower()))
+    return jsonify({"orgs": out or [{"id": "root", "name": "root"}], "current": velo_org.current() or "root"})
+
+
 # ============================================================================
 # Artifact Definitions
 # ============================================================================
@@ -910,6 +950,12 @@ def _adopt_from_workflow(source_run_id):
                                  f"{source.get('automation_type') or 'non-Velociraptor'} run "
                                  f"with no Velociraptor collection to pull."}), 400
 
+    # Its ids live in the org the source ran in: the adopt runs (and their
+    # threads) are created in it, whatever org this browser has selected. The
+    # next request sets its own org again (app.py), so this does not leak.
+    from services import velo_org
+    velo_org.set_current(velo_org.of_run(source))
+
     started, skipped = [], []
     for raw in locators:
         # Same order as a typed id: validate, then refuse a duplicate, then create.
@@ -987,6 +1033,7 @@ def _adopt_worker(run_id, kind, ident):
     from services.fusion.mappers.agentic import SUPPORTED_ARTIFACTS
     from services.workflow_service import mutate_run_details
 
+    empty_reads = []
     try:
         update_run_status(run_id, "running", progress=5)
         add_log_to_run(run_id, f"=== Adopting Velociraptor {kind} {ident} ===")
@@ -998,6 +1045,15 @@ def _adopt_worker(run_id, kind, ident):
                                f"else in this collection is skipped.")
         update_run_status(run_id, "running", progress=10)
 
+        # Checked BEFORE the read, exactly as the fuse does: a hunt that can gain
+        # nothing (stopped or expired, every client done) makes this copy whole, so
+        # it is marked settled below. Without the mark the auto-fuse this adopt
+        # arms re-read the whole hunt seconds later -- 188,790 rows again, logged
+        # into this already COMPLETED run and rewriting the snapshot just saved
+        # (QA 2026-11-08, H.D8RUHI8ARBOH8). A FLOW's client is only known after the
+        # read, so no mark there: the fuse re-reads it once and marks it itself.
+        from services.fusion import store as fusion_store
+        settled = fusion_store._hunt_final(ident) if kind == "hunt" else None
         if kind == "hunt":
             results, artifacts, client_info = get_existing_collection_results(
                 run_id, hunt_id=ident,
@@ -1008,27 +1064,50 @@ def _adopt_worker(run_id, kind, ident):
             # bought nothing but a field to get wrong.
             results, artifacts, client_info = get_existing_collection_results(
                 run_id, flow_id=ident,
-                only_artifacts=SUPPORTED_ARTIFACTS, progress_log=True)
+                only_artifacts=SUPPORTED_ARTIFACTS, progress_log=True,
+                empty_reads=empty_reads)
 
         update_run_status(run_id, "running", progress=85)
         total = sum(len(rows) for rows in (results or {}).values())
         if total == 0:
-            # TWO different failures wear the same zero, and telling them apart
-            # decides where the operator goes looking. `client_info` is populated
+            # THREE different failures wear the same zero, and telling them
+            # apart decides where the operator goes looking. `client_info` is populated
             # only once the collection has actually been LOCATED on a client, so
             # empty means the id isn't on this server at all — a typo — while
             # populated means it is there and simply carries nothing fusion maps.
             # Reporting "no supported artifacts" for a mistyped id sends someone
             # to argue about the allowlist over a transposed character.
             if not client_info:
-                msg = (f"{ident} was not found on the Velociraptor server. Check "
-                       f"the id: a flow looks like F.XXXXXXXX, a hunt like "
-                       f"H.XXXXXXXX, and a hunt's per-client flow like "
-                       f"F.XXXXXXXX.H.")
+                # It is looked up in ONE org -- the one selected when Add by ID was
+                # clicked -- so a right id in another org reads exactly like a typo.
+                try:
+                    from services import velo_org
+                    org = velo_org.current() or "root"
+                except ImportError:
+                    org = "root"
+                msg = (f"{ident} was not found on the Velociraptor server in org {org}. "
+                       f"If it was collected in another org, select that org above the "
+                       f"id and add it again. Otherwise check the id: a flow looks like "
+                       f"F.XXXXXXXX, a hunt like H.XXXXXXXX, and a hunt's per-client "
+                       f"flow like F.XXXXXXXX.H.")
             else:
                 where = ", ".join(sorted(
                     ((info or {}).get("hostname") or cid)
                     for cid, info in client_info.items())) or "the server"
+            if client_info and empty_reads:
+                # The third: the allowlist admitted
+                # sources and every one of them read 0 rows. F.DB1MDRE9ATTNA was
+                # such a flow -- really empty -- and the run blamed the allowlist.
+                # A read the server refused looks the same from here, except it
+                # carries VQL log lines, so they are quoted when present.
+                said = [ln for _, lines in empty_reads for ln in lines]
+                msg = (f"{ident} was found on {where} with {len(empty_reads)} "
+                       f"supported artifact source(s), but every one returned 0 "
+                       f"rows — the collection holds nothing to add to the case.")
+                if said:
+                    msg += (f" Velociraptor also logged: "
+                            f"{' | '.join(dict.fromkeys(said))}")
+            elif client_info:
                 msg = (f"{ident} was found on {where}, but none of its artifacts "
                        f"are ones fusion maps — nothing was added to the case. "
                        f"The log above lists what it collected and what was "
@@ -1066,6 +1145,12 @@ def _adopt_worker(run_id, kind, ident):
         update_run_status(run_id, "running", progress=92)
         add_log_to_run(run_id, "Persisting rows where the case graph reads them…")
         persist_pipeline_artifacts(run_id, results)
+        if settled is not None:
+            fusion_store._write_final(fusion_store._raw_results_path(run_id, {}),
+                                      {"settled": settled, "hostnames": hostnames})
+            add_log_to_run(run_id, f"The {kind} is finished in Velociraptor, so the case "
+                                   f"reads this saved copy from now on instead of "
+                                   f"downloading it again.")
 
         add_log_to_run(
             run_id,
@@ -1164,7 +1249,7 @@ def velociraptor_client_versions():
     thousands is never sent, nor rendered, whole). Filters: state, os, version,
     online (1/0), q (host or client id), reason ('eligible' or a not-upgradable
     key), hide=unknown (collapse clients that never reported a version);
-    sort (host / os / version / upgrade / last_seen) + dir=desc; page (1-based),
+    sort (host / org / os / version / upgrade / last_seen) + dir=desc; page (1-based),
     per (<= 200). Each row carries upgrade={code, text} for the table's column."""
     from services.velociraptor_clients import (client_versions, summarize, filter_clients, sort_clients,
                                                upgrade_status)
@@ -1219,7 +1304,8 @@ def velociraptor_pilot_candidates():
         if key is None and not c["online"]:
             key, why = "offline", "offline -- a pilot must be online"
         rows.append({"client_id": c["client_id"], "hostname": c["hostname"], "os": c["os"],
-                     "version": c["version"], "ok": key is None, "why": why})
+                     "version": c["version"], "org_name": c.get("org_name") or "root",
+                     "ok": key is None, "why": why})
     rows.sort(key=lambda r: (not r["ok"], r["hostname"].lower()))
     return jsonify({"clients": rows[:20]})
 
@@ -1277,6 +1363,8 @@ def velociraptor_upgrade_state():
 def velociraptor_upgrade_clients():
     """Start the pilot (stage=pilot, optional client_ids) or a wave of the rest (stage=rest,
     optional label = a Velociraptor label, limit = at most this many clients)."""
+    # One run covers the clients of every Velociraptor org, each upgraded with a
+    # package carrying its own org's client config (velociraptor_clients).
     from services.velociraptor_clients import start_upgrade
     body = request.get_json(silent=True) or {}
     try:

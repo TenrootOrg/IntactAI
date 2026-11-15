@@ -42,13 +42,18 @@ AGENTIC_TYPES = {"velociraptor_collection", "memory", "timesketch",
                  # parsed into a run of its own so it fuses like a collection.
                  "external_log"}
 
-# Statuses that mean "this run's data is final and fuseable". Deliberately the
-# SAME pair fusion.store.stale_member_runs counts as members, so the auto-fuse
-# arms exactly when there is something new for it to fold in — arming on 'failed'
-# or 'cancelled' would schedule a fuse that finds nothing stale and does nothing.
-_TERMINAL_STATUSES = ("completed", "success")
-# Every status that ends a run (its in-memory per-run state can go).
-_FINISHED_STATUSES = ("completed", "success", "failed", "cancelled")
+# Statuses that arm the case's auto-fuse: every end, not only success. A stopped
+# or failed collection still holds rows (481k on case 'test2'), and
+# fusion.store.stale_member_runs counts every status but running/pending -- arming
+# on success alone left those rows out of the graph until a manual Refusion.
+# _fire re-checks stale_member_runs, so a run that brought nothing costs no fuse.
+_TERMINAL_STATUSES = ("completed", "success", "failed", "cancelled")
+# Every status that ends a run (its in-memory per-run state can go). Same set.
+_FINISHED_STATUSES = _TERMINAL_STATUSES
+
+# When this process started. A run created before it was driven by the process
+# that died; one created after belongs to us (created_before_boot).
+_PROCESS_STARTED_AT = datetime.now()
 
 # Settings-page / system-operation run types. These always run under the built-in
 # "System" workspace (regardless of the browser's active case) so they have a home
@@ -86,6 +91,18 @@ SYSTEM_TYPES = {"upgrade", "online_upgrade", "prepare_package", "maintenance",
 # the active workspace or blocked by the System-workspace guard.
 INTERNAL_CASE_TYPES = {"case", "fusion_baseline"}
 
+# A finished run is not reopened (update_run_status). These types are, on purpose:
+# a case row goes back to 'pending' on every re-fuse, and the upgrade engine
+# continues an upload row into its apply, and retries a failed apply on that row.
+_REOPENABLE_TYPES = INTERNAL_CASE_TYPES | {"upgrade", "online_upgrade",
+                                           "upgrade_package_upload", "prepare_package"}
+_RESTART_REAPED = "Interrupted by a backend restart"   # app.py's boot reaper error
+_IDLE_SWEPT = "Workflow idle for"
+# Failures that were a guess, not the worker's verdict: the restart reaper and the
+# idle sweep cannot see a tus upload (tusd keeps receiving through a backend
+# restart) or a quiet 3-day indexing wait. Such a run may come back to 'running'.
+_PRESUMED_FAILURES = (_RESTART_REAPED, _IDLE_SWEPT)
+
 
 _DEFAULT_CASE_CACHE = {"id": None}
 _SYSTEM_CASE_CACHE = {"id": None}
@@ -94,8 +111,30 @@ _SYSTEM_CASE_CACHE = {"id": None}
 class WorkspaceError(Exception):
     """An operation isn't allowed in the resolved workspace — e.g. an
     investigation feature targeting the built-in System workspace. The
-    app-level errorhandler turns this into an HTTP 409 with this message."""
-    pass
+    app-level errorhandler turns this into an HTTP 409 with this message and
+    `code`, which the UI uses to tell the cases apart."""
+    def __init__(self, message, code="workspace_system_blocked"):
+        super().__init__(message)
+        self.code = code
+
+
+def closed_case_error(case_id):
+    """The refusal text when `case_id` is a Closed case, else None.
+
+    A Closed case is finished: a hunt or collection launched while it was the
+    active case still landed in it (QA, 2026-11-08), adding evidence after the
+    case was closed. Never raises: an unreadable case is not a closed one."""
+    if not case_id:
+        return None
+    try:
+        from services.fusion import store
+        d = store.get_case(case_id)
+        if d and store.case_info(d)["case_status"] == "closed":
+            return (f'Case "{d.get("name") or case_id}" is closed, so nothing new can '
+                    f"run in it. Reopen it in Case Management, or switch to another case.")
+    except Exception:                       # noqa: BLE001 — never block on a lookup failure
+        pass
+    return None
 
 
 def _system_case_id():
@@ -193,6 +232,9 @@ def _resolve_case_id(automation_type, case_id):
                 "Modules run against an investigation workspace, not the System "
                 "workspace. Switch to or create an investigation workspace first."
             )
+        closed = closed_case_error(cid)
+        if closed:
+            raise WorkspaceError(closed, code="case_closed")
         return cid
 
     # No active case (scheduler / background, no request context) -> Default.
@@ -245,8 +287,15 @@ _cancel_lock = threading.Lock()
 
 
 def register_cancel_event(run_id) -> threading.Event:
-    """Register a cancel event for a workflow run. Returns the Event to check in the pipeline."""
+    """Register a cancel event for a workflow run. Returns the Event to check in the pipeline.
+
+    A run already stopped gets its set Event back: a memory upload registers only
+    after the route's ZIP extract, and a Stop during the extract was replaced by a
+    fresh Event -- the whole pipeline then ran on a cancelled row."""
     with _cancel_lock:
+        event = _cancel_events.get(run_id)
+        if event is not None and event.is_set():
+            return event
         event = threading.Event()
         _cancel_events[run_id] = event
         _cleanup_callbacks[run_id] = []
@@ -254,7 +303,18 @@ def register_cancel_event(run_id) -> threading.Event:
 
 
 def register_cleanup(run_id, callback):
-    """Register a cleanup callback for a workflow run. Called when stop is requested."""
+    """Register a cleanup callback for a workflow run. Called when stop is requested.
+
+    It runs in the org it was registered in: Stop comes from a request (or the
+    watchdog) that may have another Velociraptor org selected, or none."""
+    from services import velo_org
+    org = velo_org.current()
+    if org:
+        inner = callback
+
+        def callback():
+            with velo_org.use(org):
+                return inner()
     with _cancel_lock:
         if run_id in _cleanup_callbacks:
             _cleanup_callbacks[run_id].append(callback)
@@ -334,13 +394,27 @@ def request_stop(run_id, reason=None):
     the watchdog did it, and left an operator looking at a QA run that said
     "cancelled, 50%" with nothing anywhere stating why (measured 2026-08-26,
     velociraptor_collection_1787727431255).
+
+    Returns False when the run had already finished: Stop is then a no-op. It used
+    to write 'cancelled' over a completed run (and run its cleanup, which for a
+    memory run deletes files). The final write is re-checked under the run's lock
+    by update_run_status, so a run finishing during the Stop keeps its result.
     """
+    wf = file_get_workflow(run_id, with_logs=False)
+    if wf and wf.get("status") in _FINISHED_STATUSES:
+        return False
+
+    # The SET Event stays registered: is_cancelled()/get_cancel_event() are how
+    # AWS, Azure, the offline-collector build and tool downloads see Stop, and
+    # popping it here made both answer "not cancelled" -- Stop was cosmetic for
+    # them. The worker's unregister_cancel() drops it when it exits.
+    # ponytail: a run whose worker never unregisters keeps one Event until restart.
     with _cancel_lock:
         event = _cancel_events.get(run_id)
-        callbacks = list(_cleanup_callbacks.get(run_id, []))
-
-    if event:
-        event.set()
+        if event is None:
+            event = _cancel_events[run_id] = threading.Event()
+        callbacks = _cleanup_callbacks.pop(run_id, [])
+    event.set()
 
     # Run all cleanup callbacks (outside lock to avoid deadlocks)
     for cb in callbacks:
@@ -352,12 +426,7 @@ def request_stop(run_id, reason=None):
     add_log_to_run(run_id,
                    f"[Pipeline] {reason}" if reason else "[Pipeline] Stop requested by user",
                    "warning")
-    update_run_status(run_id, "cancelled", error=reason or None)
-
-    # Clean up registry
-    with _cancel_lock:
-        _cancel_events.pop(run_id, None)
-        _cleanup_callbacks.pop(run_id, None)
+    return update_run_status(run_id, "cancelled", error=reason or None)
 
 
 def unregister_cancel(run_id):
@@ -455,11 +524,18 @@ def create_automation_run(automation_type, name, details=None, case_id=None):
     # actually had fatal errors logged. See the QA bug context — a
     # Velociraptor flow logged "Could not find flow ... No data found"
     # at error level and the run still went green.
+    details = dict(details or {})
+    # The Velociraptor org this run was started in: anything that re-reads its
+    # hunt / flow later (case fusion, re-collect, adopt, Stop cleanup at
+    # startup) re-enters it with velo_org.use(velo_org.of_run(run)).
+    from services import velo_org
+    if velo_org.current() and not details.get("velo_org"):
+        details["velo_org"] = velo_org.current()
     workflow_data = {
         "run_id": run_id,
         "automation_type": automation_type,
         "name": name,
-        "details": details or {},
+        "details": details,
         "status": "pending",
         "progress": 0,
         "logs": [],
@@ -587,6 +663,20 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
         # state instead of a stack trace.
         current = workflow.get("status")
         if current == "cancelled" and status != "cancelled":
+            return False
+        # Nor is a finished run reopened or cancelled after the fact: a tus
+        # post-receive landing after post-terminate failed the upload put it back
+        # to 'running' with nothing behind it, a late progress tick (KAPE's timer,
+        # a stale-snapshot write) did the same to completed runs, and a Stop that
+        # raced the end turned a completed run 'cancelled'. force=True and
+        # _REOPENABLE_TYPES are the deliberate exceptions; a presumed failure
+        # (_PRESUMED_FAILURES) may still come back to life. cancelled->cancelled
+        # still passes: a stopped worker writes its final progress after Stop.
+        if (not force and current in _FINISHED_STATUSES and status != current
+                and status in ("running", "pending", "cancelled")
+                and workflow.get("automation_type") not in _REOPENABLE_TYPES
+                and not (current == "failed" and status != "cancelled"
+                         and str(workflow.get("error") or "").startswith(_PRESUMED_FAILURES))):
             return False
 
         # Safety net: refuse to mark a run with logged errors as
@@ -747,6 +837,17 @@ def record_sigma_rule_tally(run_id, tally):
         workflow["updated_at"] = datetime.now().isoformat()
         save_workflow(workflow)
 
+def created_before_boot(wf) -> bool:
+    """True unless the run was created by this process -- the boot reaper's cut.
+    Boot work runs while Flask already serves, and a run the analyst started in
+    that window was failed as "interrupted by restart". Unparseable means old."""
+    try:
+        created = datetime.fromisoformat(str(wf.get("created_at")).replace("Z", "+00:00"))
+        return created.replace(tzinfo=None) < _PROCESS_STARTED_AT
+    except Exception:  # noqa: BLE001
+        return True
+
+
 # cleanup_orphan_workflows ran on EVERY call of get_all_automation_runs -- and
 # so on every 1 s poll of the Workflows tab and most fusion paths. Its unit is
 # hours (max_idle_hours), so once a minute is plenty.
@@ -823,7 +924,7 @@ def cleanup_orphan_workflows(force=False):
                 idle_hours = (now - last_active).total_seconds() / 3600
                 if idle_hours > max_idle_hours:
                     workflow['status'] = 'failed'
-                    workflow['error'] = f'Workflow idle for {idle_hours:.1f}h with no updates (max: {max_idle_hours}h)'
+                    workflow['error'] = f'{_IDLE_SWEPT} {idle_hours:.1f}h with no updates (max: {max_idle_hours}h)'
                     workflow['updated_at'] = now.isoformat()
 
                     append_workflow_log(
@@ -989,6 +1090,13 @@ def start_housekeeping(every=60.0, purge_every=3600.0):
         last_purge = 0.0
         while True:
             time.sleep(every)
+            try:
+                # Expired cloud credentials are deleted on read; reading once a
+                # minute deletes them on time even when nothing uses them.
+                from services.storage.config_store import load_cloud_config
+                load_cloud_config()
+            except Exception as e:      # noqa: BLE001 -- keep the loop alive
+                print(f"[CLOUD] credential expiry check failed: {e}", flush=True)
             try:
                 cleanup_orphan_workflows(force=True)
                 if time.time() - last_purge >= purge_every:

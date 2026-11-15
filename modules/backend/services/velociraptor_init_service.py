@@ -14,6 +14,7 @@ from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
 
 from services.velociraptor_service import setup_velociraptor_connection
+from services import velo_org
 
 # TenRoot custom artifacts zip (downloaded by tools_download_service)
 TENROOT_ARTIFACTS_ZIP = "/app/data/tools/Velociraptor-Artifacts-main.zip"
@@ -142,6 +143,7 @@ def run_server_artifact(artifact_name, parameters=None, logger_func=None):
             channel.close()
 
 
+@velo_org.in_root   # Intact's artifacts are loaded once, in root; every org sees them
 def start_server_event_artifact(artifact_name, logger_func=None):
     """Start a server event artifact for continuous monitoring
 
@@ -267,6 +269,7 @@ def wait_for_velociraptor_ready(log=None, attempts: int = 45, delay: int = 2) ->
     return False
 
 
+@velo_org.in_root   # Intact's artifacts are loaded once, in root; every org sees them
 def initialize_velociraptor_artifacts(logger_func=None, skip_exchange_imports=False):
     """Set up the runtime-only Velociraptor artifact state.
 
@@ -423,6 +426,7 @@ def check_artifact_exists(artifact_name, logger_func=None):
             channel.close()
 
 
+@velo_org.in_root   # Intact's artifacts are loaded once, in root; every org sees them
 def import_custom_artifact(yaml_content, logger_func=None):
     """Import a single custom artifact YAML into Velociraptor
 

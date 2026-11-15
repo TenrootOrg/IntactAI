@@ -38,6 +38,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from services import velo_org
 from typing import Callable
 
 from config import VELOCIRAPTOR_CONTAINER
@@ -162,7 +163,7 @@ def _velo_query(vql: str, timeout: int = 30) -> list[dict]:
         "docker", "exec", VELOCIRAPTOR_CONTAINER,
         "/velociraptor/velociraptor",
         "--api_config", "/velociraptor/api.config.yaml",
-        "--nobanner",
+        "--nobanner", *velo_org.cli_args(),
         "query", "--format", "jsonl", vql,
     ]
     try:
@@ -410,6 +411,7 @@ def acquire_memory_dump(
     logger: Callable[[str, str], None] | None = None,
     run_id: str | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    on_dispatched: Callable[[str, str], None] | None = None,
     **overrides,
 ) -> dict:
     """Capture a memory dump from a Velociraptor client.
@@ -436,6 +438,8 @@ def acquire_memory_dump(
         Stop button kills the in-flight flow via the existing cleanup
         callback infrastructure.
       cancel_check: Optional ``() -> bool`` polled between phases.
+      on_dispatched: Optional ``(flow_id, host_path)`` callback run right
+        after dispatch, so the caller can record what a crash must clean up.
       overrides: Keyword overrides for any value in ACQUISITION_DEFAULTS
         (``max_bytes``, ``cpu_limit``, ``compression``, ``urgent``).
     """
@@ -481,6 +485,10 @@ def acquire_memory_dump(
         urgent=cfg["urgent"],
     )
     log(f"acquire: flow_id={flow_id}", "info")
+    out_name = f"{hostname}-{flow_id}.raw"
+    host_dst = str(Path(dumps_dir) / out_name)
+    if on_dispatched:
+        on_dispatched(flow_id, host_dst)
 
     try:
         # Reuse the validated KAPE poll loop — it already handles the
@@ -529,8 +537,6 @@ def acquire_memory_dump(
     # that same volume so the file is also visible to intact_backend
     # for preflight/cleanup.
     use_shared = _shared_volume_available(dumps_dir)
-    out_name = f"{hostname}-{flow_id}.raw"
-    host_dst = str(Path(dumps_dir) / out_name)
 
     if use_shared:
         log("acquire: extracting raw memory via fs accessor (shared volume — skipping docker cp)", "info")

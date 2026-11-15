@@ -32,6 +32,18 @@ from services.blueprint_loader_service import get_all_blueprints, get_artifact_l
 
 blueprint_bp = Blueprint('blueprints', __name__)
 
+# Defaults are re-synced from default_blueprints.yaml on every start, so an
+# edit to one "saved" and then silently reverted on the next restart (QA D9).
+# They are read-only instead; Duplicate in the UI gives an editable copy.
+DEFAULT_READONLY_ERROR = "Default blueprints cannot be edited - duplicate it to make your own"
+
+
+def _refuse_default_write(existing):
+    """403 response when `existing` is a shipped default, else None."""
+    if existing and existing.get('is_default'):
+        return jsonify({"error": DEFAULT_READONLY_ERROR}), 403
+    return None
+
 
 # ============================================================================
 # Seeding - Load from YAML files
@@ -188,9 +200,10 @@ def seed_default_blueprints():
     # since been removed from default_blueprints.yaml. Listed explicitly
     # (rather than computed as "in DB but not YAML") so a YAML mistake
     # never silently nukes a real default. Each entry is deleted on
-    # startup if the DB row is still flagged is_default — an operator
-    # who customized the name or settings (is_default=false) is left
-    # alone.
+    # startup if the DB row is still flagged is_default. Editing never
+    # clears that flag: defaults are read-only (the PUT routes refuse
+    # them, QA D9), so an operator's own version is a Duplicate with its
+    # own custom_ id and is never touched here.
     DEPRECATED_MEMORY_BLUEPRINT_IDS = {
         # Removed when YARA became a memory-page checkbox: was just
         # the curated 12-plugin set with `mode: plugin`, redundant
@@ -230,7 +243,7 @@ def seed_default_blueprints():
                 print(f"[BLUEPRINTS] Synced memory default from YAML: {default_bp['id']}", flush=True)
 
         # Cleanup pass — remove deprecated defaults that linger in DB
-        # from older seeds. Skip rows the operator already customized.
+        # from older seeds. Only is_default rows; custom copies stay.
         for bp_id in DEPRECATED_MEMORY_BLUEPRINT_IDS:
             existing = existing_map.get(bp_id)
             if existing and existing.get('is_default'):
@@ -339,6 +352,11 @@ def create_velociraptor_blueprint():
             return jsonify({"error": "At least one artifact is required"}), 400
 
         blueprint_id = data.get('id') or f"custom_{int(time.time() * 1000)}"
+        # The store is INSERT OR REPLACE: POSTing a default's id would overwrite
+        # it as a custom row, i.e. edit a default by another door.
+        refused = _refuse_default_write(get_velociraptor_blueprint(blueprint_id))
+        if refused:
+            return refused
         blueprint = {
             "id": blueprint_id,
             "name": data['name'],
@@ -380,9 +398,12 @@ def update_velociraptor_blueprint_route(blueprint_id):
         existing = get_velociraptor_blueprint(blueprint_id)
         if not existing:
             return jsonify({"error": "Blueprint not found"}), 404
+        refused = _refuse_default_write(existing)
+        if refused:
+            return refused
 
         data['id'] = blueprint_id
-        data['is_default'] = existing.get('is_default', False)
+        data['is_default'] = False
         data['created_at'] = existing.get('created_at')
 
         result = save_velociraptor_blueprint(data)
@@ -484,6 +505,11 @@ def create_timesketch_blueprint():
             return jsonify({"error": "Blueprint name is required"}), 400
 
         blueprint_id = data.get('id') or f"custom_{int(time.time() * 1000)}"
+        # The store is INSERT OR REPLACE: POSTing a default's id would overwrite
+        # it as a custom row, i.e. edit a default by another door.
+        refused = _refuse_default_write(get_timesketch_blueprint(blueprint_id))
+        if refused:
+            return refused
         # Ensure settings has collection_timeout with default
         settings = data.get('settings', {})
         if 'collection_timeout' not in settings:
@@ -536,9 +562,12 @@ def update_timesketch_blueprint_route(blueprint_id):
         existing = get_timesketch_blueprint(blueprint_id)
         if not existing:
             return jsonify({"error": "Blueprint not found"}), 404
+        refused = _refuse_default_write(existing)
+        if refused:
+            return refused
 
         data['id'] = blueprint_id
-        data['is_default'] = existing.get('is_default', False)
+        data['is_default'] = False
         data['created_at'] = existing.get('created_at')
 
         result = save_timesketch_blueprint(data)
@@ -600,6 +629,11 @@ def create_memory_blueprint():
             return jsonify({"error": "Blueprint name is required"}), 400
 
         blueprint_id = data.get('id') or f"custom_{int(time.time() * 1000)}"
+        # The store is INSERT OR REPLACE: POSTing a default's id would overwrite
+        # it as a custom row, i.e. edit a default by another door.
+        refused = _refuse_default_write(get_memory_blueprint(blueprint_id))
+        if refused:
+            return refused
         settings = data.get('settings') or {}
 
         blueprint = {
@@ -641,9 +675,12 @@ def update_memory_blueprint_route(blueprint_id):
         existing = get_memory_blueprint(blueprint_id)
         if not existing:
             return jsonify({"error": "Blueprint not found"}), 404
+        refused = _refuse_default_write(existing)
+        if refused:
+            return refused
 
         data['id'] = blueprint_id
-        data['is_default'] = existing.get('is_default', False)
+        data['is_default'] = False
         data['created_at'] = existing.get('created_at')
 
         result = save_memory_blueprint(data)

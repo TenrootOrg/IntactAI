@@ -154,6 +154,13 @@ def _record_reschedule_error(job_id, message):
         pass
 
 
+def _velo_org_now():
+    """The Velociraptor org selected in the request creating / retargeting a
+    schedule (None = root): its runs must query the same org later."""
+    from services import velo_org
+    return velo_org.current() or None
+
+
 def create_scheduled_job(
     name: str,
     blueprint_id: str,
@@ -222,8 +229,8 @@ def create_scheduled_job(
          interval_type, interval_value, interval_unit, start_at, run_time, options, next_run_at, enabled,
          report_types, anonymize_data, custom_patterns,
          time_filter_enabled, time_filter_mode, time_filter_relative_range,
-         time_filter_start, time_filter_end, created_at, updated_at, case_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         time_filter_start, time_filter_end, created_at, updated_at, case_id, velo_org)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         job_id,
         name,
@@ -249,7 +256,8 @@ def create_scheduled_job(
         time_filter_end,
         now.isoformat(),
         now.isoformat(),
-        case_id or None
+        case_id or None,
+        _velo_org_now(),
     ))
     conn.commit()
     conn.close()
@@ -317,7 +325,7 @@ def update_scheduled_job(job_id: str, updates: dict) -> Optional[dict]:
     allowed_fields = [
         'name', 'description', 'blueprint_id', 'blueprint_type',
         'client_ids', 'interval_value', 'interval_unit', 'start_at', 'run_time', 'enabled',
-        'report_types', 'anonymize_data', 'custom_patterns', 'options', 'case_id'
+        'report_types', 'anonymize_data', 'custom_patterns', 'options', 'case_id', 'velo_org'
     ]
 
     conn = get_db_connection()
@@ -341,10 +349,18 @@ def update_scheduled_job(job_id: str, updates: dict) -> Optional[dict]:
     conn.commit()
     conn.close()
 
-    # If any recurrence field changed, rebuild the APScheduler trigger.
-    if any(k in updates for k in ('interval_value', 'interval_unit', 'start_at', 'run_time')):
-        scheduler = get_scheduler()
-        if scheduler:
+    # Rebuild the trigger on any recurrence change AND on every enable. Never
+    # resume_job: a paused month/year DateTrigger past its run_date resumes to
+    # no fire time (APScheduler drops it), and one that fired after an edit
+    # un-paused it is already gone, so "enable" did nothing and the error was
+    # swallowed. A disabled job is paused after any rebuild, since the rebuild
+    # re-adds it unpaused.
+    recurrence_changed = any(k in updates for k in ('interval_value', 'interval_unit', 'start_at', 'run_time'))
+    enabled = bool(updates.get('enabled', job.get('enabled', True)))
+    scheduler = get_scheduler() if (recurrence_changed or 'enabled' in updates) else None
+    if scheduler:
+        next_run = None
+        if recurrence_changed or enabled:
             interval_value = updates.get('interval_value', job.get('interval_value', 1))
             interval_unit = updates.get('interval_unit', job.get('interval_unit', 'days'))
             run_time = updates.get('run_time', job.get('run_time', '02:00'))
@@ -352,26 +368,24 @@ def update_scheduled_job(job_id: str, updates: dict) -> Optional[dict]:
             start_dt = _compose_start_dt(start_at, run_time)
             next_run = _schedule_trigger(scheduler, job_id, updates.get('name', job['name']),
                                          interval_value, interval_unit, start_dt)
-            # keep interval_type + start_at + next_run_at consistent with the rebuild
             conn2 = get_db_connection()
             conn2.execute(
-                "UPDATE scheduled_jobs SET interval_type = ?, start_at = ?, next_run_at = ? WHERE id = ?",
-                (interval_unit if interval_unit in INTERVAL_UNITS else 'days',
-                 start_dt.isoformat(), next_run.isoformat() if next_run else None, job_id))
+                "UPDATE scheduled_jobs SET interval_type = ?, start_at = ? WHERE id = ?",
+                (interval_unit if interval_unit in INTERVAL_UNITS else 'days', start_dt.isoformat(), job_id))
             conn2.commit()
             conn2.close()
-
-    # Handle enable/disable
-    if 'enabled' in updates:
-        scheduler = get_scheduler()
-        if scheduler:
+        if not enabled:
             try:
-                if updates['enabled']:
-                    scheduler.resume_job(job_id)
-                else:
-                    scheduler.pause_job(job_id)
-            except Exception:
-                pass
+                scheduler.pause_job(job_id)
+            except Exception as e:  # already gone (fired one-shot): nothing left to fire
+                print(f"[SCHEDULER] pause_job({job_id}) failed: {e}", flush=True)
+            next_run = None  # a disabled job has no next run; don't show a stale one
+        # keep next_run_at consistent with what APScheduler will actually do
+        conn3 = get_db_connection()
+        conn3.execute("UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?",
+                      (next_run.isoformat() if next_run else None, job_id))
+        conn3.commit()
+        conn3.close()
 
     return get_scheduled_job(job_id)
 
@@ -406,20 +420,45 @@ def toggle_scheduled_job(job_id: str, enabled: bool) -> Optional[dict]:
     return update_scheduled_job(job_id, {'enabled': enabled})
 
 
+class JobBusy(Exception):
+    """Run now refused: the schedule's previous run (run_id, or None while it is
+    still being started) has not finished."""
+    def __init__(self, run_id=None):
+        super().__init__(run_id or "starting")
+        self.run_id = run_id
+
+
+# Jobs whose Run now thread has not created its run row yet (a double click).
+_DISPATCHING = set()
+_DISPATCHING_LOCK = threading.Lock()
+
+
 def run_job_now(job_id: str) -> bool:
-    """Manually trigger a job to run immediately."""
-    from .executor import run_scheduled_blueprint
+    """Manually trigger a job to run immediately. Raises JobBusy while its
+    previous run is still going: Run now used to start a second copy of the
+    same pipeline on the same clients."""
+    from .executor import run_scheduled_blueprint, active_run
 
     job = get_scheduled_job(job_id)
     if not job:
         return False
 
-    # Run in background thread
-    thread = threading.Thread(
-        target=run_scheduled_blueprint,
-        args=[job_id],
-        daemon=True
-    )
+    with _DISPATCHING_LOCK:
+        if job_id in _DISPATCHING:
+            raise JobBusy(None)
+        busy = active_run(job_id)
+        if busy:
+            raise JobBusy(busy)
+        _DISPATCHING.add(job_id)
+
+    def _run():
+        try:
+            run_scheduled_blueprint(job_id)
+        finally:
+            with _DISPATCHING_LOCK:
+                _DISPATCHING.discard(job_id)
+
+    thread = threading.Thread(target=_run, daemon=True)
     thread.start()
     print(f"[SCHEDULER] Manual trigger: {job_id}", flush=True)
     return True

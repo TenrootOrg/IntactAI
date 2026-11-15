@@ -219,6 +219,7 @@
                     <!-- ==================== ACQUIRE TAB ==================== -->
                     <!-- Card 2 — Target client picker (Timesketch-style markup) -->
                     <div x-show="memoryTab === 'acquire'" class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <div class="velo-org-slot mb-4"></div>
                         <div class="flex items-center justify-between mb-2">
                             <label class="block text-sm font-medium text-gray-300">Select Client for Acquisition</label>
                             <button type="button" onclick="window.memoryClientManager ? window.memoryClientManager.refresh(this) : Alpine.store('memory').refreshClients()"

@@ -171,6 +171,14 @@ class SettledHunts(unittest.TestCase):
         self.rebuild(h)
         self.assertEqual(2, h.pulls)
 
+    def test_an_imported_hunt_with_more_finished_than_scheduled_is_settled(self):
+        # An offline import adds finished flows without scheduling them
+        # (H.D8RUHI8ARBOH8: 18 finished of 11 scheduled): "==" made it never final.
+        h = Hunt(sched=11, done=18)
+        self.rebuild(h)
+        self.rebuild(h)
+        self.assertEqual(1, h.pulls)
+
 
 if __name__ == "__main__":
     unittest.main()

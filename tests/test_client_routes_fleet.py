@@ -98,9 +98,11 @@ class FleetRouteCase(unittest.TestCase):
         self.saved = (vs.setup_velociraptor_connection, vs.api_pb2_grpc.APIStub)
         vs.setup_velociraptor_connection = lambda: types.SimpleNamespace(close=lambda: None)
         vs.api_pb2_grpc.APIStub = lambda ch: self.stub
-        reset = getattr(cr, "_FLEET_CACHE", None)
-        if reset is not None:
-            reset.update(at=0.0, rows=None)
+        cr._FLEET_CACHE.clear()          # per Velociraptor org: {org: {"at", "rows"}}
+        # One org (root): the org list is cached separately and not under test here.
+        self.saved_orgs = cr._org_names
+        cr._org_names = lambda: [("root", "root")]
+        self.addCleanup(setattr, cr, "_org_names", self.saved_orgs)
 
     def tearDown(self):
         vs.setup_velociraptor_connection, vs.api_pb2_grpc.APIStub = self.saved
@@ -159,11 +161,20 @@ class Summary(FleetRouteCase):
         body = cr.get_clients_summary()
         self.assertEqual((2, 3), (body["online"], body["total"]))
 
+    def test_every_org_is_counted(self):
+        # The dashboard is the overview: it counts every Velociraptor org's fleet,
+        # whatever org this browser has selected, and says how they split.
+        cr._org_names = lambda: [("root", "root"), ("OFM5G", "intact-test")]
+        body = cr.get_clients_summary()
+        self.assertEqual((4, 6), (body["online"], body["total"]))
+        self.assertEqual([("root", 2, 3), ("intact-test", 2, 3)],
+                         [(o["name"], o["online"], o["total"]) for o in body["by_org"]])
+
     def test_cached_for_30s_then_refetched(self):
         cr.get_clients_summary()
         cr.get_clients_summary()
         self.assertEqual(1, self.stub.queries, "a second tab within 30 s must not re-query")
-        cr._FLEET_CACHE["at"] -= cr.SUMMARY_MAX_AGE + 1  # 31 s later
+        cr._FLEET_CACHE[""]["at"] -= cr.SUMMARY_MAX_AGE + 1  # 31 s later (root org)
         cr.get_clients_summary()
         self.assertEqual(2, self.stub.queries)
 

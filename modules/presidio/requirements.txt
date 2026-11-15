@@ -1,7 +1,7 @@
 # Intact PII NER sidecar — pinned so CI builds are reproducible. The
 # presidio-analyzer version here IS versions.presidio in config.yaml (the image
 # tag); bump both together.
-presidio-analyzer==2.2.364
+presidio-analyzer==2.2.366
 spacy>=3.7,<4
 flask>=3.0,<4
 

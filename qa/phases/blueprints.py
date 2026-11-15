@@ -16,7 +16,7 @@ TWO PROPERTIES ARE ON TEST, and they pull in opposite directions:
     silently discarded; worse, anything referencing it -- a saved schedule, a
     saved case config -- points at nothing until the next restart. The product
     refuses with 400 "Cannot delete default blueprints", and that refusal is
-    load-bearing.
+    load-bearing. An edit to one is refused with 403 for the same reason.
 
 The three families are driven from one table because they share an
 implementation (agentic POST/PUT/DELETE literally call the velociraptor ones),
@@ -122,6 +122,16 @@ def register(runner, cfg):
                       note="the DELETE is expected to be REFUSED; `expect` here "
                            "would have raised on a 200, so reaching this line "
                            "is the assertion")
+            # Nor editable (QA D9): the boot re-seed would silently revert an
+            # edit, so the product refuses it and the UI offers Duplicate.
+            c.request("PUT", f"/api/blueprints/{fam}/{did}",
+                      json={"name": "QA CI edited default"}, expect=(403,))
+            after = c.get(f"/api/blueprints/{fam}/{did}", expect=(200, 404))
+            ctx.check(f"a default {fam} blueprint cannot be edited",
+                      (after or {}).get("name") == default.get("name"),
+                      expected=default.get("name"), actual=(after or {}).get("name"),
+                      note="the PUT is expected to answer 403; `expect` raises "
+                           "on anything else, and the name must be unchanged")
             still = c.status_of(f"/api/blueprints/{fam}/{did}")
             ctx.check(f"the default {fam} blueprint survived the attempt",
                       still == 200 and code == 200,

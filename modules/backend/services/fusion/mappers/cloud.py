@@ -178,7 +178,7 @@ def _map_each(findings, *, run_id: str, provider: str = "cloud", account=None) -
 
 
 def map_cloud(findings, *, run_id: str, provider: str = "cloud", account=None,
-              context=None) -> tuple[list, list]:
+              context=None, alias=None) -> tuple[list, list]:
     """Findings -> entities. Azure: one event per finding, as always. AWS: grouped by
     session, with the principal acted ON and the actor's surrounding events (see
     _map_aws). If the AWS path fails as a whole the original mapping runs instead,
@@ -186,7 +186,7 @@ def map_cloud(findings, *, run_id: str, provider: str = "cloud", account=None,
     if provider != "aws":
         return _map_each(findings, run_id=run_id, provider=provider, account=account)
     try:
-        return _map_aws(findings, run_id=run_id, account=account, context=context)
+        return _map_aws(findings, run_id=run_id, account=account, context=context, alias=alias)
     except Exception as _x:                               # noqa: BLE001 -- the whole AWS extra pass
         map_skip("aws grouping (fell back to one row per finding)", _x)
         return _map_each(findings, run_id=run_id, provider=provider, account=account)
@@ -279,6 +279,39 @@ def _resources(rec) -> list:
                 if isinstance(x, str) and x.strip() and x.strip() not in out:
                     out.append(x.strip())
     return out[:4]
+
+
+_MACHINE_PARAMS = ("instanceName", "instanceNames", "instanceId", "dbInstanceIdentifier", "clusterName",
+                   "functionName", "bucketName")
+
+
+def _machine(rec) -> str | None:
+    """The machine (or resource) a row is ABOUT: a Lightsail / EC2 instance, a database, a
+    cluster, a function, a bucket -- shown as the row's host. "aws:<account number>" told
+    the reader nothing (2026-10-26)."""
+    if not isinstance(rec, dict):
+        return None
+    for part in (rec.get("requestParameters"), rec.get("responseElements")):
+        if not isinstance(part, dict):
+            continue
+        items = ((part.get("instancesSet") or {}).get("items") if isinstance(part.get("instancesSet"), dict) else None) or []
+        for it in items if isinstance(items, list) else []:
+            if isinstance(it, dict) and isinstance(it.get("instanceId"), str):
+                return it["instanceId"]
+        for k in _MACHINE_PARAMS:
+            v = part.get(k)
+            v = v[0] if isinstance(v, list) and v else v
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def _account_label(provider, account, alias=None) -> str:
+    """The cloud account as a reader knows it: its alias, else its last four digits."""
+    if alias:
+        return f"{provider}:{alias}"
+    a = str(account or "")
+    return f"{provider.upper()} account …{a[-4:]}" if len(a) > 4 else f"{provider}:{a or '?'}"
 
 
 def _details(rec) -> str:
@@ -394,12 +427,12 @@ def _state_since(f, rec):
     return keys.norm_ts((scan - timedelta(days=age)).isoformat())
 
 
-def _map_aws(findings, *, run_id, account=None, context=None):
+def _map_aws(findings, *, run_id, account=None, context=None, alias=None):
     provider = "aws"
     ents: list[Entity] = []
     rels: list[Relationship] = []
     casset = f"asset:cloud_account:{provider}:{account or 'unknown'}"
-    ents.append(Entity(id=casset, type="asset", label=f"{provider}:{account or '?'}",
+    ents.append(Entity(id=casset, type="asset", label=_account_label(provider, account, alias),
                        attrs={"kind": "cloud_account", "provider": provider, "_assets": [casset]},
                        sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
 
@@ -490,7 +523,7 @@ def _map_aws(findings, *, run_id, account=None, context=None):
             a = grp[0].get("acct")
             if a not in assets:
                 assets[a] = f"asset:cloud_account:{provider}:{a or 'unknown'}"
-                ents.append(Entity(id=assets[a], type="asset", label=f"{provider}:{a or '?'}",
+                ents.append(Entity(id=assets[a], type="asset", label=_account_label(provider, a),
                                    attrs={"kind": "cloud_account", "provider": provider, "_assets": [assets[a]]},
                                    sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
             ents_g, rels_g = _aws_group(grp, assets[a], run_id, by_actor)
@@ -574,7 +607,32 @@ def _aws_group(grp, casset, run_id, by_actor):
         attrs["cloud_resources"] = res[:30]
     if lines:
         attrs["summary_extra"] = " ".join(lines)
-    ents = [Entity(id=eid, type="event", label=f"{provider}: {rule}", attrs=attrs,
+    # The machine the row is about is its HOST (ids stay keyed on the account, so verdicts
+    # and old rows keep their ids); account-level rows (IAM, root) stay on the account.
+    machine = None
+    if head["state"]:
+        st_rec = head["rec"].get("matched_record") if isinstance(head["rec"], dict) else None
+        if isinstance(st_rec, str):
+            try:
+                import json as _json
+                st_rec = _json.loads(st_rec)
+            except Exception:                        # noqa: BLE001
+                st_rec = None
+        st_rec = st_rec if isinstance(st_rec, dict) else (head["rec"] if isinstance(head["rec"], dict) else {})
+        if st_rec.get("ResourceName") and "IAM" not in str(st_rec.get("ResourceType") or ""):
+            machine = str(st_rec["ResourceName"])
+    else:
+        machine = next((m for m in (_safe(_machine, it["rec"], None) for it in grp) if m), None)
+    host_asset = casset
+    extra_ents = []
+    if machine:
+        host_asset = f"asset:cloud_resource:{provider}:{casset.rsplit(':', 1)[-1]}:{machine}"
+        attrs["_assets"] = [host_asset]
+        extra_ents.append(Entity(id=host_asset, type="asset", label=machine,
+                                 attrs={"kind": "cloud_resource", "provider": provider, "_assets": [host_asset],
+                                        "cloud_account": casset},
+                                 sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")], first_seen=ts))
+    ents = extra_ents + [Entity(id=eid, type="event", label=f"{provider}: {rule}", attrs=attrs,
                    sources=[MODULE],
                    evidence=[EvidenceRef(MODULE, run_id, f"{provider}/finding={it['i']}") for it in grp],
                    severity=sev, anomaly=_RW.get(sev, 0), first_seen=ts, last_seen=last)]

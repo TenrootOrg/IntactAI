@@ -133,6 +133,15 @@ def sanitize_main_config(text):
             changed.append("domain")
             continue
 
+        # data_path -> empty (the system disk). It names a drive on THIS box; a
+        # fresh install of the shipped file would try to move all data to a
+        # folder that does not exist there and stop.
+        m = re.match(_pat("data_path"), ln)
+        if m and _value(m):
+            out.append(f'{m.group(1)}""{m.group(3)}\n')
+            changed.append("data_path")
+            continue
+
         # A fresh checkout must land in setup mode, or the first install has
         # first_login: false with no stored credential and fails closed = locked out.
         m = re.match(_pat("first_login"), ln)

@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import uuid
+import zipfile
 
 DATA_DIR = "/app/data/case_files"
 MAX_BYTES = 100 * 1024 * 1024
@@ -36,6 +37,102 @@ _ID = re.compile(r"[0-9a-f]{12}")
 def _store():
     from . import store
     return store
+
+
+# data_type of a Velociraptor offline collection added as External data. It is not
+# parsed as logs: it goes through Velociraptor -> Offline collection -> Import's own
+# path (import into Velociraptor, then fuse), on a velociraptor_upload run.
+VELOCIRAPTOR = "velociraptor"
+
+
+def is_velociraptor_collection(path) -> bool:
+    """The collector's zip holds collection_context.json; an encrypted one wraps
+    everything in a top-level data.zip (offline_collector.importer reads both)."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = zf.namelist()
+    except Exception:                                      # noqa: BLE001 — not a zip
+        return False
+    return "data.zip" in names or any(n.rsplit("/", 1)[-1] == "collection_context.json" for n in names)
+
+
+UPLOADS_DIR = "/data/uploads"   # tusd's filestore, as the backend sees it
+
+
+def finished_upload(upload_id):
+    """Path of a chunked case-file upload tusd has fully received, else None.
+    Complete means the file on disk is the announced size (tusd's filestore leaves
+    .info's Offset at 0). The id is tusd's own hex name, checked so it can never
+    point outside the upload dir; the purpose must be "case_file"."""
+    import json
+    if not re.fullmatch(r"[0-9a-f]{16,64}", str(upload_id or "")):
+        return None
+    path = os.path.join(UPLOADS_DIR, upload_id)
+    try:
+        with open(path + ".info") as fh:
+            info = json.load(fh)
+        if (info.get("MetaData") or {}).get("purpose") == "case_file" \
+                and os.path.getsize(path) == int(info.get("Size", -1)):
+            return path
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def add_velociraptor_upload(case_id, run_id, name, description, file_name, size) -> dict:
+    """List a collection uploaded from External data through the resumable
+    Velociraptor upload (no 100 MB cap; the tus hook calls this when it opens the
+    run). The import keeps no copy of the zip, so the item has no file of its own:
+    it is the run, shown and switched like any External data item."""
+    st = _store()
+    if not st.get_case(case_id):
+        return {"error": "case not found"}
+    fname = _clean_file_name(file_name)
+    item = {"id": uuid.uuid4().hex[:12], "name": _s(name, 200) or fname, "description": _s(description, 1000),
+            "file_name": fname, "size": int(size or 0), "sha256": "", "kind": "other", "ai": True,
+            "host": "", "time": "", "source": "velociraptor", "source_other": "", "finding_id": "",
+            "finding_title": "", "added_at": st._now_iso(), "data_type": VELOCIRAPTOR, "run_id": run_id,
+            "stored": False}
+    st._mutate_list_field(case_id, "case_files", lambda v: (v if isinstance(v, list) else []) + [item])
+    st._report_behind(case_id)
+    st.log_case_event(case_id, "Evidence added", "info",
+                      f"{item['name']} — {fname} ({item['size']:,} bytes) · Velociraptor offline collection, "
+                      f"uploading and importing in run {run_id}")
+    return item
+
+
+def _start_velociraptor_import(case_id, item, path) -> str:
+    """Import the collection like Velociraptor -> Offline collection -> Import, in
+    the background, on a velociraptor_upload run of this case."""
+    import threading
+    from services.workflow_service import add_log_to_run, create_automation_run, update_run_status
+    rid = create_automation_run("velociraptor_upload", f"Velociraptor offline collection: {item['name']}",
+                                details={"filename": item["file_name"], "file_id": item["id"],
+                                         "size_bytes": item["size"], "use_in_analysis": True,
+                                         "added_from": "external_data"}, case_id=case_id)
+    # The importer deletes the file it is given. This one is the case's evidence
+    # copy (its SHA-256 is on record), so it gets a link of its own.
+    work_path = path + ".import"
+    try:
+        os.link(path, work_path)
+    except OSError:
+        shutil.copyfile(path, work_path)
+    add_log_to_run(rid, "Recognised in External data as a Velociraptor offline collection — "
+                        "importing it like Velociraptor → Offline collection → Import")
+    update_run_status(rid, "running", progress=10)
+
+    def work():
+        try:
+            from routes.upload_routes import import_offline_collection
+            import_offline_collection(work_path, item["file_name"], rid)
+        except Exception as e:                             # noqa: BLE001 — the run must end
+            add_log_to_run(rid, f"Import error: {e}", "error")
+            update_run_status(rid, "failed", error=str(e))
+        finally:
+            if os.path.exists(work_path):
+                os.remove(work_path)
+    threading.Thread(target=work, daemon=True).start()
+    return rid
 
 
 def _dir(case_id) -> str:
@@ -76,7 +173,9 @@ def listing(d) -> list:
                     or x.get("source") == "other" else "",
                     "finding_id": _s(x.get("finding_id"), 100), "finding_title": _s(x.get("finding_title"), 300),
                     "added_at": x.get("added_at"),
-                    "data_type": x.get("data_type") or "", "run_id": _s(x.get("run_id"), 100)})
+                    "data_type": x.get("data_type") or "", "run_id": _s(x.get("run_id"), 100),
+                    # False: a collection uploaded straight into Velociraptor; no copy here.
+                    "stored": x.get("stored") is not False})
     return out
 
 
@@ -92,7 +191,7 @@ def with_log_status(items) -> list:
         x["log"] = {"status": run.get("status") or "missing", "error": run.get("error") or "",
                     **{k: det.get(k) for k in ("format", "via", "rows", "alerts", "first_ts", "last_ts",
                                                "data_type", "leftover_lines", "row_errors", "facts", "lines",
-                                               "description")}}
+                                               "description", "artifact_count")}}
     return items
 
 
@@ -121,9 +220,13 @@ def _event(case_id, finding_id) -> dict | None:
 
 
 def add(case_id, stream, file_name, *, name, description, host="", time="", source="", finding_id="",
-        source_other="", data_type="") -> dict:
+        source_other="", data_type="", src_path=None) -> dict:
     """Save one evidence file; its SHA-256 is computed while it is written. With a
-    `data_type` it is log data: parsed in the background and used in the analysis."""
+    `data_type` it is log data: parsed in the background and used in the analysis.
+
+    `src_path` instead of `stream`: a file the chunked (tus) upload already wrote,
+    moved in rather than copied. That path has no MAX_BYTES cap -- it is how files
+    over 100 MB arrive (upload_routes, purpose "case_file")."""
     from . import external_logs
     st = _store()
     if not st.get_case(case_id):
@@ -131,6 +234,13 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
     data_type = _s(data_type, 20)
     if data_type and data_type != "auto" and data_type not in external_logs.DATA_TYPES:
         return {"error": f"data_type must be auto or one of: {', '.join(external_logs.DATA_TYPES)}"}
+    if data_type:
+        # Log data starts a run, which a Closed case refuses. Checked before the
+        # file is written, or the refusal would leave it on disk with no entry.
+        from services.workflow_service import closed_case_error
+        closed = closed_case_error(case_id)
+        if closed:
+            return {"error": closed}
     name, description = _s(name, 200), _s(description, 1000)
     link = {}
     if _s(finding_id, 100):
@@ -150,16 +260,24 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
     dest, tmp = os.path.join(_dir(case_id), fid), os.path.join(_dir(case_id), fid + ".part")
     h, size = hashlib.sha256(), 0
     try:
-        with open(tmp, "wb") as out:
-            while True:
-                chunk = stream.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > MAX_BYTES:
-                    raise ValueError(f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB")
-                h.update(chunk)
-                out.write(chunk)
+        if src_path:
+            shutil.move(src_path, tmp)
+            with open(tmp, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    size += len(chunk)
+                    h.update(chunk)
+        else:
+            with open(tmp, "wb") as out:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        raise ValueError(f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB "
+                                         f"-- larger files are sent in chunks")
+                    h.update(chunk)
+                    out.write(chunk)
         if not size:
             raise ValueError("the file is empty")
         os.replace(tmp, dest)
@@ -173,15 +291,21 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
             "source_other": "" if link or source in SOURCES and source != "other" else _s(source_other, 100),
             "finding_id": link.get("finding_id", ""), "finding_title": link.get("finding_title", ""),
             "added_at": st._now_iso()}
-    if data_type:
+    if data_type and data_type != external_logs.NOTES and is_velociraptor_collection(dest):
+        # Whatever log type was picked: a Velociraptor collection is not a log export.
+        item.update(data_type=VELOCIRAPTOR, source="velociraptor", source_other="")
+        item["run_id"] = _start_velociraptor_import(case_id, item, dest)
+    elif data_type:
         item["data_type"] = data_type
         item["run_id"] = external_logs.start(case_id, item, data_type)
     st._mutate_list_field(case_id, "case_files", lambda v: (v if isinstance(v, list) else []) + [item])
     st._report_behind(case_id)
+    what = ("Velociraptor offline collection, importing" if item.get("data_type") == VELOCIRAPTOR
+            else "log data, parsing")
     st.log_case_event(case_id, "Evidence added", "info",
                       f"{name} — {fname} ({size:,} bytes) · SHA-256 {item['sha256']}"
                       + (f" · linked to {item['finding_title']}" if link else "")
-                      + (f" · log data, parsing in run {item['run_id']}" if data_type else ""))
+                      + (f" · {what} in run {item['run_id']}" if data_type else ""))
     return with_log_status([next(x for x in listing({"case_files": [item]}))])[0]
 
 
@@ -263,12 +387,16 @@ def _use_in_analysis(case_id, run_id, on) -> None:
     """Log data switched in or out of the analysis. The run stays (its rows are kept);
     fusion reads the flag. Forgetting the run among the fused ones makes the case
     show "new data — Refusion" in either direction."""
-    from services.workflow_service import get_automation_run, update_run_status
-    run = get_automation_run(run_id) or {}
-    if run:
-        update_run_status(run_id, run.get("status") or "completed", details={"use_in_analysis": on},
-                          force=True)
+    from services.workflow_service import get_automation_run, mutate_run_details
+    # Details only, under the run lock. It used to read the status unlocked and write
+    # it back with force=True, so a toggle landing as the parse finished put the
+    # run back to "running" for good (never fused; failed by the next restart).
+    mutate_run_details(run_id, lambda det: det.update(use_in_analysis=on))
     _forget_fused(case_id, run_id)
+    # The old status write also armed the auto-fuse on a finished run; keep that.
+    if (get_automation_run(run_id, with_logs=False) or {}).get("status") in ("completed", "success"):
+        from . import autofuse
+        autofuse.schedule(case_id, reason=f"log data switched {'in' if on else 'out'}")
 
 
 def _forget_fused(case_id, run_id) -> None:
@@ -378,10 +506,14 @@ def with_data_sources(md, d, facts=None) -> str:
         if dt == NOTES:
             what = (f"{L.get('facts') or 0} fact(s) from {L.get('lines') or 0} line(s)"
                     if L.get("status") == "completed" else L.get("status") or "not read")
+        elif dt == VELOCIRAPTOR:
+            what = (f"{L.get('rows') or 0:,} row(s) from {L.get('artifact_count') or 0} artifact(s), "
+                    f"imported into Velociraptor" if L.get("status") == "completed" else L.get("status") or "not read")
         else:
             what = (f"{L.get('rows') or 0:,} row(s), {L.get('alerts') or 0:,} detection(s)"
                     if L.get("status") == "completed" else L.get("status") or "not read")
-        out.append(f"- **{x['name']}** — {DATA_TYPES.get(dt, 'Log data')} · {what}")
+        label = "Velociraptor offline collection" if dt == VELOCIRAPTOR else DATA_TYPES.get(dt, "Log data")
+        out.append(f"- **{x['name']}** — {label} · {what}")
         out.append(f"    - {x['file_name']} · SHA-256 `{x['sha256']}`" + (f" · {x['description']}" if x["description"] else ""))
     if facts:
         out += ["", "### Reported by the customer (not verified)", "",

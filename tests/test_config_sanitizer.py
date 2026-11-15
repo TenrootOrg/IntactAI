@@ -162,6 +162,15 @@ def test_github_token_is_emptied():
     check("github_token reported", "github_token" in changed)
 
 
+def test_data_path_cleared():
+    # A drive on the committer's box must not ship: a fresh install would try to
+    # move all data to a folder that does not exist there.
+    out, changed = S.sanitize_main_config('data_path: "/mnt/intact-data"\n')
+    check("data_path cleared", out == 'data_path: ""\n' and "data_path" in changed, out)
+    out, changed = S.sanitize_main_config('data_path: ""\n')
+    check("empty data_path untouched", "data_path" not in changed, out)
+
+
 def test_first_login_forced_true():
     text = "first_login: false\n"
     out, changed = S.sanitize_main_config(text)

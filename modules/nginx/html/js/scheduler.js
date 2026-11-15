@@ -173,7 +173,17 @@ function renderScheduleCard(job) {
 }
 
 // Client manager instance (uses shared utility)
-const schedulerClientManager = new ClientManager('schedule-client-list', 'schedule-client-cb');
+// A schedule targets clients for LATER runs, so offline ones are listed too (QA
+// 2026-11-08: with every client offline the picker showed none, and nothing could
+// be scheduled). Each offline row says, in red, what that means for the run.
+const SCHEDULE_NO_CLIENTS = 'No Velociraptor clients exist yet, online or offline. This schedule type runs on '
+    + 'the clients you pick, so it cannot be saved: enroll a client first, or schedule a Velociraptor Hunt '
+    + '(it reaches every client, including ones enrolled later).';
+const schedulerClientManager = new ClientManager('schedule-client-list', 'schedule-client-cb', {
+    onlineOnly: false,
+    offlineNote: 'Offline now: the scheduled run will not work for this client unless it is online when the schedule runs.',
+    emptyNote: SCHEDULE_NO_CLIENTS,
+});
 
 // Backwards-compatible wrapper functions
 function loadSchedulerClients() { schedulerClientManager.load(); }
@@ -296,6 +306,14 @@ function showNewScheduleModal() {
     onScheduleBlueprintTypeChange();
 }
 
+// The form is a page-level overlay (index.html), not part of the Scheduler panel,
+// so switching section left it open over the next one (QA 2026-11-08). Leaving
+// the Scheduler cancels it, like the ✕ does; nothing is saved.
+window.addEventListener('automation-tab-entered', (ev) => {
+    const modal = document.getElementById('schedule-modal');
+    if (ev.detail !== 'scheduler' && modal && !modal.classList.contains('hidden')) closeScheduleModal();
+});
+
 // Close modal
 function closeScheduleModal() {
     document.getElementById('schedule-modal').classList.add('hidden');
@@ -315,6 +333,12 @@ async function editSchedule(jobId) {
 
         document.getElementById('schedule-modal').classList.remove('hidden');
         document.getElementById('schedule-modal-title').textContent = 'Edit Scheduled Job';
+        // Show it in the Velociraptor org it runs in, so its saved clients are in
+        // the list (and saving keeps that org). set() clears + reloads the list
+        // synchronously before the saved selection is restored below.
+        if (window.VeloOrg && (job.velo_org || 'root') !== window.VeloOrg.get()) {
+            window.VeloOrg.set(job.velo_org || 'root');
+        }
 
         // Start UTC clock
         startUtcClock();
@@ -366,8 +390,13 @@ async function editSchedule(jobId) {
     }
 }
 
+// A double-click on Save (or a second click during a slow save) POSTed twice,
+// and the duplicate job ran every collection or hunt twice (QA F13).
+let _scheduleSaving = false;
+
 // Save schedule from modal
 async function saveScheduleFromModal() {
+    if (_scheduleSaving) return;
     const editId = document.getElementById('schedule-edit-id').value;
     const name = document.getElementById('schedule-name').value.trim();
     let description = document.getElementById('schedule-description').value.trim();
@@ -422,7 +451,8 @@ async function saveScheduleFromModal() {
     }
     // Client selection required only for client-targeted types.
     if (!envWide && clientIds.length === 0) {
-        alert('Please select at least one client');
+        alert(schedulerClientManager.totalClients === 0 ? SCHEDULE_NO_CLIENTS
+              : 'Please select at least one client (online or offline).');
         return;
     }
     if (!envWide && !schedulerClientManager.confirmMany('Schedule this job')) return;
@@ -447,6 +477,7 @@ async function saveScheduleFromModal() {
         payload.report_types = [];
     }
 
+    _scheduleSaving = true;
     try {
         const url = editId ? `/api/scheduler/jobs/${editId}` : '/api/scheduler/jobs';
         const method = editId ? 'PUT' : 'POST';
@@ -468,6 +499,8 @@ async function saveScheduleFromModal() {
 
     } catch (error) {
         alert('Error: ' + error.message);
+    } finally {
+        _scheduleSaving = false;
     }
 }
 

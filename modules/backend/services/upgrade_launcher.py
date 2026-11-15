@@ -183,6 +183,25 @@ def _upgrade_in_flight() -> bool:
         os.close(fd)
 
 
+def blocking_upgrade_run() -> Optional[str]:
+    """run_id of an upgrade in flight ("upgrade.lock" if only the lock says
+    so), else None. For callers that must not run beside one, like the
+    maintenance purge, which wiped data/tmp -- the lock file itself, the run's
+    log and .done.json, rollback snapshots -- under a live upgrade.
+
+    The row is checked as well as the lock because a dashboard run holds the
+    lock only once its engine starts, after the helper's start and the engine
+    fetch."""
+    try:
+        for run in get_all_automation_runs() or []:
+            if (run.get("automation_type") in UPGRADE_AUTOMATION_TYPES
+                    and run.get("status") == "running"):
+                return run.get("run_id") or "upgrade"
+    except Exception:
+        pass
+    return "upgrade.lock" if _upgrade_in_flight() else None
+
+
 def _add_missing_env_keys() -> None:
     """Top up modules/*/.env with keys this release expects.
 
@@ -601,6 +620,13 @@ def launch(run_id: str, cli_args: List[str]) -> Optional[str]:
     # only be scratch left by a process that never reached upkg_cleanup --
     # starting clean avoids tailing stale content as if it were this run's.
     open(log_path, "w").close()
+    # A Stop from an earlier attempt under this run_id (the legacy resume
+    # reuses it) leaves .cancel behind when that helper was killed before its
+    # EXIT trap ran, and the new engine would cancel itself at its first step.
+    try:
+        os.remove(_cancel_path(run_id))
+    except OSError:
+        pass
 
     container_name = f"intact-upgrade-runner-{run_id}"
 
@@ -660,7 +686,10 @@ def launch(run_id: str, cli_args: List[str]) -> Optional[str]:
             "    wait \"$child\" 2>/dev/null\n"
             "    rc=$?\n"
             "fi\n"
-            f"printf '{{\"rc\":%d}}' \"$rc\" > {shlex.quote(host_done_path)}\n"
+            # Written then renamed: the tailer finalizes the moment the file
+            # exists, and a half-written one parsed as rc 1 -> failed.
+            f"printf '{{\"rc\":%d}}' \"$rc\" > {shlex.quote(host_done_path + '.tmp')}\n"
+            f"mv -f {shlex.quote(host_done_path + '.tmp')} {shlex.quote(host_done_path)}\n"
             "exit \"$rc\"\n"
         )
     os.chmod(launch_script, 0o755)
@@ -847,13 +876,23 @@ def _tail_and_finalize(run_id: str) -> None:
             # exists. A helper that had to be SIGKILLed never wrote one, so
             # keying removal off the marker left its Exited container behind
             # forever -- observed after a Stop that predated the signal
-            # forwarding fix. `docker stop` has already returned by now, so
-            # there is nothing still running to cut off, and the marker-based
-            # path this replaces was only ever about not leaking a container
-            # when Stop raced a natural finish. Removing either way covers
-            # both.
-            _drain_remaining(run_id, log_path, offset, progress_state)
+            # forwarding fix. The marker-based path this replaces was only
+            # ever about not leaking a container when Stop raced a natural
+            # finish. Removing either way covers both.
+            #
+            # But only once the helper has EXITED. is_cancelled flips before
+            # _stop_helper even writes the marker, so `rm -f` here used to land
+            # within a second of Stop and SIGKILL the engine in the middle of
+            # its unwind, leaving a module down. `docker wait` returns when the
+            # unwind finishes or _stop_helper's `docker stop -t 30` kills it.
             container_name = details.get("helper_container")
+            if container_name:
+                try:
+                    subprocess.run([_DOCKER_BIN, "wait", container_name],
+                                   capture_output=True, timeout=90)
+                except Exception:
+                    pass
+            _drain_remaining(run_id, log_path, offset, progress_state)
             if container_name:
                 try:
                     subprocess.run([_DOCKER_BIN, "rm", "-f", container_name],
@@ -913,6 +952,13 @@ def _finalize(run_id: str, done_path: str) -> None:
     # two-module run stops at the 50% it was showing when the LAST module
     # started, and the UI leaves a completed upgrade sitting at half a bar.
     kwargs = {"progress": 100} if status == "completed" else {}
+    if rc == 3:
+        # Still 'completed' (see _EXIT_STATUS), but the UI shows no exit_code,
+        # so say it: otherwise a degraded module or a backend that did not
+        # swap reads exactly like a clean run.
+        add_log_to_run(run_id, "Upgrade finished with problems (exit 3): a module "
+                       "is degraded or the post-upgrade check failed. See the "
+                       "report and ATTENTION lines above.", "warning")
     update_run_status(run_id, status, details={"exit_code": rc}, force=force, **kwargs)
 
     run = get_automation_run(run_id) or {}

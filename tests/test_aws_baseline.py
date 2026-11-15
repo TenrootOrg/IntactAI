@@ -72,6 +72,14 @@ class Baseline(unittest.TestCase):
         got = self.titles(history() + attack)
         self.assertEqual(got.count(("AWS Person Active From A New Network", "low")), 1)
 
+    def test_many_new_networks_in_a_day_are_one_row(self):
+        attack = [ev(20, ip=f"{20 + i}.1.2.3", hour=10 + i % 10) for i in range(30)] + \
+                 [ev(20, "CreateAccessKey", ip="99.1.2.3", ro=False, hour=23)]
+        rows = [f for f in baseline.detect(history() + attack) if f["rule_title"] == "AWS Person Active From A New Network"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["severity"], "medium", "a sensitive change from a new network that day raises it")
+        self.assertIn("31 new networks", rows[0]["rule_description"])
+
     def test_a_rescan_of_the_same_days_finds_the_same(self):
         recs = history() + [ev(20, "CreateAccessKey", ip="192.0.2.50", ro=False)]
         first = self.titles(recs)

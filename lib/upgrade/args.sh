@@ -72,7 +72,8 @@ Exit codes:
   0  everything upgraded cleanly (or there was nothing to do)
   1  at least one module was rolled back or needs manual repair
   2  refused before anything was touched
-  3  everything applied, but at least one module is degraded
+  3  everything applied, but at least one module is degraded, or the
+     post-upgrade gate found a problem
 USAGE
 }
 

@@ -22,6 +22,8 @@ def reap(runs):
     block = textwrap.dedent(src[start:src.index("        if _reaped:", start)])
     failed = {}
     exec(block, {"load_workflows": lambda with_logs=True: runs,
+                 # Stub runs carry no created_at, which the real cut reads as old.
+                 "created_before_boot": lambda w: True,
                  "update_run_status": lambda rid, st, error=None: failed.__setitem__(rid, (st, error))})
     return failed
 

@@ -307,7 +307,7 @@
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-<script src="js/active-case.js?v=9"></script>
+<script src="js/active-case.js?v=14"></script>
 <!-- set embed + view mode before body renders (no flash) -->
 <script>(function(){var q=new URLSearchParams(location.search);
   if(q.get('embed')==='1')document.documentElement.classList.add('embed');
@@ -318,7 +318,7 @@
 <script src="vendor/flatpickr/flatpickr.min.js"></script>
 <!-- resumable chunked upload, for importing a case bundle (multi-GB) -->
 <script src="vendor/tus/tus.min.js"></script>
-<script src="js/upload.js?v=4"></script>
+<script src="js/upload.js?v=6"></script>
 </head>
 <body>
 <header>
@@ -831,11 +831,13 @@ function _riskWhy(r){
 const CASE_STATUS_LABEL={open:'Open',contained:'Contained',closed:'Closed'};
 function caseMetaHtml(info){
   info=info||{};
-  const st=CASE_STATUS_LABEL[String(info.case_status||'').toLowerCase()]||'Open';
+  const key=String(info.case_status||'').toLowerCase(), st=CASE_STATUS_LABEL[key]||'Open';
+  // Open green, Closed red (QA 2026-11-08: both were the same amber); Contained keeps amber.
+  const col={closed:'var(--crit)',contained:'var(--med,#d29922)'}[key]||'var(--ok)';
   const own=typeof info.case_owner==='string'?info.case_owner.trim():'';
   const desc=typeof info.case_description==='string'?info.case_description.trim():'';
   return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:3px 0;font-size:12px">`
-    +`<span class="sg-hint" style="border-style:solid">${esc(st)}</span>`
+    +`<span class="sg-hint" style="border-style:solid;color:${col};border-color:${col}">${esc(st)}</span>`
     +(own?`<span style="color:var(--muted)">owner: ${esc(own)}</span>`:'')
     +(desc?`<span style="color:var(--muted);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(desc)}">— ${esc(desc)}</span>`:'')
     +`</div>`;
@@ -1116,6 +1118,9 @@ function _evList(){ return Array.isArray(curInfo&&curInfo.case_files)?curInfo.ca
 function _evOnly(){ return _evList().filter(x=>!x.data_type); }
 function _dataList(){ return _evList().filter(x=>x.data_type); }
 const EV_NOTES='notes';
+// An offline collection added here is recognised by the server and imported like
+// Velociraptor → Offline collection → Import (case_files.VELOCIRAPTOR).
+const EV_VELO='velociraptor';
 function _evSrc(k, other){ return (k==='other'||!EV_SOURCES.some(([x])=>x===k)) && other ? other : (EV_SOURCES.find(([x])=>x===k)||[,'Other'])[1]; }
 function _evFields(pre, v, withFile, linked){
   const o=(k,l,cur)=>`<option value="${k}" ${cur===k?'selected':''}>${l}</option>`;
@@ -1147,14 +1152,15 @@ function _evThumb(x){
 function _evLog(x){
   if(!x.data_type) return '';
   const L=x.log||{}, dt=L.data_type||x.data_type, t=dt==='auto'?'detecting the type…':(EV_LOGTYPES.find(([k])=>k===dt)||[,'Logs'])[1];
-  const busy=L.status==='running'||L.status==='pending', notes=dt===EV_NOTES;
-  const st=busy?`<span style="color:var(--muted)">${notes?'condensing the notes…':'reading the file…'}</span>`
-    :L.status==='failed'?`<span style="color:var(--crit)">could not be read: ${esc(L.error||'')}</span>`
+  const busy=L.status==='running'||L.status==='pending', notes=dt===EV_NOTES, velo=dt===EV_VELO;
+  const st=busy?`<span style="color:var(--muted)">${notes?'condensing the notes…':velo?'importing into Velociraptor…':'reading the file…'}</span>`
+    :L.status==='failed'?`<span style="color:var(--crit)">${velo?'import failed':'could not be read'}: ${esc(L.error||'')}</span>`
+    :L.status==='completed'&&velo?`${(+L.rows||0).toLocaleString()} row(s) from ${(+L.artifact_count||0).toLocaleString()} artifact(s) · imported into Velociraptor and fused like Velociraptor → Offline collection → Import`
     :L.status==='completed'&&notes?`${L.facts?`<b>${(+L.facts).toLocaleString()} fact(s)</b> from `:''}${(+L.lines||0).toLocaleString()} line(s)${L.facts?` · <span class="elink" onclick="dtFacts('${esc(x.id)}')">${window._dtOpen===x.id?'hide':'show'} facts</span>`:" · no model configured: kept as searchable text"}`
     :L.status==='completed'?`${(+L.rows||0).toLocaleString()} row(s)${L.alerts?` · <b>${(+L.alerts).toLocaleString()} alert(s)</b>`:''} · ${esc(EV_VIA[L.via]||L.via||'')}${L.first_ts?` · ${esc(String(L.first_ts).slice(0,16))} → ${esc(String(L.last_ts||'').slice(0,16))}`:''}${L.leftover_lines?` · <span title="Lines that did not fit the file's structure — read by the model or kept as text">${(+L.leftover_lines).toLocaleString()} other line(s) kept</span>`:''}${L.row_errors?` · <span style="color:var(--warn,#d29922)" title="Rows with values the reader could not take — kept as text with their indicators">${(+L.row_errors).toLocaleString()} unreadable row(s) kept as text</span>`:''}${L.description&&L.description.text?` · <span class="elink" onclick="dtDesc('${esc(x.id)}')">${window._ddOpen===x.id?'hide':'show'} model description</span>${L.description.truncated?` <span style="color:var(--warn,#d29922)" title="The file is larger than the model's context window">(read ${(+L.description.lines_described||0).toLocaleString()} of ${(+L.description.lines_total||0).toLocaleString()} lines)</span>`:''}`:''}`
     :'<span style="color:var(--muted)">not parsed</span>';
   return `<div style="font-size:12px;margin:3px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-    <span style="border:1px solid var(--bd);border-radius:10px;padding:0 7px;font-size:11px" title="${notes?"What the customer said: condensed into facts for chat and the report, never a detection":"Log data: parsed into the case and fused like a collection"}">${notes?'Incident notes':'Log data · '+esc(t)}</span><span>${st}</span>
+    <span style="border:1px solid var(--bd);border-radius:10px;padding:0 7px;font-size:11px" title="${notes?"What the customer said: condensed into facts for chat and the report, never a detection":"Log data: parsed into the case and fused like a collection"}">${notes?'Incident notes':velo?'Velociraptor offline collection':'Log data · '+esc(t)}</span><span>${st}</span>
     <label style="margin-left:auto;font-size:12px" title="${notes?'In: chat and the report read its facts. Out: kept, but not used.':'In: the next Refusion fuses it and chat can search it. Out: kept, but not used.'}"><input type="checkbox" style="width:auto" ${x.ai?'checked':''} onchange="evUseInAnalysis('${esc(x.id)}',this.checked)"/> Use in analysis</label></div>
     ${notes&&window._dtOpen===x.id?`<div id="dt-facts-${esc(x.id)}" style="font-size:12px;margin:4px 0 2px">${window._dtFacts&&window._dtFacts.id===x.id?_dtFactsHtml(window._dtFacts.facts):'<span style="color:var(--muted)">loading…</span>'}</div>`:''}
     ${!notes&&window._ddOpen===x.id&&L.description&&L.description.text?`<div style="font-size:12px;margin:4px 0 2px;white-space:pre-wrap;border-left:2px solid var(--bd);padding-left:8px" title="Written by the model from the file itself; chat and the report read it with the rest of the case">${esc(L.description.text)}</div>`:''}`;
@@ -1166,17 +1172,20 @@ function evUseInAnalysis(id, on){
 }
 // While a log file is being read, follow it: only the attachment list is
 // refreshed, never the whole case under the operator.
-function _evFollow(){
+// One failed poll (backend restart, upgrade) used to stop the follow for good
+// and an {error} reply blanked the list: keep the list and retry, slower.
+function _evFollow(ms){
   clearTimeout(window._evFollowT);
   const busy=_evList().some(x=>x.data_type&&x.log&&(x.log.status==='running'||x.log.status==='pending'));
   if(!busy||!curInfo) return;
   const cid=curInfo.case_id;
   window._evFollowT=setTimeout(()=>api('/api/cases/'+cid).then(info=>{
-    if(!curInfo||curInfo.case_id!==cid||!info) return;
-    curInfo.case_files=info.case_files||[];
+    if(!curInfo||curInfo.case_id!==cid) return;
+    if(!Array.isArray(info&&info.case_files)){ if(info&&info.error) _evFollow(15000); return; }
+    curInfo.case_files=info.case_files;
     if(tab==='evidence' && !window._evAdd && !window._evEdit) renderEvidence(curInfo);
     else if(tab==='data' && !window._dtAdd && !window._evEdit) renderData(curInfo); else _evFollow();
-  }).catch(()=>{}),4000);
+  }).catch(()=>{ if(curInfo&&curInfo.case_id===cid) _evFollow(15000); }),ms||4000);
 }
 function _evItem(x){
   const edit=window._evEdit===x.id, lab=x.finding_title||'';
@@ -1192,7 +1201,9 @@ function _evItem(x){
     </div>
     <div style="font-size:12.5px;margin:3px 0">${esc(x.description||'')||'<span style="color:var(--muted)">no description</span>'}</div>
     ${_evLog(x)}
-    <div style="font-size:11px;color:var(--muted)"><a href="/api/cases/${esc(curInfo.case_id)}/files/${esc(x.id)}">${esc(x.file_name||x.name)}</a> · ${x.kind==='image'?'picture':x.kind==='text'?'text':'file'} · ${_evSize(x.size)} · <span title="SHA-256 ${esc(x.sha256||'')}">SHA-256 ${esc(String(x.sha256||'').slice(0,16))}…</span></div>
+    <div style="font-size:11px;color:var(--muted)">${x.stored===false
+      ?`${esc(x.file_name||x.name)} · ${_evSize(x.size)} · uploaded straight into Velociraptor; no copy is kept here`
+      :`<a href="/api/cases/${esc(curInfo.case_id)}/files/${esc(x.id)}">${esc(x.file_name||x.name)}</a> · ${x.kind==='image'?'picture':x.kind==='text'?'text':'file'} · ${_evSize(x.size)} · <span title="SHA-256 ${esc(x.sha256||'')}">SHA-256 ${esc(String(x.sha256||'').slice(0,16))}…</span>`}</div>
     ${edit?`<div class="cfgcol" style="margin-top:6px">${_evFields('eve',x,false,!!x.finding_id)}
       ${x.finding_id?`<label style="margin-top:6px"><input type="checkbox" id="eve-unlink" style="width:auto"/> Unlink from the Timeline event</label>`:''}
       <div class="row" style="gap:6px;margin-top:6px"><button onclick="evSaveEdit('${esc(x.id)}')">Save</button><button class="ghost" onclick="evEditToggle('${esc(x.id)}')">Cancel</button></div></div>`:''}
@@ -1225,12 +1236,14 @@ function renderData(info){
   $('#tabc').innerHTML=`<p class="ent-cap">What the analysis reads besides the collections. <b>Log data</b> — a SIEM, firewall, EDR, identity-provider or proxy export, any vendor and format — is read into the case: only its detections reach the Timeline, the hosts, accounts and addresses it shares with the case are joined, and chat can search every row; run <b>Refusion</b> after adding one.
     <b>Incident notes</b> — the customer's own account: a chat with them, interview notes, an e-mail thread — are condensed by the case's model into short facts (impact, what they did, what they saw), each tied to its line, and chat and the report read those as <i>reported, not verified</i>; never a detection. Both are listed in the report under <b>External data</b>.</p>
     <div class="row" style="gap:8px;margin:6px 0"><button onclick="window._dtAdd=!window._dtAdd;renderData(curInfo)">${window._dtAdd?'Close':'+ Add external data'}</button>
-      <span style="color:var(--muted);font-size:12px">${L.length} file(s) · up to 100 MB each</span></div>
+      <span style="color:var(--muted);font-size:12px">${L.length} file(s) · over 100 MB is sent in chunks</span></div>
     ${_dtWindow(info)}
+    <div id="dt-upload">${_dtUpHtml()}</div>
     ${window._dtAdd?`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:640px">
       <label>File</label><input type="file" id="dtn-file"/>
+      <div class="velo-org-slot" data-style="case" data-hint="A Velociraptor offline collection is imported into this org."></div>
       <label>What is it</label><select id="dtn-dtype">${o('auto','Log data — any kind: detect it automatically')}${EV_LOGTYPES.map(([k,l])=>o(k,'Log data — '+l)).join('')}${o(EV_NOTES,"Incident notes — the customer's account (chat, interview notes, e-mails)")}</select>
-      <div class="cfghint">Log data is read whatever its format (CSV, JSON, CEF, syslog…); the type only names its findings. Notes: text files (.txt, .md, .eml, a chat export).</div>
+      <div class="cfghint">Log data is read whatever its format (CSV, JSON, CEF, syslog…); the type only names its findings. A Velociraptor offline collection (.zip, any size) is recognised and imported like Velociraptor → Offline collection → Import; one with a password goes through that page. Notes: text files (.txt, .md, .eml, a chat export).</div>
       <label>Name <span style="color:var(--crit)">*</span></label><input id="dtn-name" maxlength="200" placeholder="e.g. FortiGate export Oct 1–3 / Call with the customer's IT"/>
       <label>Description <span style="color:var(--crit)">*</span></label><textarea id="dtn-desc" maxlength="1000" style="min-height:44px" placeholder="where it came from and what it covers"></textarea>
       <div class="row" style="margin-top:6px"><button onclick="evSubmit('dtn','')">Add</button></div></div>`:''}
@@ -1254,7 +1267,8 @@ function renderEvidence(info){
     Log exports and the customer's own account (a chat, interview notes) are not evidence — add them on the <span class="elink" onclick="setTab('data')">External data</span> tab.</p>
     ${f?`<div class="agnote">Evidence for: <b>${esc(fl)}</b> · <span class="elink" onclick="window._evFilter='';renderEvidence(curInfo)">show all</span></div>`:''}
     <div class="row" style="gap:8px;margin:6px 0"><button onclick="window._evAdd=!window._evAdd;renderEvidence(curInfo)">${window._evAdd?'Close':'+ Add evidence'}</button>
-      <span style="color:var(--muted);font-size:12px">${all.length} item(s) · up to 100 MB each</span></div>
+      <span style="color:var(--muted);font-size:12px">${all.length} item(s) · over 100 MB is sent in chunks</span></div>
+    <div id="dt-upload">${_dtUpHtml()}</div>
     ${window._evAdd?`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:640px">${_evFields('evn',{},true,false)}
       <div class="row" style="margin-top:6px"><button onclick="evSubmit('evn','')">Add</button></div></div>`:''}
     ${body||'<div class="empty">No evidence yet.</div>'}`;
@@ -1295,15 +1309,101 @@ function evSubmit(pre, findingId){
   const v=k=>(document.getElementById(pre+'-'+k)||{}).value||'';
   const fe=document.getElementById(pre+'-file'), file=(fe&&fe.files&&fe.files[0])||(pre==='evn'&&window._evPasted)||null;
   if(!file){ toast('Choose a file or paste a picture.'); return; }
-  if(file.size>100*1024*1024){ toast('The file is larger than 100 MB.'); return; }
   if(!findingId && (!v('name').trim()||!v('desc').trim())){ toast('Give it a name and a description.'); return; }
+  // External data: a Velociraptor offline collection goes through the Velociraptor
+  // import's own resumable upload, which has no 100 MB cap.
+  if(pre==='dtn' && v('dtype')!==EV_NOTES && /\.zip$/i.test(file.name) && !window._dtUp){
+    _isVeloZip(file).then(yes=>{ if(yes) _dtVeloUpload(file, v('name').trim(), v('desc').trim()); else _evPost(pre, findingId, file); });
+    return;
+  }
+  _evPost(pre, findingId, file);
+}
+// A Velociraptor offline collection names collection_context.json in its zip
+// directory (an encrypted one: data.zip). The directory sits at the END of the
+// file, so only the last 16 MB are read, in the browser; nothing is sent.
+function _isVeloZip(file){
+  return file.slice(Math.max(0, file.size-16*1024*1024)).arrayBuffer().then(b=>{
+    const t=new TextDecoder('latin1').decode(b);
+    return t.includes('collection_context.json')||t.includes('data.zip');
+  }).catch(()=>false);
+}
+function _dtVeloUpload(file, name, desc){
+  const cid=curInfo.case_id, fmt=n=>_evSize(n);
+  window._dtUp={file:file.name, pct:0, line:'starting…'}; window._dtAdd=false; renderData(curInfo);
+  let listed=false;
+  const draw=()=>{ const el=document.getElementById('dt-upload'); if(el) el.innerHTML=_dtUpHtml(); };
+  new TusUploader({purpose:'velociraptor', metadata:{external_data:'1', ext_name:name, ext_description:desc},
+    onProgress:i=>{ window._dtUp.pct=i.percentage; window._dtUp.line=`${fmt(i.bytesUploaded)} of ${fmt(i.bytesTotal)} · ${i.speedFormatted||''}${i.etaFormatted?' · '+i.etaFormatted+' left':''}`; draw();
+      if(!listed){ listed=true; _dtReload(cid); } },
+    onSuccess:()=>{ window._dtUp=null; toast('Uploaded — importing it into Velociraptor and the case now.'); _dtReload(cid); },
+    onError:e=>{ window._dtUp=null; toast('Upload failed: '+(e&&e.message||e)); _dtReload(cid); }
+  }).upload(file);
+  toast('Recognised as a Velociraptor offline collection — uploading it through the Velociraptor import (no size limit). Keep this page open until it is uploaded.', 6000);
+}
+function _dtUpHtml(){
+  const u=window._dtUp; if(!u) return '';
+  return `<div class="agnote" style="max-width:640px">Uploading <b>${esc(u.file)}</b> ${esc(u.what||'as a Velociraptor offline collection')} — ${(+u.pct||0).toFixed(1)}% · ${esc(u.line)}
+    <div style="height:4px;background:var(--bd);border-radius:2px;margin-top:4px"><div style="height:4px;width:${(+u.pct||0)}%;background:var(--ok);border-radius:2px"></div></div></div>`;
+}
+function _dtReload(cid){
+  api('/api/cases/'+cid).then(info=>{
+    if(!curInfo||curInfo.case_id!==cid||!info) return;
+    curInfo.case_files=info.case_files||[];
+    if(tab==='data' && !window._dtAdd && !window._evEdit) renderData(curInfo);
+  }).catch(()=>{});
+}
+// Over 100 MB a file is sent in chunks (the resumable upload every module uses)
+// and then added by its upload id: same checks and answer, no size cap.
+const EV_CHUNKED=100*1024*1024;
+function _evPost(pre, findingId, file){
+  const v=k=>(document.getElementById(pre+'-'+k)||{}).value||'';
   if(!findingId && !v('dtype') && v('src')==='other' && !v('srcother').trim()){ toast('Say which source it came from.'); return; }
-  const fd=new FormData(); fd.append('file',file); fd.append('name',v('name')); fd.append('description',v('desc'));
+  const fd=new FormData(); fd.append('name',v('name')); fd.append('description',v('desc'));
   if(findingId) fd.append('finding_id',findingId); else { fd.append('host',v('host')); fd.append('time',v('time')); fd.append('source',v('src')); fd.append('source_other',v('srcother').trim()); if(v('dtype')) fd.append('data_type',v('dtype')); }
-  toast('Uploading '+file.name+'…');
+  if(file.size<=EV_CHUNKED){ fd.append('file',file); toast('Uploading '+file.name+'…'); _evAdd(fd); return; }
+  if(v('dtype') && !confirm(_evBigWarning(file, v('dtype')))) return;
+  window._dtAdd=false; window._evAdd=false;
+  _evSendChunked(fd, file, v('dtype'), _evAdd);
+}
+// Send `file` in chunks, then hand `fd` (now carrying upload_id + file_name) to
+// `then`, which adds it like the small path does. Progress shows on the tab.
+function _evSendChunked(fd, file, dtype, then){
+  const cid=curInfo.case_id;
+  window._dtUp={file:file.name, pct:0, line:'starting…', what:'in chunks'};
+  if(tab==='data') renderData(curInfo); else if(tab==='evidence') renderEvidence(curInfo);
+  const draw=()=>{ const el=document.getElementById('dt-upload'); if(el) el.innerHTML=_dtUpHtml(); };
+  new TusUploader({purpose:'case_file', metadata:{data_type:dtype||''},
+    onProgress:i=>{ window._dtUp.pct=i.percentage; window._dtUp.line=`${_evSize(i.bytesUploaded)} of ${_evSize(i.bytesTotal)} · ${i.speedFormatted||''}${i.etaFormatted?' · '+i.etaFormatted+' left':''}`; draw(); },
+    onSuccess:up=>{ window._dtUp=null; draw(); if(!curInfo||curInfo.case_id!==cid) return;
+      fd.append('upload_id', String(up&&up.url||'').split('/').pop()); fd.append('file_name', file.name); then(fd); },
+    onError:e=>{ window._dtUp=null; draw(); toast('Upload failed: '+(e&&e.message||e)); }
+  }).upload(file);
+  toast('Sending '+file.name+' in chunks — keep this page open until it is uploaded.', 5000);
+}
+// What a file over 100 MB means for the model, before it is sent. The model is
+// never given a whole big file: log data is capped (an unrecognised file once, up
+// to its window, plus a few extraction chunks) and so are notes; the rest is
+// parsed with no model or reported as unread. Numbers: external_logs.model_window.
+function _evBigWarning(file, dtype){
+  const W=(curInfo&&curInfo.model_window)||{}, tok=Math.round(file.size/4), n=x=>Math.round(x).toLocaleString();
+  const notes=dtype===EV_NOTES;
+  const lines=[`${file.name} is ${_evSize(file.size)} — about ${n(tok)} tokens.`, 'It is sent in chunks, so its size is not limited.'];
+  if(!W.model){ lines.push('No AI model is configured: nothing in it is sent to a model.'); }
+  else {
+    const ctx=+W.context_tokens||0, maxc=+((W.model_max_chars||{})[notes?'notes':'log'])||0, mt=Math.round(maxc/4);
+    lines.push(ctx?`That is ${n(Math.ceil(tok/ctx))} × the context window of ${W.model} (${n(ctx)} tokens).`:`The context window of ${W.model} is unknown.`);
+    lines.push(`The model is never given all of it: at most ${n(maxc)} characters (~${n(mt)} tokens, ${ctx?Math.max(1,Math.ceil(mt/ctx)):'?'} window(s))`
+      +(notes?', condensed into facts; the rest stays searchable.':', and only from a file the reader does not recognise; recognised log data is parsed with no model.'));
+    lines.push(W.subscription?`Cost: billed to your ${W.provider||''} subscription, not per token.`
+      :(+W.usd_per_m_input>0?`Cost: at most about $${(mt/1e6*W.usd_per_m_input).toFixed(2)} each time it is read.`:`Cost: no price is known for ${W.model}.`));
+  }
+  if(!notes) lines.push('Large log files take a lot of memory and time to parse.');
+  return lines.join('\n\n')+'\n\nSend it?';
+}
+function _evAdd(fd){
   fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
     .then(item=>{ window._evAdd=false; window._evPasted=null; const box=$('#ev-attach'); if(box) box.innerHTML='<div class="agnote">Attached: <b>'+esc(item.name)+'</b></div>';
-      window._dtAdd=false; _evRefresh(L=>L.concat([item])); toast(item.data_type===EV_NOTES?'Notes added — condensing them now; chat and the report read them when done.':item.data_type?'Log data added — reading it now; run Refusion when it is done.':'Evidence added.'); if(item.data_type) _evFollow(); })
+      window._dtAdd=false; _evRefresh(L=>L.concat([item])); toast(item.data_type===EV_NOTES?'Notes added — condensing them now; chat and the report read them when done.':item.data_type===EV_VELO?'Recognised as a Velociraptor offline collection — importing it into Velociraptor and the case now.':item.data_type?'Log data added — reading it now; run Refusion when it is done.':'Evidence added.'); if(item.data_type) _evFollow(); })
     .catch(e=>toast('Not added: '+e.message));
 }
 function evPatch(id, body){
@@ -1331,14 +1431,14 @@ function evDel(id){
 function evAttachFiles(fid, files){
   const box=$('#ev-attach');
   [...(files||[])].forEach(file=>{
-    if(file.size>100*1024*1024){ toast(file.name+': larger than 100 MB'); return; }
-    const fd=new FormData(); fd.append('file',file); fd.append('finding_id',fid);
-    toast('Attaching '+file.name+'…');
-    fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
+    const fd=new FormData(); fd.append('finding_id',fid);
+    const post=fd=>fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
       .then(item=>{ _evRefresh(L=>L.concat([item]));
         if(box) box.insertAdjacentHTML('beforeend',`<div class="cfghint" style="margin-top:4px">Attached: <b>${esc(item.name)}</b> · <span class="elink" onclick="closeFindingDetail();window._evEdit='${esc(item.id)}';window._evFilter='';setTab('evidence')">add a description</span></div>`);
         toast('Evidence attached.'); })
       .catch(e=>toast(file.name+' not attached: '+e.message));
+    if(file.size>EV_CHUNKED){ _evSendChunked(fd, file, '', post); return; }
+    fd.append('file',file); toast('Attaching '+file.name+'…'); post(fd);
   });
 }
 // Report history (plan step 9): the SELECTED scope's kept reports (each scope has
@@ -1663,6 +1763,10 @@ function pollReportGen(id){
   const tick=()=>{
     api('/api/cases/'+id).then(info=>{
       if(_genPollCase!==id) return;              // superseded by a newer poll
+      // api() never looks at the HTTP status, so a 500 or 404 (case deleted in
+      // another tab) arrives here as {error}. With no report_written_at in it,
+      // that read as "the report changed": a reload and a toast every 5 s.
+      if(!info || info.error) return;
       // AI settings changed while this case is open — on ANY tab. The Analysis
       // tab used to be the only place a newly working model was noticed, so an
       // operator on the Log saw nothing until they clicked back. The payload
@@ -1761,6 +1865,9 @@ function regenReport(id, force){
   // use_llm:true -> premium LLM narrative (the only report path that spends tokens)
   api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(force?{use_llm:true,force:true}:{use_llm:true})})
    .then(r=>{
+     // A 500 is still JSON ({error}) and used to toast "Report generation
+     // started." A busy 409 also carries `error` but is not a failure.
+     if(r && r.error && !r.busy) throw new Error(r.error);
      if(r && r.status==='offline'){
        // Already written, synchronously. Nothing is generating; just show it.
        if(!backgroundRefresh(id, null)) pollReportGen(id);
@@ -1928,6 +2035,9 @@ async function doRefusion(id){
   toast('Refusion started. Progress is shown in the Log.');
   try{
     const r = await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    // A crashed rescan is a 500 with a JSON {error}; it used to toast "Refusion
+    // complete" while the Log said it crashed. Busy carries `error` too (below).
+    if(r && r.error && !r.busy) throw new Error(r.error);
     // 409 from the backend's FusionBusy handler: a fuse is already running for this
     // case. Not a failure — the config posted above IS persisted and a retry re-fuses
     // with it — so say so instead of showing the red "failed" toast.
@@ -2647,7 +2757,13 @@ function renderLog(id){
 function logFollow(on){
   window._logFollow=on;
   if(window._logTimer){clearInterval(window._logTimer);window._logTimer=null;}
-  if(on && tab==='log') window._logTimer=setInterval(logRefresh,4000);
+  // The dashboard hides this iframe (x-show) without unloading it: skip ticks
+  // while hidden, or a Log tab left open polls /log every 4 s until reload.
+  if(on && tab==='log') window._logTimer=setInterval(()=>{
+    const fe=window.frameElement;
+    if(document.hidden||(fe&&!fe.getClientRects().length)) return;   // not offsetParent: null in fullscreen (fixed)
+    logRefresh();
+  },4000);
 }
 function logRefresh(){
   if(!window._logCase) return;
@@ -2685,6 +2801,10 @@ let chatHist=[];
 // the question exists in this tab and nowhere else, and anything that reloads
 // chatHist from the server erases it.
 let _pendingQ=null;
+// Which case that turn was asked in, and which case's history chatHist holds.
+// Both used to be implied: switch from A to B mid-answer and B showed A's
+// "thinking…", then A's answer, then A's whole history after the re-sync.
+let _askCase=null, _chatCase=null;
 // Investigate is HIDDEN for now, by request. Nothing about it is broken and
 // nothing has been deleted: the /investigate route, the agentic tool loop and
 // investigateAsk() below are all intact and still tested. It is hidden because
@@ -2692,6 +2812,7 @@ let _pendingQ=null;
 // model that is minutes per question. Flip this to true to bring it back.
 const SHOW_INVESTIGATE = false;
 function renderChat(id){
+  _chatCase=id;
   $('#tabc').innerHTML=`<div id="chatwrap">
     <div class="chathead"><button class="ghost chatfs" onclick="clearChat('${id}')" title="Clear the conversation">Clear</button><button class="ghost chatfs" id="chatfsbtn" onclick="toggleChatFull()" title="Full screen (Esc to exit)">⛶ Full screen</button></div>
     <div class="chat"><div class="msgs" id="msgs"></div>
@@ -2701,32 +2822,36 @@ function renderChat(id){
   $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask(id);});
   // load the persisted conversation so it survives a page refresh
   $('#msgs').innerHTML='<i style="color:var(--muted)">loading…</i>';
+  // A slow GET for the previous case must not land on the one now open.
   api('/api/cases/'+id+'/chat').then(d=>{
+    if(_chatCase!==id) return;
     chatHist=(d.messages||[]).map(m=>({role:m.role,content:m.content}));
     reattachPendingTurn();
     drawMsgs();
-  }).catch(_=>{chatHist=[];reattachPendingTurn();drawMsgs();});
+  }).catch(_=>{if(_chatCase!==id) return; chatHist=[];reattachPendingTurn();drawMsgs();});
   // Leaving the tab does not cancel the request, so coming back to a fresh
   // Ask button that silently does nothing (because _asking is still true) is
   // worse than showing the truth: a turn is running.
-  if(_asking){ const b=$('#askbtn'); if(b){b.disabled=true; b.textContent='Asking…';} }
+  if(_asking && _askCase===id){ const b=$('#askbtn'); if(b){b.disabled=true; b.textContent='Asking…';} }
 }
 // Agentic deep-dive: routes the question through /investigate — the model calls
 // retrieval tools (list_findings / search / evidence / clusters) over the raw
 // evidence and grounds its answer, then we show the tool trace. On-demand (a few
 // model calls), so this is a separate button from plain Ask.
 function investigateAsk(id){
-  if(_asking) return;
+  if(_asking){ if(_askCase!==id) toast('Still answering a question in another case. Ask again once it is done.'); return; }
   const q=$('#q').value.trim(); if(!q)return; $('#q').value='';
-  _asking=true;
+  _asking=true; _askCase=_chatCase=id;
   const b=$('#invbtn'); if(b){b.disabled=true; b.textContent='🔬 Investigating…';}
   chatHist.push({role:'user',content:q});
   chatHist.push({role:'assistant',content:'_investigating — pulling raw evidence…_',pending:true});
   drawMsgs();
   const done=(content)=>{
+    _asking=false; _askCase=null; if(b){b.disabled=false; b.textContent='🔬 Investigate';}
+    if(_chatCase!==id) return;          // another case is on screen now
     const i=chatHist.findIndex(m=>m.pending);
     if(i>=0) chatHist.splice(i,1,{role:'assistant',content}); else chatHist.push({role:'assistant',content});
-    _asking=false; if(b){b.disabled=false; b.textContent='🔬 Investigate';} drawMsgs();
+    drawMsgs();
   };
   fetch('/api/cases/'+id+'/investigate',{method:'POST',headers:{'Content-Type':'application/json'},
                                          body:JSON.stringify({question:q})})
@@ -2760,7 +2885,9 @@ function _chatFsLabel(on){const b=document.getElementById('chatfsbtn');if(b)b.te
 // close the CSS-fallback maximise too.
 document.addEventListener('fullscreenchange',()=>{const w=document.getElementById('chatwrap');_chatFsLabel(!!(w&&document.fullscreenElement===w));});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){const w=document.getElementById('chatwrap');if(w&&w.classList.contains('chat-max')){w.classList.remove('chat-max');_chatFsLabel(false);}}});
-function drawMsgs(){$('#msgs').innerHTML=chatHist.map(m=>`<div class="msg ${m.role==='user'?'u':'a md'}">${m.role==='user'?escape(m.content):mdToHtml(m.content)}</div>`).join('');
+// Null-safe: an answer can land while another tab (no #msgs) is drawn, and the
+// throw used to fall into ask()'s .catch as a fake "Could not reach the server".
+function drawMsgs(){if(!$('#msgs'))return; $('#msgs').innerHTML=chatHist.map(m=>`<div class="msg ${m.role==='user'?'u':'a md'}">${m.role==='user'?escape(m.content):mdToHtml(m.content)}</div>`).join('');
   const m=$('#msgs'); if(m)m.scrollTop=m.scrollHeight;}
 // A chat turn is a 10s+ round-trip to a model, so this must show that it is
 // working and, above all, must never fail silently: the previous version had no
@@ -2774,15 +2901,18 @@ let _asking=false;
 // placeholder to replace -- so it was appended on its own and the operator saw
 // an answer to a question that was no longer there.
 function reattachPendingTurn(){
-  if(!_asking || !_pendingQ) return;
+  if(!_asking || !_pendingQ || _chatCase!==_askCase) return;
   chatHist.push({role:'user',content:_pendingQ});
   chatHist.push({role:'assistant',content:'_thinking…_',pending:true});
 }
 
 function ask(id){
-  if(_asking) return;                       // no double-submit while one is in flight
+  // One turn at a time. From another case, say so: B's button is enabled (the
+  // turn is not B's), and a click that silently did nothing read as broken.
+  if(_asking){ if(_askCase!==id) toast('Still answering a question in another case. Ask again once it is done.'); return; }
   const q=$('#q').value.trim(); if(!q)return; $('#q').value='';
-  _asking=true; _pendingQ=q;
+  // The input typed into is this case's chat, so chatHist is this case's too.
+  _asking=true; _pendingQ=q; _askCase=_chatCase=id;
   chatHist.push({role:'user',content:q});
   chatHist.push({role:'assistant',content:'_thinking…_',pending:true});
   drawMsgs();
@@ -2790,17 +2920,22 @@ function ask(id){
   // while the model was thinking, in which case the reference captured now is a
   // detached node -- re-enabling THAT left the visible button dead forever.
   const done=(content)=>{
-    const i=chatHist.findIndex(m=>m.pending);
-    if(i>=0) chatHist.splice(i,1,{role:'assistant',content});
-    else {
-      // No placeholder: the history was reloaded under us. Re-pair the answer
-      // with its question rather than orphaning it.
-      if(_pendingQ) chatHist.push({role:'user',content:_pendingQ});
-      chatHist.push({role:'assistant',content});
+    // Another case's chat is on screen: leave it alone. The server saved this
+    // pair under its own case, which shows it when reopened.
+    const here=_chatCase===id;
+    if(here){
+      const i=chatHist.findIndex(m=>m.pending);
+      if(i>=0) chatHist.splice(i,1,{role:'assistant',content});
+      else {
+        // No placeholder: the history was reloaded under us. Re-pair the answer
+        // with its question rather than orphaning it.
+        if(_pendingQ) chatHist.push({role:'user',content:_pendingQ});
+        chatHist.push({role:'assistant',content});
+      }
     }
-    _asking=false; _pendingQ=null;
+    _asking=false; _pendingQ=null; _askCase=null;
     const b=$('#askbtn'); if(b){b.disabled=false; b.textContent='Ask';}
-    drawMsgs();
+    if(here) drawMsgs();
   };
   // On success the server has persisted the pair atomically -- adopt that as the
   // truth rather than trusting a locally reconstructed list. Only on success:
@@ -2815,7 +2950,7 @@ function ask(id){
     done(content);
     api('/api/cases/'+id+'/chat').then(d=>{
       const ms=(d&&d.messages)||[], lastQ=[...ms].reverse().find(m=>m.role==='user');
-      if(lastQ && lastQ.content===q){
+      if(_chatCase===id && lastQ && lastQ.content===q){
         chatHist=ms.map(m=>({role:m.role,content:m.content}));
         drawMsgs();
       }

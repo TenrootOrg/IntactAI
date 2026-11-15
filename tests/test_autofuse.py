@@ -711,15 +711,16 @@ class TestEveryDataModuleIsCovered(_Base):
                   "aws_scan", "azure_scan"):
             self.assertIn(f'"{t}"', block, f"{t} no longer refreshes the report")
 
-    def test_only_success_arms_it(self):
-        # "as long as it succeeded" — a failed or cancelled run has produced no
-        # new data, so arming would schedule a fuse that finds nothing.
+    def test_every_end_arms_it(self):
+        # A5: a failed or stopped collection still holds rows (481k on 'test2'),
+        # and stale_member_runs counts them, so every end arms. Not-yet-ended
+        # runs must not: their rows are still landing.
         block = self._read(self.WF)
         block = block[block.index("_TERMINAL_STATUSES = ("):]
         block = block[:block.index(")") + 1]
-        self.assertIn('"completed"', block)
-        self.assertIn('"success"', block)
-        for bad in ("failed", "cancelled", "running"):
+        for ok in ("completed", "success", "failed", "cancelled"):
+            self.assertIn(f'"{ok}"', block, f"{ok} must arm a fuse")
+        for bad in ("running", "pending"):
             self.assertNotIn(f'"{bad}"', block, f"{bad} must not arm a fuse")
 
 

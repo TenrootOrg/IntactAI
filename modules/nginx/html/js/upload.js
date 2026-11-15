@@ -34,6 +34,10 @@ class TusUploader {
         this.onProgress = options.onProgress || (() => {});
         this.onSuccess = options.onSuccess || (() => {});
         this.onError = options.onError || (() => {});
+        // Fired when the upload ends without success or error: the System guard
+        // blocked it, or Stop aborted it. Without it callers' busy flags stayed
+        // set (memory "Uploading…" button greyed out until a reload).
+        this.onCancel = options.onCancel || (() => {});
 
         this.currentUpload = null;
         this._startTime = null;
@@ -69,7 +73,7 @@ class TusUploader {
             window.ActiveCase.blockIfSystem(
                 'This import runs against an investigation case, not System. ' +
                 'Switch to or create an investigation case first, then re-import.'
-            ).then((blocked) => { if (!blocked) this._beginUpload(file); });
+            ).then((blocked) => { if (blocked) this.onCancel(); else this._beginUpload(file); });
             return null;
         }
         this._beginUpload(file);
@@ -91,6 +95,9 @@ class TusUploader {
             // XHR (bypassing the window.fetch X-Case-Id hook), so the case must
             // ride in the upload metadata for the tusd hook to tag the run.
             case_id: (window.ActiveCase && window.ActiveCase.get && window.ActiveCase.get()) || '',
+            // Same for the Velociraptor org: the tusd hook is not a browser
+            // request, so an offline-collection import lands in this org.
+            velo_org: (window.VeloOrg && window.VeloOrg.get()) || 'root',
             ...this.metadata
         };
 
@@ -115,6 +122,11 @@ class TusUploader {
                 console.error('[TusUploader] Upload error:', error);
                 this.onError(error);
             },
+
+            // Register as soon as tusd assigns the id, not on the first progress
+            // event: a Stop in the gap between the POST and the first chunk
+            // otherwise found nothing to abort.
+            onUploadUrlAvailable: () => this._registerActive(upload),
 
             onProgress: (bytesUploaded, bytesTotal) => {
                 // Register by tus upload id the first time the server has
@@ -228,6 +240,7 @@ class TusUploader {
             try { this.currentUpload.abort(true); }
             catch (e) { this.currentUpload.abort(); }
             this.currentUpload = null;
+            this.onCancel();
         }
     }
 

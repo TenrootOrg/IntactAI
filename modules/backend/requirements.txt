@@ -10,6 +10,11 @@ Werkzeug==3.1.6  # Pin - 3.1.7 breaks internal Docker webhooks with strict host 
 requests==2.32.5
 PyYAML==6.0.3
 
+# Encrypts the cloud credentials at rest (services/storage/cloud_secrets.py).
+# Already in the image through pyvelociraptor/google-auth; named here so it
+# cannot go away with them.
+cryptography==50.0.2
+
 # Scheduler
 APScheduler==3.11.2
 SQLAlchemy==2.0.46

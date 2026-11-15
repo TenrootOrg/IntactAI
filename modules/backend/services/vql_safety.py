@@ -34,7 +34,10 @@ import re
 # collection imported by 0.77.3 is named after its HostID, the machine GUID with
 # '-' turned into '_' (C.c14d3891_8930_4a05_8cfa_3baf34a79201): rejecting '_' threw
 # away every row of such an upload. '_' is as inert as hex inside a VQL string.
-_CLIENT_ID_RE = re.compile(r'^C\.[0-9a-f_]{1,40}$')
+# A client in an org other than root carries the org id after a '-'
+# (C.4e755431fba671e8-OFM5G, 0.77.3): without it every collection, label and
+# upgrade in that org was refused. Velociraptor's org ids are 'O' + base32.
+_CLIENT_ID_RE = re.compile(r'^C\.[0-9a-f_]{1,40}(-O[0-9A-Z]{1,63})?$')
 
 # Flow IDs are uppercase alphanumerics after "F."
 _FLOW_ID_RE = re.compile(r'^F\.[0-9A-Z]{1,32}$')

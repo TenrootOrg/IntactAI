@@ -4,7 +4,8 @@ Agentic Pipeline - Main orchestration for forensics analysis pipeline
 """
 import threading
 
-from services.workflow_service import add_log_to_run, request_stop
+from services.workflow_service import (add_log_to_run, request_stop, _get_run_log_lock,
+                                       _FINISHED_STATUSES)
 from services.file_storage_service import get_workflow, save_workflow
 
 _PIPELINE_SYNTHESIS_GRACE_SECONDS = 15 * 60  # 15 minutes
@@ -51,8 +52,13 @@ def _collect_only_report(total_rows, all_results, client_count) -> str:
 
 def _update_phase(run_id, phase, progress):
     """Update workflow with current phase and progress"""
-    workflow = get_workflow(run_id)
-    if workflow:
+    # Under the run's lock, and never over a finished run: this ticks on every
+    # collection poll, and its unlocked read-then-save wrote a Stop that landed in
+    # between back to 'running' with the stop reason cleared.
+    with _get_run_log_lock(run_id):
+        workflow = get_workflow(run_id, with_logs=False)
+        if not workflow or workflow.get('status') in _FINISHED_STATUSES:
+            return
         workflow['phase'] = phase
         workflow['progress'] = progress
         save_workflow(workflow)

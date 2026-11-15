@@ -113,7 +113,7 @@ class QueuedUploadIsReclaimed(unittest.TestCase):
     def _stop_while_queued(self, keep):
         cleaned, persisted = [], {}
 
-        def queued(cancel, log):
+        def queued(cancel, log, **kw):     # run_id= since D3 (pending while queued)
             raise RuntimeError("cancelled while queued")
 
         def run_cleanup(rid, fn):

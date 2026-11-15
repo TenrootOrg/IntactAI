@@ -1656,7 +1656,22 @@ def _model_window() -> dict:
     cap = budget.transport_cap_chars(provider)
     if cap:
         chars = min(chars, cap)
-    return {"model": model, "provider": provider, "context_tokens": ctx, "budget_chars": chars}
+    # For the page's warning before a file over 100 MB: the price, and the most of
+    # any one file the model is ever given. Log data: one description of an
+    # unrecognised file plus llm_extract's chunks; notes: their own chunks. The rest
+    # of a file is parsed without the model or said to be unread, whatever its size.
+    usd_per_m, subscription = 0.0, False
+    try:
+        from services.agentic.analyzers._llm import _estimate_llm_cost
+        usd_per_m = _estimate_llm_cost(model or "", 1_000_000, 0)
+        from services.agentic import subscription_cli
+        subscription = bool(subscription_cli.is_subscription_provider(provider))
+    except Exception:                                      # noqa: BLE001 -- unpriced is an answer
+        pass
+    return {"model": model, "provider": provider, "context_tokens": ctx, "budget_chars": chars,
+            "usd_per_m_input": usd_per_m, "subscription": subscription,
+            "model_max_chars": {"log": chars + LLM_CHUNK_CHARS * LLM_MAX_CHUNKS,
+                                "notes": LLM_CHUNK_CHARS * NOTES_MAX_CHUNKS}}
 
 
 def describe_unrecognised(lines, *, call, mask=None, revert=None, window=None) -> dict | None:

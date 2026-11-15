@@ -1,5 +1,6 @@
 # IRIS - Incident Response Platform
-# Port: 8443 (Web UI - HTTPS)
+# Port: 8443 (Web UI - HTTPS) on 127.0.0.1 only; browsers use the main nginx
+# on port 8444.
 
 services:
   iris-rabbitmq:
@@ -132,7 +133,9 @@ services:
     volumes:
       - ./config/certificates/web_certificates:/www/certs:ro
     ports:
-      - "8443:8443"
+      # Loopback-only: public access goes through the main nginx on 8444
+      # (login-gated); host-side probes keep using 127.0.0.1:8443.
+      - "127.0.0.1:8443:8443"
     restart: unless-stopped
     depends_on:
       - iris-app

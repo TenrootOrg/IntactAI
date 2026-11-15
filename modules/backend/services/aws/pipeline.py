@@ -305,6 +305,17 @@ def _run_post_collection_phases(
     return result
 
 
+def _mark_cancelled(result: Dict, run_id: str) -> Dict:
+    """A stopped run's blob says so. The phases return early on Stop and the
+    result was then stamped 'complete', so /api/aws/status showed a finished scan
+    over partial data. What was collected stays on it: evidence."""
+    result['status'] = 'cancelled'
+    result['end_time'] = datetime.utcnow().isoformat()
+    kept = sum(len(v) for v in (result.get('collected_data') or {}).values())
+    add_log_to_run(run_id, f"[AWS] Stopped -- {kept} record(s) collected before Stop are kept", "warning")
+    return result
+
+
 # =============================================================================
 # Main entry points
 # =============================================================================
@@ -419,6 +430,13 @@ def run_aws_pipeline(
                 return result
             result['aws_account'] = pre['account']
             result['aws_identity'] = pre['arn']
+            # the account's name, so a case shows "aws:<alias>" -- not an account number
+            try:
+                _al = boto_client.client("iam", aws_config).list_account_aliases().get("AccountAliases") or []
+                if _al:
+                    result['aws_account_alias'] = str(_al[0])
+            except Exception:                                     # noqa: BLE001 -- the number still works
+                pass
 
         result['phases']['validation'] = {'status': 'complete'}
         _set_progress(run_id, 10)
@@ -526,6 +544,9 @@ def run_aws_pipeline(
             )
         if not collected_data:
             phase_end("collection")
+            if is_cancelled(run_id):
+                # Stopped before anything came back: not "clean", not "failed".
+                return _mark_cancelled(result, run_id)
             if collection_errors:
                 # Zero records AND errors is a failed run, not a clean one.
                 # It used to report status 'completed' / "No data collected",
@@ -555,6 +576,8 @@ def run_aws_pipeline(
             result=result,
         )
 
+        if is_cancelled(run_id):
+            return _mark_cancelled(result, run_id)
         result['status'] = 'complete'
         result['end_time'] = datetime.utcnow().isoformat()
         add_log_to_run(run_id, "[AWS] Pipeline completed successfully", "info")
@@ -603,6 +626,8 @@ def run_aws_on_existing(
             phase_end=phase_end,
             result=result,
         )
+        if is_cancelled(run_id):
+            return _mark_cancelled(result, run_id)
         result['status'] = 'complete'
         result['end_time'] = datetime.utcnow().isoformat()
     except Exception as e:

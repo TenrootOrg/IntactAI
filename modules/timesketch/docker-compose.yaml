@@ -1,5 +1,5 @@
 # TimeSketch - Timeline Analysis Platform
-# Port: 5000 (Web UI)
+# Port: 5000 (Web UI) on 127.0.0.1 only; browsers use the main nginx on 5443.
 
 services:
   timesketch-postgres:
@@ -239,7 +239,9 @@ services:
       - ../nginx/ssl/nginx-cert.crt:/etc/nginx/cert.crt:ro
       - ../nginx/ssl/nginx-cert.key:/etc/nginx/cert.key:ro
     ports:
-      - "5000:5000"
+      # Loopback-only: public access goes through the main nginx on 5443
+      # (login-gated); host-side probes keep using 127.0.0.1:5000.
+      - "127.0.0.1:5000:5000"
     restart: unless-stopped
     depends_on:
       - timesketch-web

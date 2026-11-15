@@ -14,7 +14,7 @@
 
                 <!-- Settings Tabs -->
                 <div x-data="{ settingsTab: 'general' }" @show-system-actions.window="settingsTab = 'actions'; $store.settings.loadActions()"
-                     x-init="setInterval(() => { if (settingsTab === 'actions') $store.settings.loadActions() }, 1000)" class="space-y-4">
+                     x-init="setInterval(() => { if (settingsTab === 'actions' && $store.app.currentTab === 'settings' && !document.hidden) $store.settings.loadActions() }, 1000)" class="space-y-4">
                     <!-- Tab Navigation -->
                     <div class="flex border-b border-gray-700">
                         <button @click="settingsTab = 'general'" :class="settingsTab === 'general' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
@@ -196,6 +196,261 @@
                                     </svg>
                                     <span x-text="$store.settings.saving ? 'Starting...' : 'Generate Bundle'"></span>
                                 </button>
+                            </div>
+
+                            <!-- Data storage (config.yaml data_path; scripts/move-data.sh). Where all
+                                 of Intact's data lives, and moving it to another disk. Kept in plain
+                                 words: a disk picker, one Move button (it checks first), a status line. -->
+                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700"
+                                 x-data="{
+                                    info: null, disks: [], pick: '', other: '', busy: false, err: '', note: '', timer: null,
+                                    gb(b) { return b == null ? '?' : (b / 1073741824).toFixed(b < 10737418240 ? 1 : 0) + ' GB'; },
+                                    place(p) { return p ? 'Disk at ' + p : 'System disk'; },
+                                    target() { return this.pick === '__other' ? this.other.trim() : this.pick; },
+                                    moving() { const s = ((this.info || {}).status || {}).state; return s === 'running' || s === 'starting'; },
+                                    async load() {
+                                        try {
+                                            const r = await fetch('/api/system/data-location');
+                                            if (!r.ok) throw new Error();
+                                            this.info = await r.json();
+                                        } catch (e) { if (this.moving()) this.info.status.message = 'Intact is restarting…'; }
+                                        clearTimeout(this.timer);
+                                        if (this.moving()) this.timer = setTimeout(() => this.load(), 5000);
+                                    },
+                                    async loadDisks() {
+                                        try { this.disks = (await (await fetch('/api/system/data-location/disks')).json()).disks || []; } catch (e) {}
+                                    },
+                                    async move(force) {
+                                        const to = this.target();
+                                        if (this.pick === '' && !(this.info && this.info.data_path)) { this.err = 'The data is already on the system disk.'; return; }
+                                        if (to === (this.info && this.info.data_path)) { this.err = 'The data is already there.'; return; }
+                                        this.busy = true; this.err = ''; this.note = 'Checking the disk…';
+                                        let chk = {};
+                                        try {
+                                            chk = await (await fetch('/api/system/data-location/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: to }) })).json();
+                                        } catch (e) { chk = { ok: false, reason: 'Could not check the disk.' }; }
+                                        this.note = '';
+                                        if (!chk.ok) { this.busy = false; this.err = chk.reason || 'This disk cannot be used.'; return; }
+                                        const mins = Math.max(2, Math.ceil(chk.used_bytes / 2147483648) + 1);
+                                        if (!force && !confirm('Move all of Intact\'s data (' + this.gb(chk.used_bytes) + ') to ' + this.place(to).toLowerCase().replace('disk at', 'the disk at') + '?\n\nIntact will be offline for about ' + mins + ' minutes while it copies, then it comes back by itself.\nA backup of the current location is kept until you delete it.')) { this.busy = false; return; }
+                                        const r = await fetch('/api/system/data-location/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: to, force: !!force }) });
+                                        const d = await r.json().catch(() => ({}));
+                                        this.busy = false;
+                                        if (!r.ok) {
+                                            if (!force && /still going/.test(d.error || '') && confirm(d.error + '\n\nMove anyway?')) return this.move(true);
+                                            this.err = d.error || ('Error ' + r.status); return;
+                                        }
+                                        this.info = Object.assign({}, this.info, { status: d });
+                                        this.timer = setTimeout(() => this.load(), 5000);
+                                    },
+                                    async undo(force) {
+                                        const st = (this.info || {}).status || {};
+                                        const where = st.undo_path ? 'the disk at ' + st.undo_path : 'the system disk';
+                                        if (!force && !confirm('Undo the move and go back to ' + where + '?\n\nThis switches back to the backup, as it was before the move. Anything added since the move (cases, collections, uploads) will NOT be there.\n\nIntact restarts (about a minute). The copy on the current location is kept as a backup until you delete it.')) return;
+                                        this.busy = true; this.err = '';
+                                        const r = await fetch('/api/system/data-location/undo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: !!force }) });
+                                        const d = await r.json().catch(() => ({}));
+                                        this.busy = false;
+                                        if (!r.ok) {
+                                            if (!force && /still going/.test(d.error || '') && confirm(d.error + '\n\nUndo anyway?')) return this.undo(true);
+                                            this.err = d.error || ('Error ' + r.status); return;
+                                        }
+                                        this.info = Object.assign({}, this.info, { status: d });
+                                        this.timer = setTimeout(() => this.load(), 5000);
+                                    },
+                                    async deleteBackup() {
+                                        const canUndo = !!(((this.info || {}).status || {}).undo_root_backup);
+                                        if (!confirm('Delete the backup?\n\nIt is a full copy of the data from the other location, kept in case something went wrong.' + (canUndo ? ' Without it you can no longer undo the move.' : '') + ' Delete it once you have checked that everything works.')) return;
+                                        const r = await fetch('/api/system/data-location/cleanup', { method: 'POST' });
+                                        const d = await r.json().catch(() => ({}));
+                                        this.note = r.ok ? 'Deleting the backup…' : ''; this.err = r.ok ? '' : (d.error || 'Error ' + r.status);
+                                        setTimeout(() => { this.note = ''; this.load(); }, 5000);
+                                    }
+                                 }"
+                                 x-init="load().then(() => { pick = (info && info.data_path) ? '' : '__other'; }); loadDisks()">
+                                <h4 class="text-white font-medium">Data storage</h4>
+                                <p class="text-gray-400 text-sm">Where Intact keeps everything: cases, evidence, collections and databases.</p>
+                                <template x-if="info">
+                                    <div class="mt-3 space-y-3 text-sm">
+                                        <!-- where it is now -->
+                                        <div>
+                                            <div class="flex items-baseline justify-between">
+                                                <span class="text-white font-medium" x-text="place(info.data_path)"></span>
+                                                <span x-show="info.disk" class="text-xs"
+                                                      :class="{ok: 'text-gray-400', warning: 'text-yellow-400', critical: 'text-red-400'}[(info.disk || {}).level]"
+                                                      x-text="info.disk ? gb(info.disk.free) + ' free of ' + gb(info.disk.total) : ''"></span>
+                                            </div>
+                                            <div x-show="info.disk" class="h-2 mt-1 rounded bg-gray-700 overflow-hidden"><div class="h-2"
+                                                 :class="{ok: 'bg-green-500', warning: 'bg-yellow-500', critical: 'bg-red-500'}[(info.disk || {}).level]"
+                                                 :style="'width:' + ((info.disk || {}).pct || 0) + '%'"></div></div>
+                                            <p x-show="info.disk && info.disk.level !== 'ok'" class="text-xs mt-1"
+                                               :class="(info.disk || {}).level === 'critical' ? 'text-red-400' : 'text-yellow-400'"
+                                               x-text="(info.disk || {}).level === 'critical' ? 'Almost full. Delete old data or move to a bigger disk.' : 'Getting full.'"></p>
+                                        </div>
+
+                                        <!-- status of the last move, in plain words -->
+                                        <div x-show="moving()" class="rounded px-3 py-2 bg-blue-900/40 text-blue-200">
+                                            ⏳ Moving your data… Intact is offline for a few minutes and this page reconnects by itself.
+                                        </div>
+                                        <div x-show="(info.status || {}).state === 'failed'" class="rounded px-3 py-2 bg-red-900/40 text-red-200"
+                                             x-text="'The move did not finish, so nothing was changed. ' + ((info.status || {}).message || '')"></div>
+                                        <div x-show="(info.status || {}).state === 'done' && ((info.status || {}).old_copies || []).length"
+                                             class="rounded px-3 py-2 bg-gray-800 text-gray-300 flex items-center justify-between gap-3">
+                                            <span x-text="(info.status || {}).undo_root_backup
+                                                ? '✓ Moved. The previous location is kept as a backup until you delete it (it takes disk space).'
+                                                : '✓ A backup of the other location is kept until you delete it (it takes disk space).'"></span>
+                                            <span class="shrink-0 flex gap-3">
+                                                <button x-show="(info.status || {}).undo_root_backup" @click="undo(false)" :disabled="busy"
+                                                        class="text-blue-300 hover:text-blue-200 underline disabled:opacity-50">Undo move</button>
+                                                <button @click="deleteBackup()" class="text-red-300 hover:text-red-200 underline">Delete backup</button>
+                                            </span>
+                                        </div>
+
+                                        <!-- move -->
+                                        <div x-show="!moving()" class="flex gap-2 items-center">
+                                            <span class="text-gray-300 shrink-0">Move to</span>
+                                            <select x-model="pick" @change="err = ''"
+                                                    class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                                <option value="" :disabled="!info.data_path" x-text="'System disk' + (!info.data_path ? ' (current)' : '')"></option>
+                                                <template x-for="d in disks" :key="d.path">
+                                                    <option :value="d.path" :disabled="d.path === info.data_path"
+                                                            x-text="'Disk at ' + d.path + ' (' + gb(d.free) + ' free of ' + gb(d.size) + ')' + (d.path === info.data_path ? ' (current)' : '')"></option>
+                                                </template>
+                                                <option value="__other">Other folder…</option>
+                                            </select>
+                                            <button @click="move(false)" :disabled="busy"
+                                                    class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-1.5 rounded text-sm text-white">Move</button>
+                                        </div>
+                                        <input x-show="pick === '__other' && !moving()" type="text" x-model="other" placeholder="/mnt/my-disk/intact"
+                                               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white font-mono focus:border-blue-500 focus:outline-none">
+                                        <p x-show="!moving() && !disks.length" class="text-xs text-gray-500">No other disk found. Add a disk to this machine, format and mount it, and it shows up here.</p>
+                                        <p x-show="note" class="text-xs text-gray-300" x-text="note"></p>
+                                        <p x-show="err" class="text-xs text-red-400" x-text="err"></p>
+                                    </div>
+                                </template>
+                            </div>
+
+                            <!-- Network (config.yaml domain + per-module public ports; scripts/change_ip.sh).
+                                 The backend writes config.yaml and runs change_ip.sh on the host, which
+                                 restarts Intact - so this card only starts the run and points at
+                                 Settings -> Actions, where the run's log lands.
+                                 NOTE: no double quotes anywhere inside x-data. -->
+                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700"
+                                 x-data="{
+                                    info: null, open: false, form: { ip: '', ports: {} }, busy: false, err: '', done: '', newUrl: '',
+                                    fields: [['kibana', 'Kibana'], ['portainer', 'Portainer'], ['iris', 'IRIS'], ['timesketch', 'Timesketch'], ['volweb', 'VolWeb'], ['velociraptor_agent', 'Velociraptor agents']],
+                                    async load() {
+                                        try {
+                                            const r = await fetch('/api/system/network');
+                                            if (r.ok) this.info = await r.json();
+                                        } catch (e) {}
+                                    },
+                                    ip() { return (this.info || {}).ip || (this.info || {}).domain || ''; },
+                                    port(k) { return ((this.info || {}).ports || {})[k]; },
+                                    show() {
+                                        this.form = { ip: this.ip(), ports: Object.assign({}, (this.info || {}).ports || {}) };
+                                        this.err = ''; this.done = ''; this.newUrl = ''; this.open = true;
+                                    },
+                                    agentChanged() { return String(this.form.ports.velociraptor_agent) !== String(this.port('velociraptor_agent')); },
+                                    changed() { return this.form.ip.trim() !== this.ip() || this.fields.some(f => String(this.form.ports[f[0]]) !== String(this.port(f[0]))); },
+                                    // Mirrors the server check so the operator sees the problem before
+                                    // the run starts; the backend validates again (it is the real gate).
+                                    problem() {
+                                        const ip = this.form.ip.trim();
+                                        if (!/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(ip)) return 'Enter the IP address (or host name) Intact should answer on.';
+                                        const seen = {};
+                                        for (const [k, label] of this.fields) {
+                                            const v = String(this.form.ports[k] == null ? '' : this.form.ports[k]).trim();
+                                            if (!/^[0-9]+$/.test(v) || +v < 1 || +v > 65535) return label + ': the port must be a number from 1 to 65535.';
+                                            if (+v === 80 || +v === 443) return label + ': ports 80 and 443 belong to the dashboard.';
+                                            if (seen[v]) return label + ' and ' + seen[v] + ' cannot share port ' + v + '.';
+                                            seen[v] = label;
+                                        }
+                                        if (!this.changed()) return 'Nothing changed.';
+                                        return '';
+                                    },
+                                    async save() {
+                                        this.err = this.problem();
+                                        if (this.err) return;
+                                        // Agents in the field have the old port baked in and go silent on
+                                        // a move, so this one needs its own, explicit yes.
+                                        if (this.agentChanged() && !confirm('Change the Velociraptor agent port to ' + this.form.ports.velociraptor_agent + '?\n\nAgents already installed on endpoints keep the old port and will STOP reporting in until you redeploy them with the new installers.')) return;
+                                        if (!confirm('Apply the new network settings?\n\nIntact restarts its services and is offline for a few minutes.')) return;
+                                        const ports = {};
+                                        this.fields.forEach(f => { ports[f[0]] = parseInt(this.form.ports[f[0]], 10); });
+                                        const ip = this.form.ip.trim();
+                                        this.busy = true;
+                                        let r, d = {};
+                                        try {
+                                            r = await fetch('/api/system/network', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: ip, ports: ports }) });
+                                            d = await r.json().catch(() => ({}));
+                                        } catch (e) { r = { ok: false, status: 0 }; }
+                                        this.busy = false;
+                                        if (!r.ok) { this.err = d.error || (r.status === 409 ? 'A network change is already running.' : 'Error ' + r.status); return; }
+                                        this.done = 'Running - follow it in Settings -> Actions.';
+                                        this.newUrl = ip !== this.ip() ? 'https://' + ip + '/' : '';
+                                    }
+                                 }"
+                                 x-init="load()">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <h4 class="text-white font-medium">Network</h4>
+                                        <p class="text-gray-400 text-sm">The address Intact answers on and each tool's port.</p>
+                                    </div>
+                                    <button @click="show()" :disabled="!info" class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 rounded text-sm text-white w-44">Change IP / ports</button>
+                                </div>
+                                <div x-show="info" class="mt-3 text-sm text-gray-300 flex flex-wrap gap-x-4 gap-1">
+                                    <span>IP <span class="text-white font-mono" x-text="ip()"></span></span>
+                                    <template x-for="f in fields" :key="f[0]">
+                                        <span><span x-text="f[1]"></span> <span class="text-white font-mono" x-text="port(f[0])"></span></span>
+                                    </template>
+                                </div>
+                                <p x-show="done && !open" class="mt-2 text-xs text-blue-300" x-text="done"></p>
+
+                                <!-- popup -->
+                                <div x-show="open" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4"
+                                     @click.self="if (!busy) open = false" @keydown.escape.window="if (!busy) open = false">
+                                    <div class="w-full max-w-md bg-gray-800 border border-gray-700 rounded-lg p-5 space-y-3 text-sm">
+                                        <h3 class="text-white font-medium text-lg">Change IP / ports</h3>
+                                        <template x-if="!done">
+                                            <div class="space-y-3">
+                                                <label class="block">
+                                                    <span class="text-gray-300">IP address</span>
+                                                    <input type="text" x-model="form.ip" @input="err = ''" placeholder="192.168.1.10"
+                                                           class="mt-1 w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-white font-mono focus:border-blue-500 focus:outline-none">
+                                                </label>
+                                                <div class="grid grid-cols-2 gap-3">
+                                                    <template x-for="f in fields" :key="f[0]">
+                                                        <label class="block">
+                                                            <span class="text-gray-300" x-text="f[1] + ' port'"></span>
+                                                            <input type="number" min="1" max="65535" x-model="form.ports[f[0]]" @input="err = ''"
+                                                                   class="mt-1 w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-white font-mono focus:border-blue-500 focus:outline-none">
+                                                        </label>
+                                                    </template>
+                                                </div>
+                                                <div x-show="agentChanged()" class="rounded px-3 py-2 bg-red-900/30 text-red-200 border border-red-700">
+                                                    Changing the Velociraptor agent port disconnects every agent already installed on endpoints. They keep the old port and stop reporting in until you redeploy them with the new installers.
+                                                </div>
+                                                <p class="text-xs text-gray-400">Intact restarts its services and is offline for a few minutes. The dashboard stays on port 443.</p>
+                                                <p x-show="err" class="text-xs text-red-400" x-text="err"></p>
+                                                <div class="flex justify-end gap-2">
+                                                    <button @click="open = false" :disabled="busy" class="px-4 py-1.5 rounded text-gray-300 hover:text-white disabled:opacity-50">Cancel</button>
+                                                    <button @click="save()" :disabled="busy" class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-1.5 rounded text-white" x-text="busy ? 'Starting...' : 'Save'"></button>
+                                                </div>
+                                            </div>
+                                        </template>
+                                        <template x-if="done">
+                                            <div class="space-y-3">
+                                                <p class="text-blue-200" x-text="done"></p>
+                                                <p x-show="newUrl" class="text-yellow-300">Intact will be at <a :href="newUrl" class="underline font-mono" x-text="newUrl"></a> - open it in a moment.</p>
+                                                <div class="flex justify-end gap-2">
+                                                    <button @click="open = false; $dispatch('show-system-actions')" class="bg-blue-600 hover:bg-blue-700 px-4 py-1.5 rounded text-white">Open Actions</button>
+                                                    <button @click="open = false" class="px-4 py-1.5 rounded text-gray-300 hover:text-white">Close</button>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- Online Upgrade (combined prepare + apply, no tar.gz round-trip) -->
@@ -804,7 +1059,14 @@
                                 </div>
                                 <div x-show="!$store.settings.isSubscription()">
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>
-                                    <input type="password" x-model="$store.settings.config.agentic.online_llm.api_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-...">
+                                    <input type="password" x-model="$store.settings.config.agentic.online_llm.api_key"
+                                           @input="$store.settings.shareOpenrouterKey($event.target.value, 'agentic')"
+                                           class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-...">
+                                    <!-- One OpenRouter key for Agentic and Timesketch (services/openrouter_key.py). -->
+                                    <p x-show="$store.settings.config.agentic.online_llm.provider === 'openrouter'" class="text-[11px] text-gray-500 mt-1">
+                                        Shared with Settings → Timesketch.
+                                        <span x-show="$store.settings.config.agentic.online_llm.key_from_shared" class="text-yellow-600">Entered there — Save here to use it for Case Analysis.</span>
+                                    </p>
                                 </div>
                                 <div x-show="$store.settings.isSubscription()" class="text-xs text-gray-500 self-end pb-1.5">
                                     No API key needed — this provider signs in with your
@@ -1301,7 +1563,13 @@
                             <div class="grid grid-cols-2 gap-3">
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>
-                                    <input type="password" x-model="$store.settings.config.timesketch.openrouter_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-or-v1-...">
+                                    <input type="password" x-model="$store.settings.config.timesketch.openrouter_key"
+                                           @input="$store.settings.shareOpenrouterKey($event.target.value, 'timesketch')"
+                                           class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-or-v1-...">
+                                    <p class="text-[11px] text-gray-500 mt-1">
+                                        Shared with Settings → Agentic; the model is set separately.
+                                        <span x-show="$store.settings.config.timesketch.openrouter_key_pending" class="text-yellow-600">Timesketch is not using this key yet — save here to apply it (restarts Timesketch).</span>
+                                    </p>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Model</label>
@@ -1467,8 +1735,30 @@
                             OpenRouter and LiteLLM are IntactAI add-on providers installed into the Timesketch container at start-up.
                         </p>
 
-                        <!-- Save Button -->
+                        <!-- Save Button. Test and Update catalog are Agentic's own: the same
+                             one-token probe (/api/config/llm/test) and the same refresh of every
+                             catalog, OpenRouter's included, which both tabs' pickers read. -->
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button x-show="$store.settings.config.timesketch.llm_mode === 'openrouter'"
+                                    @click="$store.settings.testTimesketchLlm()"
+                                    :disabled="$store.settings.tsLlmTesting"
+                                    class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-2 rounded text-sm font-medium mr-2"
+                                    title="Sends a 1-token prompt to the OpenRouter model on screen — proves the key and the model id, at effectively zero cost.">
+                                <span x-text="$store.settings.tsLlmTesting ? 'Testing…' : 'Test connection'"></span>
+                            </button>
+                            <template x-if="$store.settings.tsLlmTestResult && $store.settings.config.timesketch.llm_mode === 'openrouter'">
+                                <span class="text-sm mr-3 self-center"
+                                      :class="$store.settings.tsLlmTestResult.success ? 'text-green-400' : 'text-red-400'"
+                                      :title="$store.settings.tsLlmTestResult.detail || ''"
+                                      x-text="$store.settings.tsLlmTestResult.success
+                                        ? ('OK — replied in ' + $store.settings.tsLlmTestResult.elapsed_ms + 'ms')
+                                        : ('Failed: ' + ($store.settings.tsLlmTestResult.error || 'unknown'))"></span>
+                            </template>
+                            <button @click="$store.settings.updateCatalog()" :disabled="$store.settings.updatingCatalog"
+                                    class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-2 rounded text-sm font-medium mr-2"
+                                    title="Fetch the current model lists (OpenRouter's included — the same catalog Settings → Agentic uses). The existing catalog is kept if the fetch fails or returns nothing.">
+                                <span x-text="$store.settings.updatingCatalog ? 'Updating…' : 'Update catalog'"></span>
+                            </button>
                             <button @click="$store.settings.saveTimesketch()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
                                 <span x-text="$store.settings.saving ? 'Saving...' : 'Save Timesketch Settings'"></span>
                             </button>
@@ -1483,7 +1773,7 @@
                          "Ask clients to report again" lives in the Version unknown column, the one
                          place it matters. -->
                     <div x-show="settingsTab === 'velociraptor' && $store.services.has('velociraptor')" x-transition
-                         x-init="setInterval(() => { if (settingsTab === 'velociraptor' && !document.hidden && !$store.settings.veloLoading) $store.settings.loadVelociraptor() }, 30000)"
+                         x-init="setInterval(() => { if (settingsTab === 'velociraptor' && $store.app.currentTab === 'settings' && !document.hidden && !$store.settings.veloLoading) $store.settings.loadVelociraptor() }, 30000)"
                          class="bg-gray-800 rounded-lg p-5 border border-gray-700">
                         <h3 class="text-lg font-semibold text-white mb-1">Velociraptor clients</h3>
                         <p class="text-xs text-gray-500 mb-4" x-show="$store.settings.velo" x-text="$store.settings.velo ? 'Server ' + $store.settings.velo.summary.server_version + ' · ' + $store.settings.velo.summary.counts.online + ' of ' + $store.settings.velo.summary.total + ' online · clients are upgraded from here: a pilot first, then all the rest' : ''"></p>
@@ -1563,7 +1853,7 @@
                                 <table class="w-full text-sm">
                                     <!-- click a header to sort (on the server: it covers the whole fleet, not this page) -->
                                     <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-700">
-                                        <template x-for="[k, label] in [['host','Host'],['os','OS'],['version','Version'],['upgrade','Upgrade'],['last_seen','Last seen']]" :key="k">
+                                        <template x-for="[k, label] in [['host','Host'],['org','Org'],['os','OS'],['version','Version'],['upgrade','Upgrade'],['last_seen','Last seen']]" :key="k">
                                             <th class="py-1.5 cursor-pointer hover:text-gray-300 whitespace-nowrap" @click="$store.settings.setVeloSort(k)"
                                                 :title="'Sort by ' + label.toLowerCase()">
                                                 <span x-text="label"></span><span x-show="$store.settings.veloFilter.sort === k" x-text="$store.settings.veloFilter.dir === 'desc' ? ' ▼' : ' ▲'"></span>
@@ -1573,6 +1863,7 @@
                                         <template x-for="c in $store.settings.velo.clients" :key="c.client_id">
                                             <tr class="border-b border-gray-700/50">
                                                 <td class="py-1.5 text-white" :title="c.client_id + (c.release ? ' — ' + c.release : '')" x-text="c.hostname || c.client_id"></td>
+                                                <td class="text-gray-400" :title="'Velociraptor org ' + (c.org || 'root')" x-text="c.org_name || 'root'"></td>
                                                 <td class="text-gray-400" x-text="c.os || '—'"></td>
                                                 <td class="text-gray-300" x-text="c.version || '—'"></td>
                                                 <td :title="c.upgrade.text"
@@ -1611,7 +1902,7 @@
                                                              :class="c.ok ? 'cursor-pointer hover:bg-gray-700 text-white' : 'cursor-not-allowed text-gray-500'"
                                                              :title="c.ok ? '' : c.why" class="px-2 py-1">
                                                             <span x-text="c.hostname"></span>
-                                                            <span class="text-xs" x-text="c.ok ? ' — ' + c.os + ' ' + c.version : ' — ' + c.why.split(' -- ')[0]"></span>
+                                                            <span class="text-xs" x-text="(c.org_name && c.org_name !== 'root' ? ' [' + c.org_name + ']' : '') + (c.ok ? ' — ' + c.os + ' ' + c.version : ' — ' + c.why.split(' -- ')[0])"></span>
                                                         </div>
                                                     </template>
                                                 </div>
@@ -1627,7 +1918,7 @@
                                             <p x-show="!$store.settings.veloUpgrade.eligible_online" class="text-xs text-gray-500 mt-2">No online client can be upgraded right now.</p>
                                         </div>
                                         <div class="bg-gray-900 rounded p-3">
-                                            <div class="text-gray-300 font-medium mb-2">2. Upgrade all <span class="text-xs text-gray-500">— every other client behind the server; followed 24 h, checked hourly</span></div>
+                                            <div class="text-gray-300 font-medium mb-2">2. Upgrade all <span class="text-xs text-gray-500">— every other client behind the server, in every Velociraptor org (each gets a package with its own org's config), in one run; followed 24 h, checked hourly</span></div>
                                             <div class="flex items-center gap-2 mt-2">
                                                 <span class="text-xs text-gray-500" x-text="$store.settings.veloWaveText()"></span>
                                                 <button @click="$store.settings.startVeloUpgrade('rest')" class="ml-auto bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1 rounded text-white"
@@ -1743,10 +2034,39 @@
                             </div>
                         </div>
 
-                        <p class="text-xs text-gray-500 mt-4">
-                            <svg class="w-3.5 h-3.5 inline mr-1 text-yellow-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
-                            Credentials are stored locally and used for cloud-based threat hunting integrations.
-                        </p>
+                        <!-- Credentials: encrypted at rest, deleted after N days (services/storage/cloud_secrets.py) -->
+
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+
+                            <label class="block text-sm text-gray-400 mb-1">Delete the credentials after</label>
+
+                            <div class="flex items-center gap-2">
+
+                                <input type="number" min="0" max="3650" x-model.number="$store.settings.config.cloud.credentials_ttl_days"
+
+                                       class="w-28 bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
+
+                                <span class="text-sm text-gray-400">days after they are saved (0 = never)</span>
+
+                            </div>
+
+                            <p class="text-xs mt-2" :class="$store.settings.config.cloud.credentials_expired_at && !$store.settings.config.cloud.credentials_saved_at ? 'text-yellow-500' : 'text-gray-500'"
+
+                               x-text="(() => { const c = $store.settings.config.cloud, d = v => (v || '').slice(0, 10);
+
+                                   if (c.credentials_saved_at) return 'Saved ' + d(c.credentials_saved_at) + (c.credentials_expire_at ? ' · deleted automatically on ' + d(c.credentials_expire_at) : ' · kept until removed');
+
+                                   if (c.credentials_expired_at) return 'The credentials were deleted on ' + d(c.credentials_expired_at) + ' (older than the limit): enter them again to use the cloud scans.';
+
+                                   return 'No credentials saved.'; })()"></p>
+
+                            <p class="text-xs text-gray-500 mt-2">
+
+                                Stored encrypted on this appliance. The key is a separate file only the appliance can read (data/state/backend), never in the database, an export, a backup download or a support bundle.
+
+                            </p>
+
+                        </div>
 
                         <!-- Save Button -->
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
@@ -1800,7 +2120,7 @@
                              Releases" / "Compute Plan" / "Show Modules" buttons;
                              selecting a different release re-runs the next step
                              automatically. -->
-                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="space-y-4 max-h-96 overflow-y-auto">
+                        <div x-show="!$store.settings.prepareLoading" class="space-y-4 max-h-96 overflow-y-auto">
 
                             <!-- GitHub quota banner -->
                             <div x-show="$store.settings.githubQuota && $store.settings.githubQuota.success"
@@ -1908,15 +2228,14 @@
                                 </p>
                             </div>
 
-                            <!-- Spinner while plan/modules auto-load -->
-                            <div x-show="$store.settings.selectedRef && ($store.settings.computingPlan || $store.settings.showingPrepareModules)"
+                            <!-- Spinner while the online plan auto-loads -->
+                            <div x-show="$store.settings.selectedRef && $store.settings.computingPlan"
                                  class="flex items-center justify-center py-4 text-sm text-gray-400">
                                 <svg class="animate-spin h-4 w-4 mr-2 text-blue-500" fill="none" viewBox="0 0 24 24">
                                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                 </svg>
-                                <span x-show="$store.settings.prepareModalMode === 'online'">Computing plan from GitHub… (up to 60 s)</span>
-                                <span x-show="$store.settings.prepareModalMode === 'prepare'">Loading module list from GitHub… (up to 60 s)</span>
+                                <span>Computing plan from GitHub… (up to 60 s)</span>
                             </div>
 
                             <!-- Step 3 (PREPARE mode): flat checkbox list, all pre-checked.
@@ -2003,23 +2322,6 @@
 
                         </div>
 
-                        <!-- Package Ready -->
-                        <div x-show="$store.settings.preparePackageReady" class="text-center py-6">
-                            <svg class="w-16 h-16 text-green-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                            </svg>
-                            <h4 class="text-white font-medium mb-2">Package Ready!</h4>
-                            <p class="text-gray-400 text-sm mb-2" x-text="'Size: ' + $store.settings.preparePackageSize"></p>
-                            <p class="text-gray-500 text-xs mb-4">Available for 24 hours</p>
-                            <button @click="$store.workflows.downloadPackage($store.settings.prepareRunId)"
-                               class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded text-sm font-medium inline-flex items-center gap-2">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                                </svg>
-                                Download Package
-                            </button>
-                        </div>
-
                         <!-- Manual fallback — ALWAYS visible, not behind a disclosure.
                              The operator who needs this is the one whose appliance
                              cannot fetch the package: no route to GitHub, a wedged
@@ -2029,7 +2331,7 @@
                              which is exactly the assumption that fails. Shown without
                              a release picked too — the tag is a placeholder until
                              one is chosen. -->
-                        <div x-show="$store.settings.prepareModalMode === 'prepare' && !$store.settings.prepareLoading && !$store.settings.preparePackageReady"
+                        <div x-show="$store.settings.prepareModalMode === 'prepare' && !$store.settings.prepareLoading"
                              x-data="{ open: false }"
                              class="bg-gray-900 rounded border border-gray-700 p-3 mt-4">
                             <!-- Collapsed by default. This is the escape hatch for building the
@@ -2076,7 +2378,7 @@
                         </div>
 
                         <!-- Warning -->
-                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
+                        <div x-show="!$store.settings.prepareLoading" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
                             <p class="text-yellow-400 text-xs">
                                 <strong>Note:</strong> Downloads the prebuilt package for the selected release and verifies its checksum — nothing is built here. Expect several minutes and a few GB of free space.
                             </p>
@@ -2086,7 +2388,7 @@
                         <!-- /scroll wrapper — Actions below stay pinned on small monitors -->
 
                         <!-- Actions -->
-                        <div x-show="!$store.settings.preparePackageReady" class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
+                        <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
                             <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
                                 Cancel
                             </button>
@@ -2105,12 +2407,6 @@
                             </button>
                         </div>
 
-                        <!-- Close when done -->
-                        <div x-show="$store.settings.preparePackageReady" class="flex justify-end mt-6 pt-4 border-t border-gray-700">
-                            <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
-                                Close
-                            </button>
-                        </div>
                     </div>
                 </div>
 

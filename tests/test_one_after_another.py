@@ -163,7 +163,7 @@ class ScheduledMemory(unittest.TestCase):
         for target, name, value in (
                 (workflow_service, "create_automation_run", create),
                 (workflow_service, "update_run_status", status),
-                (workflow_service, "add_log_to_run", lambda rid, m, l="info": self.logs.append((rid, m))),
+                (workflow_service, "add_log_to_run", lambda rid, m, l="info", **_k: self.logs.append((rid, m))),
                 (workflow_service, "register_cancel_event", lambda rid: self.stop),
                 (workflow_service, "unregister_cancel", lambda rid: None),
                 (pm, "run_memory_pipeline", pipeline),

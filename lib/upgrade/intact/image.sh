@@ -139,15 +139,24 @@ _intact_bring_up() {
 # an error and keeps its old, working version; it never rolls the backend back.
 _INTACT_SIDECARS_MOVED=()
 _intact_move_sidecars() {
-    local spec env_var mod prefix repo cfg_key v cur envf rc=0
+    local spec env_var mod prefix repo cfg_key ctr v cur envf img created rc=0
     _INTACT_SIDECARS_MOVED=()
-    for spec in "TUSD_VERSION:backend:tusd-:tusproject/tusd:backend_tusd" \
-                "NGINX_VERSION:nginx:intact-nginx-:nginx:nginx"; do
-        IFS=: read -r env_var mod prefix repo cfg_key <<<"$spec"
+    for spec in "TUSD_VERSION:backend:tusd-:tusproject/tusd:backend_tusd:intact_tusd" \
+                "NGINX_VERSION:nginx:intact-nginx-:nginx:nginx:intact_nginx"; do
+        IFS=: read -r env_var mod prefix repo cfg_key ctr <<<"$spec"
         v="$(_intact_pkg_image_version "$prefix" | head -1)"
         [[ -n "$v" ]] || continue          # package carries none: keep the box's pin
         envf="${SCRIPT_DIR}/modules/${mod}/.env"
         cur="$(read_env_var "$envf" "$env_var" 2>/dev/null || echo '')"
+        # No pin on the box: modules/nginx ships no .env, and lib/config.sh
+        # only writes one when config.yaml has versions.nginx -- which releases
+        # before 20261021 never had (intact_nginx ran a floating nginx:alpine).
+        # The running container's tag is then the version to revert to, so a
+        # new nginx that does not serve goes back to exactly what served.
+        if [[ -z "$cur" ]]; then
+            img="$("${DOCKER_BIN:-docker}" inspect -f '{{.Config.Image}}' "$ctr" 2>/dev/null)"
+            [[ "$img" == "${repo}:"* ]] && cur="${img#"${repo}:"}"
+        fi
         [[ "$cur" == "$v" ]] && continue
         _u_image_present "${repo}:${v}" || _u_load_tars_matching "${prefix}${v}"
         if ! _u_image_present "${repo}:${v}"; then
@@ -155,9 +164,18 @@ _intact_move_sidecars() {
             rc=1
             continue
         fi
-        update_env_var "$envf" "$env_var" "$v" || { rc=1; continue; }
+        # update_env_var refuses a missing file. Without this, a box upgraded
+        # from 20260915 loaded nginx:1.31.7-alpine and then logged "Env file
+        # not found" and stayed on nginx:alpine. Observed 2026-10-28.
+        created=0
+        if [[ ! -f "$envf" ]]; then
+            : > "$envf" || { log_error "  could not create ${envf}"; rc=1; continue; }
+            created=1
+        fi
+        update_env_var "$envf" "$env_var" "$v" || {
+            (( created )) && rm -f "$envf"; rc=1; continue; }
         _pin_module_version "$cfg_key" "$v" || true
-        _INTACT_SIDECARS_MOVED+=("${envf}|${env_var}|${cur}|${cfg_key}")
+        _INTACT_SIDECARS_MOVED+=("${envf}|${env_var}|${cur}|${cfg_key}|${created}")
         log_info "  sidecar pin ${env_var}: ${cur:-unset} -> ${v} (from the package)"
     done
     return $rc
@@ -190,10 +208,15 @@ _intact_sidecars_or_revert() {
         return 0
     fi
     log_error "  nginx or tusd is not serving on the new version(s); putting the old pins back"
-    local m envf env_var old cfg_key
+    local m envf env_var old cfg_key created
     for m in "${_INTACT_SIDECARS_MOVED[@]}"; do
-        IFS='|' read -r envf env_var old cfg_key <<<"$m"
-        [[ -n "$old" ]] || continue
+        IFS='|' read -r envf env_var old cfg_key created <<<"$m"
+        if [[ -z "$old" ]]; then
+            # Nothing known to go back to. A .env this run created is removed,
+            # so the file is as it was before the upgrade touched it.
+            [[ "$created" == "1" ]] && rm -f "$envf" && log_error "    removed ${envf}"
+            continue
+        fi
         update_env_var "$envf" "$env_var" "$old" || true
         _pin_module_version "$cfg_key" "$old" || true
         log_error "    ${env_var} -> ${old}"

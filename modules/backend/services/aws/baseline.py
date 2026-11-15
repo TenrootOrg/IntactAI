@@ -141,6 +141,7 @@ def _detect_account(account, rows, persist, log, _finding) -> List[Dict[str, Any
     regions = base.setdefault("regions", {})
     acct_first = base.get("first")
     out, flagged = [], set()
+    per_day: Dict[tuple, tuple] = {}
 
     for t, r in rows:
         who, person = _who(r)
@@ -155,16 +156,25 @@ def _detect_account(account, rows, persist, log, _finding) -> List[Dict[str, Any
         console = "console" in str(r.get("userAgent") or "").lower() or str(r.get("eventName")) == "ConsoleLogin"
 
         net = _net(r.get("sourceIPAddress")) if person else None
-        if net and not _seen(me["nets"], net, t) and mature and (who, "net", net) not in flagged \
+        if net and not _seen(me["nets"], net, t) and mature \
                 and len(me["nets"]) > 1:              # a person with ONE known network so far: no "normal" yet
-            flagged.add((who, "net", net))
+            # ONE row per person per day: a leaked key used from hundreds of networks made
+            # 720 rows on a public dataset (2026-10-26); the day's row counts them instead
             sensitive = write and str(r.get("eventSource")) in SENSITIVE_SOURCES
-            out.append(_finding(
-                "AWS Person Active From A New Network", "medium" if sensitive else "low",
-                f"{_label(who)} {'made a sensitive change' if sensitive else 'acted'} from {r.get('sourceIPAddress')} "
-                f"(network {net}), never seen for them in {int((t - me['first']) // 86400)} days of history"
-                + (" (console)" if console else "") + f": {r.get('eventName')}",
-                r, mitre=("T1078.004",)))
+            day = (who, str(r.get("eventTime"))[:10])
+            if day in per_day:
+                per_day[day][1].add(net)
+                if sensitive:
+                    per_day[day][0]["severity"] = "medium"
+            else:
+                f = _finding(
+                    "AWS Person Active From A New Network", "medium" if sensitive else "low",
+                    f"{_label(who)} {'made a sensitive change' if sensitive else 'acted'} from {r.get('sourceIPAddress')} "
+                    f"(network {net}), never seen for them in {int((t - me['first']) // 86400)} days of history"
+                    + (" (console)" if console else "") + f": {r.get('eventName')}",
+                    r, mitre=("T1078.004",))
+                per_day[day] = (f, {net})
+                out.append(f)
 
         if write and str(r.get("eventSource")) in SENSITIVE_SOURCES:
             api = f"{r.get('eventSource', '').split('.')[0]}:{r.get('eventName')}"
@@ -188,6 +198,9 @@ def _detect_account(account, rows, persist, log, _finding) -> List[Dict[str, Any
                     f"the account had only used {', '.join(sorted(k for k in regions if k != reg))[:200]}",
                     r, mitre=("T1535",)))
 
+    for f, nets in per_day.values():
+        if len(nets) > 1:
+            f["rule_description"] += f" -- {len(nets)} new networks for them that day"
     if persist:
         base["first"] = acct_first
         base["updated"] = datetime.now(timezone.utc).isoformat()

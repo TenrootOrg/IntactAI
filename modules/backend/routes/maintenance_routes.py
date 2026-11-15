@@ -107,6 +107,11 @@ def test_openrouter_models():
         key = (ol.get("api_key") if (ol.get("provider") or "") == "openrouter" else "") \
             or (dmc.get("api_key") if (dmc.get("provider") or "openrouter") == "openrouter" else "")
         if not key:
+            # The OpenRouter key shared with Settings -> Timesketch, so its
+            # "Update catalog" button tests models on a Timesketch-only key.
+            from services import openrouter_key
+            key = openrouter_key.get()
+        if not key:
             return jsonify({"success": False, "error": "needs an OpenRouter API key (the AI model's or the decision model's)"}), 400
         if model_probe.busy():
             return jsonify({"success": False, "error": "a catalog test is already running — "
@@ -201,6 +206,9 @@ def download_velociraptor_tools():
                 )
                 if result.get('success'):
                     add_log_to_run(run_id, f"Tool download completed: {result.get('summary', '')}", "success")
+                    # The tools were registered in root; give every other org the same files.
+                    from services.velociraptor_clients import sync_tools_to_orgs
+                    sync_tools_to_orgs(log=lambda m: add_log_to_run(run_id, m, "info"))
                     update_run_status(run_id, "completed", progress=100)
                 else:
                     add_log_to_run(run_id, f"Tool download failed: {result.get('error', 'Unknown')}", "error")
@@ -405,9 +413,31 @@ def _purge_kb_orphans() -> int:
         return 0
 
 
+def _refuse_during_upgrade():
+    """(response, 409) while an upgrade is in flight, else None.
+
+    A purge wipes data/tmp -- the upgrade lock file (a new one is a new inode,
+    so a second upgrade could then start), the run's log, its .done.json and
+    the rollback snapshots -- and can prune images loaded but not yet started.
+    Refused whole rather than per section: almost every section touches
+    something a live upgrade is using."""
+    from services import upgrade_launcher
+    blocking = upgrade_launcher.blocking_upgrade_run()
+    if not blocking:
+        return None
+    return jsonify({
+        "error": "An upgrade is running. Purge is disabled until it finishes "
+                 "(or Stop it first).",
+        "blocking_run_id": blocking,
+    }), 409
+
+
 @maintenance_bp.route('/api/maintenance/purge', methods=['POST'])
 def run_system_purge():
     """Purge all accumulated data: workflows, reports, uploads, temp files, Velociraptor hunt data."""
+    refused = _refuse_during_upgrade()
+    if refused:
+        return refused
     run_id = create_automation_run(
         automation_type="system_purge",
         name="System Purge",
@@ -602,6 +632,7 @@ def run_system_purge():
                     add_log_to_run(
                         run_id,
                         f"  Deleted {res.get('hunts', 0)} hunts, {res.get('flows', 0)} flows, "
+                        f"{res.get('server_flows', 0)} server-artifact flows, "
                         f"{res.get('data_files', 0)} result files, "
                         f"{res.get('monitoring', 0)} monitoring files",
                         "info",
@@ -936,7 +967,7 @@ def _scan_report_downloads():
 # server_artifacts/Custom.Elastic.Flows.Upload (server-side output no section
 # touches) and 1.1GB was one client's own directory. An estimate that counts what
 # will still be there after the run is worse than no estimate.
-_VELO_PURGED_PATHS = ("hunts", "clients")
+_VELO_PURGED_PATHS = ("hunts", "clients", "orgs")   # orgs/<id>/ holds each other org's
 
 
 def _scan_velociraptor():
@@ -955,7 +986,7 @@ def _scan_velociraptor():
             size += int(line.split()[0])
         except (ValueError, IndexError):
             continue
-    return size, "hunts + flows + monitoring (clients and server artifacts are kept)"
+    return size, "hunts + flows + monitoring + server-artifact flows (clients and the client MSI builds are kept)"
 
 
 def _es_base() -> str:
@@ -1326,7 +1357,7 @@ def _purge_velociraptor(run_id):
     enrolled. Delegates to the gRPC-API purge in velociraptor_service — that
     runs in the proper server context (the old `docker exec … query` CLI saw 0
     hunts and 0 clients, so it silently freed nothing) and uses Velociraptor's
-    own flow_delete/hunt_delete/file_store_delete primitives instead of an
+    own delete_flow/hunt_delete plugins and file_store_delete instead of an
     index-corrupting `rm -rf`."""
     from services.velociraptor_service import purge_velociraptor_data
 
@@ -1341,6 +1372,7 @@ def _purge_velociraptor(run_id):
     after = _scan_velociraptor()[0]
     detail = (
         f"{res.get('hunts', 0)} hunts, {res.get('flows', 0)} flows, "
+        f"{res.get('server_flows', 0)} server-artifact flows, "
         f"{res.get('data_files', 0)} result files, "
         f"{res.get('monitoring', 0)} monitoring files"
     )
@@ -1797,6 +1829,9 @@ def purge_selected_sections():
     unknown = [s for s in requested if s not in known]
     if unknown:
         return jsonify({"error": f"unknown sections: {unknown}"}), 400
+    refused = _refuse_during_upgrade()
+    if refused:
+        return refused
 
     run_id = create_automation_run(
         automation_type="system_purge",

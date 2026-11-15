@@ -14,6 +14,7 @@ document.addEventListener('alpine:init', () => {
         // index.html).
         installedCount: 0,
         onlineClientCount: 0,
+        clientsByOrg: "",       // "root 1/2 · intact-test 1/1" when there is more than one org
 
         async checkAll() {
             try {
@@ -41,14 +42,13 @@ document.addEventListener('alpine:init', () => {
                 }
             } catch (e) {
                 console.error('Error checking service status:', e);
-                // Mark all as not_installed if backend is unreachable —
-                // we can't tell the difference between "stopped" and
-                // "never created" without a docker ps reply, so we
-                // conservatively assume nothing is installed (worst
-                // case: the dashboard hides Total card briefly until
-                // the next successful poll).
+                // Unreachable (Wi-Fi/VPN drop, laptop wake, nginx restarting)
+                // says nothing about the containers. Overwriting with
+                // 'not_installed' hid every module's sidebar entry and Settings
+                // tab until the next poll; keep the last answer instead, and
+                // 'checking' (which has() treats as present) for one we never had.
                 for (const serviceId in window.services) {
-                    this.statuses[serviceId] = 'not_installed';
+                    this.statuses[serviceId] = this.statuses[serviceId] || 'checking';
                 }
             }
             this.updateStats();
@@ -103,6 +103,11 @@ document.addEventListener('alpine:init', () => {
                     const s = await summary.json();
                     this.clientCount = s.total || 0;
                     this.onlineClientCount = s.online || 0;
+                    // Every Velociraptor org is counted; with more than one, the
+                    // card says how they split ("root 1/2 · intact-test 1/1").
+                    const orgs = s.by_org || [];
+                    this.clientsByOrg = orgs.length > 1
+                        ? orgs.map(o => `${o.name} ${o.online}/${o.total}`).join(' · ') : '';
                     return;
                 }
                 // 404 = a backend older than the summary route (mid-upgrade): fall

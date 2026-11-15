@@ -11,7 +11,8 @@ import json
 from types import SimpleNamespace as _SimpleNS
 
 from . import severity as sev, keys
-from .correlate import in_window, finding_in_window, _assets_of, _host_label, _detection_name
+from .correlate import (in_window, finding_in_window, _assets_of, _host_label, _detection_name,
+                        _wm_new_activity)
 
 
 def fmt_ts(v) -> str:
@@ -639,19 +640,42 @@ def report_mode_banner(altitude, zt, *, mode="time", total_findings=None,
             f"timeline; open one to go deeper.{extra}_")
 
 
-def analyst_verdict_map(dispositions=None, validations=None) -> dict:
-    """finding id -> the analyst's verdict ("true_positive" / "false_positive" /
-    "known"), from chat dispositions and Timeline validations (the latter win)."""
+def analyst_verdicts(dispositions=None, validations=None, graph=None) -> dict:
+    """finding id -> {"status", "watermark"}: the analyst's verdict from chat /
+    checklist dispositions and Timeline validations (the latter win). With `graph`,
+    a benign verdict (known / false_positive) whose watermark shows new activity
+    since is dropped -- the same re-open rule the Timeline and the fuse
+    (correlate._apply_dispositions) apply. Without it the report still listed a
+    re-opened finding as dismissed while the Timeline and risk had it active."""
+    wm = {}
+    for f in (graph.findings if graph is not None else []):
+        for i in f.ids():
+            wm[i] = f.watermark()
+        for p in getattr(f, "parts", None) or []:
+            for i in (p.get("ids") or [p["id"]]):
+                wm[i] = p.get("wm") or ""
     out = {}
     for x in dispositions or []:
-        v = (x.get("verdict") or "").lower()
         if x.get("target"):
-            out[x["target"]] = ("true_positive" if v == "malicious" else
-                                "known" if x.get("attribution") == "it_admin" else "false_positive")
+            v = (x.get("verdict") or "").lower()
+            out[x["target"]] = {"status": ("true_positive" if v == "malicious" else
+                                           "known" if x.get("attribution") == "it_admin"
+                                           else "false_positive"),
+                                "watermark": x.get("watermark")}
     for v in validations or []:
         if v.get("finding_id") and v.get("status") in ("true_positive", "false_positive", "known"):
-            out[v["finding_id"]] = v["status"]
+            out[v["finding_id"]] = {"status": v["status"], "watermark": v.get("watermark")}
+    if graph is not None:
+        out = {k: r for k, r in out.items()
+               if not (r["status"] in ("known", "false_positive")
+                       and _wm_new_activity(r.get("watermark"), wm.get(k, "")))}
     return out
+
+
+def analyst_verdict_map(dispositions=None, validations=None, graph=None) -> dict:
+    """finding id -> the analyst's verdict ("true_positive" / "false_positive" /
+    "known"); see analyst_verdicts."""
+    return {k: r["status"] for k, r in analyst_verdicts(dispositions, validations, graph).items()}
 
 
 def row_verdict(f, verdicts):
@@ -778,7 +802,7 @@ def phases_md(graph, zt, *, min_severity="informational", eff_detail="summary",
     if not rows:
         return ""
     names, bodies = dict(names or {}), dict(bodies or {})
-    verdicts = analyst_verdict_map(dispositions, validations)
+    verdicts = analyst_verdict_map(dispositions, validations, graph)
     people = []
     try:
         from .identities import resolve_identities, person_findings
@@ -2321,19 +2345,10 @@ def _analyst_validations_md(graph, dispositions, validations) -> str:
     the Timeline tab."""
     title_of = {**part_titles(graph), **{f.id: f.title for f in graph.findings}}
     buckets = {"true_positive": [], "false_positive": [], "known": []}
-    seen = set()
-    for v in (validations or []):
-        fid, st = v.get("finding_id"), v.get("status")
-        if st in buckets and fid not in seen:
-            seen.add(fid)
-            buckets[st].append(title_of.get(fid, str(fid)))
-    for d in (dispositions or []):                 # chat-driven triage not in the timeline
-        tgt = d.get("target")
-        if tgt in seen:
-            continue
-        seen.add(tgt)
-        buckets["known" if d.get("attribution") == "it_admin" else "false_positive"].append(
-            title_of.get(tgt, str(tgt)))
+    # One source with the Timeline: a re-opened verdict is not listed as dismissed,
+    # and a chat "malicious" lands under True positive (it used to fall into FP).
+    for fid, r in analyst_verdicts(dispositions, validations, graph).items():
+        buckets[r["status"]].append(title_of.get(fid, str(fid)))
     people = identity_verdict_lines(graph)
     # Events the analyst added by hand ("IT pushed a GPO at 14:05"). They reached
     # every model call but not this report — the one an air-gapped box writes.

@@ -320,12 +320,18 @@ function renderBlueprintCard(bp) {
                 </div>
             </div>
             <div class="flex gap-2 ml-4">
-                <button onclick="editBlueprint('${escapeJsAttr(bp.id)}', '${actualType}')" class="text-xs bg-blue-700 hover:bg-blue-600 px-3 py-1.5 rounded">Edit</button>
+                ${!isDefault ? `<button onclick="editBlueprint('${escapeJsAttr(bp.id)}', '${actualType}')" class="text-xs bg-blue-700 hover:bg-blue-600 px-3 py-1.5 rounded">Edit</button>` : ''}
+                <button onclick="editBlueprint('${escapeJsAttr(bp.id)}', '${actualType}', true)" ${isDefault ? `title="${DEFAULT_BLUEPRINT_READONLY_HINT}"` : ''} class="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded">Duplicate</button>
                 ${!isDefault ? `<button onclick="deleteBlueprintById('${escapeJsAttr(bp.id)}', '${actualType}')" class="text-xs bg-red-700 hover:bg-red-600 px-3 py-1.5 rounded">Delete</button>` : ''}
             </div>
         </div>
     </div>`;
 }
+
+// Defaults are re-synced from YAML on every backend start, so an edit to one
+// reverted silently on the next restart (QA D9). The backend now refuses it;
+// the card offers Duplicate instead, which opens the create form pre-filled.
+const DEFAULT_BLUEPRINT_READONLY_HINT = 'Default blueprints cannot be edited - duplicate it to make your own';
 
 // Track which type is being edited in the modal
 window.currentBlueprintEditType = 'velociraptor';
@@ -417,15 +423,17 @@ function closeBlueprintModal() {
     document.getElementById('blueprint-modal').classList.add('hidden');
 }
 
-async function editBlueprint(blueprintId, type) {
+async function editBlueprint(blueprintId, type, duplicate = false) {
     window.currentBlueprintEditType = type || 'velociraptor';
     const bp = await getBlueprintById(blueprintId, type);
     if (!bp) return;
 
+    // Duplicate = the same pre-filled form with no edit id, so Save POSTs a new
+    // custom blueprint of the same type.
     document.getElementById('blueprint-modal').classList.remove('hidden');
-    document.getElementById('blueprint-modal-title').textContent = 'Edit Blueprint: ' + bp.name;
-    document.getElementById('blueprint-edit-id').value = bp.id;
-    document.getElementById('blueprint-name').value = bp.name || '';
+    document.getElementById('blueprint-modal-title').textContent = (duplicate ? 'Duplicate Blueprint: ' : 'Edit Blueprint: ') + bp.name;
+    document.getElementById('blueprint-edit-id').value = duplicate ? '' : bp.id;
+    document.getElementById('blueprint-name').value = duplicate ? `${bp.name || ''} (copy)` : (bp.name || '');
     document.getElementById('blueprint-description').value = bp.description || '';
 
     // Clear search box
@@ -699,7 +707,12 @@ function toggleHasherSize() {
     }
 }
 
+// A double-click on Save (or a second click during a slow save) POSTed twice
+// and created two identical blueprints (QA F13).
+let _blueprintSaving = false;
+
 async function saveBlueprintFromModal() {
+    if (_blueprintSaving) return;
     const editId = document.getElementById('blueprint-edit-id').value;
     const name = document.getElementById('blueprint-name').value.trim();
     const description = document.getElementById('blueprint-description').value.trim();
@@ -775,6 +788,7 @@ async function saveBlueprintFromModal() {
         data = { name, description, artifacts, settings };
     }
 
+    _blueprintSaving = true;
     try {
         const url = editId ? `/api/blueprints/${type}/${editId}` : `/api/blueprints/${type}`;
         const method = editId ? 'PUT' : 'POST';
@@ -801,6 +815,8 @@ async function saveBlueprintFromModal() {
         }
     } catch (error) {
         alert('Error: ' + error.message);
+    } finally {
+        _blueprintSaving = false;
     }
 }
 

@@ -151,7 +151,10 @@ def _reconcile_velociraptor_hunt(run):
     if not hunt_id:
         return
     from services.workflow_service import update_run_status
-    if _hunt_registered_cached(hunt_id):
+    from services import velo_org        # the run's org, not the polling browser's
+    with velo_org.use(velo_org.of_run(run)):
+        registered = _hunt_registered_cached(hunt_id)
+    if registered:
         update_run_status(run.get("run_id", run.get("id")), "completed", progress=100)
         run["status"] = "completed"
         run["progress"] = 100
@@ -498,8 +501,10 @@ def recollect(run_id):
                                      "run.", "busy": True}), 409
         _recollecting.add(run_id)
 
-    threading.Thread(target=_recollect_worker, args=(run_id, run),
-                     daemon=True, name=f"recollect-{run_id}").start()
+    from services import velo_org        # re-read in the run's org, not the browser's
+    with velo_org.use(velo_org.of_run(run)):
+        threading.Thread(target=_recollect_worker, args=(run_id, run),
+                         daemon=True, name=f"recollect-{run_id}").start()
     return jsonify({"success": True, "run_id": run_id,
                     "message": "Re-collecting from Velociraptor — follow the "
                                "run's log."}), 202
@@ -512,7 +517,9 @@ def stop_automation(run_id):
     run = get_automation_run(run_id)
     if not run or not _run_visible_in_active_workspace(run):
         return jsonify({"error": f"Automation run {run_id} not found"}), 404
-    if run.get('status') not in ('running', 'pending'):
+    # 'uploaded' too: an AWS/Azure offline upload nobody analyses never ends on
+    # its own, and refusing Stop left it in the list for ever.
+    if run.get('status') not in ('running', 'pending', 'uploaded'):
         return jsonify({"error": f"Cannot stop workflow in '{run.get('status')}' state"}), 400
 
     # POINT OF NO RETURN: an upgrade that has committed Phase 1 cannot be
@@ -540,7 +547,10 @@ def stop_automation(run_id):
     # Phase 2 could bring the modules up to match it. Upgrades run on the
     # host now and have no phases, so there is no half-applied state for a
     # stop to strand.
-    request_stop(run_id)
+    if not request_stop(run_id):
+        # It finished between the check above and the Stop; its result stands.
+        run = get_automation_run(run_id) or {}
+        return jsonify({"error": f"Cannot stop workflow in '{run.get('status')}' state"}), 409
     return jsonify({"status": "cancelled", "run_id": run_id})
 
 

@@ -24,7 +24,6 @@ from services.vql_safety import is_valid_client_id, is_valid_flow_id
 velociraptor_api_config = None
 _api_config_lock = threading.Lock()
 _API_CONFIG_KEYS = ("ca_certificate", "client_private_key", "client_cert", "api_connection_string")
-_SHARED_CONFIG_COPY = "/tmp/api.config.yaml"
 _CONNECT_CHECK_SECONDS = 5
 
 def get_clients_from_snapshot(include_offline=False):
@@ -203,6 +202,11 @@ def _decode_client_info(info, client_id):
     raise ValueError(f"{client_id}: info is not a ClientInfo record")
 
 
+def _org_snapshot_path():
+    from services import velo_org
+    return VELOCIRAPTOR_SNAPSHOT_PATH.replace("/var./", velo_org.datastore(), 1)
+
+
 def get_clients_from_snapshot_file(include_offline=True):
     """Read clients from Velociraptor snapshot file (fallback method only).
 
@@ -223,7 +227,7 @@ def get_clients_from_snapshot_file(include_offline=True):
         print("[CLIENT-LIST] Using fallback snapshot file method...", flush=True)
         result = subprocess.run([
             "docker", "exec", VELOCIRAPTOR_CONTAINER,
-            "cat", VELOCIRAPTOR_SNAPSHOT_PATH
+            "cat", _org_snapshot_path()
         ], capture_output=True, text=True, timeout=10)
     except Exception as e:
         print(f"[CLIENT-LIST] Error reading snapshot: {e}", flush=True)
@@ -298,25 +302,10 @@ def load_velociraptor_api_config(stale=None):
                 print("[CONFIG] ✗ API config is incomplete", flush=True)
                 return None
             velociraptor_api_config = config
-            _refresh_shared_config_copy(result.stdout)
             return config
         except Exception as e:
             print(f"[CONFIG] ✗ Exception loading API config: {e}", flush=True)
             return None
-
-
-def _refresh_shared_config_copy(text):
-    """tools_download_service and msi_generator_service still read their own copy
-    of /tmp/api.config.yaml (written by them only when missing), so keep it current
-    -- replaced atomically, never truncated in place, so a reader can't see it half
-    written. ponytail: drop once both use setup_velociraptor_connection()."""
-    try:
-        tmp = _SHARED_CONFIG_COPY + ".new"
-        with open(tmp, "w") as f:
-            f.write(text)
-        os.replace(tmp, _SHARED_CONFIG_COPY)
-    except OSError as e:
-        print(f"[CONFIG] Could not refresh {_SHARED_CONFIG_COPY}: {e}", flush=True)
 
 
 def _secure_channel(config):
@@ -359,7 +348,9 @@ def setup_velociraptor_connection():
                 channel.close()
                 config, channel = fresh, _secure_channel(fresh)
         print(f"[GRPC] Secure channel established to {config['api_connection_string']}", flush=True)
-        return channel
+        # Every query on it runs in the operator's Velociraptor org (velo_org).
+        from services import velo_org
+        return velo_org.wrap(channel)
 
     except Exception as e:
         print(f"[GRPC] Connection setup failed: {e}", flush=True)
@@ -773,7 +764,8 @@ def export_flow_to_zip(client_id: str, flow_id: str, out_path: str, logger=None,
     out_dir = os.path.dirname(out_path) or "/tmp"
     os.makedirs(out_dir, exist_ok=True)
 
-    src_dir = f"/var./downloads/{client_id}/{flow_id}"
+    from services import velo_org        # another org's downloads live under /var./orgs/<id>/
+    src_dir = f"{velo_org.datastore()}downloads/{client_id}/{flow_id}"
     locate_cmd = [
         "docker", "exec", VELOCIRAPTOR_CONTAINER, "sh", "-c",
         f"ls -1 {src_dir}/*.zip 2>/dev/null | head -1",
@@ -835,8 +827,9 @@ def cleanup_flow_export(client_id: str, flow_id: str, logger=None) -> None:
         else:
             print(f"[VELO-EXPORT] [{level}] {msg}", flush=True)
 
+    from services import velo_org
     script = (
-        f"rm -rf /var./downloads/{client_id}/{flow_id} 2>/dev/null || true"
+        f"rm -rf {velo_org.datastore()}downloads/{client_id}/{flow_id} 2>/dev/null || true"
     )
     # docker exec into the running container instead of spinning up an
     # alpine sidecar — same reasoning as export_flow_to_zip(): airgapped
@@ -987,7 +980,47 @@ def hunt_tool_preflight(logger):
         pass
 
 
-def purge_velociraptor_data(logger=None, delete_flows=True,
+def purge_velociraptor_data(logger=None, delete_flows=True, delete_monitoring=True,
+                            delete_hunts=True):
+    """System purge, in EVERY Velociraptor org (each has its own clients, hunts
+    and flows): the per-org work is _purge_org below, and the counts are summed.
+    The org list is read in root; if it can't be, only root is purged."""
+    from services import velo_org
+    orgs = [""]
+    try:
+        with velo_org.root():
+            channel = setup_velociraptor_connection()
+            if channel:
+                try:
+                    req = api_pb2.VQLCollectorArgs(max_wait=10, max_row=1000, Query=[
+                        api_pb2.VQLRequest(VQL="SELECT OrgId AS id FROM orgs()")])
+                    for resp in api_pb2_grpc.APIStub(channel).Query(req, timeout=30):
+                        for o in (json.loads(resp.Response) if resp.Response else []):
+                            if velo_org.clean(o.get("id")):
+                                orgs.append(o["id"])
+                finally:
+                    channel.close()
+    except Exception as e:
+        print(f"[VELO-PURGE] could not list orgs, purging root only: {e}", flush=True)
+    total = None
+    for org in orgs:
+        if logger and len(orgs) > 1:
+            try:
+                logger(f"Org {org or 'root'}:", "info")
+            except Exception:
+                pass
+        with velo_org.use(org):
+            res = _purge_org(logger=logger, delete_flows=delete_flows,
+                             delete_monitoring=delete_monitoring, delete_hunts=delete_hunts)
+        if total is None:
+            total = res
+        else:
+            for k, v in res.items():
+                total[k] = total[k] + v if k != "errors" else total[k] + [f"{org}: {e}" for e in v]
+    return total
+
+
+def _purge_org(logger=None, delete_flows=True,
                             delete_monitoring=True, delete_hunts=True):
     """Safely remove COLLECTED DATA from the Velociraptor server while keeping
     every client enrolled.
@@ -998,10 +1031,27 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
     stays consistent. We deliberately do NOT `rm -rf` the datastore folders:
     that leaves dangling flow/hunt index entries and can corrupt the store.
 
-    - flows:      flow_delete() for every flow of every client. This is the
-                  bulk of the datastore (clients/<id>/artifacts/).
+    - flows:      the delete_flow() PLUGIN for every flow of every client. This
+                  is the bulk of the datastore (clients/<id>/artifacts/).
+    - server flows: delete_flow() for the server artifacts' flows (the GUI's
+                  Server Artifacts list: every offline import, cancel-hunt,
+                  delete-client...), except the Server.Utils.Create* builders
+                  (Intact registers the client MSI from its flow's uploads) and
+                  anything still running.
     - monitoring: file_store_delete() over clients/<id>/monitoring[_logs]/**.
-    - hunts:      hunt_delete(really_do_it=true) for every hunt.
+    - hunts:      the hunt_delete() PLUGIN for every hunt.
+
+    delete_flow and hunt_delete are PLUGINS (SELECT * FROM delete_flow(...)).
+    This used to call them as functions -- flow_delete(...) AS deleted, a name
+    the server does not have, and hunt_delete(...) in a SELECT list. Both
+    returned null for every row and deleted nothing, while the rows were
+    counted as "deleted": a purge reported N hunts and flows gone and the GUI
+    still listed every one (QA 2026-11-08; checked on Velociraptor 0.77.3, whose
+    help() lists both as plugins). A len(list={ SELECT * FROM delete_flow(..) })
+    sub-query does not work either: it returned 0 and the flow stayed. Only
+    foreach(row=<ids>, query={ SELECT * FROM <plugin>(..) }) deleted (tested on
+    the box), and its rows are the deleted FILES, so GROUP BY the id counts
+    flows / hunts.
 
     Client identity (client_info/) and registration are untouched, so clients
     stay enrolled and visible — only their collected data is removed. The
@@ -1018,7 +1068,7 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         else:
             print(f"[VELO-PURGE] [{level}] {msg}", flush=True)
 
-    out = {"hunts": 0, "flows": 0, "data_files": 0, "monitoring": 0, "errors": []}
+    out = {"hunts": 0, "flows": 0, "server_flows": 0, "data_files": 0, "monitoring": 0, "errors": []}
     channel = setup_velociraptor_connection()
     if not channel:
         log("Could not connect to Velociraptor — skipping data purge", "warning")
@@ -1052,28 +1102,35 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
         if delete_hunts:
             try:
                 log("Deleting hunts…")
-                n = _count(
-                    "SELECT hunt_id, "
-                    "hunt_delete(hunt_id=hunt_id, really_do_it=true) AS deleted "
-                    "FROM hunts()",
+                # Counted as hunts before minus after: hunt_delete yields a row
+                # per deleted FILE, and a hunt no client ran yields none, so it
+                # was deleted but reported as 0 (checked on the box 2026-11-08).
+                listed = "SELECT hunt_id FROM hunts()"
+                before = _count(listed, timeout=120)
+                _count(
+                    "SELECT hunt_id FROM foreach("
+                    "row={ SELECT hunt_id FROM hunts() }, "
+                    "query={ SELECT hunt_id, * FROM hunt_delete(hunt_id=hunt_id, really_do_it=TRUE) })",
                     timeout=600,
                 )
-                out["hunts"] = n
+                out["hunts"] = max(0, before - _count(listed, timeout=120))
                 log(f"Deleted {out['hunts']} hunt(s)", "success")
             except Exception as e:
                 log(f"Hunt deletion error: {e}", "warning")
                 out["errors"].append(f"hunts: {e}")
 
-        # 2. Live flows — flow_delete removes the collection metadata + files.
+        # 2. Live flows — delete_flow removes the collection metadata + files.
         if delete_flows:
             try:
                 log("Deleting tracked flows…")
                 n = _count(
-                    "SELECT client_id, session_id, "
-                    "flow_delete(client_id=client_id, flow_id=session_id, really_do_it=true) AS deleted "
-                    "FROM foreach("
+                    "SELECT client_id, session_id FROM foreach("
                     "row={ SELECT client_id FROM clients() WHERE client_id != 'server' }, "
-                    "query={ SELECT client_id, session_id FROM flows(client_id=client_id) }, "
+                    "query={ SELECT client_id, session_id FROM foreach("
+                    "row={ SELECT session_id FROM flows(client_id=client_id) }, "
+                    "query={ SELECT client_id, session_id, * FROM delete_flow(client_id=client_id, "
+                    "flow_id=session_id, really_do_it=TRUE, sync=TRUE) }) "
+                    "GROUP BY session_id }, "
                     "workers=10)",
                     timeout=1800,
                 )
@@ -1082,6 +1139,32 @@ def purge_velociraptor_data(logger=None, delete_flows=True,
             except Exception as e:
                 log(f"Flow deletion error: {e}", "warning")
                 out["errors"].append(f"flows: {e}")
+
+            # 2b. Server-artifact flows. The query above skips the 'server'
+            #     pseudo-client, so every offline import (Server.Utils.
+            #     ImportCollection) and every cancel-hunt / delete-client stayed
+            #     in the GUI's Server Artifacts list after a purge (QA
+            #     2026-11-08; 71 of 79 on the dev box). Kept: the
+            #     Server.Utils.Create* builders -- the client MSI is registered
+            #     from its CreateMSI flow's uploads, so deleting that flow would
+            #     break the upgrade package -- and anything still running.
+            try:
+                log("Deleting server-artifact flows (imports, cancel-hunt, delete-client…)…")
+                n = _count(
+                    "SELECT session_id FROM foreach("
+                    "row={ SELECT session_id FROM flows(client_id='server') "
+                    "WHERE state != 'RUNNING' "
+                    "AND NOT join(array=request.artifacts, sep=',') =~ '^Server.Utils.Create' }, "
+                    "query={ SELECT session_id, * FROM delete_flow(client_id='server', "
+                    "flow_id=session_id, really_do_it=TRUE, sync=TRUE) }) "
+                    "GROUP BY session_id",
+                    timeout=600,
+                )
+                out["server_flows"] = n
+                log(f"Deleted {out['server_flows']} server-artifact flow(s)", "success")
+            except Exception as e:
+                log(f"Server flow deletion error: {e}", "warning")
+                out["errors"].append(f"server flows: {e}")
 
             # 3. Residual collected-result files. Hunt/flow deletion above
             #    leaves ORPHANED result files when the originating hunt/flow

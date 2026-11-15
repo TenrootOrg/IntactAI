@@ -89,21 +89,76 @@ def _save_config(config):
 def _load_cloud_config():
     """Load cloud configuration from database."""
     from services.file_storage_service import load_cloud_config
+    # deepcopy, not .copy(): _deep_merge writes into the nested aws/azure dicts,
+    # and a shallow copy shares them with the module-level defaults -- the saved
+    # secrets (and later the GET's mask) ended up in DEFAULT_CLOUD_CONFIG itself.
     try:
         saved = load_cloud_config()
         if saved:
-            config = DEFAULT_CLOUD_CONFIG.copy()
+            config = copy.deepcopy(DEFAULT_CLOUD_CONFIG)
             _deep_merge(config, saved)
             return config
     except Exception as e:
         print(f"Error loading cloud config: {e}")
-    return DEFAULT_CLOUD_CONFIG.copy()
+    return copy.deepcopy(DEFAULT_CLOUD_CONFIG)
+
+
+# Cloud secrets: masked the same way on every GET, and a masked value sent back
+# means "keep the stored one" on every PUT. GET /api/config returned them in
+# clear (QA 2026-11-08: the full AWS secret access key) while GET
+# /api/config/cloud masked them -- one rule now serves both endpoints.
+_CLOUD_SECRETS = (("aws", "secret_access_key", True), ("aws", "session_token", False),
+                  ("azure", "client_secret", False))
+
+
+def _mask_cloud(cloud):
+    """A copy of the cloud config with its secrets masked (last 4 shown where
+    the Cloud page has always shown them)."""
+    m = copy.deepcopy(cloud) if isinstance(cloud, dict) else {}
+    for section, field, tail in _CLOUD_SECRETS:
+        sec = m.get(section)
+        if isinstance(sec, dict) and sec.get(field):
+            v = str(sec[field])
+            sec[field] = '••••••••' + (v[-4:] if tail and len(v) > 4 else '')
+    return m
+
+
+def _keep_masked_cloud(incoming, stored):
+    """In place: every masked secret in `incoming` becomes the stored value."""
+    if not isinstance(incoming, dict):
+        return incoming
+    stored = stored or {}
+    for section, field, _tail in _CLOUD_SECRETS:
+        sec = incoming.get(section)
+        if isinstance(sec, dict) and str(sec.get(field) or '').startswith(_API_KEY_MASK_PREFIX):
+            sec[field] = (stored.get(section) or {}).get(field, '')
+    return incoming
+
+
+def _stored_online_key(incoming, stored):
+    """The real key behind a masked online_llm.api_key.
+
+    OpenRouter's is the key shared with Settings -> Timesketch
+    (services/openrouter_key.py). Any other provider's is the stored one only
+    while the stored config is for that same provider: the field holds ONE key,
+    so "keep the saved key" after switching provider (the old one still masked
+    on screen) used to hand an OpenRouter key to Anthropic, or the reverse.
+    """
+    provider = (incoming or {}).get('provider')
+    if provider == 'openrouter':
+        from services import openrouter_key
+        return openrouter_key.get()
+    stored = stored or {}
+    return stored.get('api_key', '') if stored.get('provider') == provider else ''
 
 
 def _save_cloud_config(config):
     """Save cloud configuration to database."""
     from services.file_storage_service import save_cloud_config
-    save_cloud_config(config)
+    # A failed save (e.g. the credentials could not be encrypted) must not read
+    # as "saved": the caller's error handler turns this into a 500.
+    if not save_cloud_config(config):
+        raise RuntimeError("the cloud settings could not be saved (see the backend log)")
 
 
 # =============================================================================
@@ -556,7 +611,7 @@ def test_llm_connection():
     on = agentic.get('online_llm') or {}
     if isinstance(on.get('api_key'), str) and on['api_key'].startswith(_API_KEY_MASK_PREFIX):
         on = dict(on)
-        on['api_key'] = ((cfg.get('agentic') or {}).get('online_llm') or {}).get('api_key', '')
+        on['api_key'] = _stored_online_key(on, (cfg.get('agentic') or {}).get('online_llm'))
         agentic['online_llm'] = on
 
     # One token is all this needs; the saved cap would otherwise let a test
@@ -653,7 +708,8 @@ def test_decision_model():
     if isinstance((agentic.get('online_llm') or {}).get('api_key'), str) and \
             agentic['online_llm']['api_key'].startswith(_API_KEY_MASK_PREFIX):
         agentic['online_llm'] = {**agentic['online_llm'],
-                                 'api_key': ((_load_config().get('agentic') or {}).get('online_llm') or {}).get('api_key', '')}
+                                 'api_key': _stored_online_key(agentic['online_llm'],
+                                                               (_load_config().get('agentic') or {}).get('online_llm'))}
     p = dm.provider(agentic)
     info = {"provider": p, "model": dm.model_name(agentic), "cloud": dm.PROVIDERS[p]["cloud"]}
     why = dm.why_inactive(agentic)
@@ -701,6 +757,17 @@ def get_config():
     """Get frontend configuration."""
     try:
         config = _load_config()
+        # OpenRouter's key is shared with Settings -> Timesketch. One entered
+        # only there is shown here too (masked below), flagged: it is not in
+        # force for Case Analysis until this section is saved -- see
+        # services/openrouter_key.py for why it is not filled in silently.
+        on = config.get('agentic', {}).get('online_llm', {})
+        if on.get('provider') == 'openrouter' and not on.get('api_key'):
+            from services import openrouter_key
+            shared = openrouter_key.get()
+            if shared:
+                on['api_key'] = shared
+                on['key_from_shared'] = True
         # Mask the LLM key the same way GET /api/config/cloud already masks
         # its cloud secrets — this endpoint previously returned it unmasked.
         if config.get('agentic', {}).get('online_llm', {}).get('api_key'):
@@ -712,6 +779,9 @@ def get_config():
             config = json.loads(json.dumps(config))
             key = config['agentic']['decision_model']['api_key']
             config['agentic']['decision_model']['api_key'] = '••••••••' + key[-4:] if len(key) > 4 else '••••••••'
+        # The cloud secrets: this endpoint returned them in clear (see _mask_cloud).
+        if 'cloud' in config:
+            config['cloud'] = _mask_cloud(config['cloud'])
         return jsonify(config)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -729,11 +799,19 @@ def save_config():
 
         # Don't overwrite the real key with the masked placeholder GET
         # returns — same protection /api/config/cloud's PUT already has.
-        key = config.get('agentic', {}).get('online_llm', {}).get('api_key', '')
-        if key.startswith('••••'):
-            existing = _load_config()
-            config['agentic']['online_llm']['api_key'] = \
-                existing.get('agentic', {}).get('online_llm', {}).get('api_key', '')
+        on = (config.get('agentic') or {}).get('online_llm')
+        if isinstance(on, dict):
+            on.pop('key_from_shared', None)          # a GET-only hint, never stored
+            if on.get('provider') == 'openrouter':
+                # The key shared with Settings -> Timesketch: masked keeps it,
+                # anything else replaces it for both sections. A body without
+                # the field is an API caller not touching it, not "remove it".
+                from services import openrouter_key
+                on['api_key'] = openrouter_key.save(on['api_key'] if 'api_key' in on
+                                                    else _API_KEY_MASK_PREFIX)
+            elif str(on.get('api_key') or '').startswith(_API_KEY_MASK_PREFIX):
+                on['api_key'] = _stored_online_key(
+                    on, (_load_config().get('agentic') or {}).get('online_llm'))
         # A Settings page cached from before the rename (2026-10) sends a `jev`
         # block filled with its own defaults (enabled: false): saving it would switch
         # the decision model off. Ignore it and keep what is stored. (An export
@@ -748,6 +826,10 @@ def save_config():
         dmc = config.get('agentic', {}).get('decision_model')
         if isinstance(dmc, dict) and str(dmc.get('api_key') or '').startswith('••••'):
             dmc['api_key'] = _stored_decision_key(dmc, config.get('agentic'))
+        # A caller that reads this config and saves it back whole now gets the
+        # cloud secrets masked: keep the stored ones rather than store the mask.
+        if isinstance(config.get('cloud'), dict):
+            _keep_masked_cloud(config['cloud'], _load_cloud_config())
 
         # Which AI settings were in force BEFORE this save, so a change can be told
         # apart from re-saving the same thing.
@@ -789,16 +871,11 @@ def save_config():
 def get_cloud_config():
     """Get cloud provider configuration."""
     try:
-        config = _load_cloud_config()
-        # Mask sensitive fields for GET requests
-        masked = config.copy()
-        if masked.get('aws', {}).get('secret_access_key'):
-            masked['aws']['secret_access_key'] = '••••••••' + masked['aws']['secret_access_key'][-4:]
-        if masked.get('aws', {}).get('session_token'):
-            masked['aws']['session_token'] = '••••••••'
-        if masked.get('azure', {}).get('client_secret'):
-            masked['azure']['client_secret'] = '••••••••'
-        return jsonify(masked)
+        from services.storage import cloud_secrets
+        cfg = _load_cloud_config()
+        out = _mask_cloud(cfg)
+        out.update(cloud_secrets.status(cfg))      # dates for Settings -> Cloud, never a credential
+        return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -815,12 +892,9 @@ def save_cloud_config_endpoint():
         existing = _load_cloud_config()
 
         # Don't overwrite with masked values
-        if config.get('aws', {}).get('secret_access_key', '').startswith('••••'):
-            config['aws']['secret_access_key'] = existing.get('aws', {}).get('secret_access_key', '')
-        if config.get('aws', {}).get('session_token') == '••••••••':
-            config['aws']['session_token'] = existing.get('aws', {}).get('session_token', '')
-        if config.get('azure', {}).get('client_secret') == '••••••••':
-            config['azure']['client_secret'] = existing.get('azure', {}).get('client_secret', '')
+        _keep_masked_cloud(config, existing)
+        # Shown, not stored: the expiry date is derived from saved-at + days.
+        config.pop('credentials_expire_at', None)
         # The AWS region is chosen on the AWS page and remembered by the scan --
         # a Settings save (maybe from a page opened before that scan) keeps it.
         if isinstance(config.get('aws'), dict):

@@ -45,6 +45,11 @@ class ClientManager {
 
         // Facet state.
         this.onlineOnly = options.onlineOnly !== undefined ? options.onlineOnly : true;
+        // Shown in red on every offline row when set (the scheduler: a client can be
+        // offline when the schedule is made and online when it runs, or not).
+        this.offlineNote = options.offlineNote || '';
+        // Shown in red instead of "No clients found" when the fleet is empty.
+        this.emptyNote = options.emptyNote || '';
         this.activeOs = new Set();
         this.activeLabels = new Set();
         this.search = '';
@@ -60,6 +65,16 @@ class ClientManager {
         this._refreshing = false;  // a refresh is in flight (repeat clicks ignored)
         this._refreshError = '';   // shown in the bar; the list itself is kept
         this._loadedAt = null;     // when the fleet was last fetched
+
+        // The Velociraptor org picker changed: this list is another org's fleet
+        // now. Drop the selection (those ids are not in the new org) and reload.
+        // Only a list that was ever loaded -- a page not opened yet loads its own.
+        if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('velo-org-changed', () => {
+            if (!this._listenerAttached) return;
+            this.selected.clear();
+            this._fireChange();
+            this.load();
+        });
     }
 
     /**
@@ -180,7 +195,9 @@ class ClientManager {
         this._renderFacetBar();
 
         if (this._clients.length === 0) {
-            container.innerHTML = '<p class="text-sm text-gray-500">No clients found</p>';
+            container.innerHTML = this.emptyNote
+                ? `<p class="text-sm" style="color:#f87171">${escapeHtml(this.emptyNote)}</p>`
+                : '<p class="text-sm text-gray-500">No clients found</p>';
             return;
         }
         if (shown.length === 0) {
@@ -236,6 +253,7 @@ class ClientManager {
                             <span class="text-xs text-gray-500">${safeOs}</span>
                             ${labelChips}
                         </div>
+                        ${!isOnline && this.offlineNote ? `<div class="text-xs" style="color:#f87171">${escapeHtml(this.offlineNote)}</div>` : ''}
                     </div>
                     <span class="text-xs text-gray-600 font-mono truncate">${safeClientId.substring(0, 12)}...</span>
                 </label>

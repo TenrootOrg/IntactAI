@@ -31,6 +31,22 @@ class _Stub:
             yield types.SimpleNamespace(Response=json.dumps(p), log="")
 
 
+class _FlowStub:
+    """A server holding one flow on C.1 whose every source() read is empty and
+    carries only a VQL log line -- what Velociraptor sends when the plugin fails."""
+    def __init__(self, sources, log):
+        self.sources, self.log = sources, log
+
+    def Query(self, req, timeout=None):
+        vql = req["Query"][0]
+        if "FROM clients()" in vql:
+            yield types.SimpleNamespace(Response=json.dumps([{"LocCid": "C.1", "LocHost": "HOST1"}]), log="")
+        elif "artifacts_with_results" in vql:
+            yield types.SimpleNamespace(Response=json.dumps([{"artifacts_with_results": self.sources}]), log="")
+        elif "FROM source(" in vql:
+            yield types.SimpleNamespace(Response="", log=self.log)
+
+
 class FetchInBatches(unittest.TestCase):
     def setUp(self):
         self._pb = _base.api_pb2
@@ -78,6 +94,49 @@ def _load_upload_routes():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+class EmptyReadsKeepVelociraptorsReason(unittest.TestCase):
+    """F.DB1MDRE9ATTNA: every source() read came back with 0 rows in ~4 ms and
+    the log said nothing about why. Velociraptor puts a plugin failure in the
+    response's `log` field, and the fetch loop never looked at it."""
+    def setUp(self):
+        from unittest import mock
+        self._pb = _base.api_pb2
+        _base.api_pb2 = types.SimpleNamespace(VQLCollectorArgs=lambda **kw: kw, VQLRequest=lambda VQL: VQL)
+        self.logs = []
+        self.stub = _FlowStub(["Windows.Hayabusa.Rules", "Windows.Forensics.SAM/Parsed"],
+                              "source: no such file\n")
+        self.patches = [
+            mock.patch.object(_base, "setup_velociraptor_connection",
+                              lambda: types.SimpleNamespace(close=lambda: None)),
+            mock.patch.object(_base.api_pb2_grpc, "APIStub", lambda ch: self.stub, create=True),
+            mock.patch.object(_base, "add_log_to_run",
+                              lambda rid, msg, level="info": self.logs.append((level, msg))),
+            mock.patch.object(_base, "_run_client_ids", lambda rid: []),
+        ]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        _base.api_pb2 = self._pb
+
+    def test_each_empty_read_is_reported_with_the_server_log(self):
+        empty = []
+        results, _, info = _base.get_existing_collection_results(
+            "run_1", flow_id="F.X", empty_reads=empty)
+        self.assertEqual({}, results)
+        self.assertIn("C.1", info)
+        self.assertEqual([("Windows.Hayabusa.Rules", ["source: no such file"]),
+                          ("Windows.Forensics.SAM/Parsed", ["source: no such file"])], empty)
+        warned = [m for lvl, m in self.logs if lvl == "warning" and "source: no such file" in m]
+        self.assertEqual(2, len(warned))
+
+    def test_the_kwarg_is_optional(self):
+        results, _, _ = _base.get_existing_collection_results("run_1", flow_id="F.X")
+        self.assertEqual({}, results)
 
 
 class ImportSaysWhatIsMissing(unittest.TestCase):

@@ -280,3 +280,8 @@ backups/
 # what lands in it. See docs/MEMORY_SYMBOLS_AIRGAP.md.
 data/volweb-symbols/*
 !data/volweb-symbols/.gitkeep
+
+# Data location moves (scripts/move-data.sh): runtime status, log, set-aside copies.
+/data-move-status.json
+/data-move.log
+/data.before-move-*/

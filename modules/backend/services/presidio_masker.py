@@ -342,7 +342,7 @@ def _image() -> str:
             return img
     except Exception:                                    # noqa: BLE001 — config/dep absent
         pass
-    return os.environ.get("PRESIDIO_IMAGE", "intact-presidio:2.2.364")
+    return os.environ.get("PRESIDIO_IMAGE", "intact-presidio:2.2.366")
 
 
 def _image_present() -> bool:

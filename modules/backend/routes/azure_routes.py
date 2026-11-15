@@ -332,7 +332,9 @@ def start_scan():
                 run_id=run_id,
                 azure_config=azure_config,
                 blueprint=blueprint,
-                options=options
+                options=options,
+                # Registered above and never handed on: Stop only relabelled the row.
+                cancel_event=cancel_event,
             )
 
             # Store and persist FIRST. Behind the cancel check, stopping a
@@ -353,7 +355,10 @@ def start_scan():
             if is_cancelled(run_id):
                 return
 
-            if result.get('status') == 'failed':
+            # The pipeline reports failure as 'error'. Checking only 'failed'
+            # let a crashed or all-sources-failed scan finish green; the
+            # offline path below already checks both.
+            if result.get('status') in ('failed', 'error'):
                 update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))
             else:
                 if not is_cancelled(run_id):

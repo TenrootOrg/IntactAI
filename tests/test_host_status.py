@@ -58,8 +58,8 @@ class Saved(unittest.TestCase):
 
 class VelociraptorIsolation(unittest.TestCase):
     def setUp(self):
-        store._VR_ISOLATED.update(at=0.0, ids=set())
-        self.addCleanup(store._VR_ISOLATED.update, at=0.0, ids=set())
+        store._VR_ISOLATED.clear()          # per Velociraptor org
+        self.addCleanup(store._VR_ISOLATED.clear)
 
     def _vr(self, fn):
         mod = types.SimpleNamespace(get_clients_from_snapshot=fn)

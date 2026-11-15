@@ -9,6 +9,12 @@
 > `store.get_case`), and `jev_relevance` stays a System type so past runs survive a
 > purge. **Jev is still the default model** (`jev-latest` via OpenRouter); the
 > sections below keep the original history.
+>
+> **Running decision models locally (air-gapped):** see
+> [AI_TECHNOLOGY_RESEARCH.md](AI_TECHNOLOGY_RESEARCH.md) — llama.cpp's
+> `/v1/systemone` speaks this same wire format, Apache-2.0 open models exist, and the
+> `local` provider here already targets it (research 2026-11-08; accuracy and CPU speed
+> still to be benchmarked).
 
 ## Jev — the default model
 

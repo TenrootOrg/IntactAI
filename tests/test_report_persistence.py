@@ -179,18 +179,18 @@ class AFailedWriteIsAnError(unittest.TestCase):
 
     def test_merge_raises_when_the_row_write_fails(self):
         ws = mock.Mock()
-        ws.get_automation_run.return_value = {"status": "completed"}
-        ws.update_run_status.return_value = False          # save_workflow said no
+        # C3: the merge writes details only, through the locked mutate_run_details.
+        ws.mutate_run_details.return_value = False         # save_workflow said no
         with mock.patch.object(store, "_ws", return_value=ws):
             with self.assertRaises(RuntimeError):
                 store._merge_case_details("case-1", {"report_md": "x"})
 
     def test_merge_is_silent_when_the_write_lands(self):
         ws = mock.Mock()
-        ws.get_automation_run.return_value = {"status": "completed"}
-        ws.update_run_status.return_value = True
+        ws.mutate_run_details.return_value = True
         with mock.patch.object(store, "_ws", return_value=ws):
             store._merge_case_details("case-1", {"report_md": "x"})   # must not raise
+        ws.update_run_status.assert_not_called()   # the case status is never put back
 
     def test_list_mutation_raises_when_the_write_fails(self):
         ws = mock.Mock()

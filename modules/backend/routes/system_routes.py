@@ -97,6 +97,39 @@ def get_intact_version():
     return jsonify(version_payload(os.environ.get('INTACT_PATH', '/app/workdir'),
                                    os.environ.get('BACKEND_VERSION')))
 
+# Public port of each tool: (key in the reply, config.yaml module, key, default).
+# Defaults are the compose defaults, so a config.yaml without these keys (every
+# box upgraded from before they existed) reports what nginx actually publishes.
+SERVICE_PORT_KEYS = (
+    ('kibana', 'elk', 'kibana_port', 5602),
+    ('portainer', 'portainer', 'port', 9444),
+    ('iris', 'iris', 'port', 8444),
+    ('timesketch', 'timesketch', 'port', 5443),
+    ('volweb', 'volweb', 'port', 8002),
+    ('velociraptor_agent', 'velociraptor', 'agent_port', 8000),
+)
+
+
+def service_ports_payload(cfg) -> dict:
+    """No Flask here either -- see tests/test_ui_service_ports.py."""
+    modules = (cfg or {}).get('modules') or {}
+    out = {}
+    for key, module, field, default in SERVICE_PORT_KEYS:
+        try:
+            port = int(((modules.get(module) or {}).get(field)))
+        except (TypeError, ValueError):
+            port = default
+        # A typo in config.yaml must not hand the dashboard a dead link.
+        out[key] = port if 0 < port < 65536 else default
+    return out
+
+
+@system_bp.route('/api/system/service-ports', methods=['GET'])
+def get_service_ports():
+    """The public ports the dashboard tiles open, from config.yaml modules.*."""
+    from config import load_main_config
+    return jsonify(service_ports_payload(load_main_config()))
+
 @system_bp.route('/api/system/actions', methods=['GET'])
 def get_system_actions():
     """System/admin run history — the runs tagged to the internal System workspace
@@ -123,6 +156,102 @@ def get_system_actions():
     # `sudo bash scripts/upgrade.sh --package`. Historical prepare_package runs stay in
     # the list as history; they simply have no download button.
     return jsonify({"actions": actions})
+
+# --- Network (config.yaml domain + modules.*.port; services/network_settings.py)
+@system_bp.route('/api/system/network', methods=['GET'])
+def network_get():
+    """The domain and each tool's public port as config.yaml has them now."""
+    from services import network_settings as ns
+    return jsonify(ns.current())
+
+
+@system_bp.route('/api/system/network', methods=['POST'])
+def network_change():
+    """Save body {domain (or ip), ports:{kibana, portainer, iris, timesketch, volweb,
+    velociraptor_agent}} to config.yaml and apply it with scripts/change_ip.sh
+    on the host. 202 {run_id}: the run's log is in Settings -> Actions."""
+    from services import network_settings as ns
+    body = request.get_json(silent=True) or {}
+    try:
+        # The popup posts `ip`; `domain` is config.yaml's name for the same value.
+        return jsonify(ns.start(body.get('domain') or body.get('ip'), body.get('ports'))), 202
+    except ns.Busy as e:
+        return jsonify({"error": str(e)}), 409
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
+# --- Data location (config.yaml data_path; services/data_location.py) ---------
+@system_bp.route('/api/system/data-location', methods=['GET'])
+def data_location_get():
+    """Where the data is, the last move's status, and the data disk's usage
+    (with the 80% / 90% warning level the dashboard shows)."""
+    from services import data_location as dl
+    return jsonify(dl.overview())
+
+
+@system_bp.route('/api/system/data-location/disks', methods=['GET'])
+def data_location_disks():
+    """Mounted disks the data could move to (the Settings picker)."""
+    from services import data_location as dl
+    try:
+        return jsonify({"disks": dl.disks()})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"disks": [], "error": str(e)})
+
+
+@system_bp.route('/api/system/data-location/check', methods=['POST'])
+def data_location_check():
+    """Can the data go to body.path ('' = the system disk)? Changes nothing."""
+    from services import data_location as dl
+    try:
+        path = dl.clean_path((request.get_json(silent=True) or {}).get('path'))
+    except ValueError as e:
+        return jsonify({"ok": False, "reason": str(e)}), 400
+    return jsonify(dl.check(path))
+
+
+@system_bp.route('/api/system/data-location/move', methods=['POST'])
+def data_location_move():
+    """Move every module's data and data/ to body.path ('' = back to the system
+    disk). Every service stops while it copies; body.force goes ahead although
+    runs are still going (they are cut off)."""
+    from services import data_location as dl
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(dl.start_move(body.get('path'), force=body.get('force') is True)), 202
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
+@system_bp.route('/api/system/data-location/undo', methods=['POST'])
+def data_location_undo():
+    """Switch back to the backup the last move kept. body.force as for move."""
+    from services import data_location as dl
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(dl.start_undo(force=body.get('force') is True)), 202
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
+@system_bp.route('/api/system/data-location/cleanup', methods=['POST'])
+def data_location_cleanup():
+    """Delete the old copy a finished move kept."""
+    from services import data_location as dl
+    try:
+        return jsonify(dl.start_cleanup()), 202
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
 
 @system_bp.route('/api/system/containers', methods=['GET'])
 def get_container_status():
