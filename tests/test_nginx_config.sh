@@ -106,6 +106,22 @@ test_every_proxied_tool_is_gated() {
     assert_false grep -qE '^\s*upstream\s' "${NGX_DIR}/config/nginx.conf"
 }
 
+# The fallback must not open what the main config gates: its VolWeb server
+# (8002) once had no auth_request, so a box whose nginx.conf failed `nginx -t`
+# served VolWeb's memory images to the LAN behind VolWeb's own login only.
+test_safe_config_gates_every_https_server() {
+    local out
+    out="$(python3 - "${NGX_DIR}/config/nginx-safe.conf" <<'EOF'
+import re, sys
+for block in open(sys.argv[1]).read().split("\n    server {")[1:]:
+    port = re.search(r"listen (\d+) ssl", block)
+    if port and "auth_request" not in block:
+        print("ungated:" + port.group(1))
+EOF
+)"
+    assert_eq "$out" "" "every https server in nginx-safe.conf has auth_request"
+}
+
 # Kibana is back at its root: a leftover base path would make it write
 # /kibana/ links that nothing serves any more.
 test_kibana_has_no_base_path() {
