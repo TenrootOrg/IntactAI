@@ -107,8 +107,11 @@ _CHUNK = 4 * 1024 * 1024
 #   activity_log        — the customer's audit trail; a fresh one is seeded
 #   is_default/is_system— an imported case is always an ordinary case
 #   auto_fuse_incomplete— a crash-loop marker about the SOURCE appliance's memory
+#   velo_org            — a Velociraptor org id of the SOURCE server; here it is
+#                         another org or none (the imported case starts in root,
+#                         and its runs lose theirs on import too)
 _STRIP_FROM_CASE = ("fusion_graph", "activity_log", "is_default", "is_system",
-                    "auto_fuse_incomplete")
+                    "auto_fuse_incomplete", "velo_org")
 
 
 class BundleError(Exception):
@@ -828,9 +831,11 @@ def import_case_bundle(zip_path, *, run_id=None, name=None, cancel=None) -> dict
 
         created = []                        # unwound in reverse if anything fails
         try:
-            new_case_id = ws.create_automation_run(
-                automation_type=st.CASE_TYPE, name=f"Case — {disp}",
-                case_id=None, details={})
+            from services import velo_org
+            with velo_org.root():           # not the importing browser's org (create stamps it)
+                new_case_id = ws.create_automation_run(
+                    automation_type=st.CASE_TYPE, name=f"Case — {disp}",
+                    case_id=None, details={})
             created.append(("case", new_case_id))
 
             id_map = {}
@@ -863,6 +868,7 @@ def import_case_bundle(zip_path, *, run_id=None, name=None, cancel=None) -> dict
                 det = row.get("details") or {}
                 det.pop("is_default", None)
                 det.pop("is_system", None)
+                det.pop("velo_org", None)   # the SOURCE server's org id (_STRIP_FROM_CASE)
                 row["details"] = det
                 row["case_id"] = new_case_id if role != "baseline" else None
                 _save_row(row)

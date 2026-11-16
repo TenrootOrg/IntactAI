@@ -169,17 +169,26 @@ def _auth_gate():
     }), 401
 
 
-# Velociraptor organization: the top-bar dropdown's `velo_org` cookie (sent on
-# every request, download links and uploads included). Set on EVERY request,
-# empty included: werkzeug may reuse a thread, and a stale org must not carry
-# over. Threads started from here inherit it (services/velo_org.py).
+# Velociraptor organization: always a CASE's org -- nothing else picks one. The
+# case is the one in the URL (/api/cases/<case_id>/...), else the active case
+# every /api fetch carries (X-Case-Id), else the active case in the
+# `intact_case` cookie (download links, window.open: js/active-case.js). A case
+# id, never an org: an org changed on the case since applies at once. Set on
+# EVERY request, empty included: werkzeug may reuse a thread, and a stale org
+# must not carry over. Threads started from here inherit it (services/velo_org.py).
 from services import velo_org
 velo_org.install_thread_inheritance()
 
 
 @app.before_request
 def _velo_org_from_request():
-    velo_org.set_current(request.headers.get('X-Velo-Org') or request.cookies.get(velo_org.COOKIE))
+    case_id = str((request.view_args or {}).get('case_id') or request.headers.get('X-Case-Id')
+                  or request.cookies.get(velo_org.CASE_COOKIE) or '').strip()
+    if case_id:
+        from services.fusion import store as _case_store
+        velo_org.set_current(_case_store.case_velo_org(case_id))
+    else:
+        velo_org.set_current('')
 
 
 # Workspace guard: investigation features targeting the System workspace raise

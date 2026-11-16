@@ -750,19 +750,23 @@ def create_case(name, *, time_window=None, initial_access=None,
         if not tw.get("end"):
             tw["end"] = dw["end"]
     # The case row is itself a workflow row but is NEVER case-scoped — pass
-    # case_id=None explicitly so the request's active case doesn't tag it.
-    return _ws().create_automation_run(
-        automation_type=CASE_TYPE, name=f"Case — {name}", case_id=None,
-        details={"name": name, "time_window": tw, "time_window_auto": _tw_auto,
-                 "initial_access_estimate": initial_access, "min_severity": min_severity,
-                 "member_run_ids": list(member_run_ids or []),
-                 "is_default": bool(is_default), "is_system": bool(is_system),
-                 # Masking ON by default (customer-facing): hide identifying values
-                 # from the AI model, including the NER second pass for free-text
-                 # person/company names. Reversible — the operator still sees the real
-                 # values. The UI checkbox defaults to match this.
-                 "masking": {"enabled": True, "ner": True, "patterns": []},
-                 "fusion_graph": {}, "report_md": "", "chat_messages": []})
+    # case_id=None explicitly so the request's active case doesn't tag it. In
+    # root, too: create_automation_run stamps the request's org on every row, and
+    # a case's org is its own choice (update_case_info), never the browser's.
+    from services import velo_org
+    with velo_org.root():
+        return _ws().create_automation_run(
+            automation_type=CASE_TYPE, name=f"Case — {name}", case_id=None,
+            details={"name": name, "time_window": tw, "time_window_auto": _tw_auto,
+                     "initial_access_estimate": initial_access, "min_severity": min_severity,
+                     "member_run_ids": list(member_run_ids or []),
+                     "is_default": bool(is_default), "is_system": bool(is_system),
+                     # Masking ON by default (customer-facing): hide identifying values
+                     # from the AI model, including the NER second pass for free-text
+                     # person/company names. Reversible — the operator still sees the real
+                     # values. The UI checkbox defaults to match this.
+                     "masking": {"enabled": True, "ner": True, "patterns": []},
+                     "fusion_graph": {}, "report_md": "", "chat_messages": []})
 
 
 _DECISION_RENAMED = {f"jev_{k}": f"decision_{k}" for k in
@@ -1162,6 +1166,7 @@ def delete_case(case_id) -> dict:
         kb.delete_case_entities(case_id)
     except Exception:
         pass
+    _case_org_forget(case_id)              # after: a poller may have re-read it meanwhile
     return {"deleted": True, "runs_deleted": len(run_ids),
             "baselines_deleted": removed_baselines,
             "export_bundles_deleted": removed_bundles,
@@ -4171,7 +4176,38 @@ def case_info(d) -> dict:
     # 2026-09-30). A value stored on a case from before is ignored.
     return {"case_status": st if st in CASE_STATUSES else "open",
             "case_owner": d.get("case_owner") if isinstance(d.get("case_owner"), str) else "",
-            "case_description": d.get("case_description") if isinstance(d.get("case_description"), str) else ""}
+            "case_description": d.get("case_description") if isinstance(d.get("case_description"), str) else "",
+            # The Velociraptor org every Velociraptor action in this case runs in.
+            "velo_org": (d.get("velo_org") if isinstance(d.get("velo_org"), str) else "") or "root"}
+
+
+# case_id -> its org ('' = root), for the request hook (app.py), which runs on every
+# API call: get_case() parses the whole case record, reports and graph included.
+# One process (python app.py), so forgetting the entry after an edit/delete keeps
+# it exact; the generation stops a read that started BEFORE the edit from caching
+# the old org after it.
+_CASE_ORG = {}
+_CASE_ORG_GEN = {}
+
+
+def _case_org_forget(case_id) -> None:
+    _CASE_ORG_GEN[case_id] = _CASE_ORG_GEN.get(case_id, 0) + 1
+    _CASE_ORG.pop(case_id, None)
+
+
+def case_velo_org(case_id) -> str:
+    """The Velociraptor org of a case ('' = root, also for an unknown id)."""
+    if case_id in _CASE_ORG:
+        return _CASE_ORG[case_id]
+    from services import velo_org
+    gen = _CASE_ORG_GEN.get(case_id, 0)
+    d = get_case(case_id)
+    org = velo_org.clean(d.get("velo_org")) if d else ""
+    if len(_CASE_ORG) > 5000:              # bogus header values must not grow it forever
+        _CASE_ORG.clear()
+    if _CASE_ORG_GEN.get(case_id, 0) == gen:
+        _CASE_ORG[case_id] = org
+    return org
 
 
 def update_case_info(case_id, fields) -> dict:
@@ -4203,9 +4239,17 @@ def update_case_info(case_id, fields) -> dict:
         patch["case_description"] = str(fields.get("case_description") or "").strip()[:2000]
     if "include_evidence" in fields:
         patch["include_evidence"] = fields.get("include_evidence") is True
+    if "velo_org" in fields:
+        from services import velo_org
+        raw = str(fields.get("velo_org") or "").strip()
+        org = velo_org.clean(raw)
+        if raw not in ("", "root") and not org:
+            return {"error": "not a valid Velociraptor org id"}
+        patch["velo_org"] = org            # '' = root
     if not patch:
         return {"error": "nothing to save"}
     _merge_case_details(case_id, patch)
+    _case_org_forget(case_id)
     if "include_evidence" in patch and patch["include_evidence"] != (d.get("include_evidence") is True):
         _report_behind(case_id)            # the report's evidence section follows the switch
     log_case_event(case_id, "Case details saved", "info",

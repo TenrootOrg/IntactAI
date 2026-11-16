@@ -311,18 +311,42 @@ def _bind_active_case():
             print(f"[CASES] workspace bootstrap failed: {e}", flush=True)
 
 
+def _velo_org_error(d):
+    """Why d's velo_org cannot be saved, or None. An org Velociraptor does not
+    have would fail every query of the case; when Velociraptor cannot be asked,
+    only the id's form is checked."""
+    if "velo_org" not in d:
+        return None
+    from services import velo_org
+    raw = str(d.get("velo_org") or "").strip()
+    org = velo_org.clean(raw)
+    if raw in ("", "root"):
+        return None
+    if not org:
+        return "not a valid Velociraptor org id"
+    try:
+        from services.velociraptor_clients import org_list
+        known = {o for o, _ in org_list()}
+    except Exception:
+        return None
+    return None if org in known else f"Velociraptor has no org '{org}'"
+
+
 @case_bp.route("/api/cases", methods=["POST"])
 def create_case():
     d = request.get_json(silent=True) or {}
     name = (d.get("name") or "").strip()
     if not name:
         return jsonify({"error": "name is required"}), 400
+    bad_org = _velo_org_error(d)
+    if bad_org:
+        return jsonify({"error": bad_org}), 400
     dup = store.duplicate_name_error(name)
     if dup:
         return jsonify({"error": dup, "duplicate": True}), 409
     # Asked for at creation (the New Case pop-up): owner and an optional
     # description. A new case is always Open; its status is changed by editing it.
-    info = {k: d[k] for k in ("case_owner", "case_description") if d.get(k)}
+    info = {k: d[k] for k in ("case_owner", "case_description", "velo_org") if d.get(k)}
     tw = d.get("time_window") or {}
     rid = store.create_case(
         name, time_window={"start": tw.get("start"), "end": tw.get("end")} if tw else {},
@@ -846,9 +870,12 @@ def finding_evidence(case_id, finding_id):
 
 @case_bp.route("/api/cases/<case_id>", methods=["PATCH"])
 def update_case(case_id):
-    """Case details: name, case_status, case_owner, case_description.
+    """Case details: name, case_status, case_owner, case_description, velo_org.
     Labels only — no re-fuse."""
     b = request.get_json(silent=True) or {}
+    bad_org = _velo_org_error(b)
+    if bad_org:
+        return jsonify({"error": bad_org}), 400
     res = store.update_case_info(case_id, b)
     if res.get("error") == "case not found":
         return jsonify(res), 404

@@ -237,11 +237,16 @@ def update_job(job_id):
             if case_err:
                 return jsonify({"error": case_err}), 400
 
-        # Saved from the edit form, whose Velociraptor org picker opens on the
-        # schedule's org: what it shows at save is the org the schedule runs in.
-        # (Not in update_scheduled_job: the enable toggle must not move it.)
+        # A schedule runs in its case's org (executor._job_org); this saved copy is
+        # only the fallback for a schedule without a case, so it is that case's org
+        # too, not the browser's. (Not in update_scheduled_job: the enable toggle
+        # must not move it.)
         from services import velo_org
-        data['velo_org'] = velo_org.current() or None
+        if data.get('case_id'):
+            from services.fusion import store
+            data['velo_org'] = store.case_velo_org(data['case_id']) or None
+        else:
+            data['velo_org'] = velo_org.current() or None
         job = update_scheduled_job(job_id, data)
         if not job:
             return jsonify({"error": "Job not found"}), 404

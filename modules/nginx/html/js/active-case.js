@@ -12,9 +12,21 @@
   const _fetch = window.fetch.bind(window);   // pristine fetch (no header) for bootstrap
 
   function get() { return localStorage.getItem(KEY) || ''; }
+  // The active case for what fetch does not tag (download links, window.open): the
+  // backend takes the Velociraptor org from it (app.py). A case id, never an org.
+  function _caseCookie(id) {
+    document.cookie = `intact_case=${encodeURIComponent(id || '')}; path=/; max-age=${id ? 31536000 : 0}; SameSite=Strict`;
+  }
+  try {
+    _caseCookie(get());
+    document.cookie = 'velo_org=; path=/; max-age=0; SameSite=Strict';   // the old per-page org pick
+  } catch (e) { /* no document.cookie (headless) */ }
   function set(id) {
     localStorage.setItem(KEY, id || '');
+    _caseCookie(id);
     window.dispatchEvent(new CustomEvent('active-case-changed', { detail: { id } }));
+    // The case decides the Velociraptor org (VeloOrg below).
+    if (window.VeloOrg && id) window.VeloOrg.syncFromCase(id);
   }
 
   // Surface "module run blocked in the System workspace" ONCE (debounced) — the
@@ -242,6 +254,8 @@
       const def = cases.find(c => c.is_default) || cases[0];
       if (def) { set(def.case_id); id = def.case_id; }
     }
+    const cur = cases.find(c => c.case_id === id);
+    if (cur && window.VeloOrg) window.VeloOrg.apply(cur.velo_org);
     return { id, cases };
   }
 
@@ -261,7 +275,10 @@
        <select class="ac-select" style="width:auto;min-width:160px">${options}
          <option value="__new__">＋ New case…</option></select>
        ${opts.manageLink === false ? '' :
-        '<a href="/cases.html" title="Manage cases" style="font-size:12px">Manage</a>'}`;
+        '<a href="/cases.html" title="Manage cases" style="font-size:12px">Manage</a>'}
+       <span class="ac-org" style="font-size:12px;color:var(--muted,#8b949e)" title="The case's Velociraptor org: everything this case does in Velociraptor runs there. Change it by editing the case.">Org <b style="color:inherit;font-weight:600">${escapeHtml((cases.find(c => c.case_id === id) || {}).velo_org || 'root')}</b></span>`;
+    if (window.VeloOrg) window.VeloOrg.nameOf((cases.find(c => c.case_id === id) || {}).velo_org)
+      .then(n => { const b = el.querySelector('.ac-org b'); if (b) b.textContent = n; });
     const sel = el.querySelector('.ac-select');
     sel.addEventListener('change', async () => {
       if (sel.value === '__new__') {
@@ -343,49 +360,48 @@
 })();
 
 /**
- * Velociraptor organization — the org picker shown at the top of every page
- * that works with Velociraptor (above its client list, or its import / add-by-id
- * form). A page asks for it with an empty <div class="velo-org-slot"></div>; it
- * is mounted here whenever one appears (partials and modals render late).
+ * Velociraptor organization -- the ACTIVE CASE's org. A case is attached to one
+ * org (chosen when it is created, editable in Case Management); nothing else
+ * picks one. Pages that work with Velociraptor show it read-only in an empty
+ * <div class="velo-org-slot"></div>, mounted here whenever one appears
+ * (partials and modals render late).
  *
- * Kept in the `velo_org` cookie, not a header: a cookie also rides on download
- * links, window.open and tus uploads, which the fetch hook above never sees. The
- * backend runs every Velociraptor query in it (services/velo_org.py); anything
- * started in an org keeps that org even if the picker changes later. One choice
- * for the whole browser: changing it on one page changes it on every page, and
- * each client list (ClientManager) reloads from the new org on 'velo-org-changed'.
+ * The backend takes the org from the case itself on every request (X-Case-Id,
+ * or the `intact_case` cookie set above for download links and window.open), so
+ * an org changed on the case applies at once. Here it is only known for display,
+ * the Velociraptor GUI link and the tus metadata; each client list
+ * (ClientManager) reloads on 'velo-org-changed'.
  */
 (function () {
-  const COOKIE = 'velo_org';
-  const SYNC_KEY = 'veloOrgId';      // localStorage: tells the other frames / tabs
+  const SYNC_KEY = 'veloOrgId';      // localStorage: the case's org, shared by frames / tabs
   const _fetch = window.fetch.bind(window);
 
   function get() {
-    const m = document.cookie.match(/(?:^|;\s*)velo_org=([^;]*)/);
-    return (m && decodeURIComponent(m[1])) || 'root';
+    try { return localStorage.getItem(SYNC_KEY) || 'root'; } catch (e) { return 'root'; }
   }
   function _announce(id) {
-    // defaultSelected too: pages reset their form when a tab opens (Timesketch),
-    // and a reset puts a <select> back on its default option -- the old org.
-    document.querySelectorAll('select.velo-org-select').forEach(s => {
-      for (const o of s.options) o.defaultSelected = (o.value === id);
-      s.value = id;
-    });
+    mountAll(true);
     window.dispatchEvent(new CustomEvent('velo-org-changed', { detail: { id } }));
   }
-  function set(id) {
+  /** Record the active case's org (only ActiveCase calls this). */
+  function apply(id) {
     id = id || 'root';
-    const v = id !== 'root' ? encodeURIComponent(id) : '';
-    // A year, path=/ so /api, /velociraptor and the tus endpoint all get it.
-    document.cookie = `${COOKIE}=${v}; path=/; max-age=${v ? 31536000 : 0}; SameSite=Strict`;
+    if (id === get()) return;
     try { localStorage.setItem(SYNC_KEY, id); } catch (e) {}
     _announce(id);
+  }
+  async function syncFromCase(caseId) {
+    try {
+      const r = await _fetch('/api/cases', { credentials: 'same-origin' });
+      if (!r.ok) return;
+      const c = ((await r.json()).cases || []).find(x => x.case_id === caseId);
+      if (c) apply(c.velo_org);
+    } catch (e) { /* the next page load syncs it */ }
   }
   // Another frame (Case Analysis is an iframe) or tab changed it.
   window.addEventListener('storage', e => { if (e.key === SYNC_KEY) _announce(get()); });
 
-  // One request for every picker on the page (there are up to seven); a failed
-  // one is retried by the next picker that mounts.
+  // One request for every label on the page; a failed one is retried later.
   let _orgs = null;
   function list() {
     if (!_orgs) {
@@ -397,41 +413,37 @@
     }
     return _orgs;
   }
-  /** Velociraptor GUI url in the selected org (its GUI takes ?org_id=). */
+  /** Display name of an org id ('Name (ID)'; the id when Velociraptor is down). */
+  async function nameOf(id) {
+    id = id || 'root';
+    const o = (await list()).find(x => x.id === id);
+    return o && o.id !== 'root' && o.name !== o.id ? `${o.name} (${o.id})` : id;
+  }
+  /** Velociraptor GUI url in the case's org (its GUI takes ?org_id=). */
   function guiUrl(hash) {
     const org = get();
     return `https://${location.hostname}/velociraptor/app/index.html` +
            (org !== 'root' ? `?org_id=${encodeURIComponent(org)}` : '') + (hash || '');
   }
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
-  async function renderSelector(el) {
+  async function renderLabel(el) {
     if (!el) return;
     el.dataset.mounted = '1';
-    const orgs = await list();
-    if (!orgs.length) { el.innerHTML = ''; return; }        // Velociraptor not installed / down
-    let cur = get();
-    if (!orgs.some(o => o.id === cur)) { cur = 'root'; set('root'); }   // org deleted since
-    const options = orgs.map(o => `<option value="${esc(o.id)}"${o.id === cur ? ' selected' : ''}>` +
-      `${esc(o.name)}${o.id !== 'root' && o.name !== o.id ? ` (${esc(o.id)})` : ''}</option>`).join('');
-    const hint = el.dataset.hint || 'Clients, hunts, collections and imports started here use this org.';
-    if (el.dataset.style === 'case') {        // Case Analysis (cases.html) form styling
-      el.innerHTML = `<label>Velociraptor org</label><select class="velo-org-select">${options}</select>
-        <div class="cfghint">${esc(hint)}</div>`;
-    } else {                                  // the Tailwind module pages
-      el.innerHTML = `<label class="block text-sm font-medium text-gray-300 mb-1">Velociraptor organization</label>
-        <select class="velo-org-select w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">${options}</select>
-        <p class="text-xs text-gray-500 mt-1">${esc(hint)}</p>`;
-    }
-    el.querySelector('select').addEventListener('change', function () { set(this.value); });
+    const name = await nameOf(get());
+    const hint = el.dataset.hint || 'Clients, hunts, collections and imports here use this org.';
+    const text = `Velociraptor org: <b>${esc(name)}</b> &mdash; the active case's. ${esc(hint)} Change it by editing the case.`;
+    el.innerHTML = el.dataset.style === 'case'            // Case Analysis (cases.html) styling
+      ? `<div class="cfghint">${text}</div>`
+      : `<p class="text-xs text-gray-400">${text}</p>`;
   }
-  function mountAll() {
-    document.querySelectorAll('.velo-org-slot:not([data-mounted])').forEach(renderSelector);
+  function mountAll(all) {
+    document.querySelectorAll(all ? '.velo-org-slot' : '.velo-org-slot:not([data-mounted])').forEach(renderLabel);
   }
   let _t = null;
-  new MutationObserver(() => { clearTimeout(_t); _t = setTimeout(mountAll, 50); })
+  new MutationObserver(() => { clearTimeout(_t); _t = setTimeout(() => mountAll(false), 50); })
     .observe(document.documentElement, { childList: true, subtree: true });
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountAll);
-  else mountAll();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => mountAll(false));
+  else mountAll(false);
 
-  window.VeloOrg = { get, set, list, guiUrl, renderSelector };
+  window.VeloOrg = { get, apply, syncFromCase, list, nameOf, guiUrl };
 })();

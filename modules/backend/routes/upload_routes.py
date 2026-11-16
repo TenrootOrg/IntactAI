@@ -386,11 +386,18 @@ def handle_tus_hook():
 
         # Metadata is already decoded by tusd
         metadata = upload_info.get('MetaData', {})
-        # The browser's org rides in the metadata like case_id (js/upload.js):
-        # this webhook comes from tusd, not the browser. Runs created here and
-        # the import thread started at post-finish inherit it (velo_org).
+        # This webhook comes from tusd, not the browser: the upload's case rides
+        # in the metadata (js/upload.js) and its org is that case's. Runs created
+        # here and the import thread started at post-finish inherit it (velo_org).
+        # shortcut: re-read on every hook, so moving the case to another org DURING
+        # an upload imports it in the new org while its run says the old one; use
+        # the run's own org (of_run) at post-finish if that ever matters.
         from services import velo_org
-        velo_org.set_current(metadata.get('velo_org'))
+        if (metadata.get('case_id') or '').strip():
+            from services.fusion import store as _case_store
+            velo_org.set_current(_case_store.case_velo_org(metadata['case_id'].strip()))
+        else:
+            velo_org.set_current(metadata.get('velo_org'))
 
         print(f"[TUS HOOK] Event: {event_type}", flush=True)
         print(f"[TUS HOOK] Upload ID: {upload_info.get('ID', 'unknown')}", flush=True)

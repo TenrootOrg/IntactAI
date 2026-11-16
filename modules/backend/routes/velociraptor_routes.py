@@ -1086,8 +1086,8 @@ def _adopt_worker(run_id, kind, ident):
                 except ImportError:
                     org = "root"
                 msg = (f"{ident} was not found on the Velociraptor server in org {org}. "
-                       f"If it was collected in another org, select that org above the "
-                       f"id and add it again. Otherwise check the id: a flow looks like "
+                       f"If it was collected in another org, add it from a case in that org "
+                       f"(the org is set on the case). Otherwise check the id: a flow looks like "
                        f"F.XXXXXXXX, a hunt like H.XXXXXXXX, and a hunt's per-client "
                        f"flow like F.XXXXXXXX.H.")
             else:

@@ -21,9 +21,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 _org = contextvars.ContextVar("velo_org", default="")
-COOKIE = "velo_org"
+# The ACTIVE CASE id, for requests fetch does not tag with X-Case-Id (download
+# links, window.open): the org always comes from a case (app.py).
+CASE_COOKIE = "intact_case"
 # Velociraptor org ids are short base32-ish ids ('OFM5G') or 'root'.
-_VALID = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+# Never '..' or a leading '.': the id is joined into datastore paths (datastore()).
+_VALID = re.compile(r"^(?!.*\.\.)[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$")
 
 
 def clean(org):

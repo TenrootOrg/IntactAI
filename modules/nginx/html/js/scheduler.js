@@ -63,6 +63,9 @@ async function fillScheduleCases(selected) {
     const want = [selected, active, scheduleDefaultCaseId].find(id => id && scheduleCases.some(c => c.case_id === id)) || '';
     sel.innerHTML = scheduleCases.map(c =>
         `<option value="${escapeHtml(c.case_id)}"${c.case_id === want ? ' selected' : ''}>${escapeHtml(c.name || c.case_id)}</option>`).join('');
+    // Another case can be another Velociraptor org: its own fleet, nothing picked.
+    sel.onchange = () => { schedulerClientManager.setSelected([]); schedulerClientManager.load(); };
+    await schedulerClientManager.load();
 }
 
 function renderScheduleCard(job) {
@@ -183,6 +186,8 @@ const schedulerClientManager = new ClientManager('schedule-client-list', 'schedu
     onlineOnly: false,
     offlineNote: 'Offline now: the scheduled run will not work for this client unless it is online when the schedule runs.',
     emptyNote: SCHEDULE_NO_CLIENTS,
+    // Its clients are in the org of the case the schedule files its runs in.
+    caseId: () => (document.getElementById('schedule-case') || {}).value || '',
 });
 
 // Backwards-compatible wrapper functions
@@ -333,13 +338,6 @@ async function editSchedule(jobId) {
 
         document.getElementById('schedule-modal').classList.remove('hidden');
         document.getElementById('schedule-modal-title').textContent = 'Edit Scheduled Job';
-        // Show it in the Velociraptor org it runs in, so its saved clients are in
-        // the list (and saving keeps that org). set() clears + reloads the list
-        // synchronously before the saved selection is restored below.
-        if (window.VeloOrg && (job.velo_org || 'root') !== window.VeloOrg.get()) {
-            window.VeloOrg.set(job.velo_org || 'root');
-        }
-
         // Start UTC clock
         startUtcClock();
         document.getElementById('schedule-edit-id').value = job.id;

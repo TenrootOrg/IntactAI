@@ -1,6 +1,7 @@
 """Velociraptor organization plumbing (services/velo_org.py).
 
-Every Velociraptor query runs in the org the operator picked in the top bar, and
+Every Velociraptor query runs in the active case's org (picked when the case is
+opened, editable on the case), and
 work started in an org keeps it: threads, executor jobs and timers inherit it,
 and work that runs later from a stored run re-enters the org saved with it.
 """
@@ -79,6 +80,74 @@ class Org(unittest.TestCase):
         velo_org.set_current("OFM5G")
         self.assertEqual("", f())
         self.assertEqual("OFM5G", velo_org.current())
+
+
+
+class TheCaseDecides(unittest.TestCase):
+    """The org is the active case's (chosen when the case is opened), not a
+    per-page picker: the request hook, schedules and case bundles follow it."""
+    def tearDown(self):
+        velo_org.set_current("")
+
+    def _hook(self, headers, cookies, view_args=None):
+        import re
+        from unittest import mock
+        src = open(os.path.join(ROOT, "modules/backend/app.py"), encoding="utf-8").read()
+        fn = re.search(r"\ndef _velo_org_from_request\(\):.*?(?=\n\n|\Z)", src, re.S).group(0)
+        ns = {"request": mock.Mock(headers=headers, cookies=cookies, view_args=view_args), "velo_org": velo_org}
+        from services.fusion import store
+        with mock.patch.object(store, "case_velo_org", lambda cid: {"case-acme": "OFM5G"}.get(cid, "")):
+            exec(fn, ns)
+            ns["_velo_org_from_request"]()
+        return velo_org.current()
+
+    def test_the_org_always_comes_from_a_case(self):
+        self.assertEqual(self._hook({"X-Case-Id": "case-acme"}, {}), "OFM5G")
+        self.assertEqual(self._hook({"X-Case-Id": "case-root"}, {"intact_case": "case-acme"}), "")  # header first
+        self.assertEqual(self._hook({"X-Velo-Org": "OTHER"}, {"velo_org": "OTHER"}), "")         # nothing picks an org
+        self.assertEqual(self._hook({}, {}), "")
+
+    def test_the_url_case_beats_the_active_one(self):            # /api/cases/<case_id>/...
+        self.assertEqual(self._hook({"X-Case-Id": "case-root"}, {}, {"case_id": "case-acme"}), "OFM5G")
+
+    def test_without_the_header_the_cookie_names_the_case(self):  # download links, window.open
+        self.assertEqual(self._hook({}, {"intact_case": "case-acme"}), "OFM5G")
+
+    def test_an_org_id_never_walks_out_of_the_datastore(self):
+        for bad in ("..", "a..b", ".hidden", "../root"):
+            self.assertEqual("", velo_org.clean(bad), bad)
+        self.assertEqual("O1.x", velo_org.clean("O1.x"))
+
+    def test_a_schedule_runs_in_its_case_org_now(self):
+        from unittest import mock
+        from services.fusion import store
+        import importlib.util          # the file alone: the package __init__ needs APScheduler
+        spec = importlib.util.spec_from_file_location(
+            "_sched_executor", os.path.join(ROOT, "modules/backend/services/scheduler/executor.py"))
+        executor = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(executor)
+        orgs = {"c1": "OFM5G", "default": "DEF01"}
+        with mock.patch.object(store, "get_case", lambda cid: {"x": 1} if cid == "c1" else {}), \
+                mock.patch.object(store, "ensure_default_case", lambda: "default"), \
+                mock.patch.object(store, "case_velo_org", lambda cid: orgs.get(cid, "")):
+            self.assertEqual(executor._job_org({"case_id": "c1", "velo_org": "SAVED"}), "OFM5G")
+            self.assertEqual(executor._job_org({"case_id": "gone", "velo_org": "SAVED"}), "DEF01")  # like its runs
+            self.assertEqual(executor._job_org({"velo_org": "SAVED"}), "SAVED")   # from before case_id existed
+
+    def test_a_case_bundle_does_not_carry_the_source_servers_org(self):
+        from services.fusion import case_bundle
+        self.assertIn("velo_org", case_bundle._STRIP_FROM_CASE)
+        src = open(os.path.join(ROOT, "modules/backend/services/fusion/case_bundle.py"), encoding="utf-8").read()
+        self.assertIn('det.pop("velo_org", None)', src)          # its runs lose it on import too
+
+    def test_a_new_case_row_is_made_in_root_not_the_browsers_org(self):
+        from unittest import mock
+        from services.fusion import store
+        seen = []
+        ws = mock.Mock(create_automation_run=lambda **kw: seen.append(velo_org.current()) or "case_x")
+        with mock.patch.object(store, "_ws", lambda: ws), velo_org.use("OFM5G"):
+            store.create_case("org probe")
+        self.assertEqual(seen, [""], "create_automation_run stamps the org it runs in on the row")
 
 
 if __name__ == "__main__":

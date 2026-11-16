@@ -154,9 +154,13 @@ def _record_reschedule_error(job_id, message):
         pass
 
 
-def _velo_org_now():
-    """The Velociraptor org selected in the request creating / retargeting a
-    schedule (None = root): its runs must query the same org later."""
+def _velo_org_now(case_id=None):
+    """The org saved with a schedule (None = root): its case's org; the request's
+    when it has no case. Only a fallback -- it runs in its case's org at run time
+    (executor._job_org)."""
+    if case_id:
+        from services.fusion import store
+        return store.case_velo_org(case_id) or None
     from services import velo_org
     return velo_org.current() or None
 
@@ -257,7 +261,7 @@ def create_scheduled_job(
         now.isoformat(),
         now.isoformat(),
         case_id or None,
-        _velo_org_now(),
+        _velo_org_now(case_id),
     ))
     conn.commit()
     conn.close()

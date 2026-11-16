@@ -31,15 +31,30 @@ def _job_case(job_meta):
     return None
 
 
+def _job_org(job_meta):
+    """The Velociraptor org a schedule runs in: its case's org NOW, so editing the
+    case's org moves its schedules too. A case gone since -> Default's, like its
+    runs; a schedule from before case_id existed keeps the org it was saved in."""
+    job_meta = job_meta or {}
+    if not job_meta.get("case_id"):
+        return job_meta.get("velo_org")
+    try:
+        from services.fusion import store
+        cid = job_meta["case_id"] if store.get_case(job_meta["case_id"]) else store.ensure_default_case()
+        return store.case_velo_org(cid)
+    except Exception:                                      # noqa: BLE001 -- the saved org
+        return job_meta.get("velo_org")
+
+
 def run_scheduled_blueprint(job_id: str):
     """Execute a scheduled blueprint run. This is the main APScheduler callback.
 
-    Runs in the Velociraptor org the schedule was made in (its velo_org): the
-    APScheduler thread has none, and Run now comes from a request that may have
-    another org selected. Everything below -- runs, threads -- inherits it."""
+    Runs in its case's Velociraptor org (_job_org): the APScheduler thread has
+    none, and Run now comes from a request in whatever case the browser is in.
+    Everything below -- runs, threads -- inherits it."""
     from services import velo_org
     from .jobs import get_scheduled_job
-    with velo_org.use((get_scheduled_job(job_id) or {}).get('velo_org')):
+    with velo_org.use(_job_org(get_scheduled_job(job_id))):
         return _run_scheduled_blueprint(job_id)
 
 

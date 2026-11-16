@@ -38,6 +38,9 @@ class ClientManager {
         // hundreds of hosts; 1000 is generous headroom (truncation is flagged).
         this.limit = options.limit || 1000;
         this.onChange = typeof options.onChange === 'function' ? options.onChange : null;
+        // () => case id: list the fleet of THAT case's Velociraptor org instead of
+        // the active case's (the schedule form files its runs in a chosen case).
+        this.caseId = typeof options.caseId === 'function' ? options.caseId : null;
 
         // Selection is a Set of client_ids — the source of truth. Survives
         // facet filtering (a hidden row's id stays selected).
@@ -66,11 +69,12 @@ class ClientManager {
         this._refreshError = '';   // shown in the bar; the list itself is kept
         this._loadedAt = null;     // when the fleet was last fetched
 
-        // The Velociraptor org picker changed: this list is another org's fleet
-        // now. Drop the selection (those ids are not in the new org) and reload.
-        // Only a list that was ever loaded -- a page not opened yet loads its own.
+        // The active case's org changed: this list is another org's fleet now.
+        // Drop the selection (those ids are not in the new org) and reload. Only a
+        // list that was ever loaded -- a page not opened yet loads its own -- and
+        // not one that follows its own case (caseId).
         if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('velo-org-changed', () => {
-            if (!this._listenerAttached) return;
+            if (!this._listenerAttached || this.caseId) return;
             this.selected.clear();
             this._fireChange();
             this.load();
@@ -122,7 +126,9 @@ class ClientManager {
     async _fetchFleet() {
         let url = `/api/clients?limit=${this.limit}&include_offline=true`;
         if (this.search) url += `&search=${encodeURIComponent(this.search)}`;
-        const response = await fetch(url);
+        const cid = this.caseId && this.caseId();
+        // An explicit X-Case-Id wins over the active case (js/active-case.js).
+        const response = await fetch(url, cid ? { headers: { 'X-Case-Id': cid } } : undefined);
         if (!response.ok) return null;
         return response.json();
     }

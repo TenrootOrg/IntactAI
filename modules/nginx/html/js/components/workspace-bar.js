@@ -11,9 +11,14 @@ async function renderTopWorkspace(bar) {
     const { id, cases } = await window.ActiveCase.ensureActiveCase();
     const active = (cases || []).find(c => c.case_id === id);
     const name = active ? (active.name || active.case_id) : '—';
+    const org = (active && active.velo_org) || 'root';
     bar.innerHTML =
         `<span style="font-size:12px;color:#8b949e">Case:</span>
-         <a href="#cases" id="ws-link" style="color:#58a6ff;font-weight:600">${escWs(name)}</a>`;
+         <a href="#cases" id="ws-link" style="color:#58a6ff;font-weight:600">${escWs(name)}</a>
+         <span id="ws-org" style="font-size:12px;color:#8b949e" title="The case's Velociraptor org: everything this case does in Velociraptor runs there. Change it by editing the case.">Org: <b style="color:#c9d1d9;font-weight:600">${escWs(org)}</b></span>`;
+    if (window.VeloOrg) window.VeloOrg.nameOf(org).then(n => {
+        const b = bar.querySelector('#ws-org b'); if (b) b.textContent = n;
+    });
     bar.querySelector('#ws-link').addEventListener('click', function (e) {
         e.preventDefault();
         if (window.Alpine) Alpine.store('app').switchTab('cases');
@@ -35,6 +40,10 @@ async function renderTopWorkspace(bar) {
             // dispatches this instead. Keep the bar in sync so the operator sees
             // the workspace they were moved to.
             window.addEventListener('active-case-changed', function () {
+                renderTopWorkspace(bar);
+            });
+            // The case's org was edited (Case Management saves -> re-sync).
+            window.addEventListener('velo-org-changed', function () {
                 renderTopWorkspace(bar);
             });
         }

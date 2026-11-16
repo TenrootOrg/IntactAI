@@ -25,14 +25,15 @@ from services.fusion import store  # noqa: E402
 class OldCases(unittest.TestCase):
     def test_a_case_from_an_older_version_reads_as_open_and_unset(self):
         self.assertEqual(store.case_info({"name": "old"}),
-                         {"case_status": "open", "case_owner": "", "case_description": ""})
+                         {"case_status": "open", "case_owner": "", "case_description": "", "velo_org": "root"})
         # a severity stored on a case from before it was removed is ignored
         self.assertNotIn("case_severity", store.case_info({"case_severity": "high"}))
 
     def test_damaged_values_fall_back_instead_of_failing(self):
         info = store.case_info({"case_status": 7, "case_severity": "huge", "case_owner": ["x"],
                                 "case_description": None})
-        self.assertEqual(info, {"case_status": "open", "case_owner": "", "case_description": ""})
+        self.assertEqual(info, {"case_status": "open", "case_owner": "", "case_description": "", "velo_org": "root"})
+        self.assertEqual(store.case_info({"velo_org": ["x"]})["velo_org"], "root")
         self.assertEqual(store.case_info(None)["case_status"], "open")
 
 
@@ -73,6 +74,27 @@ class Save(unittest.TestCase):
         res, patch, _ = self.run_it({"name": "Default", "case_status": "closed"}, {"name": "Default"})
         self.assertEqual(patch["case_status"], "closed")          # same name + other fields: fine
 
+    def test_the_velociraptor_org_is_saved_root_as_empty_and_drops_the_lookup(self):
+        store._CASE_ORG["c1"] = "OLD"
+        _, patch, _ = self.run_it({"velo_org": "OFM5G"})
+        self.assertEqual(patch, {"velo_org": "OFM5G"})
+        self.assertNotIn("c1", store._CASE_ORG)                   # the request hook re-reads it
+        _, patch, _ = self.run_it({"velo_org": "root"})
+        self.assertEqual(patch, {"velo_org": ""})
+        res, patch, _ = self.run_it({"velo_org": "no spaces; allowed"})
+        self.assertIn("error", res)
+        self.assertIsNone(patch)
+
+    def test_the_request_hook_lookup_is_cached_per_case(self):
+        store._CASE_ORG.clear()
+        with mock.patch.object(store, "get_case", return_value={"velo_org": "OFM5G"}) as g:
+            self.assertEqual(store.case_velo_org("c9"), "OFM5G")
+            self.assertEqual(store.case_velo_org("c9"), "OFM5G")
+        g.assert_called_once()
+        with mock.patch.object(store, "get_case", return_value={}):
+            self.assertEqual(store.case_velo_org("gone"), "")       # unknown id: root
+        store._CASE_ORG.clear()
+
     def test_an_unknown_case(self):
         with mock.patch.object(store, "get_case", return_value=None):
             self.assertEqual(store.update_case_info("nope", {"case_owner": "x"}), {"error": "case not found"})
@@ -86,9 +108,10 @@ class Page(unittest.TestCase):
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
         parts = [re.search(r"const CASE_STATUS_LABEL=\{.*?\};", src).group(0),
-                 re.search(r"let _cdEdit=null, _cdDraft=\{\};", src).group(0)] + \
-                [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0) for n in ("caseMetaHtml", "caseEditForm")]
-        js = "const esc=s=>String(s);\n" + "\n".join(parts) + """
+                 re.search(r"let _cdEdit=null, _cdDraft=\{\};", src).group(0),
+                 re.search(r"function orgLabel\([^\n]*", src).group(0)] + \
+                [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0) for n in ("orgOptionsHtml", "caseMetaHtml", "caseEditForm")]
+        js = "const esc=s=>String(s);\nlet _orgOpts=[{id:'root',name:'root'},{id:'OFM5G',name:'Acme'}];\n" + "\n".join(parts) + """
 console.log(JSON.stringify([
   caseMetaHtml({name:'old case'}),
   caseMetaHtml({case_status:'contained', case_severity:'high', case_owner:'Dan', case_description:'ransomware'}),
@@ -96,7 +119,10 @@ console.log(JSON.stringify([
   caseMetaHtml(null),
   caseEditForm({case_id:'c1', name:'Default', is_default:true}),
   caseEditForm({case_id:'c2', name:'qa', case_status:'bogus'}),
-  (()=>{ _cdDraft={'cdf-owner':'typed before a redraw'}; return caseEditForm({case_id:'c2', name:'qa', case_owner:'saved'}); })()]));"""
+  (()=>{ _cdDraft={'cdf-owner':'typed before a redraw'}; return caseEditForm({case_id:'c2', name:'qa', case_owner:'saved'}); })(),
+  (()=>{ _cdDraft={}; return caseEditForm({case_id:'c3', name:'acme', velo_org:'OFM5G'}); })(),
+  caseMetaHtml({velo_org:'OFM5G'}),
+  caseEditForm({case_id:'c4', name:'gone', velo_org:'DELETED'})]));"""
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
@@ -123,6 +149,11 @@ console.log(JSON.stringify([
         self.assertIn('<option value="open" selected>', out[5])         # damaged status: Open
         self.assertIn('value="typed before a redraw"', out[6])          # typing survives a list redraw
         self.assertNotIn("caseDetailsBox", src)                         # not in the Analysis rail any more
+        self.assertIn("org: root", out[0])                              # an old case: root
+        self.assertIn('id="cdf-org" data-was="OFM5G"', out[7])          # the case's org, editable
+        self.assertIn('<option value="OFM5G" selected>Acme (OFM5G)</option>', out[7])
+        self.assertIn("org: Acme (OFM5G)", out[8])
+        self.assertIn('value="DELETED" selected>DELETED (not in Velociraptor now)', out[9])  # kept, said
 
 
 
@@ -136,9 +167,12 @@ class CreateAsksForTheDetails(unittest.TestCase):
         fn = re.search(r'@case_bp.route\("/api/cases", methods=\["POST"\]\)\ndef create_case\(\):.*?(?=\n\n\n)', self.SRC, re.S).group(0)
         fn = fn.split("\n", 1)[1]                                   # drop the decorator
         made, saved = [], []
+        helper = re.search(r'\ndef _velo_org_error\(d\):.*?(?=\n\n\n)', self.SRC, re.S).group(0)
         ns = {"request": mock.Mock(get_json=lambda silent=True: body), "jsonify": lambda x: x, "store": store}
         with mock.patch.object(store, "create_case", lambda name, **kw: made.append(name) or "case_new"), \
-                mock.patch.object(store, "update_case_info", lambda cid, f: saved.append((cid, f)) or {}):
+                mock.patch.object(store, "update_case_info", lambda cid, f: saved.append((cid, f)) or {}), \
+                mock.patch("services.velociraptor_clients.org_list", lambda: [("root", "root"), ("OFM5G", "Acme")]):
+            exec(helper, ns)
             exec(fn, ns)
             out = ns["create_case"]()
         return out, made, saved
@@ -150,6 +184,14 @@ class CreateAsksForTheDetails(unittest.TestCase):
         # status and severity are not taken at creation: a new case is Open
         self.assertEqual(saved, [("case_new", {"case_owner": "Dan", "case_description": "phishing"})])
 
+    def test_the_org_is_saved_with_the_new_case_and_checked_first(self):
+        out, made, saved = self.post({"name": "IR 06", "velo_org": "OFM5G"})
+        self.assertEqual(saved, [("case_new", {"velo_org": "OFM5G"})])
+        out, made, saved = self.post({"name": "IR 07", "velo_org": "NOPE1"})
+        self.assertEqual((out, made), (({"error": "Velociraptor has no org 'NOPE1'"}, 400), []))  # no case made
+        out, made, saved = self.post({"name": "IR 08", "velo_org": "bad id!"})
+        self.assertEqual(made, [])
+
     def test_a_name_alone_still_works(self):                      # the API and older callers
         out, made, saved = self.post({"name": "IR 05"})
         self.assertEqual((made, saved), (["IR 05"], []))
@@ -157,7 +199,7 @@ class CreateAsksForTheDetails(unittest.TestCase):
     def test_the_page_sends_every_field_and_the_selector_opens_the_form(self):
         html = open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8").read()
         dlg = re.search(r'<dialog id="ncdlg">.*?</dialog>', html, re.S).group(0)
-        for i in ('id="cname"', 'id="cowner"', 'id="cdesc"'):
+        for i in ('id="cname"', 'id="cowner"', 'id="corg"', 'id="cdesc"'):
             self.assertIn(i, dlg)                                      # in the pop-up, not always open
             self.assertEqual(html.count(i), 1)
         for gone in ('id="cstatus"', 'id="csev"', "Severity", "Status"):
@@ -173,7 +215,8 @@ const $=s=>({value:vals[s.slice(1)]}); let sent=null;
 const api=(p,o)=>{sent=JSON.parse(o.body); return {then(){return {catch(){}};}};}; const toast=()=>{};
 """ + fn + "\ncreateWorkspace(); console.log(JSON.stringify(sent));"
         out = subprocess.run(["node", "-e", js], capture_output=True, text=True)
-        self.assertEqual(json.loads(out.stdout), {"name": "IR 05", "case_owner": "Dan", "case_description": "phishing"},
+        self.assertEqual(json.loads(out.stdout), {"name": "IR 05", "case_owner": "Dan", "case_description": "phishing",
+                                                  "velo_org": "root"},
                          out.stderr)
         ac = open(os.path.join(_ROOT, "modules/nginx/html/js/active-case.js"), encoding="utf-8").read()
         self.assertNotIn("prompt('New case name", ac)
