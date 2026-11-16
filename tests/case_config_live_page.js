@@ -101,7 +101,15 @@ const dumpSession = win => Object.fromEntries(
   const name = 'tw-probe-' + Date.now();
   const cid = JSON.parse(call('POST', '/api/cases', { name }).text).case_id;
   console.log('probe case:', cid, name);
-  const stored = () => JSON.parse(call('GET', '/api/cases/' + cid).text).time_window;
+  // The window being READ: the selected scope's, else the case's. A window
+  // inside the case does not move time_window (the fuse bound) -- Refusion
+  // makes it a scope and selects it (store._scope_from_rescan), and the rail
+  // shows that scope's window (renderConfig).
+  const stored = () => {
+    const c = JSON.parse(call('GET', '/api/cases/' + cid).text);
+    const sc = (c.scopes || []).find(s => s.active && s.id !== 'full');
+    return (sc && sc.window && sc.window.start) ? sc.window : c.time_window;
+  };
   console.log('window as created:', JSON.stringify(stored()));
 
   try {
@@ -148,12 +156,16 @@ const dumpSession = win => Object.fromEntries(
     check(posted && posted.body.time_window.start === TYPED,
       `Refusion posts the operator's start (sent ${posted && posted.body.time_window.start})`);
     check(stored().start === TYPED, `the backend stored it (${stored().start})`);
-    // the scope line under the case name must name the new start too — it is
-    // drawn by render(), which does not run again until the whole fuse ends
+    // the scope line under the case name must not keep naming the old start.
+    // With one scope it names the new one (_sinceText prints 'T' as a space);
+    // once the edit made a second scope it is blank by design -- the scope
+    // list names each window (scopeSinceHtml).
     const since = win.document.querySelector('#case-since');
-    console.log('scope line:', since && since.textContent);
-    check(since && since.textContent === 'since ' + TYPED,
-      `the scope line follows the save (${since && since.textContent})`);
+    const nScopes = (JSON.parse(call('GET', '/api/cases/' + cid).text).scopes || []).length;
+    const wantSince = nScopes > 1 ? '' : 'since ' + TYPED.replace('T', ' ');
+    console.log('scope line:', JSON.stringify(since && since.textContent), 'scopes:', nScopes);
+    check(since && since.textContent === wantSince,
+      `the scope line follows the save (want ${JSON.stringify(wantSince)}, got ${JSON.stringify(since && since.textContent)})`);
 
     // a Refusion switches to the Log to show progress; back to Configuration
     win.setTab('config'); await sleep(1000);
@@ -183,6 +195,8 @@ const dumpSession = win => Object.fromEntries(
       'cf-alt': 'macro', 'cf-tlp': 'RED', 'cf-cust': 'Acme Corp',
       'cf-maskpat': 'secretproject', 'cf-mp': 'focus on lateral movement',
     };
+    // the rail's checkboxes, each flipped from its default (all off)
+    const TOGGLES = { 'cf-mask': true, 'cf-maskner': true, 'cf-autoreport': true };
     const q = s => win.document.querySelector(s);
     for (const [id, v] of Object.entries(EDITS)) {
       const e = q('#' + id);
