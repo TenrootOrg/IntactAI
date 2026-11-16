@@ -114,7 +114,12 @@ _up() {
             backend|nginx) ;;                      # the platform, always
             *) [[ "$enabled" == *" $m "* ]] || continue ;;
         esac
-        if ! ( cd "$ROOT/modules/$m" && sudo docker compose up -d ) >/dev/null 2>&1; then
+        # --no-build: the images are already here. Without it compose rebuilt
+        # intact-backend and velociraptor-server from the tree on 2026-11-16,
+        # replacing the box's real images (and their commit labels) under the
+        # same tags. Note `_down` removes the containers, so a save or restore
+        # always recreates them from the compose files on disk.
+        if ! ( cd "$ROOT/modules/$m" && sudo docker compose up -d --no-build ) >/dev/null 2>&1; then
             _UP_FAILED+=("$m")
         fi
     done
@@ -133,7 +138,7 @@ _up() {
         err "these module(s) did NOT come back up: ${_UP_FAILED[*]}"
         err "  the appliance is only partly running. To see why, run:"
         for m in "${_UP_FAILED[@]}"; do
-            err "    ( cd $ROOT/modules/$m && sudo docker compose up -d )"
+            err "    ( cd $ROOT/modules/$m && sudo docker compose up -d --no-build )"
         done
         return 1
     fi
