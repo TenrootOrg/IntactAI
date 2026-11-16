@@ -8,6 +8,10 @@
 
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")"
+# The repo root, from HERE: after the cd, a relative BASH_SOURCE (`bash
+# tests/<file>` from the root) no longer resolves, and paths built from it
+# became /lib/release.sh -- 10 checks failed unless run from inside tests/.
+ROOT="$(cd .. && pwd)"
 source ./helpers.sh
 
 LOG_FILE="$(mktemp)"
@@ -107,7 +111,7 @@ test_happy_path_stages_the_bundle() {
 # ---------------------------------------------------------------------------
 _selection() {   # <INTACT_RELEASE_ONLY_MODULES> [<box symbols sha>] -> the asset names it would fetch
     INTACT_RELEASE_ONLY_MODULES="$1" INTACT_HAVE_SYMBOLS_SHA256="${2:-}" \
-        python3 - "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/release.sh" <<'PYEOF'
+        python3 - "${ROOT}/lib/release.sh" <<'PYEOF'
 import json, os, sys
 src = open(sys.argv[1]).read().split("\n")
 start = next(i for i, l in enumerate(src) if l.strip() == "want = []")
@@ -170,7 +174,7 @@ test_upgrade_sh_always_appends_intact_to_the_filter() {
     # What must hold: whatever --only names, `intact` ends up in the fetch set,
     # because its asset carries source/intact/scripts/upgrade.sh and without it
     # the stage-0 hop has nothing to exec into.
-    local f; f="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/upgrade.sh"
+    local f; f="${ROOT}/scripts/upgrade.sh"
     assert_true grep -q 'INTACT_RELEASE_ONLY_MODULES=' "$f"
     # the construction must mention intact on the same logical line
     assert_true grep -q 'UPGRADE_ONLY//,/ } intact' "$f"
@@ -199,10 +203,15 @@ test_no_volweb_on_the_box_means_no_pack_fetch() {
         "VolWeb not running here: leave the asset"
 }
 
-test_install_never_sets_the_filter() {
-    local root; root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-    local n; n="$(grep -rl 'INTACT_RELEASE_ONLY_MODULES' "${root}/install.sh" "${root}/lib/args.sh" 2>/dev/null | wc -l)"
-    assert_eq "$n" "0" "the install path must take the complete module set"
+# Install fetches only what the box will run (88cb329c, 2026-11-12) -- and only
+# through install_release_modules (lib/args.sh, tested in
+# test_install_release_modules.sh), which keeps the modules every box needs. A
+# filter set any other way could leave an enabled module without its images.
+test_install_filters_only_through_install_release_modules() {
+    local sets; sets="$(grep -o 'INTACT_RELEASE_ONLY_MODULES=[^ ]*' "${ROOT}/install.sh" | sort -u)"
+    assert_eq "$sets" 'INTACT_RELEASE_ONLY_MODULES="$_only"' "the filter is set from one variable"
+    assert_contains "$(cat "${ROOT}/install.sh")" '_only="$(install_release_modules ' \
+        "and that variable comes from install_release_modules"
 }
 
 run_all_tests
