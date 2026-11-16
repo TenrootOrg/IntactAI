@@ -172,14 +172,14 @@ def register(runner, cfg):
         # is what this suite used to send: the endpoint answered 400, 400 was in
         # the accepted set, and the check passed having changed nothing.
         c.post(f"{base}/timeline/validate",
-               {"finding_id": eid, "status": "not_real", "notes": "QA"},
+               {"finding_id": eid, "status": "false_positive", "notes": "QA"},
                expect=(200, 201))
         rows2 = _items(c.get(f"{base}/timeline", expect=_SOFT), "timeline")
         mine2 = [r for r in rows2 if r.get("finding_id") == eid]
         got = _tl_state(mine2[0]) if mine2 else None
         detail["status_after_validate"] = got
         ctx.check("triaging the event actually changes its status",
-                  got == "not_real", expected="not_real", actual=got,
+                  got == "false_positive", expected="false_positive", actual=got,
                   note="reversible triage is the whole feature; a status that "
                        "does not move means every judgement is lost on reload")
 

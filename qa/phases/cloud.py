@@ -132,19 +132,19 @@ def register(runner, cfg):
         # Operator-added detections. A responder who cannot add a rule during
         # an engagement is stuck with what shipped.
         fname = "qa_ci_custom_rule.yml"
-        detail["cleanup"] = [f"/api/aws/rules/custom/{fname}"]
-        c.post("/api/aws/rules/custom",
+        detail["cleanup"] = [f"/api/azure/rules/custom/{fname}"]
+        c.post("/api/azure/rules/custom",
                {"filename": fname, "content": _CUSTOM_RULE},
                expect=(200, 201))
-        listed = (c.get("/api/aws/rules/custom") or {}).get("rules") or []
+        listed = (c.get("/api/azure/rules/custom") or {}).get("rules") or []
         names = [r if isinstance(r, str) else r.get("filename") or r.get("name")
                  for r in listed]
         detail["custom_rules"] = names
         ctx.check("a custom SIGMA rule is stored and listed",
                   any(fname in str(n) for n in names),
                   expected=fname, actual=names)
-        c.delete(f"/api/aws/rules/custom/{fname}", expect=(200, 202, 204, 404))
-        after = (c.get("/api/aws/rules/custom") or {}).get("rules") or []
+        c.delete(f"/api/azure/rules/custom/{fname}", expect=(200, 202, 204, 404))
+        after = (c.get("/api/azure/rules/custom") or {}).get("rules") or []
         ctx.check("a custom rule can be removed again",
                   not any(fname in str(r) for r in after),
                   actual=len(after),

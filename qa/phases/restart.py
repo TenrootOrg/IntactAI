@@ -123,7 +123,7 @@ def register(runner, cfg):
                 and f"/api/scheduler/jobs/{detail['wrote']['job']}",
                 detail.get("wrote", {}).get("blueprint")
                 and f"/api/blueprints/velociraptor/{detail['wrote']['blueprint']}",
-                f"/api/aws/rules/custom/{detail.get('wrote', {}).get('rule')}"
+                f"/api/azure/rules/custom/{detail.get('wrote', {}).get('rule')}"
                 if detail.get("wrote", {}).get("rule") else None,
                 detail.get("aws_run") and f"/api/aws/runs/{detail['aws_run']}",
             ])
@@ -144,7 +144,7 @@ def register(runner, cfg):
         bp_id = ((made or {}).get("blueprint") or made or {}).get("id")
 
         rule_name = "qa_ci_restart_rule.yml"
-        c.post("/api/aws/rules/custom", {"filename": rule_name, "content": _RULE},
+        c.post("/api/azure/rules/custom", {"filename": rule_name, "content": _RULE},
                expect=(200, 201))
 
         detail["wrote"] = {"job": job_id, "blueprint": bp_id, "rule": rule_name}
@@ -298,7 +298,7 @@ def register(runner, cfg):
                        "blueprint has to survive that re-seed rather than be "
                        "swept away by it")
 
-        rules = (c.get("/api/aws/rules/custom", expect=_SOFT) or {}).get("rules") or []
+        rules = (c.get("/api/azure/rules/custom", expect=_SOFT) or {}).get("rules") or []
         ctx.check("the custom SIGMA rule survived the restart",
                   any(rule_name in str(x) for x in rules),
                   expected=rule_name, actual=rules,

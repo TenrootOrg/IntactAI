@@ -85,7 +85,7 @@ TIER0 = [
     ("GET", "/api/velociraptor/offline/configs", (200,), None),
     ("GET", "/api/aws/status", (200,), None),
     ("GET", "/api/aws/blueprints", (200,), None),
-    ("GET", "/api/aws/rules/custom", (200,), None),
+    ("GET", "/api/azure/rules/custom", (200,), None),
     ("GET", "/api/aws/runs", (200,), None),
     ("GET", "/api/azure/status", (200, 503), "o365rc is off by default and the "
                                              "route's disabled code varies"),
@@ -307,17 +307,17 @@ def _tier1(ctx, lb, detail):
                  "detection:\n  sel:\n    eventName: QaCiProbeEvent\n"
                  "  condition: sel\nlevel: low\n" % stamp)
     try:
-        lb.request("POST", "/api/aws/rules/custom",
+        lb.request("POST", "/api/azure/rules/custom",
                    json={"filename": rule_file, "content": rule_body},
                    expect=(200, 201))
-        listed = lb.get("/api/aws/rules/custom", expect=(200,))
+        listed = lb.get("/api/azure/rules/custom", expect=(200,))
         blob = str(listed)
         ctx.check("a custom sigma rule round-trips", rule_file in blob,
                   expected=rule_file, actual="present" if rule_file in blob
                   else "absent from the listing")
-        lb.request("DELETE", f"/api/aws/rules/custom/{rule_file}",
+        lb.request("DELETE", f"/api/azure/rules/custom/{rule_file}",
                    expect=(200, 204))
-        gone = rule_file not in str(lb.get("/api/aws/rules/custom", expect=(200,)))
+        gone = rule_file not in str(lb.get("/api/azure/rules/custom", expect=(200,)))
         ctx.check("a custom sigma rule can be deleted", gone)
     except Exception as exc:                                  # noqa: BLE001
         ctx.check("a custom sigma rule round-trips", False, actual=str(exc)[:160])

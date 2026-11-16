@@ -337,7 +337,7 @@ def register(runner, cfg):
         if events:
             eid = events[0].get("finding_id")
             was = _tl_state(events[0])
-            want = "known_it" if was != "known_it" else "real"
+            want = "known" if was != "known" else "true_positive"
             c.post(f"{base}/timeline/validate",
                    {"finding_id": eid, "status": want, "notes": "QA"},
                    expect=(200, 201))
