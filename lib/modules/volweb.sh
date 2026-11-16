@@ -155,43 +155,24 @@ deploy_volweb() {
 
 
 # Ensures modules/volweb/secrets/ADMIN_PASSWORD exists and returns its
-# content on stdout. Uses the operator's modules.volweb.password from
-# config.yaml when set; otherwise generates a random per-install password
-# instead of falling back to a fixed, publicly-documented string (same
-# pattern as generate_iris_secrets' IRIS_ADM_PASSWORD / the Portainer admin
-# password). Persisted so seed_volweb_admin() and seed_yara_rulesets()
+# content on stdout. Written by ensure_module_credentials (lib/config.sh):
+# typed, from config.yaml, or generated -- seed_volweb_admin re-applies it on
+# every run, so a freshly minted one always takes effect. Persisted so
+# seed_volweb_admin() and seed_yara_rulesets()
 # (which authenticates as the same user) always agree, and re-runs stay
 # idempotent. Callers capture this via `$(get_volweb_admin_password)`, so
 # any log output MUST go to stderr — only the password itself goes to
 # stdout.
 get_volweb_admin_password() {
-    local secrets_dir="${SCRIPT_DIR}/modules/volweb/secrets"
-    mkdir -p "$secrets_dir"
-    local pass_file="$secrets_dir/ADMIN_PASSWORD"
-
-    if [[ ! -s "$pass_file" ]]; then
-        local volweb_pass
-        volweb_pass=$(read_config "['modules']['volweb']['password']")
-        if [[ -z "$volweb_pass" || "$volweb_pass" == "None" ]]; then
-            volweb_pass=$(openssl rand -hex 16)
-            {
-                log_warn "  No VolWeb password set in config.yaml; generated a random one instead"
-                log_warn "  Retrieve it with: cat ${pass_file}"
-            } >&2
-        fi
-        printf '%s' "$volweb_pass" > "$pass_file"
-        chmod 600 "$pass_file"
-    fi
-    cat "$pass_file"
+    # stdout is the caller's capture: everything else goes to stderr.
+    cred_get volweb 2>/dev/null || { ensure_module_credentials volweb >&2 && cred_get volweb; }
 }
 
 
 seed_volweb_admin() {
-    # Use the platform's VolWeb admin creds from config.yaml. Reads
-    # ``modules.volweb.id`` for the username, and the persisted
-    # admin password from get_volweb_admin_password() (config.yaml's
-    # password when the operator set one, otherwise a random per-install
-    # value generated on first run).
+    # ``modules.volweb.id`` for the username, the stored admin password from
+    # get_volweb_admin_password(). The password travels in the heredoc (stdin),
+    # never in an argv.
     local tenroot_user=$(read_config "['modules']['volweb']['id']")
     [[ -z "$tenroot_user" ]] && tenroot_user="tenroot"
     local tenroot_pass
@@ -549,9 +530,11 @@ seed_yara_rulesets() {
     log_info "  Seeding YARA rulesets (~3 min)..."
 
     # Get a JWT for the admin user we just seeded.
-    local token=$(docker exec intact_volweb_backend curl -s -X POST \
-        -H 'Content-Type: application/json' \
-        -d "{\"username\":\"${volweb_user}\",\"password\":\"${volweb_pass}\"}" \
+    # Body on stdin (--data-binary @-): as -d it sat in the argv of both
+    # docker exec on the host and curl in the container.
+    local token=$(printf '{"username":"%s","password":"%s"}' "$volweb_user" "$volweb_pass" \
+        | docker exec -i intact_volweb_backend curl -s -X POST \
+        -H 'Content-Type: application/json' --data-binary @- \
         http://localhost:8000/core/token/ \
         | python3 -c 'import sys,json; print(json.load(sys.stdin).get("access",""))' 2>/dev/null)
     if [[ -z "$token" ]]; then

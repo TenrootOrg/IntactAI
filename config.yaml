@@ -8,23 +8,30 @@ schema_version: 3
 # false = a login is configured. The setup page is closed and https://<domain>/
 #         shows the login page.
 #
-# THIS IS ALSO THE RECOVERY SWITCH. There is one operator account and the
-# password is stored only as a hash, so it cannot be read back. If you forget
-# it, or ten wrong attempts in a row trigger the lockout and you don't want to
-# wait it out, set this back to true and reload the page — you'll get the setup
-# page again and can choose new credentials. It takes effect immediately; no
-# restart needed.
+# The setup page also asks for a one-time setup token: install.sh prints it, and
+# it is in data/state/backend/setup_token (root only). Without it nobody who
+# merely reaches the page first can claim the box. The password must be 12+
+# characters with an uppercase letter, a lowercase letter and a digit.
 #
-# Because flipping this re-opens the setup page to whoever loads it first, it
-# deliberately requires access to this file on the appliance host. That host
-# access IS the authentication for a password reset. Don't leave it true on a
-# box you haven't just set up.
+# RECOVERY. There is one operator account and the password is stored only as a
+# hash, so it cannot be read back. If you forget it, or ten wrong attempts from
+# your address trigger the lockout: run `sudo bash scripts/reset-login.sh`. It
+# sets this back to true and prints a new setup token; reload the page and
+# choose new credentials. Flipping this to true by hand is not enough any more:
+# setup also needs the token, and that is what the script makes. Root on the
+# appliance host IS the authentication for a password reset.
 #
 # The login gates the dashboard, /api/, the upload endpoint, the /velociraptor/
 # proxy, and every other bundled tool: Kibana, IRIS, Portainer, Timesketch and
 # VolWeb are reached through nginx on their own ports (set per module below as
 # `port` / `kibana_port`) and still keep their own login behind this one.
 first_login: true
+
+# LAB / DEV BOXES ONLY. true lets weak or publicly known passwords (e.g. 123123)
+# through: module passwords at install, the dashboard password at setup and
+# change, and it stops upgrades from rotating known passwords. Never turn it on
+# for a box anyone else can reach. Committing always resets it to false.
+allow_weak_passwords: false
 
 domain: CHANGE-ME
 
@@ -95,6 +102,13 @@ options:
   # without reinstalling. Leave empty to stay anonymous.
   github_token: ''
 
+# Module passwords. Intact's one rule: 12+ characters with an uppercase letter,
+# a lowercase letter and a digit; only A-Z a-z 0-9 - _ . (not starting with
+# - _ .), and never a publicly known default. Every bundled tool accepts it.
+# Leave empty: the installer asks (or generates one when there is no terminal),
+# stores it privately in modules/<module>/secrets/, and empties this line again.
+# This file is in a public repo, so a value left here is no secret.
+# `sudo scripts/show-credentials.sh` prints the stored ones.
 modules:
   # CloudTrail — native AWS DFIR detection (CloudTrail events + SIGMA rules,
   # feeding the fusion engine). No container image and no release asset of its
@@ -115,13 +129,15 @@ modules:
   elk:
     enabled: true
     id: elastic
-    password: '123123'
+    # Elasticsearch: 6+ characters.
+    password: ''
     # Browser port for Kibana (served by nginx behind the Intact login).
     kibana_port: 5602
   iris:
     enabled: true
     id: administrator #Cant be changed
-    password: '123123'
+    # IRIS: 12+ with an uppercase letter, a lowercase letter and a digit.
+    password: ''
     # Browser port for IRIS (served by nginx behind the Intact login).
     port: 8444
   # Portainer — container infrastructure management UI. On by default: it is
@@ -132,49 +148,37 @@ modules:
   portainer:
     enabled: true
     id: admin
-    # CHANGE THIS BEFORE THE APPLIANCE IS REACHABLE BY ANYONE ELSE.
-    #
-    # This file is committed, so whatever sits here is public and identical on
-    # every default install -- "complex" does not make it secret. It is a
-    # starting credential, not a secret, and Portainer's admin account is a
-    # window onto the whole container layer.
-    #
-    # Constraints if you replace it: Portainer enforces >= 12 characters even
-    # when seeded via --admin-password-file, and a value that fails validation
-    # leaves the admin account silently uncreated with the UI stuck in its
-    # timed-out "initial setup" state. Anything empty, shorter than 12, or
-    # equal to the RETIRED default `1234qwer!@#$` is refused outright and
-    # replaced with a random password (read it from
-    # modules/portainer/secrets/admin_password) -- see
-    # generate_portainer_secrets in lib/modules/portainer.sh.
-    password: 'Ch4nge-Me!Intact2026'
+    # Portainer: 12+, or the admin account is never created.
+    password: ''
     # Browser port for Portainer (served by nginx behind the Intact login).
     port: 9444
   timesketch:
     enabled: true
     id: tenroot
-    password: '123123'
+    # Timesketch: no rule of its own.
+    password: ''
     # Browser port for Timesketch (served by nginx behind the Intact login).
     port: 5443
   velociraptor:
     api_id: api
-    api_password: '123123'
     enabled: true
     id: tenroot
-    password: '123123'
+    # Velociraptor: no rule of its own. (The `api` user's password is generated
+    # and never shown; nothing needs it.)
+    password: ''
     # Port every Velociraptor agent connects to. It is baked into the agent
     # installers: changing it after agents are deployed cuts them off until
     # they are redeployed with the new installers.
     agent_port: 8000
-  # VolWeb (memory-forensics analysis stack). The platform's admin
-  # user is seeded with these creds at install time by
-  # `lib/modules.sh:seed_volweb_admin`; the IntactAI backend
-  # authenticates against VolWeb's REST API using the same pair
-  # (no separate secret-store entry needed).
+  # VolWeb (memory-forensics analysis stack). The admin user is seeded at
+  # install time (lib/modules/volweb.sh:seed_volweb_admin); its password is
+  # stored in modules/volweb/secrets/ADMIN_PASSWORD, which the IntactAI backend
+  # also reads to call VolWeb's REST API.
   volweb:
     enabled: true
     id: tenroot
-    password: '123123'
+    # VolWeb: no rule of its own at seeding.
+    password: ''
     # Browser port for VolWeb (served by nginx behind the Intact login).
     port: 8002
 project_name: intact

@@ -47,6 +47,7 @@ from routes import (
     support_bundle_bp,
     memory_bp,
     case_bp,
+    security_bp,
 )
 
 # Import initialization services
@@ -109,6 +110,7 @@ app.register_blueprint(aws_bp)
 app.register_blueprint(support_bundle_bp)
 app.register_blueprint(memory_bp)
 app.register_blueprint(case_bp)
+app.register_blueprint(security_bp)
 
 
 # =============================================================================
@@ -147,6 +149,15 @@ def _auth_gate():
         if session.get('user') and auth_service.touch_session(session):
             session.modified = True
         return None
+
+    if reason == auth_service.PASSWORD_CHANGE_REQUIRED:
+        # Signed in with a publicly known password: only change-password,
+        # logout and status until it is replaced (js/active-case.js redirects).
+        return jsonify({
+            'error': reason,
+            'message': 'This box still uses a publicly known dashboard '
+                       'password. Choose a new one.',
+        }), 403
 
     # `reason` is what lets login.html say "your session expired" or "the
     # password was changed" instead of showing a bare form — the whole point of

@@ -654,8 +654,22 @@ def forget_credentials(provider) -> bool:
     return delete_secret(_spec(provider)["secret_key"])
 
 
+# The backend's environment carries every tool's password (compose env_file:
+# ELASTIC_PASSWORD, TIMESKETCH_PASSWORD, KIBANA_PASSWORD, ...) and the CLI is a
+# third-party binary -- and its installer a script fetched from the network --
+# that has no use for any of them (red team). It authenticates with the auth.json
+# in its own home dir (home_env), set after this, so nothing secret-named is kept.
+_SECRET_ENV_NAME = re.compile(r"PASS|SECRET|TOKEN|KEY|CREDENTIAL", re.IGNORECASE)
+
+
+def _scrubbed_environ() -> dict:
+    """os.environ minus every secret-named variable (PATH, HOME, LANG, TERM,
+    proxies, CI/NO_COLOR stay)."""
+    return {k: v for k, v in os.environ.items() if not _SECRET_ENV_NAME.search(k)}
+
+
 def _env_for(provider, home) -> dict:
-    env = dict(os.environ)
+    env = _scrubbed_environ()
     env[_spec(provider)["home_env"]] = home
     # Both the managed dir AND wherever the binary actually resolved: the CLI
     # shells out to helper binaries that sit beside itself, so a copy found
@@ -858,7 +872,7 @@ def install(provider, run_id=None) -> dict:
     _log(provider, f"Downloading the installer from {spec['installer']}...", run_id=run_id)
     # The vendor installer honours CODEX_INSTALL_DIR / CODEX_NON_INTERACTIVE,
     # so we can place the binary in our own tree without touching $HOME.
-    env = dict(os.environ)
+    env = _scrubbed_environ()
     env["CODEX_INSTALL_DIR"] = _BIN_DIR
     env["CODEX_NON_INTERACTIVE"] = "1"
     # The installer unpacks the release into $CODEX_HOME/packages/... and makes

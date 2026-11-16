@@ -85,7 +85,12 @@ unset _writable_libs _wl
 # bash resolves function calls at call time, so cross-file calls between these
 # are fine in any direction.
 source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/lib/secrets.sh"
+source "${SCRIPT_DIR}/lib/setup_token.sh"
 source "${SCRIPT_DIR}/lib/config.sh"
+# creds_apply / _creds_recreate: deploy_elk recreates a running Velociraptor so
+# it picks up the Elasticsearch password; rotation at the end uses it too.
+source "${SCRIPT_DIR}/lib/credentials_apply.sh"
 source "${SCRIPT_DIR}/lib/deps.sh"
 source "${SCRIPT_DIR}/lib/docker.sh"
 for _lib in shared elk timesketch velociraptor iris portainer volweb backend nginx orchestrator; do
@@ -198,6 +203,20 @@ main() {
         log_error "Fix it (or clear data_path in config.yaml) and run the installer again."
         exit 1
     fi
+
+    # -------------------------------------------------------------------------
+    # Module passwords -- stored privately, then blanked in config.yaml.
+    # Here, not next to update_env_files: the operator may be asked to type
+    # some, and that must happen before the long downloads below, not twenty
+    # minutes in. It needs docker (an existing Elasticsearch/Portainer volume
+    # means "keep the old password"), which ensure_core_dependencies provides.
+    # It also has to finish before the backend image build in start_services.
+    # First re-link any password store that is gone from modules/ but kept in
+    # data/state (an upgraded box keeps the only copy there): otherwise a tool
+    # with data reads as "password not stored anywhere".
+    # -------------------------------------------------------------------------
+    state_restore_missing "$SCRIPT_DIR"
+    ensure_module_credentials || exit 1
 
     # -------------------------------------------------------------------------
     # Release Assets — Docker is guaranteed present and verified above.
@@ -361,6 +380,11 @@ main() {
     # asked whether a credential exists, and before the report so a repair shows
     # up in the final ATTENTION block instead of scrolling past.
     ensure_dashboard_login_is_reachable
+    # Re-install of an old box: human-only logins still on a publicly known
+    # password (Velociraptor GUI + api, Portainer, IRIS, Timesketch SECRET_KEY)
+    # are rotated, here because it talks to the running tools. The new values
+    # are in the stores, so the one-time display below shows them.
+    _rotate_known_defaults
     print_installation_report
     create_initialization_marker
 
@@ -370,6 +394,7 @@ main() {
     fix_source_permissions
 
     print_summary
+    _show_credentials_once
     # Neutral "this is expected" notes recorded during the install. Kept
     # separate from — and printed before — the ATTENTION block so that
     # deliberate behaviour is never mistaken for something that went wrong.
@@ -379,6 +404,38 @@ main() {
     # that scrolled past — this surfaces them right after the success
     # banner so they can't be missed. Pure formatter, no side effects.
     print_final_issues_report
+}
+
+# creds_rotate_known_defaults lives in lib/credentials_apply.sh (shared with
+# the upgrade and scripts/apply-passwords.sh), and a tree without that file
+# just skips it. Called on a lab box too (allow_weak_passwords: true): it
+# rotates nothing there itself, but still refreshes the marker, which is what
+# clears a stale "default password in use" warning on a box just switched to lab.
+_rotate_known_defaults() {
+    if ! declare -F creds_rotate_known_defaults >/dev/null; then
+        [[ -f "${SCRIPT_DIR}/lib/credentials_apply.sh" ]] || return 0
+        # shellcheck source=/dev/null
+        source "${SCRIPT_DIR}/lib/credentials_apply.sh" || return 0
+        declare -F creds_rotate_known_defaults >/dev/null || return 0
+    fi
+    creds_rotate_known_defaults \
+        || log_warn "Some publicly known default passwords could not be rotated — see the lines above; sudo scripts/apply-passwords.sh changes them"
+}
+
+# Every human login this install set up, shown ONCE, on the terminal only
+# (secret_show_once) -- never stdout or the install log.
+# The dashboard setup token only while setup is open (first_login: true): a
+# re-install of a claimed box needs none.
+_show_credentials_once() {
+    local tok=""
+    if is_enabled "$(read_config "['first_login']")"; then
+        tok="$(ensure_setup_token)" || tok=""
+        [[ -n "$tok" ]] && log_info "Dashboard setup: open https://$(read_config "['domain']")/setup.html and enter the setup token shown below"
+    fi
+    {
+        credential_lines --enabled
+        [[ -n "$tok" ]] && printf 'Dashboard setup token|-|%s\n' "$tok"
+    } | secret_show_once
 }
 
 # ============================================================================

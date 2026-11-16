@@ -591,7 +591,10 @@ def get_timesketch_sketches():
     try:
         ts_host = TIMESKETCH_CONFIG.get('host', 'http://localhost:5000')
         ts_username = TIMESKETCH_CONFIG.get('username', 'admin')
-        ts_password = TIMESKETCH_CONFIG.get('password', 'admin')
+        ts_password = TIMESKETCH_CONFIG.get('password') or ''
+        if not ts_password:
+            return jsonify({"sketches": [], "error": "No Timesketch password configured "
+                            "(TIMESKETCH_PASSWORD in modules/timesketch/secrets/creds.env)"})
 
         # Use timesketch CLI to list sketches
         cmd = [
@@ -603,7 +606,7 @@ from timesketch_api_client import client as ts_client
 api_client = ts_client.TimesketchApi(
     host_uri="{ts_host}",
     username="{ts_username}",
-    password="{ts_password}"
+    password=__import__("os").environ["TS_PASS"]
 )
 
 sketches = api_client.list_sketches()
@@ -612,7 +615,11 @@ for s in sketches:
 '''
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        # The password goes to the child in its environment, not spliced into the
+        # `python3 -c` source: that source is argv, readable from /proc by any
+        # process on the host.
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                                env={**os.environ, 'TS_PASS': ts_password})
 
         sketches = []
         if result.returncode == 0 and result.stdout.strip():

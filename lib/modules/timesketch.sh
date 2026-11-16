@@ -42,8 +42,10 @@ ${YELLOW}TimeSketch container modification — expected, by design${NC}
   (scripts/ci/check_timesketch_provider_drift.py). No action is needed now."
 }
 
-# Create (or confirm) the TimeSketch admin user from config.yaml's
-# modules.timesketch.id/password. Idempotent -- tsctl's "already exists" is
+# Create (or confirm) the TimeSketch admin user: config.yaml's
+# modules.timesketch.id with the stored password (secrets/creds.env). tsctl
+# create-user on an existing user replaces its password, which is what makes a
+# freshly minted password safe for Timesketch. Idempotent -- tsctl's "already exists" is
 # treated the same as a fresh create, so this is safe to call on every
 # deploy, not only the first.
 #
@@ -58,7 +60,9 @@ ${YELLOW}TimeSketch container modification — expected, by design${NC}
 # skips the DFIQ/timeout niceties that used to be gated on it.
 create_timesketch_admin_user() {
     local ts_user=$(read_config "['modules']['timesketch']['id']")
-    local ts_pass=$(read_config "['modules']['timesketch']['password']")
+    ensure_module_credentials timesketch || return 1
+    local ts_pass
+    ts_pass="$(cred_get timesketch)" || { log_error "  No stored Timesketch password"; return 1; }
 
     # STEP A — Wait until the postgres "user" table actually exists.
     # The Timesketch container image doesn't ship Alembic migrations
@@ -102,7 +106,11 @@ create_timesketch_admin_user() {
     local ts_error=""
 
     while [[ $ts_retry -lt $ts_max_retry ]]; do
-        ts_error=$(docker exec intact_timesketch_web tsctl create-user "${ts_user}" --password "${ts_pass}" 2>&1)
+        # Password on stdin, typed twice for tsctl's own prompt (verified: its
+        # click prompt reads a pipe when there is no tty), never `--password`,
+        # which would put it in the argv of docker exec and of tsctl.
+        ts_error=$(printf '%s\n%s\n' "$ts_pass" "$ts_pass" \
+            | docker exec -i intact_timesketch_web tsctl create-user "${ts_user}" 2>&1)
         local ts_exit_code=$?
 
         # tsctl said it worked OR said the user already exists — either
@@ -393,7 +401,7 @@ deploy_timesketch() {
         # longer exists in this scope.
         local ts_user_for_msg; ts_user_for_msg=$(read_config "['modules']['timesketch']['id']")
         log_error "  TimeSketch user '${ts_user_for_msg}' creation FAILED"
-        log_error "  Manual fix: docker exec intact_timesketch_web tsctl create-user ${ts_user_for_msg} --password '<from config.yaml>'"
+        log_error "  Manual fix: docker exec intact_timesketch_web tsctl create-user ${ts_user_for_msg}   (password: sudo bash scripts/show-credentials.sh)"
         log_error "  Then verify:  docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c 'SELECT id, username FROM \"user\";'"
         capture_diagnostic_logs "TimeSketch user creation" \
             intact_timesketch_web intact_timesketch_postgres

@@ -124,4 +124,28 @@ test_a_genuinely_updated_live_copy_still_wins() {
     ls "${ROOT}/$(dirname "$canon_rel")" | grep -q superseded || _fail "the stale copy must be kept as .superseded"
 }
 
+# install.sh: a lost modules/<m>/secrets with the data/state copy intact is
+# re-linked before the passwords are resolved (else "not stored anywhere").
+test_restore_missing_relinks_lost_secrets_from_data_state() {
+    _fresh_root
+    log_info() { :; }; log_warn() { :; }; log_success() { :; }
+    mkdir -p "$ROOT/data/state/elk/secrets" "$ROOT/data/state/velociraptor/secrets" \
+             "$ROOT/data/state/portainer/secrets" "$ROOT/modules/elk/secrets"
+    echo "ELASTIC_PASSWORD=Kept1Elastic99" > "$ROOT/data/state/elk/secrets/creds.env"
+    echo "VELOX_PASSWORD=Kept1Velox9999" > "$ROOT/data/state/velociraptor/secrets/creds.env"
+    : > "$ROOT/data/state/portainer/secrets/admin_password"     # empty: not state
+    echo "live" > "$ROOT/modules/volweb_marker"                  # unrelated
+    assert_true state_restore_missing "$ROOT"
+    [[ "$ROOT/modules/elk/secrets/creds.env" -ef "$ROOT/data/state/elk/secrets/creds.env" ]] \
+        || _fail "elk creds.env not hard-linked back"
+    assert_true test -L "$ROOT/modules/velociraptor/secrets"
+    assert_contains "$(cat "$ROOT/modules/velociraptor/secrets/creds.env")" "Kept1Velox9999" "dir symlink resolves"
+    assert_false test -e "$ROOT/modules/portainer/secrets/admin_password"
+    # A live copy is never replaced.
+    rm -f "$ROOT/modules/elk/secrets/creds.env"
+    echo "ELASTIC_PASSWORD=Live1Elastic99" > "$ROOT/modules/elk/secrets/creds.env"
+    assert_true state_restore_missing "$ROOT"
+    assert_contains "$(cat "$ROOT/modules/elk/secrets/creds.env")" "Live1Elastic99" "live copy kept"
+}
+
 run_all_tests

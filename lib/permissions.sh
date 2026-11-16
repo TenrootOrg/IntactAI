@@ -21,8 +21,16 @@ fix_source_permissions() {
     # Fix ownership for entire project
     chown -R "${uid}:${gid}" "${SCRIPT_DIR}" 2>/dev/null || true
 
-    # Fix directory permissions (755 = rwxr-xr-x)
-    find "${SCRIPT_DIR}" -type d -exec chmod 755 {} \; 2>/dev/null || true
+    # Fix directory permissions (755 = rwxr-xr-x) -- except the private ones:
+    # every secrets/ dir is 0700 (re-asserted further down), data/tmp holds
+    # upgrade snapshots of .env/config.yaml/the Velociraptor CA, and
+    # data/state/backend holds the dashboard setup token. This sweep used to
+    # reopen all of them to 755 on every install and upgrade.
+    find "${SCRIPT_DIR}" -type d \
+        -not -name secrets -not -path "*/secrets/*" \
+        -not -path "${SCRIPT_DIR}/data/tmp/*" \
+        -not -path "${SCRIPT_DIR}/data/state/backend" \
+        -exec chmod 755 {} \; 2>/dev/null || true
 
     # Fix file permissions (644 = rw-r--r--), but leave secret material that
     # earlier steps in this same run deliberately hardened to a tighter mode
@@ -39,8 +47,21 @@ fix_source_permissions() {
     # of them to decrypt password-protected offline collections, so this sweep
     # broke that import on every installed host — and because lib/docker.sh only
     # chmods +x on a fresh download, re-running the installer never repaired it.
+    # */secrets/* rather than */modules/*/secrets/*: the same files also sit
+    # under data/state/<module>/secrets (state_registry) and in upgrade
+    # snapshots, and a hard-linked file chmod-ed 644 through one name is 644
+    # through all of them. data/state/backend is the setup token. The
+    # backup names are upgrade copies of config.yaml and .env files: they hold
+    # every old password, 0600 like the live files (re-asserted below).
     find "${SCRIPT_DIR}" -type f \
-        -not -path "*/modules/*/secrets/*" \
+        -not -path "*/secrets/*" \
+        -not -path "${SCRIPT_DIR}/data/tmp/*" \
+        -not -path "${SCRIPT_DIR}/data/state/backend/*" \
+        -not -path "${SCRIPT_DIR}/data/state/default-passwords.json" \
+        -not -name 'config.yaml.pre-*' \
+        -not -name '*.upgrade-bak-*' \
+        -not \( -name '*.env.*' -not -name '*.template' -not -name '*.example' \
+                 -not -path "*/modules/nginx/html/*" \) \
         -not -path "*/modules/*/.env" \
         -not -path "*/modules/nginx/ssl/*.key" \
         -not -path "*/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" \
@@ -112,9 +133,9 @@ fix_source_permissions() {
            -o -name IRIS_SECURITY_PASSWORD_SALT \
            -o -name POSTGRES_ADMIN_PASSWORD -o -name POSTGRES_PASSWORD \) \
         -exec chmod 644 {} \; 2>/dev/null || true
-    # config.yaml is as sensitive as anything under secrets/: it carries
-    # options.github_token (a real GitHub PAT), the dashboard login and every
-    # module password. It was landing at 664/644 — readable by every local
+    # config.yaml is still sensitive: it carries options.github_token (a real
+    # GitHub PAT), and whatever module password an operator typed into it
+    # between install runs (install blanks them once stored). It was landing at 664/644 — readable by every local
     # account on the box — because the sweep above treats it as ordinary source.
     # config.yaml is tracked but sanitized on commit, so git only ever holds
     # shipping defaults; the live file here still needs 600.
@@ -189,6 +210,29 @@ fix_source_permissions() {
     chmod 600 "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf" 2>/dev/null || true
     chmod 600 "${SCRIPT_DIR}/data/auth/audit.jsonl" 2>/dev/null || true
     # END shared-secret-hardening
+
+    # Secrets dirs: 0700. Their files keep the modes set above -- including
+    # IRIS's 644, which is safe inside a 0700 dir: a compose file-secret is a
+    # bind mount of the FILE, so the container (uid 65534) never traverses the
+    # host dir. Proven with a throwaway iris_app container run as 65534.
+    # -L: modules/iris|timesketch/secrets are symlinks into data/state.
+    find -L "${SCRIPT_DIR}/modules" "${SCRIPT_DIR}/data/state" -type d -name secrets \
+        -exec chmod 700 {} \; 2>/dev/null || true
+    # Upgrade snapshots and rollback copies in data/tmp carry .env files,
+    # config.yaml and creds.env; the live copies are 0600, so are these.
+    find "${SCRIPT_DIR}/data/tmp" -type f \( -name '*.env' -o -name '*config.yaml' \) \
+        -exec chmod 600 {} \; 2>/dev/null || true
+    # Upgrade backups beside the live files (config.yaml.pre-upgrade-backup,
+    # modules/<m>/.env.upgrade-bak-*, backend.env.bak): every old password, so
+    # 0600 wherever they sit. Templates/examples carry none, and nginx (uid
+    # 101) must keep reading anything under html/ that happens to match.
+    find "${SCRIPT_DIR}" "${SCRIPT_DIR}/data/tmp" -type f \
+        \( -name 'config.yaml.pre-*' -o -name '*.upgrade-bak-*' -o -name '*.env.*' \) \
+        -not -name '*.template' -not -name '*.example' -not -path "*/modules/nginx/html/*" \
+        -exec chmod 600 {} \; 2>/dev/null || true
+    # The "default password in use" marker names which logins are weak.
+    [[ -f "${SCRIPT_DIR}/data/state/default-passwords.json" ]] && \
+        chmod 600 "${SCRIPT_DIR}/data/state/default-passwords.json" 2>/dev/null || true
 
     # Restore execute permission on scripts
     chmod +x "${SCRIPT_DIR}/install.sh" 2>/dev/null || true

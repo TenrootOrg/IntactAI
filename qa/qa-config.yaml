@@ -73,14 +73,17 @@ run:
   # local report instead, and nothing leaves the box unless you ask for it.
   llm_summary: false
 
-  # Rotate the qa/123123 dashboard password to a random value at teardown.
+  # Rotate the fixed QA dashboard password (qa / QaLab2026Intact, or the
+  # QA_DASH_PASS env var; see qa/phases/platform.py) to a random value at
+  # teardown.
   #
-  # OFF by default: the QA credentials are always qa/123123 so the dashboard
-  # stays usable between runs without digging a password out of a run
-  # directory. Turning this on closes a real exposure -- a six-digit password
-  # on the account gating the dashboard, /api/, uploads and the
-  # /velociraptor/ proxy -- at the cost of that convenience. The ten-attempt
-  # lockout is what stands behind the password either way.
+  # OFF by default: the QA credentials stay fixed so the dashboard stays usable
+  # between runs without digging a password out of a run directory. Turning
+  # this on closes a real exposure -- a password that is in a public repo, on
+  # the account gating the dashboard, /api/, uploads and the /velociraptor/
+  # proxy -- at the cost of that convenience. The ten-attempt lockout is what
+  # stands behind the password either way. Module passwords are generated per
+  # box by the install; the harness reads them with show-credentials.sh.
   revoke_dashboard_account: false
 
   # Keep the acquired memory image after teardown. Off by default because it

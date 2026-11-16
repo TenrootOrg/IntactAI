@@ -16,13 +16,23 @@ import time
 from lib import api as api_lib
 from lib import shell
 
-# Fixed dashboard credentials, matching the shipped module defaults in
-# config.yaml. Deliberately not random and deliberately not in qa-config.yaml:
-# they are the same on every run, so the operator can open the dashboard
-# mid-run without looking anything up, and there is no secret to leak because
-# the value is the documented shipped default.
+# Fixed dashboard credentials, the same on every run, so the operator can open
+# the dashboard mid-run without looking anything up. The password has to meet
+# the dashboard's rule (12+, upper, lower, digit) -- the old qa/123123 is now
+# refused at setup. QA_DASH_PASS (the env var verify_api.py already reads)
+# overrides it, for a box that is reachable by anyone but the operator: this
+# fallback is in a public repo.
 QA_DASH_USER = "qa"
-QA_DASH_PASSWORD = "123123"
+QA_DASH_PASSWORD = os.environ.get("QA_DASH_PASS") or "QaLab2026Intact"
+
+# Where install.sh leaves the one-time dashboard setup token (0600, root), and
+# the script that makes a new one on a box that is already claimed.
+SETUP_TOKEN_FILE = "data/state/backend/setup_token"
+RESET_LOGIN = "scripts/reset-login.sh"
+
+# Module passwords are generated per box now (nothing ships 123123). This prints
+# them as `module | user | password` lines from modules/<module>/secrets/.
+SHOW_CREDENTIALS = "scripts/show-credentials.sh"
 
 REPO_URL = "git@github.com:TenrootOrg/IntactAI.git"
 
@@ -331,12 +341,13 @@ def register(runner, cfg):
                    stage="wipe")
 
         # config.yaml is NOT wiped -- it is operator state and holds the live
-        # PAT -- but first_login must go back to true, or the "fresh install
-        # ships unclaimed" check is wrong on every run after the first. Once
-        # any run claims the appliance the flag flips to false and persists
-        # across a wipe, so the next install comes up already claimed with a
-        # password nothing knows.
-        detail["first_login_reset"] = _reset_first_login(tl)
+        # PAT -- but setup must be re-opened, or the "fresh install ships
+        # unclaimed" check is wrong on every run after the first. Once any run
+        # claims the appliance first_login flips to false and persists across a
+        # wipe, so the next install comes up already claimed with a password
+        # nothing knows. reset-login.sh, not a bare first_login edit: setup
+        # also needs a token, and that script writes one.
+        detail["first_login_reset"] = _reset_login(cfg, tl)
 
         ctx.check("no containers remain", len(shell.container_names()) == 0,
                   actual=len(shell.container_names()))
@@ -416,6 +427,21 @@ def register(runner, cfg):
         # leak the redactor exists to prevent — and it went unnoticed because
         # the canary self-test passed, the canary being seeded into a different
         # file. The leak scan at report time caught it.
+        # The module passwords this install generated. Read BEFORE the logs are
+        # copied so the redactor already knows them, and asserted absent from
+        # the install output: the installer promises they go only to
+        # modules/<module>/secrets/ (and the terminal, never stdout).
+        module_pw = _module_passwords(cfg)
+        ctx.set(module_passwords=module_pw)
+        ctx.redact.secrets.extend(module_pw)
+        ctx.redact.secrets.sort(key=len, reverse=True)
+        ctx.check("show-credentials.sh lists the generated module passwords",
+                  bool(module_pw), actual=f"{len(module_pw)} password(s)",
+                  note=f"sudo {SHOW_CREDENTIALS}")
+        ctx.check("no module password appears in the install output",
+                  not any(pw in (r.out or "") for pw in module_pw),
+                  note="passwords go to modules/<module>/secrets/ only")
+
         for candidate in sorted(_glob_logs(REPO_DIR)):
             dest = os.path.join(ctx.run_dir, "logs", os.path.basename(candidate))
             ctx.redact.redact_file(candidate, dest)
@@ -780,7 +806,7 @@ def register(runner, cfg):
     @runner.phase("auth", "Claim the appliance and hold a session",
                   needs=("install",), critical=True)
     def auth(ctx):
-        """Fixed qa/123123, matching the shipped module defaults in config.yaml.
+        """Fixed QA_DASH_USER / QA_DASH_PASSWORD, claimed with the setup token.
 
         This was a per-run random password. The operator asked for fixed
         credentials instead: a random password meant looking up a file every
@@ -795,12 +821,6 @@ def register(runner, cfg):
         """
         username, password = QA_DASH_USER, QA_DASH_PASSWORD
 
-        # Deliberately NOT added to the redactor. It is the documented shipped
-        # default, not a secret, and redacting a string as common as "123123"
-        # would blank the module passwords wherever they legitimately appear in
-        # install logs — turning readable output into [REDACTED] noise for no
-        # gain.
-
         creds_path = os.path.join(ctx.run_dir, "dashboard-credentials.txt")
         with open(os.open(creds_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
                   "w", encoding="utf-8") as fh:
@@ -812,27 +832,27 @@ def register(runner, cfg):
 
         # Self-heal rather than dead-end. If the box is already claimed the
         # harness cannot log in -- it does not know the password -- and every
-        # remaining phase would be skipped. config.yaml's first_login is the
-        # documented recovery switch and takes effect immediately with no
-        # restart, so flip it and carry on. Recorded as a warning, not silently:
-        # on a run that included the wipe this should never be needed, and if
-        # it is, that is worth knowing.
+        # remaining phase would be skipped. reset-login.sh is the documented
+        # recovery (it re-opens setup and writes a new token); a tree without it
+        # still has config.yaml's first_login switch. Recorded as a warning, not
+        # silently: on a run that included the wipe this should never be
+        # needed, and if it is, that is worth knowing.
         recovered = False
         if mode_before != "setup":
             tl.warn("appliance_already_claimed", detail={
-                "mode": mode_before,
-                "action": "resetting first_login via config.yaml"})
-            recovered = _reset_first_login(tl)
+                "mode": mode_before, "action": "reset-login.sh / first_login"})
+            recovered = _reset_login(cfg, tl)
             mode_before = c.auth_mode()
 
         ctx.check("appliance is claimable", mode_before == "setup",
                   expected="setup", actual=mode_before,
-                  note="first_login: true in config.yaml is the recovery switch")
+                  note="sudo scripts/reset-login.sh re-opens setup with a new token")
         if not recovered:
             ctx.check("appliance shipped unclaimed without intervention",
                       True, note="fresh install landed in setup mode")
 
-        how = c.ensure_session(username, password)
+        how = c.ensure_session(username, password,
+                               setup_token=lambda: read_setup_token(cfg, ctx))
         mode_after = c.auth_mode()
         ctx.check("setup closes after claiming", mode_after == "login",
                   expected="login", actual=mode_after)
@@ -893,6 +913,55 @@ def _ensure_qa_case(c):
         return (made or {}).get("case_id"), True
     except Exception:                                         # noqa: BLE001
         return None, False
+
+
+def _sudo_out(cfg, argv):
+    """Root's stdout for argv, or None. Never printed or logged."""
+    try:
+        r = shell.sudo_capture(argv, cfg.sudo_password)
+    except Exception:                                         # noqa: BLE001
+        return None
+    return r.out if r.ok else None
+
+
+def read_setup_token(cfg, ctx=None):
+    """The one-time setup token install.sh wrote, or None. Added to the
+    redactor: it is a credential until setup consumes it."""
+    out = _sudo_out(cfg, ["cat", os.path.join(REPO_DIR, SETUP_TOKEN_FILE)])
+    token = (out or "").strip() or None
+    if token and ctx is not None:
+        ctx.redact.secrets.insert(0, token)
+        ctx.redact.secrets.sort(key=len, reverse=True)
+    return token
+
+
+def _module_passwords(cfg):
+    """Every password show-credentials.sh prints. Its lines are
+    `module | user | password`; the header row and any rule lines are skipped."""
+    out = _sudo_out(cfg, ["bash", os.path.join(REPO_DIR, SHOW_CREDENTIALS)])
+    return parse_show_credentials(out or "")
+
+
+def parse_show_credentials(text):
+    pws = []
+    for ln in text.splitlines():
+        parts = [p.strip() for p in ln.split("|")]
+        if len(parts) != 3 or not parts[2] or parts[2].lower() == "password":
+            continue
+        pws.append(parts[2])
+    return pws
+
+
+def _reset_login(cfg, tl):
+    """Re-open dashboard setup on a claimed box: reset-login.sh writes a new
+    setup token and sets first_login: true in place. The bare first_login
+    edit is only for a tree from before the token (no reset-login.sh)."""
+    script = os.path.join(REPO_DIR, RESET_LOGIN)
+    if os.path.exists(script):
+        ok = _sudo_out(cfg, ["bash", script]) is not None
+        (tl.ok if ok else tl.warn)("reset_login", detail={"script": RESET_LOGIN})
+        return ok
+    return _reset_first_login(tl)
 
 
 def _reset_first_login(tl, path=None):

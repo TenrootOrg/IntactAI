@@ -1,147 +1,90 @@
 #!/usr/bin/env bash
-# The shipped Portainer password must be usable, and the refusal must say why.
+# The Portainer admin password: nothing shipped, a usable one stored.
 #
-# config.yaml shipped `1234qwer!@#$`, which is EXACTLY 12 characters. It passed
-# the length test and tripped the literal match against the known-weak default,
-# so every default install generated a random password and printed:
-#
-#   Portainer password missing or < 12 chars in config.yaml
-#
-# Neither clause was true. The operator opened config.yaml, saw a 12-character
-# password sitting there, and had nothing to go on. One message covered four
-# branches and named the two that had not fired.
-#
-# Two properties are asserted here:
-#   1. the value config.yaml ships is actually ACCEPTED (a default nobody can
-#      use is worse than no default -- it looks configured and is not);
-#   2. every refusal names the condition that fired, and the retired default is
-#      still refused so a box carrying it never inherits a weak credential.
-set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PASS=0; TOTAL=0
-ok()   { TOTAL=$((TOTAL+1)); PASS=$((PASS+1)); echo "  ok   - $1"; }
-fail() { TOTAL=$((TOTAL+1)); echo "  FAIL - $1"; [[ -n "${2:-}" ]] && echo "         $2"; }
+# History: config.yaml shipped `1234qwer!@#$`, then `Ch4nge-Me!Intact2026` --
+# both public, both identical on every default install. It now ships an empty
+# value, and the installer stores a password per box
+# (ensure_module_credentials, lib/config.sh). Portainer enforces >= 12
+# characters even via --admin-password-file; a shorter value leaves the admin
+# silently uncreated and the UI stuck in its timed-out "initial setup". And it
+# reads that file at FIRST start only, so a Portainer that already has data
+# must never get a freshly minted one.
+set -u
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+source ./helpers.sh
+ROOT="$(cd .. && pwd)"
 
-P="${ROOT}/lib/modules/portainer.sh"
+LOG_FILE=/dev/null
+source ../lib/common.sh
+source ../lib/config.sh
+source ../lib/modules/portainer.sh
 
-echo "== the shipped default is usable =="
-# Read the TRACKED config, not the box's live one: they differ, and it is the
-# tracked file that every install starts from.
-SHIPPED="$(cd "$ROOT" && git show HEAD:config.yaml 2>/dev/null | python3 -c "
-import sys, yaml
-try:
-    d = yaml.safe_load(sys.stdin)
-    print((d.get('modules', {}).get('portainer') or {}).get('password', '') or '')
-except Exception:
-    print('')
-")"
-RETIRED='1234qwer!@#$'
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"; rm -f "${STUB_LOG}"' EXIT
+SCRIPT_DIR="$WORK"
+CONFIG_FILE="$WORK/config.yaml"
+_cred_have_tty() { return 1; }
+docker() { [[ "$*" == "volume inspect"* ]] && return 1; return 0; }   # no Portainer data
+sync() { :; }
 
-if [[ -n "$SHIPPED" && "$SHIPPED" != "None" ]]; then
-    ok "config.yaml ships a Portainer password"
-else
-    fail "config.yaml ships a Portainer password"
-fi
-if (( ${#SHIPPED} >= 12 )); then
-    ok "it meets Portainer's 12-character minimum (${#SHIPPED} chars)"
-else
-    fail "it meets Portainer's 12-character minimum" \
-         "got ${#SHIPPED}; a short value leaves the admin account silently uncreated"
-fi
-if [[ "$SHIPPED" != "$RETIRED" ]]; then
-    ok "it is not the retired default"
-else
-    fail "it is not the retired default" \
-         "that value is refused, so every install would fall back to a random password"
-fi
-# The whole point: the shipped value survives the guard and is used as-is.
-if [[ -n "$SHIPPED" && "$SHIPPED" != "None" && ${#SHIPPED} -ge 12 && "$SHIPPED" != "$RETIRED" ]]; then
-    ok "so the guard accepts it and Portainer is seeded with it"
-else
-    fail "so the guard accepts it and Portainer is seeded with it"
-fi
-
-echo
-echo "== the retired default is still refused =="
-if grep -q "_PORTAINER_RETIRED_DEFAULT=" "$P"; then
-    ok "the retired default is still named in the guard"
-else
-    fail "the retired default is still named in the guard" \
-         "a box whose config still carries it would inherit a publicly-known password"
-fi
-
-echo
-echo "== each refusal states the condition that fired =="
-# Distinct reason strings, not one message covering every branch.
-for r in "no Portainer password is set" "shorter than Portainer's 12-character minimum" "retired shipped default"; do
-    if grep -qF "$r" "$P"; then
-        ok "reason present: ${r}"
-    else
-        fail "reason present: ${r}"
-    fi
-done
-# The old catch-all must be gone, or the misdiagnosis survives.
-if grep -qF "Portainer password missing or < 12 chars" "$P"; then
-    fail "the old catch-all message is gone" \
-         "it named the two conditions that had not fired on a default install"
-else
-    ok "the old catch-all message is gone"
-fi
-# A refusal must still tell the operator where to read the generated password.
-if grep -q 'Retrieve it with: cat' "$P"; then
-    ok "a refusal still points at the generated password file"
-else
-    fail "a refusal still points at the generated password file"
-fi
-
-echo
-echo "== the branch chosen matches the input =="
-# Exercise the real decision rather than trusting the strings above.
-run_branch() {
-    LOG_OUT="$(
-        portainer_password="$1" bash -c '
-            _PORTAINER_RETIRED_DEFAULT='"'"'1234qwer!@#$'"'"'
-            reason=""
-            if [[ -z "$portainer_password" || "$portainer_password" == "None" ]]; then
-                reason="empty"
-            elif (( ${#portainer_password} < 12 )); then
-                reason="short"
-            elif [[ "$portainer_password" == "$_PORTAINER_RETIRED_DEFAULT" ]]; then
-                reason="retired"
-            fi
-            echo "${reason:-accepted}"
-        '
-    )"
-    echo "$LOG_OUT"
+_config() {  # _config <password yaml value>
+    rm -rf "$WORK/modules"
+    printf "modules:\n  portainer:\n    enabled: true\n    id: admin\n    password: %s\n" "$1" > "$CONFIG_FILE"
 }
-for case in "::empty" "None::empty" "short1::short" '1234qwer!@#$::retired'; do
-    val="${case%%::*}"; want="${case##*::}"
-    got="$(run_branch "$val")"
-    if [[ "$got" == "$want" ]]; then
-        ok "input '${val:-<empty>}' -> ${want}"
-    else
-        fail "input '${val:-<empty>}' -> ${want}" "got '${got}'"
-    fi
-done
-got="$(run_branch "$SHIPPED")"
-if [[ "$got" == "accepted" ]]; then
-    ok "the shipped default -> accepted"
-else
-    fail "the shipped default -> accepted" "got '${got}'"
-fi
+_pw_file() { echo "$WORK/modules/portainer/secrets/admin_password"; }
 
-echo
-echo "== aws_sigma ships enabled =="
-if (cd "$ROOT" && git show HEAD:config.yaml 2>/dev/null | python3 -c "
-import sys, yaml
-d = yaml.safe_load(sys.stdin)
-raise SystemExit(0 if (d.get('modules', {}).get('aws_sigma') or {}).get('enabled') else 1)
-"); then
-    ok "modules.aws_sigma.enabled is true in the tracked config"
-else
-    fail "modules.aws_sigma.enabled is true in the tracked config"
-fi
+test_the_repo_ships_no_portainer_password() {
+    # The repo's config.yaml (sanitized on commit, blanked by every install).
+    local shipped
+    shipped="$(CONFIG_FILE="$ROOT/config.yaml" _config_password_raw portainer password)"
+    assert_eq "$shipped" "" "modules.portainer.password ships empty"
+}
 
-echo
-echo "${PASS}/${TOTAL} passed"
-[[ "$PASS" -eq "$TOTAL" ]]
+test_empty_gives_a_stored_password_that_passes_the_rule() {
+    _config "''"
+    assert_true generate_portainer_secrets
+    local pw; pw="$(cat "$(_pw_file)" 2>/dev/null)"
+    assert_true secret_check "$pw"
+    (( ${#pw} >= 12 )) || _fail "Portainer needs >= 12 characters, got ${#pw}"
+    assert_eq "$(stat -c %a "$(_pw_file)")" "600" "admin_password is 0600"
+    assert_eq "$(cut -c1-13 "$WORK/modules/portainer/secrets/agent.env")" "AGENT_SECRET=" "agent secret still made"
+}
+
+test_a_good_config_value_is_used_and_blanked() {
+    _config "'Port1ainerPass9'"
+    assert_true generate_portainer_secrets
+    assert_eq "$(cat "$(_pw_file)")" "Port1ainerPass9" "operator's value seeds Portainer"
+    assert_eq "$(_config_password_raw portainer password)" "" "and leaves config.yaml"
+}
+
+test_retired_and_short_values_are_refused_with_the_reason() {
+    local v out
+    for v in "'1234qwer!@#\$'" "'Ch4nge-Me!Intact2026'" "'Short1Aa'"; do
+        _config "$v"
+        out="$(ensure_module_credentials portainer 2>&1)"
+        assert_false generate_portainer_secrets
+        [[ -e "$(_pw_file)" ]] && _fail "stored a refused value ($v)"
+        assert_contains "$out" "modules.portainer.password is not accepted" "names the key"
+    done
+    _config "'Short1Aa'"
+    assert_contains "$(ensure_module_credentials portainer 2>&1)" "shorter than 12 characters" "names the condition"
+}
+
+# Existing data, nothing known: the install goes on with a placeholder file
+# (Portainer ignores it after first start) marked so it is shown "unknown",
+# never as a password that would not work.
+test_existing_portainer_data_gets_a_marked_placeholder() {
+    _config "''"
+    docker() { [[ "$*" == "volume inspect portainer_portainer_data" ]] && return 0; [[ "$*" == "volume inspect"* ]] && return 1; return 0; }
+    assert_true generate_portainer_secrets
+    assert_true test -e "$(_pw_file).placeholder"
+    assert_eq "$(cred_get portainer)" "unknown" "shown as unknown"
+    docker() { [[ "$*" == "volume inspect"* ]] && return 1; return 0; }
+}
+
+test_aws_sigma_ships_enabled() {
+    assert_eq "$(CONFIG_FILE="$ROOT/config.yaml" read_config "['modules']['aws_sigma']['enabled']")" "True" \
+        "modules.aws_sigma.enabled is true in the repo config"
+}
+
+run_all_tests

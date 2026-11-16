@@ -69,6 +69,16 @@ def sudo(argv, password, timeout=300, cwd=None, log_path=None, tl=None,
                   argv_for_log=["sudo", "…"] + list(argv))
 
 
+def sudo_capture(argv, password, timeout=60):
+    """Run argv as root and return its output WITHOUT printing or logging it.
+
+    For reading a credential (the setup token, show-credentials.sh): sudo()
+    goes through stream(), which echoes every line to the console before the
+    redactor knows the value."""
+    return run(["sudo", "-S", "-k", "-p", ""] + list(argv), timeout=timeout,
+               input_text=password + "\n")
+
+
 def stream(argv, timeout=7200, cwd=None, log_path=None, tl=None, env=None,
            stdin_text=None, stage=None, argv_for_log=None, echo=True):
     """Run a command, streaming stdout+stderr to a log file and the console.

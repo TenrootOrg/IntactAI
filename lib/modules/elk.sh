@@ -40,9 +40,15 @@ generate_elk_secrets() {
         return 0
     fi
 
+    # elastic + kibana_system passwords first: ES reads ELASTIC_PASSWORD only on
+    # an empty data dir, so it must exist before the first compose up. A no-op
+    # once stored; here for the upgrade path's install case, which runs this
+    # without install.sh's ensure_module_credentials.
+    ensure_module_credentials elk || return 1
+
     local secrets_dir="${SCRIPT_DIR}/modules/elk/secrets"
     local keyfile="${secrets_dir}/kibana-keys.env"
-    mkdir -p "$secrets_dir"
+    ( umask 077; mkdir -p "$secrets_dir" )
 
     if [[ -s "$keyfile" ]]; then
         log_info "Kibana encryption keys already present — not rotating"
@@ -98,13 +104,10 @@ elk_settle_single_node_replicas() {
     is_enabled "$elk_enabled" || return 0
     docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'intact_elasticsearch' || return 0
 
-    local user pass health
-    user=$(read_config "['modules']['elk']['id']"); user="${user:-elastic}"
-    pass=$(read_config "['modules']['elk']['password']")
-    health="http://localhost:9200/_cluster/health"
+    local health="http://localhost:9200/_cluster/health"
 
     local body nodes st
-    body=$(curl -sf --max-time 10 -u "${user}:${pass}" "$health" 2>/dev/null) || return 0
+    body=$(es_curl -sf --max-time 10 "$health" 2>/dev/null) || return 0
     nodes=$(sed -n 's/.*"number_of_nodes":\([0-9]*\).*/\1/p' <<< "$body")
     st=$(sed -n 's/.*"status":"\([a-z]*\)".*/\1/p' <<< "$body")
     # A real multi-node deployment WANTS its replicas. Same guard the init
@@ -113,14 +116,14 @@ elk_settle_single_node_replicas() {
     [[ "$st" == "yellow" ]] || return 0
 
     log_info "  Elasticsearch is ${st} on a single node — clearing replicas on the indices created since startup"
-    curl -sf -o /dev/null --max-time 30 -u "${user}:${pass}" \
+    es_curl -sf -o /dev/null --max-time 30 \
         -X PUT "http://localhost:9200/*/_settings?expand_wildcards=all" \
         -H 'Content-Type: application/json' \
         -d '{"index":{"number_of_replicas":0}}' 2>/dev/null || true
 
     local i
     for i in $(seq 1 10); do
-        st=$(curl -sf --max-time 5 -u "${user}:${pass}" "$health" 2>/dev/null \
+        st=$(es_curl -sf --max-time 5 "$health" 2>/dev/null \
              | sed -n 's/.*"status":"\([a-z]*\)".*/\1/p')
         [[ "$st" == "green" ]] && break
         sleep 2
@@ -182,14 +185,20 @@ deploy_elk() {
 
     # Wait for Elasticsearch to be ready
     log_info "  Waiting for Elasticsearch API (http://localhost:9200)..."
-    local elk_user=$(read_config "['modules']['elk']['id']")
-    local elk_pass=$(read_config "['modules']['elk']['password']")
     local es_wait=0
     local es_max_wait=90
     while [[ $es_wait -lt $es_max_wait ]]; do
-        if curl -sf --max-time 5 -u "${elk_user:-elastic}:${elk_pass}" "http://localhost:9200/_cluster/health" > /dev/null 2>&1; then
+        if es_curl -sf --max-time 5 "http://localhost:9200/_cluster/health" > /dev/null 2>&1; then
             log_success "  Elasticsearch is ready! (${es_wait}s)"
             track_module_success "ELK Stack"
+            # Velociraptor already running (ELK added later): its env_file copy of
+            # ELASTIC_PASSWORD was read at its last create, so the Elastic upload
+            # artifact would get 401 until it is recreated. Same as the upgrade path.
+            if declare -F _creds_recreate >/dev/null && declare -F _creds_running >/dev/null \
+               && _creds_running intact_velociraptor; then
+                log_info "  Recreating Velociraptor so it picks up the Elasticsearch password..."
+                _creds_recreate velociraptor velociraptor || log_warn "  Could not recreate Velociraptor — restart it to use the Elastic upload"
+            fi
             return 0
         fi
         sleep 5

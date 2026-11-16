@@ -25,9 +25,12 @@ _u_probe_elk() {
     local envf="${SCRIPT_DIR}/modules/elk/.env"
     local user pass status
     user="$(read_env_var "$envf" ELASTIC_USER 2>/dev/null || echo elastic)"
-    pass="$(read_env_var "$envf" ELASTIC_PASSWORD 2>/dev/null || echo '')"
+    # The store first (lib/secrets.sh); a box not migrated yet still has it in .env.
+    pass="$(secret_get elk ELASTIC_PASSWORD 2>/dev/null || read_env_var "$envf" ELASTIC_PASSWORD 2>/dev/null || echo '')"
 
-    status="$(curl -s --max-time 6 -u "${user}:${pass}" \
+    # _u_elk_curlrc (modules/elk.sh) quotes for curl's config parser: an old
+    # box's password may hold " \ or spaces, which a bare printf would break.
+    status="$(curl -s --max-time 6 -K <(_u_elk_curlrc "$user" "$pass") \
                 "http://127.0.0.1:9200/_cluster/health" 2>/dev/null \
               | grep -o '"status"[[:space:]]*:[[:space:]]*"[a-z]*"' \
               | grep -o '[a-z]*"$' | tr -d '"')"

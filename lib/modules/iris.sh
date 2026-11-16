@@ -14,25 +14,16 @@ generate_iris_secrets() {
     fi
     log_info "Generating IRIS secrets..."
     local secrets_dir="${SCRIPT_DIR}/modules/iris/secrets"
-    mkdir -p "$secrets_dir"
+    ( umask 077; mkdir -p "$secrets_dir" )
 
     local secrets_created=false
 
-    # IRIS_ADM_PASSWORD comes from config.yaml when the operator set one;
-    # otherwise generate a random per-install password instead of shipping
-    # the same fixed, publicly-documented string to every default install
-    # (the same pattern used for the Portainer admin password below).
-    if [[ ! -f "$secrets_dir/IRIS_ADM_PASSWORD" ]] || [[ ! -s "$secrets_dir/IRIS_ADM_PASSWORD" ]]; then
-        local iris_password=$(read_config "['modules']['iris']['password']")
-        if [[ -n "$iris_password" && "$iris_password" != "None" ]]; then
-            echo -n "$iris_password" > "$secrets_dir/IRIS_ADM_PASSWORD"
-            log_info "  Created IRIS_ADM_PASSWORD from config.yaml"
-        else
-            iris_password=$(openssl rand -hex 16)
-            echo -n "$iris_password" > "$secrets_dir/IRIS_ADM_PASSWORD"
-            log_warn "  No IRIS password set in config.yaml; generated a random one instead"
-            log_warn "  Retrieve it with: cat ${secrets_dir}/IRIS_ADM_PASSWORD"
-        fi
+    # IRIS_ADM_PASSWORD is written by ensure_module_credentials (lib/config.sh):
+    # typed, from config.yaml, or generated. Not `openssl rand -hex` any more --
+    # hex is lowercase-only and fails IRIS's own policy (upper+lower+digit), so
+    # IRIS refused it and fell back to a random admin password nobody knew.
+    if [[ ! -s "$secrets_dir/IRIS_ADM_PASSWORD" ]]; then
+        ensure_module_credentials iris || return 1
         secrets_created=true
     else
         log_info "  IRIS_ADM_PASSWORD exists, skipping"
@@ -367,11 +358,11 @@ print('INTACT_IRISKEY:' + (get_secret('iris.administrator.api_key') or ''))
 }
 
 enforce_iris_admin_password() {
-    # Make config.yaml the source of truth for the IRIS administrator password.
+    # Make the stored password (secrets/IRIS_ADM_PASSWORD) the IRIS administrator's.
     # IRIS only honours IRIS_ADM_PASSWORD at FIRST init (post_init.py); on later
     # boots an existing admin keeps whatever it had. So if the secret wasn't
     # applied at first-init (e.g. an unreadable secret file -> IRIS fell back to
-    # a RANDOM password), the documented config.yaml creds never work. Re-assert
+    # a RANDOM password), the stored password never works. Re-assert
     # them here using IRIS's own bcrypt hashing (flask-bcrypt), idempotently.
 
     # IRIS-disabled guard — mirrors bootstrap_iris_api_key. Without this, a
@@ -387,9 +378,8 @@ enforce_iris_admin_password() {
 
     local iris_user iris_pass
     iris_user=$(read_config "['modules']['iris']['id']"); [[ -z "$iris_user" ]] && iris_user="administrator"
-    iris_pass=$(read_config "['modules']['iris']['password']")
-    if [[ -z "$iris_pass" ]]; then
-        log_warn "  IRIS password not set in config.yaml — skipping admin-password enforcement"
+    if ! iris_pass="$(cred_get iris)"; then
+        log_warn "  No stored IRIS password — skipping admin-password enforcement"
         return 0
     fi
     if ! docker ps --filter 'name=^intact_iris_app$' --format '{{.Names}}' 2>/dev/null | grep -q . \
@@ -398,13 +388,14 @@ enforce_iris_admin_password() {
         return 0
     fi
 
-    log_info "  Enforcing IRIS administrator password from config.yaml..."
+    log_info "  Enforcing the stored IRIS administrator password..."
     # Step 1: hash with IRIS's own flask-bcrypt, standalone (NO db access — a
     # fresh `docker exec` lacks the DB secret the entrypoint exports, so importing
-    # `app` can't connect). Password comes from the container env, never the body.
+    # `app` can't connect). Password on stdin: `-e IRIS_RESET_PW=...` put it in
+    # the docker exec argv (ps) and in the exec's recorded environment.
     local hash
-    hash=$(docker exec -e IRIS_RESET_PW="$iris_pass" intact_iris_app python3 -c \
-        'import os;from flask_bcrypt import Bcrypt;print(Bcrypt().generate_password_hash(os.environ["IRIS_RESET_PW"].encode()).decode())' \
+    hash=$(printf '%s' "$iris_pass" | docker exec -i intact_iris_app python3 -c \
+        'import sys;from flask_bcrypt import Bcrypt;print(Bcrypt().generate_password_hash(sys.stdin.read().encode()).decode())' \
         2>/dev/null | tail -1)
     if [[ "$hash" != \$2* ]]; then
         log_warn "  Could not compute IRIS password hash — skipping"
@@ -416,7 +407,7 @@ enforce_iris_admin_password() {
     res=$(docker exec intact_iris_db psql -U iris -d iris_db \
         -c "UPDATE \"user\" SET password='$hash' WHERE \"user\"='$iris_user';" 2>&1 | tail -1)
     if [[ "$res" == *"UPDATE 1"* ]]; then
-        log_success "  IRIS administrator password set from config.yaml"
+        log_success "  IRIS administrator password set from the stored value"
     elif [[ "$res" == *"UPDATE 0"* ]]; then
         log_warn "  IRIS administrator row not found — password not set"
     else

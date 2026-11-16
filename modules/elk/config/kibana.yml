@@ -1,0 +1,14 @@
+# Kibana's config, mounted over the image's own kibana.yml (modules/elk/
+# docker-compose.yaml). The first four lines are that default file verbatim;
+# everything else still comes from the compose environment.
+server.host: "0.0.0.0"
+server.shutdownTimeout: "5s"
+elasticsearch.hosts: [ "http://elasticsearch:9200" ]
+monitoring.ui.container.elasticsearch.enabled: true
+
+# kibana_system, with its password from modules/elk/secrets/creds.env (env_file).
+# Here and not in ELASTICSEARCH_PASSWORD: the image's kibana-docker turns that
+# variable into `--elasticsearch.password=<pw>` on node's command line, which
+# any process on the host can read. Kibana expands ${...} in this file itself.
+elasticsearch.username: "kibana_system"
+elasticsearch.password: "${KIBANA_PASSWORD}"

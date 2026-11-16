@@ -152,7 +152,9 @@ def main():
                   f"'{args.user}', or claim it in the browser first.")
             print("  Continuing with unauthenticated checks only.\n")
         else:
-            c.setup(args.user, password)
+            # Setup needs the one-time token install.sh wrote (root-only:
+            # `sudo cat data/state/backend/setup_token`); env, never argv.
+            c.setup(args.user, password, os.environ.get("QA_SETUP_TOKEN"))
             print(f"  Claimed the appliance as '{args.user}'.\n")
     elif password:
         c.login(args.user, password)

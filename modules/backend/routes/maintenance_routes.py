@@ -1002,9 +1002,9 @@ def _es_auth():
     without it: the probe came back 401, the `!= 200` branch reported
     'elasticsearch unreachable', and the ELK row silently scanned and purged
     NOTHING while looking like it worked. Measured on a live box."""
-    import os
-    return (os.environ.get("ELASTICSEARCH_USER", "elastic"),
-            os.environ.get("ELASTICSEARCH_PASSWORD", ""))
+    # config's resolution (store's ELASTIC_PASSWORD first), not the raw env.
+    from config import ELASTICSEARCH_CONFIG as C
+    return (C.get("user") or "elastic", C.get("password") or "")
 
 
 def _es_indices():

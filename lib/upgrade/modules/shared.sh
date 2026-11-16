@@ -7,6 +7,11 @@
 # to the simpler version-swap-plus-a-little-care modules: elk, iris,
 # portainer, volweb, plaso, aws_sigma, o365rc.
 
+# Module passwords (migration off the tracked files, rotation, marker). Sourced
+# from here because upgrade.sh's source list is the general flow and this file
+# is loaded by every run that loads a module.
+source "$(dirname "${BASH_SOURCE[0]}")/creds.sh"
+
 _u_module_dir() { echo "${SCRIPT_DIR}/modules/$1"; }
 _u_env_file()   { echo "${SCRIPT_DIR}/modules/$1/.env"; }
 
@@ -36,17 +41,30 @@ _u_compose_sources() {
     grep -oE '^[[:space:]]*-[[:space:]]*\.\.?/[^:]+:' "$compose" 2>/dev/null \
         | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/:$//; s#^\./##' \
         | sed 's/^/mount /'
+    # The long form `- path: x` + `required: false` (the module password
+    # stores, which a box without that module never has) is optional: compose
+    # starts without it, so it is not reported. Reporting it refused every
+    # `up` of the backend on a box without ELK or Timesketch.
     awk '
-        /^[[:space:]]*env_file:/ { inblock = 1; next }
+        function flush() { if (p != "" && p !~ /^\$/) print "envfile " p; p = "" }
+        /^[[:space:]]*env_file:/ { flush(); inblock = 1; next }
+        inblock && /^[[:space:]]*-[[:space:]]*path:/ {
+            flush(); p = $0
+            sub(/^[[:space:]]*-[[:space:]]*path:[[:space:]]*/, "", p); gsub(/["\047]/, "", p); sub(/^\.\//, "", p)
+            next
+        }
+        inblock && /^[[:space:]]*required:[[:space:]]*false/ { p = ""; next }
         # Every entry inside an env_file: block is a path, so match the list
         # item rather than a path shape -- the bare `- .env` form (backend,
         # iris, velociraptor) has no leading ./ and was being skipped.
         inblock && /^[[:space:]]*-[[:space:]]*[^[:space:]]/ {
-            sub(/^[[:space:]]*-[[:space:]]*/, ""); sub(/^\.\//, "")
-            if ($0 !~ /^\$/) print "envfile " $0
+            flush(); p = $0
+            sub(/^[[:space:]]*-[[:space:]]*/, "", p); sub(/^\.\//, "", p)
             next
         }
-        inblock && !/^[[:space:]]*-/ { inblock = 0 }
+        inblock && /^[[:space:]]*required:/ { next }
+        inblock && !/^[[:space:]]*-/ { flush(); inblock = 0 }
+        END { flush() }
     ' "$compose" 2>/dev/null
 }
 
@@ -134,7 +152,14 @@ _u_state_migrate() {
         if state_is_migrated "$SCRIPT_DIR" "$rel"; then
             continue
         fi
-        if [[ -e "${SCRIPT_DIR}/${rel}" ]]; then
+        # Also when the live path is GONE but data/state still has it (a fresh
+        # extract over an upgraded box's data/, a hand cleanup of modules/*/
+        # secrets): that copy is the only one of the module passwords, and the
+        # password migration right after this must find it there instead of
+        # warning "stored nowhere". state_migrate_one re-links it.
+        local canon="${SCRIPT_DIR}/$(state_canonical_path "$rel")"
+        if [[ -e "${SCRIPT_DIR}/${rel}" ]] || { [[ -e "$canon" ]] && ! _state_is_empty_skeleton "$canon"; }; then
+            [[ -e "${SCRIPT_DIR}/${rel}" ]] || mkdir -p "$(dirname "${SCRIPT_DIR}/${rel}")"
             if state_migrate_one "$SCRIPT_DIR" "$rel"; then
                 log_info "  moved ${rel} -> $(state_canonical_path "$rel")"
                 n=$((n + 1))

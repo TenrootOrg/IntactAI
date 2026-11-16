@@ -52,6 +52,10 @@ upgrade_module_timesketch() {
     # 1. Credential migration off the shipped default. ORDER IS LOAD-BEARING;
     #    see the function.
     u_do "postgres credentials" -- _ts_ensure_postgres_password
+    # The Timesketch user's password into modules/timesketch/secrets/creds.env,
+    # which the web container now reads -- before anything restarts it, and
+    # before the .env backup below (an undo must not drop a stored value).
+    u_do "timesketch credentials" -- _u_creds_migrate timesketch
 
     # timesketch.conf / timesketch_legacy.conf are gitignored and
     # bind-mounted into the containers -- a module enabled but never before
@@ -186,6 +190,9 @@ upgrade_module_timesketch() {
     u_end timesketch rollback 300
     local rc=$?
     if (( rc == 0 )); then
+        # First: it clears config.yaml, and the create-user below refuses a
+        # config.yaml password that differs from the stored one.
+        _u_creds_after timesketch
         # A module enabled but never before deployed has no admin user --
         # nothing else in this path ever creates one. Gated on U_FROM
         # (nothing installed before this run) rather than running

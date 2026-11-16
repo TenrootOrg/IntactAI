@@ -125,6 +125,12 @@ trap 'rm -rf "$WORK"' EXIT
 log "unpacking the cached 8-module bundle"
 tar -xf "$CACHE_TAR" -C "$WORK"
 cp "$INTACT_ASSET" "$WORK/"
+# The cached bundle carries the PUBLISHED release's engine, and the box runs
+# that engine, not this source's (2026-11-16: the dev box upgrade ran an old
+# env_file parser and stopped Velociraptor). Rebuild it from current source.
+log "rebuilding the upgrade engine from current source"
+bash "$REPO_DIR/scripts/build_engine_asset.sh" "$TAG" "$REPO_DIR" "$WORK" || {
+    err "could not build the upgrade engine from $REPO_DIR"; exit 1; }
 
 INDEX="$WORK/$TAG.index.json"
 if [ ! -f "$INDEX" ]; then

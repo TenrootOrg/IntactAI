@@ -1,12 +1,9 @@
 #!/bin/bash
 # Intact.AI Platform Installer — Portainer module.
 
-# The password config.yaml used to ship. Still refused, deliberately: it is
-# publicly known, and a box whose config still carries it must keep getting a
-# random password rather than inheriting a weak one from this change.
-#
-# Single-quoted so the `$` is a literal and needs no escaping.
-_PORTAINER_RETIRED_DEFAULT='1234qwer!@#$'
+# The password config.yaml used to ship (1234qwer!@#$) is refused with every
+# other public value by secret_check (INTACT_KNOWN_DEFAULT_PASSWORDS in
+# lib/secrets.sh).
 
 generate_portainer_secrets() {
     # Portainer CE locks itself after a 5-minute "initial setup" window if no
@@ -15,45 +12,16 @@ generate_portainer_secrets() {
     # and the install works unattended.
     log_info "Generating Portainer secrets..."
     local secrets_dir="${SCRIPT_DIR}/modules/portainer/secrets"
-    mkdir -p "$secrets_dir"
+    ( umask 077; mkdir -p "$secrets_dir" )
 
+    # The admin password is written by ensure_module_credentials
+    # (lib/config.sh): typed, from config.yaml (checked: 12+ characters is
+    # Portainer's own minimum -- a shorter one leaves the admin uncreated and
+    # the UI stuck in its timed-out "initial setup"), or generated. Portainer
+    # reads the file at FIRST start only, so ensure_module_credentials refuses
+    # to mint one for a Portainer that already has data.
     if [[ ! -s "$secrets_dir/admin_password" ]]; then
-        local portainer_password reason=""
-        portainer_password=$(read_config "['modules']['portainer']['password']")
-
-        # SAY WHICH CONDITION FIRED. This was one message covering four
-        # branches, and on a default install it named the two that had NOT
-        # happened: config.yaml shipped `1234qwer!@#$`, which is exactly 12
-        # characters, so it passed the length test and tripped the literal
-        # match instead -- while the operator was told "missing or < 12 chars"
-        # and could see a 12-character password sitting in the file. Every
-        # default install printed that.
-        #
-        # Portainer enforces a 12-character minimum even when the password is
-        # seeded via --admin-password-file. Short values silently cause the
-        # admin user to never be created and the UI falls back to the
-        # timed-out "initial setup" state — exactly what we're trying to avoid.
-        if [[ -z "$portainer_password" || "$portainer_password" == "None" ]]; then
-            reason="no Portainer password is set in config.yaml"
-        elif (( ${#portainer_password} < 12 )); then
-            reason="the Portainer password in config.yaml is shorter than Portainer's 12-character minimum"
-        elif [[ "$portainer_password" == "$_PORTAINER_RETIRED_DEFAULT" ]]; then
-            reason="config.yaml still carries the retired shipped default, which is publicly known"
-        fi
-
-        if [[ -n "$reason" ]]; then
-            # Random rather than a hardcoded fallback: a constant here would
-            # ship one credential to every install that took this branch, and
-            # the string would be visible in this open-source file. Same
-            # treatment as every other auto-provisioned secret in this codebase
-            # (see IRIS_SECRET_KEY / POSTGRES_*_PASSWORD above).
-            portainer_password=$(openssl rand -hex 16)
-            log_warn "  ${reason}; generated a random one instead"
-            log_warn "  Retrieve it with: cat ${secrets_dir}/admin_password"
-            log_warn "  Change it from the Portainer UI after first login (Settings -> Users)"
-        fi
-        printf '%s' "$portainer_password" > "$secrets_dir/admin_password"
-        chmod 600 "$secrets_dir/admin_password"
+        ensure_module_credentials portainer || return 1
         sync
         log_info "  Created Portainer admin password file"
     else

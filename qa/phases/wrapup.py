@@ -114,14 +114,14 @@ def register(runner, cfg):
     # --------------------------------------------------------------- F.2 --
     @runner.phase("revoke", "Confirm the dashboard account is as configured",)
     def revoke(ctx):
-        """Leaves qa/123123 in place. Deliberately.
+        """Leaves the fixed QA dashboard login in place. Deliberately.
 
         This phase used to rotate the password to a random value at teardown,
         on the reasoning that a guessable admin account gating the dashboard,
         /api/, uploads and the /velociraptor/ proxy should not outlive the run.
         That reasoning is sound but it is not the operator's call to make here:
-        the standing instruction is that the QA credentials are always
-        qa/123123, and rotating them meant the dashboard became unusable after
+        the standing instruction is that the QA credentials are fixed
+        (platform.QA_DASH_USER / QA_DASH_PASSWORD), and rotating them meant the dashboard became unusable after
         every run and the operator had to dig a password out of a run
         directory to look at their own appliance.
 
@@ -130,8 +130,9 @@ def register(runner, cfg):
         self-describing.
 
         The residual risk is real and worth stating plainly rather than
-        burying: on a network-reachable appliance this leaves a six-digit
-        password on an account that gates everything. What stands behind it is
+        burying: on a network-reachable appliance this leaves a password that
+        is in a public repo (unless QA_DASH_PASS overrides it) on an account
+        that gates everything. What stands behind it is
         the ten-attempt lockout, not the password.
         """
         import secrets
@@ -145,7 +146,8 @@ def register(runner, cfg):
 
         if rotate and c:
             alphabet = string.ascii_letters + string.digits
-            password = "Qa-" + "".join(secrets.choice(alphabet) for _ in range(28))
+            # "Qa1-" guarantees the upper/lower/digit the dashboard rule needs.
+            password = "Qa1-" + "".join(secrets.choice(alphabet) for _ in range(28))
             ctx.redact.secrets.insert(0, password)
             ctx.redact.secrets.sort(key=len, reverse=True)
             body = c.request("POST", "/api/auth/change-password", expect=(),
@@ -236,7 +238,9 @@ def register(runner, cfg):
         detail_redacted = _redact_run_directory(ctx)
 
         # And the real thing: no configured secret may appear anywhere.
-        offenders = _scan_for_secrets(ctx.run_dir, cfg.secrets())
+        # Plus the module passwords this install generated (platform.install).
+        offenders = _scan_for_secrets(
+            ctx.run_dir, list(cfg.secrets()) + list(ctx.get("module_passwords") or []))
         # NAMED, not counted. This check fired for real and the timeline line
         # carried no `actual` at all, because a list value rendered as nothing
         # -- so the one check whose entire job is to say a credential leaked

@@ -83,21 +83,73 @@ if [ -f server.config.yaml ] && ! grep -qE '^\s+hostname:\s*127\.0\.0\.1' server
     fi
 fi
 
-# Always check and create admin user if not exists
+# Users. The passwords come from modules/velociraptor/secrets/creds.env
+# (env_file in docker-compose.yaml), never printed here.
+#
+# WHY THEY ARE ON A COMMAND LINE: `velociraptor user add <user> [<password>]`
+# has no stdin or file option -- without the argument it reads a TERMINAL and
+# fails in a container ("inappropriate ioctl for device"), and the VQL
+# user_create() does nothing offline (both checked on 0.77.3). The value is in
+# this short-lived process's argv inside the container for well under a second.
+
+# GUI user: the store is authoritative, the same way as `api` below. Its
+# password is (re)applied whenever the stored VELOX_PASSWORD differs from the
+# sha256 stamp of the last one applied, and the user is created when missing.
+# That is what makes a revert by scripts/apply-passwords.sh safe: it puts the
+# old value back in the store and drops the stamps, and the next start puts it
+# back in the datastore -- even when the container was down for the revert and
+# the old value could not be applied from outside (round 2 review).
+#
+# Deliberate: Intact owns these passwords. A password changed by hand in the
+# Velociraptor UI is overwritten by the stored one at the next start after the
+# store changes (or the stamp is dropped, or on the first start of this
+# entrypoint on an old box, which has no stamp yet). Change it with
+# sudo scripts/apply-passwords.sh instead.
+GUI_PW_STAMP=.gui_pw.sha256
 if [[ -n "$VELOX_USER" && -n "$VELOX_PASSWORD" && -n "$VELOX_ROLE" ]]; then
+    # printf is a builtin: the value never reaches an argv here.
+    GUI_PW_SUM=$(printf '%s' "$VELOX_PASSWORD" | sha256sum | cut -d' ' -f1)
     USER_EXISTS=$(./velociraptor --config server.config.yaml user show "$VELOX_USER" 2>/dev/null || true)
-    if [[ -z "$USER_EXISTS" ]]; then
-        echo "Creating admin user: $VELOX_USER"
-        ./velociraptor --config server.config.yaml user add "$VELOX_USER" "$VELOX_PASSWORD" --role "$VELOX_ROLE"
+    if [[ -n "$USER_EXISTS" && "$(cat "$GUI_PW_STAMP" 2>/dev/null)" == "$GUI_PW_SUM" ]]; then
+        echo "GUI user password unchanged: $VELOX_USER"
+    else
+        echo "Setting the password of the GUI user: $VELOX_USER"
+        if ./velociraptor --config server.config.yaml user add "$VELOX_USER" "$VELOX_PASSWORD" --role "$VELOX_ROLE"; then
+            (umask 077; printf '%s\n' "$GUI_PW_SUM" > "$GUI_PW_STAMP") && chmod 600 "$GUI_PW_STAMP" \
+                || echo "WARNING: could not record the GUI user password stamp"
+        else
+            echo "WARNING: could not set the password of $VELOX_USER (left as it was)"
+        fi
     fi
 fi
 
-# Create API user if specified
-if [[ -n "$VELOX_USER_2" && -n "$VELOX_PASSWORD_2" && -n "$VELOX_ROLE_2" ]]; then
-    USER_EXISTS=$(./velociraptor --config server.config.yaml user show "$VELOX_USER_2" 2>/dev/null || true)
-    if [[ -z "$USER_EXISTS" ]]; then
-        echo "Creating API user: $VELOX_USER_2"
-        ./velociraptor --config server.config.yaml user add "$VELOX_USER_2" "$VELOX_PASSWORD_2" --role "$VELOX_ROLE_2"
+# `api` IS the backend's API-certificate identity (`config api_client --name api`
+# below) -- NEVER delete it. Its password is random (VELOX_PASSWORD_2), known to
+# no human, and applied whenever it CHANGES: `user add` on an existing user only
+# replaces the password, so this is what retires the public GUI login `api`
+# carried on older boxes the moment the store holds a random value. Failure is
+# a warning, not an exit (set -e): it must not keep the server from starting.
+#
+# Only on change (red team): re-applying on every start put the value in argv
+# on every boot. The sha256 of the last applied value sits in a root-only file
+# in this persistent dir (the bind mount), written only after `user add`
+# succeeded, so a failed apply is retried on the next start.
+VELOX_USER_2="${VELOX_USER_2:-api}"
+VELOX_ROLE_2="${VELOX_ROLE_2:-api,administrator}"
+API_PW_STAMP=.api_pw.sha256
+if [[ -n "$VELOX_PASSWORD_2" ]]; then
+    # printf is a builtin: the value never reaches an argv here.
+    API_PW_SUM=$(printf '%s' "$VELOX_PASSWORD_2" | sha256sum | cut -d' ' -f1)
+    if [[ "$(cat "$API_PW_STAMP" 2>/dev/null)" == "$API_PW_SUM" ]]; then
+        echo "API user password unchanged: $VELOX_USER_2"
+    else
+        echo "Setting the password of the API user: $VELOX_USER_2"
+        if ./velociraptor --config server.config.yaml user add "$VELOX_USER_2" "$VELOX_PASSWORD_2" --role "$VELOX_ROLE_2"; then
+            (umask 077; printf '%s\n' "$API_PW_SUM" > "$API_PW_STAMP") && chmod 600 "$API_PW_STAMP" \
+                || echo "WARNING: could not record the API user password stamp"
+        else
+            echo "WARNING: could not set the password of $VELOX_USER_2 (left as it was)"
+        fi
     fi
 fi
 

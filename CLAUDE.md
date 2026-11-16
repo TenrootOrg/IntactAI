@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Read [AGENTS.md](AGENTS.md) before deleting or "scrubbing" any file.** The `modules/*/.env` files and the `123123` passwords are tracked install-time defaults, not leaked secrets; purging them once broke every fresh install.
+**Read [AGENTS.md](AGENTS.md) before deleting or "scrubbing" any file.** The tracked `modules/*/.env` files are needed by compose; purging one once broke every fresh install. Their password values (and `config.yaml`'s) ship empty: real ones are per box in `modules/<module>/secrets/` (see `docs/SECRETS.md`).
 
 ## What this is
 
@@ -40,7 +40,7 @@ bash scripts/scan-secrets.sh               # secrets audit before any force-push
 
 ## Repo conventions
 
-- `config.yaml` is tracked. The pre-commit hook (`scripts/git-hooks/sanitize-config-yaml.sh`) rewrites the staged blob back to defaults (token cleared, passwords `123123`) and leaves the working file untouched. It does not sanitize `domain:`. A release does not ship `config.yaml`. The backend mounts the file by inode, so writers must truncate in place (reuse `_pin_module_version` in `lib/config.sh`); never write a temp file and `mv` it.
-- The installer writes live credentials into `modules/*/.env` at runtime. Never run `git add -A modules/`.
+- `config.yaml` is tracked. The pre-commit hook (`scripts/git-hooks/sanitize-config-yaml.sh`) rewrites the staged blob back to defaults (token cleared, every module password empty; staged `modules/*/.env` get their `*PASSWORD*` values blanked too) and leaves the working file untouched. It also resets `domain:` to `CHANGE-ME`. A release does not ship `config.yaml`. The backend mounts the file by inode, so writers must truncate in place (reuse `_pin_module_version` in `lib/config.sh`); never write a temp file and `mv` it.
+- Older installs wrote live credentials into `modules/*/.env` (a box keeps them until its upgrade moves them into `modules/<module>/secrets/`), and VolWeb's `.env` is rendered with secrets. Never run `git add -A modules/`.
 - Comments in this codebase explain *why* (the incident, the trap). Keep that style when editing nearby code.
 - `.claude/notes/known-bugs.md` lists known, not-yet-fixed bugs.

@@ -84,6 +84,10 @@ upgrade_module_iris() {
             || log_warn "  continuing without a database backup"
     fi
 
+    # Before generate_iris_secrets would write config.yaml's (public) value, and
+    # before the backup: generated only for an IRIS with no database yet.
+    u_do "iris administrator password" -- _u_creds_migrate iris
+
     bak="$(backup_file_for_rollback "$envf")" || bak=""
     u_undo "_u_compose_up_old iris"
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
@@ -148,6 +152,7 @@ upgrade_module_iris() {
             bootstrap_iris_api_key || log_warn "  could not bootstrap the IRIS api key"
         fi
         discard_backup "$bak"
+        _u_creds_after iris
     fi
     return $rc
 }

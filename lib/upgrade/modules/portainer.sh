@@ -48,7 +48,10 @@ upgrade_module_portainer() {
     # and we now have a working .env-restore rollback to revert WITH.
     u_end portainer rollback 150
     local rc=$?
-    (( rc == 0 )) && discard_backup "$bak"
+    if (( rc == 0 )); then
+        discard_backup "$bak"
+        _u_creds_after portainer
+    fi
     return $rc
 }
 
@@ -83,27 +86,21 @@ _u_ensure_agent_secret() {
     return 0
 }
 
-# Portainer enforces a 12-character minimum even via --admin-password-file and
-# SILENTLY never creates the admin account on a shorter value. The shipped
-# default is exactly 12 characters, so the length check alone lets it through
-# and it has to be denied by name.
+# secrets/admin_password: config.yaml's value or a generated one for a Portainer
+# with no data yet (Portainer silently never creates the admin on a value under
+# 12 characters, and the shipped ones are public -- secret_check refuses both).
+# With data, the value it was created from is kept (_u_creds_migrate).
 _u_ensure_portainer_admin_secret() {
-    local d="${SCRIPT_DIR}/modules/portainer/secrets"
-    local f="${d}/admin_password"
-    local known_default='1234qwer!@#$'
-    mkdir -p "$d" 2>/dev/null
-    [[ -s "$f" ]] && return 0
-
-    local pw
-    pw="$(read_config "['modules']['portainer']['password']" 2>/dev/null || echo '')"
-    [[ "$pw" == "None" ]] && pw=""
-    if [[ -z "$pw" || ${#pw} -lt 12 || "$pw" == "$known_default" ]]; then
-        [[ "$pw" == "$known_default" ]] && \
-            log_warn "  config.yaml still has the shipped default Portainer password; generating a random one"
-        pw="$(openssl rand -hex 16)"
-    fi
-    printf '%s' "$pw" > "$f" || return 1
-    chmod 600 "$f"
-    log_info "  wrote modules/portainer/secrets/admin_password"
+    _u_creds_migrate portainer || return 1
+    cred_get portainer >/dev/null 2>&1 && return 0
+    # Data, and no password anywhere. Portainer reads the file at its FIRST
+    # start only, so a random one changes nothing it holds -- but compose needs
+    # the file (a missing bind source becomes a directory and the container
+    # dies). The .placeholder marker says it is not the login: cred_get then
+    # reports "unknown", show-credentials says so, and neither the rotation
+    # nor apply-passwords.sh ever sends it to Portainer.
+    _cred_put portainer "$(secret_generate)" || return 1
+    ( umask 077; : > "$(_cred_placeholder portainer)" ) || return 1
+    log_warn "  portainer: wrote a placeholder admin_password; the admin keeps the password Portainer already has"
     return 0
 }

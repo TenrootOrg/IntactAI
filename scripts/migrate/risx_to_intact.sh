@@ -66,6 +66,8 @@ fi
 
 # shellcheck source=risx_lib.sh
 source "$HERE/risx_lib.sh"      # say warn die discover_risx graceful_stop_legacy_velo
+# shellcheck source=../../lib/secrets.sh
+source "$ROOT/lib/secrets.sh" || die "cannot load $ROOT/lib/secrets.sh"   # INTACT_KNOWN_DEFAULT_PASSWORDS
 
 BACKUP_DIR="${BACKUP_DIR:-$HOME/velociraptor_backup}"
 PACKAGE=""
@@ -287,18 +289,21 @@ PYEOF
     say "pre-set domain: $ID_HOST (the host every deployed client dials)"
     grep -qE '^\s*agent_port:' "$CFG" && say "pre-set modules.velociraptor.agent_port: $ID_PORT"
     while true; do
-        say "opening config.yaml — choose modules, set passwords; save and exit"
+        say "opening config.yaml — choose modules; leave the passwords empty to be asked (or have them generated) by the install; save and exit"
         # the editor needs the real terminal, not the logging pipe
         if { : >/dev/tty; } 2>/dev/null; then ${EDITOR:-nano} "$CFG" </dev/tty >/dev/tty 2>&1
         else ${EDITOR:-nano} "$CFG"; fi
         local summary
-        summary="$(python3 - "$CFG" <<'PYEOF'
+        # Every publicly known value, not just 123123: the install refuses them
+        # (lib/secrets.sh), so say so here, before it stops.
+        summary="$(python3 - "$CFG" "${INTACT_KNOWN_DEFAULT_PASSWORDS[@]}" <<'PYEOF'
 import sys, yaml
 c = yaml.safe_load(open(sys.argv[1])) or {}
+known = set(sys.argv[2:])
 m = c.get('modules') or {}
 on = sorted(k for k, v in m.items() if isinstance(v, dict) and v.get('enabled', True))
-weak = sorted(k for k, v in m.items() if isinstance(v, dict) and str(v.get('password', '')) == '123123'
-              and v.get('enabled', True))
+weak = sorted(k for k, v in m.items() if isinstance(v, dict) and v.get('enabled', True)
+              and (str(v.get('password') or '') in known or str(v.get('api_password') or '') in known))
 velo = m.get('velociraptor') or {}
 print(c.get('domain', '')); print(velo.get('agent_port', 8000))
 print('yes' if velo.get('enabled', True) else 'no'); print(', '.join(on)); print(', '.join(weak))
@@ -315,7 +320,7 @@ PYEOF
         echo "  ------------------------------"
         [[ "$domain" == "$ID_HOST" ]] || warn "domain $domain is NOT what the clients dial ($ID_HOST): every deployed client would be stranded"
         [[ "$port" == "$ID_PORT" ]] || warn "Velociraptor port $port is NOT the port the clients dial ($ID_PORT)"
-        [[ -n "$weak" ]] && warn "these modules still use the default password 123123: $weak"
+        [[ -n "$weak" ]] && warn "these modules have a publicly known password, which the install refuses — empty it: $weak"
         if [[ "$velo_on" != yes ]]; then
             warn "Velociraptor is DISABLED — the migration needs it; enable it"; continue
         fi
@@ -375,6 +380,65 @@ adopt() {
     mark adopted
 }
 
+# A stored Velociraptor password, read as root (the store is 0600 root).
+velo_secret() {
+    sudo bash -c 'SCRIPT_DIR="$1"; source "$1/lib/secrets.sh" && secret_get velociraptor "$2"' _ "$ROOT" "$1"
+}
+
+# The users came across with the RISX datastore, so they still have RISX's
+# passwords, not the ones the install stored and shows (show-credentials.sh).
+# `user add` on an existing user replaces only its password (0.77.3). `api` is
+# the backend's API-certificate identity: re-passworded with its random stored
+# value, never removed. The values stay out of the log (output dropped) and
+# out of the host argv and `docker events` (exec_create logs the full command):
+# the exec gets the value in its environment (-e _P names it, never the value).
+#
+# A RUNNING server does not see a `user add` until its process restarts (the
+# old password keeps working, the new one is refused -- proven on 0.77.3), so
+# the container is RECREATED afterwards (a plain restart would also do that,
+# but recreate re-reads env_file, and the entrypoint re-applies `api` from it),
+# then both logins are checked over the GUI port.
+apply_velo_passwords() {
+    local envf="$ROOT/modules/velociraptor/.env" gui role api row k u r pw users=()
+    gui="$(sed -n 's/^VELOX_USER=//p' "$envf" 2>/dev/null | tail -1)"
+    [[ -n "$gui" ]] || gui="$(python3 -c 'import sys,yaml; print(((yaml.safe_load(open(sys.argv[1])) or {}).get("modules") or {}).get("velociraptor",{}).get("id") or "")' "$CFG" 2>/dev/null)"
+    role="$(sed -n 's/^VELOX_ROLE=//p' "$envf" 2>/dev/null | tail -1)"
+    api="$(sed -n 's/^VELOX_USER_2=//p' "$envf" 2>/dev/null | tail -1)"
+    for row in "VELOX_PASSWORD|${gui:-tenroot}|${role:-administrator}" "VELOX_PASSWORD_2|${api:-api}|api,administrator"; do
+        IFS='|' read -r k u r <<<"$row"
+        pw="$(velo_secret "$k")" || { warn "no stored $k in modules/velociraptor/secrets/creds.env"; return 1; }
+        _P="$pw" docker exec -e _P intact_velociraptor sh -c \
+            'exec /velociraptor/velociraptor --config /velociraptor/server.config.yaml user add "$1" "$_P" --role "$2"' \
+            _ "$u" "$r" >/dev/null 2>&1 || { warn "user add $u failed"; return 1; }
+        users+=("$k|$u")
+    done
+    # sudo: compose reads secrets/creds.env, which is root's 0600 file.
+    (cd "$ROOT/modules/velociraptor" && sudo docker compose up -d --force-recreate --no-build --pull never velociraptor) \
+        >/dev/null 2>&1 || { warn "could not recreate intact_velociraptor"; return 1; }
+    local i
+    for row in "${users[@]}"; do
+        IFS='|' read -r k u <<<"$row"
+        pw="$(velo_secret "$k")" || return 1
+        for (( i = 0; i < ${VELO_LOGIN_WAIT:-30}; i++ )); do
+            velo_login "$u" "$pw" && break
+            sleep 3
+        done
+        (( i < ${VELO_LOGIN_WAIT:-30} )) || { warn "Velociraptor does not accept the stored password of '$u' after the recreate"; return 1; }
+    done
+    say "Velociraptor users '${gui:-tenroot}' and '${api:-api}' now log in with the passwords this install stored"
+    say "  (sudo bash $ROOT/scripts/show-credentials.sh shows the GUI one)"
+}
+
+# velo_login <user> <password> -- 0 when the GUI (127.0.0.1:8889, Basic auth)
+# accepts it. The credentials go to curl as a config on stdin, never in argv.
+velo_login() {
+    local v="$1:$2" code
+    v="${v//\\/\\\\}"; v="${v//\"/\\\"}"
+    code="$(printf 'user = "%s"\n' "$v" | curl -s -K - -o /dev/null -w '%{http_code}' --max-time 5 \
+            "${INTACT_VELO_GUI:-http://127.0.0.1:8889}/velociraptor/app/index.html" 2>/dev/null)"
+    [[ "$code" == 200 ]]
+}
+
 verify() {
     step verified "8. Verify" || return 0
     local live; live="$(live_fp)"
@@ -386,6 +450,7 @@ verify() {
     (cd $ROOT && sudo docker compose -f modules/velociraptor/docker-compose.yaml up -d --no-build --pull never)"
     fi
     say "intact_velociraptor is up"
+    apply_velo_passwords || die "could not give the Velociraptor users the passwords Intact stored — re-run to retry"
     local out rc=0
     out="$(docker exec intact_velociraptor ./velociraptor --config /velociraptor/server.config.yaml \
            query "SELECT client_id, os_info.hostname AS host FROM clients()" 2>&1)" || rc=$?

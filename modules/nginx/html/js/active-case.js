@@ -92,6 +92,18 @@
       // it there would cover 3 of them and leave every other panel silently
       // rendering empty on an expired session.
       if (resp.status === 401) { _handleUnauthenticated(resp); return resp; }
+      // Signed in with a publicly known password: the backend refuses
+      // everything but change-password until it is replaced. Other 403s pass.
+      if (resp.status === 403) {
+        resp.clone().json().then(function (d) {
+          if (d && d.error === 'password_change_required' && !_redirecting) {
+            _redirecting = true;
+            // top: from the Case Analysis iframe the whole dashboard must go.
+            var u = '/login.html?reason=password_change_required';
+            try { window.top.location.replace(u); } catch (e) { location.replace(u); }
+          }
+        }).catch(function () { /* not JSON: an ordinary 403 */ });
+      }
       // PRIMARY path: the backend redirects a module launched from the System
       // workspace to Default and echoes the effective workspace here. Follow it
       // so the UI + later requests use Default (the run already ran there). This

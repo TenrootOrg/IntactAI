@@ -19,6 +19,12 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# The JSON field /api/auth/setup reads the one-time setup token from. Setup
+# requires it, so whoever reaches an unclaimed box first cannot claim it without
+# root on the box (install writes the token to data/state/backend/setup_token,
+# 0600; `sudo scripts/reset-login.sh` makes a new one).
+SETUP_TOKEN_FIELD = "setup_token"
+
 
 class APIError(RuntimeError):
     def __init__(self, method, path, status, body):
@@ -115,16 +121,17 @@ class Client:
         st = self.auth_status()
         return bool(st.get("authenticated")) or st.get("session_state") == "ok"
 
-    def setup(self, username, password):
-        return self.post("/api/auth/setup",
-                         {"username": username, "password": password,
-                          "confirm": password})
+    def setup(self, username, password, setup_token=None):
+        body = {"username": username, "password": password, "confirm": password}
+        if setup_token:
+            body[SETUP_TOKEN_FIELD] = setup_token
+        return self.post("/api/auth/setup", body)
 
     def login(self, username, password):
         return self.post("/api/auth/login",
                          {"username": username, "password": password})
 
-    def ensure_session(self, username, password):
+    def ensure_session(self, username, password, setup_token=None):
         """Claim the appliance if it is unclaimed, otherwise log in.
 
         Handles the re-run case: the second QA run against the same box finds
@@ -132,7 +139,10 @@ class Client:
         """
         mode = self.auth_mode()
         if mode == "setup":
-            self.setup(username, password)
+            # A callable is read only here, so a box already in login mode is
+            # never asked (via sudo) for a token it does not need.
+            token = setup_token() if callable(setup_token) else setup_token
+            self.setup(username, password, token)
             return "setup"
         self.login(username, password)
         return "login"

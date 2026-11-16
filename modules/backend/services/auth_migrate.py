@@ -96,15 +96,16 @@ def migrate_basic_auth_to_app_login(logger: Callable = None) -> None:
     # The normal path for every real appliance: no operator-chosen password, so
     # the operator picks their own on the setup page.
     if auth_service.write_first_login(True):
+        # Setup needs a one-time token (data/state/backend/setup_token), and a
+        # pre-auth box has none -- so the page refuses until the operator mints one.
         log("  This appliance will show the SETUP page on next load, where you "
-            "choose your own username and password. Complete it IMMEDIATELY — "
-            "until you do, anyone who can reach the appliance can claim the "
-            "account. (It has been serving an unauthenticated dashboard up to "
-            "now, so this is not a new exposure, but it is your chance to end "
-            "it.)", "warning")
+            "choose your own username and password. It needs a setup token: "
+            "run sudo scripts/reset-login.sh on the appliance to get a setup token.",
+            "warning")
     else:
         log("  Could not write first_login to config.yaml. Add "
-            "'first_login: true' at the top level by hand to set up a login.",
+            "'first_login: true' at the top level by hand, then run "
+            "sudo scripts/reset-login.sh on the appliance to get a setup token.",
             "error")
 
 def _read_dashboard_credentials(log: Callable) -> tuple:

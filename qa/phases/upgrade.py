@@ -634,8 +634,9 @@ def _refresh_session(ctx, cfg):
 
     c = api_lib.Client(cfg.platform_host, tl=ctx.tl)
     try:
-        how = c.ensure_session(platform_mod.QA_DASH_USER,
-                               platform_mod.QA_DASH_PASSWORD)
+        how = c.ensure_session(
+            platform_mod.QA_DASH_USER, platform_mod.QA_DASH_PASSWORD,
+            setup_token=lambda: platform_mod.read_setup_token(cfg, ctx))
         ok = c.is_authenticated()
     except Exception as exc:                                  # noqa: BLE001
         ctx.check("the dashboard is reachable after the upgrade", False,

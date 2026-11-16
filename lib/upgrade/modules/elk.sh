@@ -78,6 +78,7 @@ upgrade_module_elk() {
     if (( rc == 0 )); then
         _u_kibana_data_view || log_warn "  could not re-assert the Kibana data view"
         discard_backup "$bak"
+        _u_creds_after elk
     fi
     return $rc
 }
@@ -122,8 +123,8 @@ _u_elk_status() {
     local envf; envf="$(_u_env_file elk)"
     local user pass
     user="$(read_env_var "$envf" ELASTIC_USER 2>/dev/null || echo elastic)"
-    pass="$(read_env_var "$envf" ELASTIC_PASSWORD 2>/dev/null || echo '')"
-    curl -s --max-time 6 -u "${user}:${pass}" "http://127.0.0.1:9200/_cluster/health" 2>/dev/null \
+    pass="$(_u_elk_password)"
+    curl -s --max-time 6 -K <(_u_elk_curlrc "$user" "$pass") "http://127.0.0.1:9200/_cluster/health" 2>/dev/null \
         | grep -o '"status"[[:space:]]*:[[:space:]]*"[a-z]*"' | grep -o '[a-z]*"$' | tr -d '"'
 }
 
@@ -139,15 +140,15 @@ _u_elk_disk_headroom() {
     local envf user pass alloc avail total high=90 need=0 w c img sz
     envf="$(_u_env_file elk)"
     user="$(read_env_var "$envf" ELASTIC_USER 2>/dev/null || echo elastic)"
-    pass="$(read_env_var "$envf" ELASTIC_PASSWORD 2>/dev/null || echo '')"
-    alloc="$(curl -s --max-time 6 -u "${user}:${pass}" \
+    pass="$(_u_elk_password)"
+    alloc="$(curl -s --max-time 6 -K <(_u_elk_curlrc "$user" "$pass") \
         "http://127.0.0.1:9200/_cat/allocation?bytes=b&h=disk.avail,disk.total" 2>/dev/null | head -1)"
     read -r avail total <<<"$alloc"
     if ! [[ "$avail" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ ]] || (( total == 0 )); then
         log_warn "  could not read Elasticsearch's disk use; skipping its watermark check"
         return 0
     fi
-    w="$(curl -s --max-time 6 -u "${user}:${pass}" \
+    w="$(curl -s --max-time 6 -K <(_u_elk_curlrc "$user" "$pass") \
         "http://127.0.0.1:9200/_cluster/settings?include_defaults=true&flat_settings=true&filter_path=*.cluster.routing.allocation.disk.watermark.high" \
         2>/dev/null | grep -o '"[0-9.]*%"' | head -1 | tr -d '"%')"
     [[ "$w" =~ ^[0-9]+(\.[0-9]+)?$ ]] && high="${w%.*}"
@@ -173,37 +174,37 @@ _u_elk_disk_headroom() {
 
 # NEVER ROTATES. Elasticsearch fixes the `elastic` password at initdb, so
 # generating a new one on an existing cluster locks the platform out of its
-# own data. Seeds a default only when the value is genuinely absent, and says
-# so loudly. Ported from elk.py:405-455, but called on BOTH paths -- the
-# Python only ran it offline, which is how a security-enabled upgrade left
-# Logstash 401-crash-looping while every summary signal stayed green.
+# own data. The values now live in modules/elk/secrets/creds.env (compose
+# env_file); this moves an old box's .env/config.yaml values there UNCHANGED,
+# and generates only for a cluster that has no data yet. It used to seed the
+# public word 'changeme' when the value was missing -- that is gone: a cluster
+# with data and no known password is a warning, not a guess.
 ensure_elk_credentials() {
     local envf; envf="$(_u_env_file elk)"
-    local backend_env="${SCRIPT_DIR}/modules/backend/.env"
-    [[ -f "$envf" ]] || { log_warn "  no modules/elk/.env"; return 0; }
-
-    local user pass kib
-    user="$(read_env_var "$envf" ELASTIC_USER 2>/dev/null || echo '')"
-    pass="$(read_env_var "$envf" ELASTIC_PASSWORD 2>/dev/null || echo '')"
-    kib="$(read_env_var "$envf" KIBANA_PASSWORD 2>/dev/null || echo '')"
-
-    [[ -z "$user" ]] && { user=elastic; update_env_var "$envf" ELASTIC_USER "$user"; }
-    if [[ -z "$pass" ]]; then
-        pass=changeme
-        update_env_var "$envf" ELASTIC_PASSWORD "$pass"
-        log_warn "  modules/elk/.env had no ELASTIC_PASSWORD; seeding 'changeme'."
-        log_warn "  CHANGE IT: this password gates every index on this appliance."
+    if [[ -f "$envf" ]] && [[ -z "$(read_env_var "$envf" ELASTIC_USER 2>/dev/null)" ]]; then
+        update_env_var "$envf" ELASTIC_USER elastic
     fi
-    [[ -z "$kib" ]] && update_env_var "$envf" KIBANA_PASSWORD "$pass"
+    _u_creds_migrate elk || return 1
+    # generate_elk_secrets (next step) calls ensure_module_credentials, which
+    # stops on a config.yaml value that differs from the store -- and on an old
+    # box config.yaml can hold a value the cluster never took. The store is the
+    # truth here, so config.yaml is cleared first.
+    _u_creds_blank_config
+}
 
-    # The backend reads these too. config.py also falls back to reading
-    # modules/elk/.env at runtime, so a running backend recovers without the
-    # restart it is not going to get mid-upgrade.
-    if [[ -f "$backend_env" ]]; then
-        update_env_var "$backend_env" ELASTICSEARCH_USER "$user"
-        update_env_var "$backend_env" ELASTICSEARCH_PASSWORD "$pass"
-    fi
-    return 0
+# curl's credentials as a config on a file descriptor: `-u user:pw` put the
+# password in an argv every process on the host can read.
+_u_elk_curlrc() {
+    local v="${1}:${2}"; v="${v//\\/\\\\}"; v="${v//\"/\\\"}"
+    printf 'user = "%s"\n' "$v"
+}
+
+# The `elastic` password: the store first, the .env of a box not migrated yet
+# second. 2>/dev/null also hides "command not found" where only this file is
+# sourced (tests).
+_u_elk_password() {
+    secret_get elk ELASTIC_PASSWORD 2>/dev/null \
+        || read_env_var "$(_u_env_file elk)" ELASTIC_PASSWORD 2>/dev/null
 }
 
 # services/kibana_init.py in three curls.
@@ -211,7 +212,7 @@ _u_kibana_data_view() {
     local envf; envf="$(_u_env_file elk)"
     local user pass code
     user="$(read_env_var "$envf" ELASTIC_USER 2>/dev/null || echo elastic)"
-    pass="$(read_env_var "$envf" ELASTIC_PASSWORD 2>/dev/null || echo '')"
+    pass="$(_u_elk_password)"
     # HTTPS, AND -k. Kibana serves TLS itself (modules/elk/docker-compose.yaml
     # sets SERVER_SSL_ENABLED=true with its own cert), so `http://` here never
     # got an answer and this function could not succeed on any box. The failure
@@ -246,19 +247,19 @@ _u_kibana_data_view() {
     local deadline=600
     local waited=0
     while (( waited < deadline )); do
-        code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 -u "${user}:${pass}" \
+        code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 -K <(_u_elk_curlrc "$user" "$pass") \
                 "${kb}/api/status" 2>/dev/null)"
         [[ "$code" == "200" ]] && break
         sleep 5; waited=$((waited + 5))
     done
     [[ "$code" == "200" ]] || { log_info "  Kibana did not answer in ${waited}s; skipping the data view"; return 1; }
 
-    if curl -sk --max-time 10 -u "${user}:${pass}" "${kb}/api/data_views" 2>/dev/null \
+    if curl -sk --max-time 10 -K <(_u_elk_curlrc "$user" "$pass") "${kb}/api/data_views" 2>/dev/null \
          | grep -qF "\"title\":\"${view_title}\""; then
         log_info "  Kibana data view '${view_title}' already present"
         return 0
     fi
-    code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 -u "${user}:${pass}" \
+    code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 -K <(_u_elk_curlrc "$user" "$pass") \
         -X POST "${kb}/api/data_views/data_view" \
         -H 'kbn-xsrf: true' -H 'Content-Type: application/json' \
         -d "{\"data_view\":{\"title\":\"${view_title}\",\"name\":\"${view_name}\",\"timeFieldName\":\"@timestamp\"}}" 2>/dev/null)"

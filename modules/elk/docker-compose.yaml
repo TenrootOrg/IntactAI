@@ -22,7 +22,17 @@ services:
       - xpack.security.transport.ssl.enabled=false
       - xpack.license.self_generated.type=basic
       - "ES_JAVA_OPTS=-Xms${ES_HEAP_SIZE:-512m} -Xmx${ES_HEAP_SIZE:-512m}"
-      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+    # ELASTIC_PASSWORD comes from the box's private store (lib/secrets.sh), never
+    # from compose text: `${ELASTIC_PASSWORD:-changeme}` here was interpolated
+    # from the git-tracked .env, so a box that lost that line silently ran
+    # Elasticsearch on the public word "changeme". required: false so compose
+    # still parses (config/down) on a box whose store is not migrated yet; the
+    # setup container below then stops loudly on the missing password.
+    # Elasticsearch reads it only on an EMPTY data dir -- after that the hash
+    # lives in its own index, which is why upgrades never change it.
+    env_file:
+      - path: ./secrets/creds.env
+        required: false
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
     ports:
@@ -43,7 +53,14 @@ services:
     networks:
       - intact_network
     healthcheck:
-      test: ["CMD-SHELL", "curl -s -u elastic:${ELASTIC_PASSWORD:-changeme} http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      # The password is read INSIDE the container ($$ = a literal $ for the
+      # container's shell) and handed to curl on stdin as a config file (-K-):
+      # `curl -u elastic:<pw>` put it in the argv every process on the host can
+      # read from /proc, and the interpolated form put it in `docker inspect`'s
+      # healthcheck text as well. printf is a shell builtin, so it is in no argv.
+      # shortcut: unquoted curl-config value, so a password with a space breaks
+      # the probe; Intact's rule (lib/secrets.sh) never allows one.
+      test: ["CMD-SHELL", "printf 'user = elastic:%s\\n' \"$$ELASTIC_PASSWORD\" | curl -s -K- http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -57,9 +74,11 @@ services:
   setup:
     container_name: intact_elk_setup
     image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION}
-    environment:
-      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
-      - KIBANA_PASSWORD=${KIBANA_PASSWORD:-changeme}
+    # ELASTIC_PASSWORD (to log in) and KIBANA_PASSWORD (what kibana_system gets).
+    # Two different values on purpose: kibana_system's is never shown to anyone.
+    env_file:
+      - path: ./secrets/creds.env
+        required: false
     volumes:
       - ./config/setup-kibana-user.sh:/usr/local/bin/setup-kibana-user.sh:ro
     entrypoint: ["/bin/bash", "/usr/local/bin/setup-kibana-user.sh"]
@@ -77,7 +96,11 @@ services:
       - "LS_JAVA_OPTS=-Xms${LS_HEAP_SIZE:-256m} -Xmx${LS_HEAP_SIZE:-256m}"
       - ELASTIC_HOST=elasticsearch:9200
       - ELASTIC_USER=${ELASTIC_USER:-elastic}
-      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+    # ELASTIC_PASSWORD, read by config/pipeline/main.conf as ${ELASTIC_PASSWORD}
+    # (Logstash's own env lookup at runtime, not compose interpolation).
+    env_file:
+      - path: ./secrets/creds.env
+        required: false
     volumes:
       - ./config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
       - ./config/pipeline:/usr/share/logstash/pipeline:ro
@@ -114,9 +137,10 @@ services:
       # `kibana_system` service account (its password is set by the `setup`
       # container above) — never as `elastic`: Elasticsearch/Kibana 9.x
       # explicitly refuse "elastic" for this setting ("Use a service
-      # account token instead").
-      - ELASTICSEARCH_USERNAME=kibana_system
-      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD:-changeme}
+      # account token instead"). The username and KIBANA_PASSWORD are set in
+      # config/kibana.yml, NOT as ELASTICSEARCH_USERNAME/PASSWORD here: the
+      # image's kibana-docker turns those variables into `--elasticsearch.
+      # password=<pw>` on node's command line, readable by anything on the host.
       # xpack.encryptedSavedObjects / security / reporting encryption keys come
       # from env_file below, NOT from here and NOT from .env — .env is tracked
       # in git and a credential written there gets staged. See
@@ -141,7 +165,13 @@ services:
     # elk.sh) create it before any compose up here, so it is always present.
     env_file:
       - ./secrets/kibana-keys.env
+      # KIBANA_PASSWORD for config/kibana.yml (Kibana expands ${KIBANA_PASSWORD}
+      # in its own yml at startup).
+      - path: ./secrets/creds.env
+        required: false
     volumes:
+      # Replaces the image's default kibana.yml; it repeats that file's settings.
+      - ./config/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
       - ../nginx/ssl/nginx-cert.crt:/certs/cert.crt:ro
       - ../nginx/ssl/nginx-cert.key:/certs/key.key:ro
     ports:

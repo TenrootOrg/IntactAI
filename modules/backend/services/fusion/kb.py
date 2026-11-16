@@ -38,12 +38,13 @@ def _es():
     except Exception:
         pass
     try:
-        import os as _os
+        from config import ELASTICSEARCH_CONFIG as _es_cfg
         from elasticsearch import Elasticsearch
         c = Elasticsearch(
             ["http://elasticsearch:9200"], request_timeout=3, max_retries=1,
-            basic_auth=(_os.environ.get('ELASTICSEARCH_USER', 'elastic'),
-                        _os.environ.get('ELASTICSEARCH_PASSWORD', '')),
+            # config's resolution, not the raw env: the password now arrives as
+            # ELASTIC_PASSWORD (modules/elk/secrets/creds.env), not ELASTICSEARCH_PASSWORD.
+            basic_auth=(_es_cfg.get('user') or 'elastic', _es_cfg.get('password') or ''),
         )
         if not c.ping():
             _failed_at = _time.time()

@@ -34,6 +34,9 @@ upgrade_module_volweb() {
     # deploy_volweb) is idempotent -- a no-op past this point on every
     # normal upgrade, where the file already exists.
     u_do "render volweb .env template" -- render_volweb_env_template
+    # secrets/ADMIN_PASSWORD before get_volweb_admin_password would fill it from
+    # config.yaml's (public) value: generated only for a VolWeb with no database.
+    u_do "volweb admin password" -- _u_creds_migrate volweb
 
     bak="$(backup_file_for_rollback "$envf")" || bak=""
     u_undo "_u_compose_up_old volweb"
@@ -106,6 +109,7 @@ upgrade_module_volweb() {
         fi
         _volweb_verify_symbols "$_sym_before"
         discard_backup "$bak"
+        _u_creds_after volweb
     fi
     return $rc
 }

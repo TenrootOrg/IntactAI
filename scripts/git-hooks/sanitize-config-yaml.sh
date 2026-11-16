@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Sanitize the STAGED copy of the repo's config files before they become a
-# commit. Two files are covered, for the same reason:
+# commit. config.yaml, qa/qa-config.yaml and the tracked modules/*/.env files
+# are covered, for the same reason:
 #
 #   config.yaml     — tracked so a clone or a downloaded release has a
 #                     ready-to-edit file (there is no config.yaml.example any
@@ -12,6 +13,9 @@
 #                     sudo password for this appliance and the Administrator
 #                     password for the Windows target. Nothing in it should
 #                     ever reach GitHub.
+#
+#   modules/*/.env  — tracked because compose needs them; only their
+#                     *PASSWORD* values are blanked.
 #
 # This rewrites the version going INTO the commit back to shipping defaults and
 # leaves the operator's working copy untouched. So `git commit` never publishes
@@ -83,5 +87,12 @@ sanitize() {
 
 sanitize "config.yaml"
 sanitize "qa/qa-config.yaml"
+
+# The tracked modules/<module>/.env files: their password values ship empty
+# (the real ones are in modules/<module>/secrets/), but an install from before
+# that change wrote live ones into them, and `git commit -a` would publish them.
+while IFS= read -r f; do
+    sanitize "$f"
+done < <(git diff --cached --name-only | grep -E '^modules/[^/]+/\.env$' || true)
 
 exit 0

@@ -124,6 +124,16 @@ services:
         exec /docker-entrypoint.sh timesketch-web
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-4}
+    # TIMESKETCH_PASSWORD for the Timesketch user (config.yaml `id`), from the
+    # box's private store (lib/secrets.sh). The installer creates/updates that
+    # user with `docker exec -i intact_timesketch_web tsctl create-user`, piping
+    # the value on stdin so it never appears on a command line. Kept here so this
+    # service reads the store (the upgrade decides from that whether the old
+    # .env copy can be blanked). Only this service: the others never need it.
+    # required: false so compose still parses on a box not migrated yet.
+    env_file:
+      - path: ./secrets/creds.env
+        required: false
     volumes:
       - ./config:/etc/timesketch
       # IntactAI's contrib LLM providers (openrouter, litellm_proxy). apply.sh

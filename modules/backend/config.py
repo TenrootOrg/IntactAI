@@ -67,10 +67,16 @@ VELOCIRAPTOR_SNAPSHOT_PATH = "/var./client_info/snapshot.json"
 
 # Timesketch configuration (from environment variables)
 # Note: intact_timesketch_web is the container name in Docker network
+# The password: TIMESKETCH_PASSWORD from modules/timesketch/secrets/creds.env
+# (env_file), the box's only copy; TIMESKETCH_PASS is the old .env name, kept
+# for a box whose store is not migrated yet. NO literal fallback -- this was
+# '123123', so a box that lost the variable logged in with the public default
+# and nobody noticed. Empty means "not configured" and callers say so.
 TIMESKETCH_CONFIG = {
     'host': os.environ.get('TIMESKETCH_HOST', 'http://intact_timesketch_web:5000'),
     'username': os.environ.get('TIMESKETCH_USER', 'nof'),
-    'password': os.environ.get('TIMESKETCH_PASS', '123123')
+    'password': (os.environ.get('TIMESKETCH_PASSWORD', '').strip()
+                 or os.environ.get('TIMESKETCH_PASS', '').strip())
 }
 
 # Plaso configuration
@@ -173,8 +179,13 @@ VELOCIRAPTOR_DATA_PATH = "/var."
 
 # Elasticsearch configuration
 #
-# The credentials fall back to modules/elk/.env because a box upgrading ONTO
-# Elasticsearch authentication has no other way to receive them. The ELK module
+# The password is ELASTIC_PASSWORD from modules/elk/secrets/creds.env (env_file
+# in modules/backend/docker-compose.yaml), the box's only copy;
+# ELASTICSEARCH_PASSWORD is the old .env name, kept for a box whose store is not
+# migrated yet. No literal fallback: empty means "not configured".
+#
+# The credentials ALSO fall back to the files on disk because a box upgrading
+# ONTO Elasticsearch authentication has no other way to receive them. The ELK module
 # runs in Phase 2 of an upgrade, i.e. AFTER the backend has already restarted,
 # so an environment variable written there reaches this process on its next
 # restart -- which is not going to happen mid-upgrade. The observed result was
@@ -183,19 +194,23 @@ VELOCIRAPTOR_DATA_PATH = "/var."
 #
 # The environment always wins; this only fills a blank. Reading the file is
 # specifically what lets the RUNNING backend recover the moment ELK is
-# configured, instead of waiting for a restart to be told.
+# configured, instead of waiting for a restart to be told. The private store
+# first, then the legacy modules/elk/.env.
 def _elk_env_credential(key: str) -> str:
     for root in ('/app/workdir', os.environ.get('INTACT_PATH', '')):
         if not root:
             continue
-        try:
-            with open(os.path.join(root, 'modules', 'elk', '.env')) as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith(key + '='):
-                        return line.split('=', 1)[1].strip().strip('"').strip("'")
-        except Exception:
-            continue
+        for rel in (('secrets', 'creds.env'), ('.env',)):
+            try:
+                with open(os.path.join(root, 'modules', 'elk', *rel)) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith(key + '='):
+                            val = line.split('=', 1)[1].strip().strip('"').strip("'")
+                            if val:
+                                return val
+            except Exception:
+                continue
     return ''
 
 
@@ -204,7 +219,8 @@ ELASTICSEARCH_CONFIG = {
     'port': int(os.environ.get('ELASTICSEARCH_PORT', '9200')),
     'user': (os.environ.get('ELASTICSEARCH_USER', '').strip()
              or _elk_env_credential('ELASTIC_USER') or 'elastic'),
-    'password': (os.environ.get('ELASTICSEARCH_PASSWORD', '').strip()
+    'password': (os.environ.get('ELASTIC_PASSWORD', '').strip()
+                 or os.environ.get('ELASTICSEARCH_PASSWORD', '').strip()
                  or _elk_env_credential('ELASTIC_PASSWORD'))
 }
 

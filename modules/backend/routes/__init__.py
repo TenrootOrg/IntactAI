@@ -25,6 +25,7 @@ from routes.aws_routes import aws_bp
 from routes.support_bundle_routes import support_bundle_bp
 from routes.memory_routes import memory_bp
 from routes.case_routes import case_bp
+from routes.security_routes import security_bp
 
 __all__ = [
     'auth_bp',
@@ -50,4 +51,5 @@ __all__ = [
     'aws_bp',
     'support_bundle_bp',
     'memory_bp',
+    'security_bp',
 ]

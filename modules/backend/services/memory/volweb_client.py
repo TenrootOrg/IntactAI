@@ -197,12 +197,11 @@ def _config_yaml_volweb(key: str) -> str:
 
 
 def _volweb_secrets_file_password() -> str:
-    """Read the persisted VolWeb admin password generated at seed time when
-    config.yaml doesn't set ``modules.volweb.password``. Both
-    lib/modules.sh:get_volweb_admin_password() and
-    services.upgrade.volweb._get_volweb_admin_password() write the SAME
-    random per-install secret to this file, instead of falling back to a
-    fixed, publicly-documented password.
+    """The VolWeb admin password: modules/volweb/secrets/ADMIN_PASSWORD, the
+    box's only copy (the installer seeds VolWeb from it). config.yaml is NOT
+    read for it any more -- the installer moves a typed password into this file
+    and blanks config.yaml, so a value still there is stale or the public
+    default, and logging in with it is how the pipeline failed with a 401.
     """
     workdir = os.environ.get("INTACT_PATH", "/app/workdir")
     secret_path = os.path.join(workdir, "modules", "volweb", "secrets", "ADMIN_PASSWORD")
@@ -218,10 +217,7 @@ def _volweb_user() -> str:
 
 
 def _volweb_pass() -> str:
-    return _config_value(
-        "password",
-        default=_config_yaml_volweb("password") or _volweb_secrets_file_password(),
-    )
+    return _config_value("password", default=_volweb_secrets_file_password())
 
 
 # ---------------------------------------------------------------------------

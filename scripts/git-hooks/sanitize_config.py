@@ -17,8 +17,15 @@ import re
 import sys
 from collections import Counter
 
-DEFAULT_PW = "123123"
-
+# Module passwords ship EMPTY. The installer asks for (or generates) each one,
+# keeps it in modules/<module>/secrets/ and blanks config.yaml again, so any
+# value found here on commit is this box's real password -- or a public default
+# that must not work anywhere. Either way the shipped value is ''.
+#
+# This used to be '123123', plus a per-module exception for Portainer (which
+# refuses < 12 characters), and the two drifted apart once: the hook would have
+# rewritten Portainer's shipped value to one Portainer rejects. One empty value
+# for every module has nothing to drift.
 # The shipped `domain:` value. config.yaml is TRACKED, so whatever IP the last
 # committer happened to have becomes the default every clone and every extracted
 # release installs with -- and domain is not cosmetic: it is the TLS certificate
@@ -32,31 +39,6 @@ DEFAULT_PW = "123123"
 # address, and check_config (lib/config.sh) refuses to install until it is
 # changed, which is what makes the operator aware they have to set it.
 PLACEHOLDER_DOMAIN = "CHANGE-ME"
-
-# Portainer will not accept DEFAULT_PW: it refuses anything empty, shorter than
-# 12 characters, or equal to the RETIRED default below, and silently leaves the
-# admin account uncreated with the UI stuck in "initial setup"
-# (generate_portainer_secrets, lib/modules/portainer.sh). So Portainer's line
-# gets its own replacement value -- rewriting it to 123123 would hand a fresh
-# install a password its own installer rejects.
-PORTAINER_RETIRED_PW = "1234qwer!@#$"          # lib/modules/portainer.sh:9
-PORTAINER_DEFAULT_PW = "Ch4nge-Me!Intact2026"  # what config.yaml actually ships
-
-# The replacement written for a module's `password:` when the staged value is
-# not already a shipping default. Per module, because "the shipped default" is
-# not one value.
-DEFAULT_PW_BY_MODULE = {"portainer": PORTAINER_DEFAULT_PW}
-
-# Values that are ALREADY shipping defaults and must be left exactly as-is.
-#
-# This set and config.yaml have to agree, and they silently stopped agreeing
-# once: the working Portainer password was shipped in 71835af while this set
-# still listed only the retired one, so the next staged commit would have
-# rewritten it to 123123 -- reintroducing exactly the bug that commit fixed.
-# tests/test_config_sanitizer.py pins them together by asserting that
-# sanitizing the tracked config.yaml is a no-op, so a future rotation fails the
-# test instead of failing an install.
-SHIPPED = {DEFAULT_PW, PORTAINER_RETIRED_PW, PORTAINER_DEFAULT_PW}
 
 # qa/qa-config.yaml: the leaf keys blanked on commit, per top-level section.
 # An allowlist rather than "blank everything" so that adding a non-secret knob
@@ -99,15 +81,9 @@ def _value(match):
 def sanitize_main_config(text):
     """config.yaml -> (sanitized text, list of field names changed)."""
     out, changed = [], []
-    module = None  # the `  <name>:` block the current line sits in
+    in_modules = False  # inside the top-level `modules:` block
 
     for ln in text.splitlines(keepends=True):
-        # Track the enclosing module so a password can be replaced with the
-        # default that module actually accepts.
-        m_mod = re.match(r"^  ([A-Za-z0-9_]+):\s*$", ln)
-        if m_mod:
-            module = m_mod.group(1)
-
         # options.github_token -> always empty. This is the one that matters: a
         # live PAT to a private org, written at runtime, never something to ship.
         m = re.match(_pat(r"\s*github_token"), ln)
@@ -116,12 +92,15 @@ def sanitize_main_config(text):
             changed.append("github_token")
             continue
 
-        # Module passwords -> back to the shipped default. Operators are told to
-        # change these at install time; whatever this box uses is not for git.
-        m = re.match(_pat("    password"), ln)
-        if m and _value(m) not in SHIPPED:
-            replacement = DEFAULT_PW_BY_MODULE.get(module, DEFAULT_PW)
-            out.append(f"{m.group(1)}{replacement}{m.group(3)}\n")
+        top = re.match(r"^([A-Za-z0-9_]+):", ln)
+        if top:
+            in_modules = top.group(1) == "modules"
+
+        # Any *password key under modules (password, api_password, ...) -> ''.
+        # '' is the shipped value, so an empty one is left exactly as it is.
+        m = in_modules and re.match(_pat(r"[ \t]+[A-Za-z0-9_]*password"), ln)
+        if m and _value(m):
+            out.append(f"{m.group(1)}''{m.group(3)}\n")
             changed.append("password")
             continue
 
@@ -148,6 +127,14 @@ def sanitize_main_config(text):
         if m and _value(m).lower() != "true":
             out.append(f"{m.group(1)}true{m.group(3)}\n")
             changed.append("first_login")
+            continue
+
+        # allow_weak_passwords -> false. A dev box turns it on to keep 123123;
+        # shipped as true it would let every fresh install keep a known password.
+        m = re.match(_pat("allow_weak_passwords"), ln)
+        if m and _value(m).lower() != "false":
+            out.append(f"{m.group(1)}false{m.group(3)}\n")
+            changed.append("allow_weak_passwords")
             continue
 
         out.append(ln)
@@ -189,16 +176,48 @@ def sanitize_qa_config(text):
     return "".join(out), changed
 
 
+# KEY=value lines in a tracked modules/<module>/.env whose key names a password:
+# ELASTIC_PASSWORD, VELOX_PASSWORD_2, TIMESKETCH_PASS. `PASS` must end the key
+# or be followed by WORD or `_`, so a future PASSTHROUGH_* knob is not wiped.
+_ENV_PW = re.compile(r"^([A-Za-z0-9_]*PASS(?:WORD)?(?:_[A-Za-z0-9_]*)?=)(.*?)(\r?\n?)$")
+MODULE_ENV = re.compile(r"modules/[^/]+/\.env")
+
+
+def sanitize_module_env(text):
+    """modules/<module>/.env -> (sanitized text, list of keys blanked).
+
+    These files are tracked because compose needs them (see AGENTS.md), and an
+    old install wrote live passwords into them. Their password values ship
+    empty; the real ones live in modules/<module>/secrets/. Only the value is
+    cut, so every other line -- version pins, hosts, comments -- is byte-identical.
+    """
+    out, changed = [], []
+    for ln in text.splitlines(keepends=True):
+        m = _ENV_PW.match(ln)
+        if m and m.group(2):
+            out.append(m.group(1) + m.group(3))
+            changed.append(m.group(1)[:-1])
+            continue
+        out.append(ln)
+    return "".join(out), changed
+
+
 SANITIZERS = {
     "config.yaml": sanitize_main_config,
     "qa/qa-config.yaml": sanitize_qa_config,
 }
 
 
+def sanitizer_for(target):
+    if MODULE_ENV.fullmatch(target):
+        return sanitize_module_env
+    return SANITIZERS.get(target)
+
+
 def main(argv):
     target, src, dst = argv[1], argv[2], argv[3]
 
-    fn = SANITIZERS.get(target)
+    fn = sanitizer_for(target)
     if fn is None:
         # Fail closed. Being asked to sanitize a file with no rules means the
         # caller and this table disagree; copying the input through would

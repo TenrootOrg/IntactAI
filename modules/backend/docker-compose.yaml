@@ -17,17 +17,26 @@ services:
     build:
       context: ../..
       dockerfile: modules/backend/Dockerfile
+    # The module passwords come from those modules' private stores
+    # (lib/secrets.sh), the only copy on the box: ELASTIC_PASSWORD and
+    # TIMESKETCH_PASSWORD, read by config.py. They used to be interpolated here
+    # as ${ELASTICSEARCH_PASSWORD} / ${TIMESKETCH_PASS} from this module's
+    # git-tracked .env -- and `environment:` beats env_file, so a blank there
+    # would mask the store. required: false: a box without ELK or Timesketch has
+    # no such file, and the backend must still start.
     env_file:
       - .env
+      - path: ../elk/secrets/creds.env
+        required: false
+      - path: ../timesketch/secrets/creds.env
+        required: false
     environment:
       # These override .env if needed, but .env provides defaults
       - ELASTICSEARCH_HOST=${ELASTICSEARCH_HOST}
       - ELASTICSEARCH_PORT=${ELASTICSEARCH_PORT}
       - ELASTICSEARCH_USER=${ELASTICSEARCH_USER}
-      - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}
       - TIMESKETCH_HOST=${TIMESKETCH_HOST}
       - TIMESKETCH_USER=${TIMESKETCH_USER}
-      - TIMESKETCH_PASS=${TIMESKETCH_PASS}
       - VELO_CONFIG_PATH=${VELO_CONFIG_PATH}
       - CONFIG_PATH=${CONFIG_PATH}
       # Host path for upgrade operations (Docker needs host paths for volume mounts)

@@ -107,6 +107,14 @@ STATE_PATHS=(
     # services/memory/volweb_client.py via HOST_PATH; nothing in compose mounts
     # it, so a hard link here is invisible to every container.
     "modules/volweb/secrets/ADMIN_PASSWORD"
+    # Module passwords (lib/secrets.sh): the ONLY copy on the box, since
+    # config.yaml is blanked at install. Elasticsearch keeps its elastic hash in
+    # its own data, so a lost creds.env locks the backend, Kibana and Logstash
+    # out of existing evidence. elk as a FILE for the kibana-keys.env reason
+    # above; velociraptor's secrets/ holds nothing else, so the dir.
+    # (timesketch's creds.env is covered by modules/timesketch/secrets.)
+    "modules/elk/secrets/creds.env"
+    "modules/velociraptor/secrets"
     #
     # modules/nginx/secrets is deliberately NOT registered. It has no consumers
     # left: its generator was deleted from lib/modules/nginx.sh, and the
@@ -287,5 +295,32 @@ state_unmigrate_one() {
     [[ -e "$canon" ]] || { rm -f "$live" 2>/dev/null; return 0; }
     rm -f "$live" 2>/dev/null
     mv "$canon" "$live" || return 1
+    return 0
+}
+
+# state_restore_missing <root> -- re-link every registered path whose live
+# copy is gone but whose data/state copy survived. install.sh runs it before
+# the module passwords are resolved: a box whose modules/<m>/secrets was lost
+# (a fresh extract over an upgraded box's data/, a hand cleanup) still has the
+# only copy of each password in data/state, and without this the install
+# either minted new ones the tools' data rejects or stopped with "not stored
+# anywhere". state_migrate_one already does the linking (it is what upgrades
+# run); this only picks the paths that need it.
+state_restore_missing() {
+    local root="$1" rel canon n=0
+    for rel in "${STATE_PATHS[@]}"; do
+        [[ -e "${root}/${rel}" ]] && continue
+        canon="${root}/$(state_canonical_path "$rel")"
+        [[ -e "$canon" ]] || continue
+        _state_is_empty_skeleton "$canon" && continue
+        mkdir -p "$(dirname "${root}/${rel}")" 2>/dev/null
+        if state_migrate_one "$root" "$rel"; then
+            log_info "  restored ${rel} from $(state_canonical_path "$rel")"
+            n=$((n + 1))
+        else
+            log_warn "  could not restore ${rel} from $(state_canonical_path "$rel")"
+        fi
+    done
+    (( n )) && log_success "  ${n} per-box state file(s) restored from data/state/"
     return 0
 }

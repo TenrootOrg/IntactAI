@@ -1,3 +1,22 @@
+# Stage 1: the config.yaml this image may carry, SANITIZED.
+#
+# The build context is the repo root, and on an installed box that root's
+# config.yaml is the operator's live file -- whatever passwords they typed
+# (until the installer blanks them) and their GitHub PAT. `COPY config.yaml`
+# straight into the image baked that into a layer, recoverable with `docker run
+# --entrypoint cat <image> /app/config.yaml` and shipped by every `docker save`.
+# The comment below always said "the TEMPLATE"; the COPY never was one.
+#
+# So the raw file only ever enters THIS throwaway stage, and the repo's own
+# pre-commit sanitizer (the one definition of "shipping defaults") writes the
+# copy the final image takes. Same base image as below: nothing new to pull,
+# which matters offline. The sanitizer leaves `enabled:` and versions alone, so
+# install_deps.py and the sigma_rules pin read exactly what they read before.
+FROM python:3.11-slim AS config-template
+COPY scripts/git-hooks/sanitize_config.py /tmp/sanitize_config.py
+COPY config.yaml /tmp/config.raw.yaml
+RUN python3 /tmp/sanitize_config.py config.yaml /tmp/config.raw.yaml /tmp/config.yaml
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -48,7 +67,7 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.0" "wheel>=0.46.2"
 # Copy the TEMPLATE, never the operator's live config.yaml.
 #
 # This used to be `COPY config.yaml`, which baked whatever the build host had
-# into an image layer. On a real install that file holds the operator's GitHub
+# into an image layer (now it takes the sanitized stage above). On a real install that file holds the operator's GitHub
 # PAT (options.github_token) and every module password in plaintext — verified
 # recoverable with a plain `docker run --entrypoint sh <image> -c 'cat
 # /app/config.yaml'`. Image layers get saved, pushed and shared, so that is a
@@ -58,9 +77,10 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.0" "wheel>=0.46.2"
 # input and a fallback for contexts with no mount (CI test runs).
 #
 # install_deps.py below reads it to decide which module dependencies to install.
-# The template ships every module `enabled: true`, so this installs a superset —
-# which also makes the image reproducible instead of varying by build host.
-COPY config.yaml /app/config.yaml
+# Release builds (scripts/ci/packager) pass a template with every module
+# `enabled: true`, so this installs a superset; a box build takes the box's own
+# enabled set. Either way it is the sanitized copy from the stage above.
+COPY --from=config-template /tmp/config.yaml /app/config.yaml
 
 # Copy all requirements files and install script
 COPY modules/backend/requirements*.txt /app/
@@ -132,7 +152,7 @@ COPY scripts/ /app/host-engine/scripts/
 
 # Re-copy the template after the source layers (see the note above — the
 # operator's real config.yaml is bind-mounted over this at runtime).
-COPY config.yaml /app/config.yaml
+COPY --from=config-template /tmp/config.yaml /app/config.yaml
 
 # Create logs directory
 RUN mkdir -p /app/logs

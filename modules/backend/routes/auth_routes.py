@@ -17,7 +17,8 @@ auth_bp = Blueprint('auth', __name__)
 
 
 def _client_ip():
-    return request.headers.get('X-Real-IP') or request.remote_addr
+    # X-Real-IP only when nginx sent it; a direct caller is its own address.
+    return auth.client_address(request)
 
 
 @auth_bp.route('/api/auth/status', methods=['GET'])
@@ -27,7 +28,7 @@ def auth_status():
     attacker could use. The username is only returned once authenticated."""
     mode = auth.auth_mode()
     state = auth.evaluate_session(session)
-    locked = auth.lock_remaining_seconds()
+    locked = auth.lock_remaining_seconds(_client_ip())
 
     body = {
         'mode': mode,                       # setup | login | error
@@ -43,6 +44,7 @@ def auth_status():
                            'file on the host, then reload.')
     if state == auth.SESSION_OK:
         body['user'] = session.get('user')
+        body['must_change'] = auth.must_change(session)
     return jsonify(body)
 
 
@@ -50,10 +52,11 @@ def auth_status():
 def auth_setup():
     """Claim the appliance: set the single user's id + password.
 
-    Only available while config.yaml has first_login: true. That flag is the
-    operator's deliberate "I am standing at this box" signal — it requires host
-    access to set, which is what stops this endpoint being an open account
-    takeover.
+    Needs BOTH config.yaml first_login: true AND the one-time setup token from
+    data/state/backend/setup_token (printed by install.sh and by
+    `sudo scripts/reset-login.sh`). The flag alone used to be enough, so the
+    first visitor from the network could claim the box (QA): reaching the page
+    is not proof of standing at the host, reading a root-only file is.
     """
     if auth.auth_mode() != auth.MODE_SETUP:
         auth.audit('setup_rejected', request, reason='not_in_setup_mode')
@@ -63,10 +66,55 @@ def auth_setup():
             'message': 'This appliance is already set up. Use the login page.',
         }), 403
 
+    client = _client_ip()
+    auth.forgive_lockouts_on_new_token()
+    locked = auth.lock_remaining_seconds(client)
+    if locked > 0:
+        auth.audit('setup_rejected', request, reason='locked',
+                   lock_remaining_seconds=locked)
+        return jsonify({
+            'success': False,
+            'error': 'locked',
+            'lock_remaining_seconds': locked,
+            'message': f'Too many failed attempts. Try again in '
+                       f'{_humanize(locked)}.',
+        }), 429
+    # The token is a guessable-in-theory secret behind an unauthenticated
+    # endpoint, so it gets the same per-client throttle and strikes as login.
+    if not auth.throttle_ok(client):
+        return jsonify({'success': False, 'error': 'too_fast',
+                        'message': 'Slow down and try again.'}), 429
+
+    if auth.read_setup_token() is None:
+        # Spent by an earlier setup, or a box that reached setup mode without
+        # one (hand-edited first_login, upgrade migration). Fail closed.
+        auth.audit('setup_rejected', request, reason='no_setup_token')
+        return jsonify({
+            'success': False,
+            'error': 'setup_token_missing',
+            'message': ('No setup token exists on this appliance. On the '
+                        'appliance, run sudo scripts/reset-login.sh and enter '
+                        'the token it prints.'),
+        }), 403
+
     data = request.get_json(silent=True) or {}
     user = (data.get('username') or '').strip()
     password = data.get('password') or ''
     confirm = data.get('confirm') or ''
+
+    if not auth.setup_token_matches(data.get('setup_token')):
+        lock_seconds = auth.register_failure(client)
+        auth.audit('setup_rejected', request, username_value=user,
+                   reason='bad_setup_token',
+                   locked_for_seconds=lock_seconds or None)
+        return jsonify({
+            'success': False,
+            'error': 'bad_setup_token',
+            'attempts_before_lock': auth.failures_before_lock(client),
+            'message': ('The setup token is missing or wrong. It was printed at '
+                        'the end of the install; to get a new one, run sudo '
+                        'scripts/reset-login.sh on the appliance.'),
+        }), 403
 
     if not user or not password:
         return jsonify({'success': False, 'error': 'missing_fields',
@@ -74,18 +122,28 @@ def auth_setup():
     if password != confirm:
         return jsonify({'success': False, 'error': 'mismatch',
                         'message': 'The two passwords do not match.'}), 400
-    # No minimum length. Removed deliberately at the operator's request so the
-    # shipped default (123123) can be used, matching the module passwords in
-    # config.yaml. The appliance's real protection against a guessed dashboard
-    # password is the lockout in evaluate_login() -- ten wrong attempts and the
-    # account is locked -- not length. Operators who want a strong password can
-    # still set one; this only stops the appliance refusing a short one.
+    problem = auth.password_problem(password)
+    if problem:
+        return jsonify({'success': False, 'error': 'weak_password',
+                        'message': f'Password rejected: {problem}. '
+                                   f'Rule: {auth.PASSWORD_RULE}.'}), 400
 
-    # ORDER IS SECURITY-CRITICAL: close setup FIRST, then store the credential.
-    # The reverse order means a failed config write leaves the setup page still
-    # being served WITH a credential set — permanently claimable by the next
-    # visitor. This order fails closed instead: worst case the credential is
-    # absent and login refuses everything, which the recovery hint covers.
+    # ORDER IS SECURITY-CRITICAL: spend the token, close setup, THEN store the
+    # credential. Spending first makes the token single-use even for two
+    # concurrent requests (only one unlink succeeds). Closing before storing
+    # means a failed config write never leaves the setup page served WITH a
+    # credential set. Every failure here fails closed: no token left, setup
+    # refused, and reset-login.sh is the way back.
+    if not auth.consume_setup_token():
+        auth.audit('setup_rejected', request, username_value=user,
+                   reason='setup_token_already_used')
+        return jsonify({
+            'success': False,
+            'error': 'setup_token_missing',
+            'message': ('The setup token was already used. Run sudo '
+                        'scripts/reset-login.sh on the appliance for a new one.'),
+        }), 403
+
     if not auth.write_first_login(False):
         auth.audit('setup_failed', request, username_value=user,
                    reason='config_write_failed')
@@ -94,7 +152,8 @@ def auth_setup():
             'error': 'config_write_failed',
             'message': ('Could not update config.yaml, so setup was not '
                         'completed. Check the backend logs and the file '
-                        'permissions on config.yaml.'),
+                        'permissions on config.yaml, then run sudo '
+                        'scripts/reset-login.sh for a new setup token.'),
         }), 500
 
     if not auth.set_credential(user, password):
@@ -103,8 +162,8 @@ def auth_setup():
         return jsonify({
             'success': False,
             'error': 'store_failed',
-            'message': ('Could not store the credential. Set first_login: true '
-                        'in config.yaml on the host and try again.'),
+            'message': ('Could not store the credential. Run sudo '
+                        'scripts/reset-login.sh on the appliance and try again.'),
         }), 500
 
     auth.bump_generation_cache()
@@ -119,7 +178,8 @@ def auth_login():
         return jsonify({'success': False, 'error': 'config_error',
                         'message': 'config.yaml could not be read.'}), 503
 
-    locked = auth.lock_remaining_seconds()
+    client = _client_ip()
+    locked = auth.lock_remaining_seconds(client)
     if locked > 0:
         auth.audit('login_blocked', request, reason='locked',
                    lock_remaining_seconds=locked)
@@ -134,10 +194,12 @@ def auth_login():
 
     # Independent of the strike counter — otherwise ten failures burn in
     # milliseconds and the lockout is decorative against a script.
-    if not auth.throttle_ok():
+    if not auth.throttle_ok(client):
         return jsonify({'success': False, 'error': 'too_fast',
                         'message': 'Slow down and try again.'}), 429
 
+    # No password_problem() here on purpose: boxes set up before the rule
+    # existed (some with 123123) must keep signing in.
     data = request.get_json(silent=True) or {}
     user = (data.get('username') or '').strip()
     password = data.get('password') or ''
@@ -156,8 +218,8 @@ def auth_login():
         }), 403
 
     if not auth.verify_password(user, password):
-        lock_seconds = auth.register_failure()
-        remaining = auth.failures_before_lock()
+        lock_seconds = auth.register_failure(client)
+        remaining = auth.failures_before_lock(client)
         auth.audit('login_failed', request, username_value=user,
                    locked_for_seconds=lock_seconds or None)
         if lock_seconds:
@@ -179,11 +241,16 @@ def auth_login():
             'recovery_hint': auth.recovery_hint(),
         }), 401
 
-    auth.reset_lockout()
+    auth.reset_lockout(client)
     auth.bump_generation_cache()
     auth.start_session(session, user)
-    auth.audit('login_ok', request, username_value=user)
-    return jsonify({'success': True, 'user': user})
+    # A publicly known (or rule-failing) password still gets in -- old boxes
+    # must -- but the session can do nothing except change it (gate_decision).
+    must_change = auth.needs_change(password)
+    if must_change:
+        session['must_change'] = True
+    auth.audit('login_ok', request, username_value=user, must_change=must_change or None)
+    return jsonify({'success': True, 'user': user, 'must_change': must_change})
 
 
 @auth_bp.route('/api/auth/logout', methods=['POST'])
@@ -216,11 +283,15 @@ def auth_change_password():
     if new_password != confirm:
         return jsonify({'success': False, 'error': 'mismatch',
                         'message': 'The two passwords do not match.'}), 400
-    # No minimum length here either. Removing it only from /api/auth/setup was
-    # a half-measure: an appliance claimed with a short password could not then
-    # CHANGE it back to one, so any rotation was a one-way door out of the
-    # documented default. Same reasoning as setup — the lockout in
-    # evaluate_login() is the control, not length.
+    # Same rule as setup (auth.password_problem): a known or weak dashboard
+    # password on a tool that controls every endpoint was a QA finding. A box
+    # still on an old short password keeps logging in; it just cannot change
+    # TO one.
+    problem = auth.password_problem(new_password)
+    if problem:
+        return jsonify({'success': False, 'error': 'weak_password',
+                        'message': f'Password rejected: {problem}. '
+                                   f'Rule: {auth.PASSWORD_RULE}.'}), 400
 
     if not auth.set_credential(user, new_password):
         return jsonify({'success': False, 'error': 'store_failed',
@@ -244,7 +315,8 @@ def auth_verify():
     one subrequest per tus PATCH, which is ~2000 of them for a 10 GB upload
     against a single-process threaded server. 200 or 401, no body.
     """
-    if auth.evaluate_session(session) == auth.SESSION_OK:
+    # must_change too: /velociraptor/ and uploads are "everything else".
+    if auth.evaluate_session(session) == auth.SESSION_OK and not auth.must_change(session):
         return '', 200
     return '', 401
 

@@ -19,8 +19,18 @@ services:
       args:
         - VELOCIRAPTOR_TAG=${VELOCIRAPTOR_TAG}
         - VELOCIRAPTOR_VERSION=${VELOCIRAPTOR_VERSION}
+    # .env first, the private stores after: a later env_file wins, so the
+    # stored VELOX_PASSWORD / VELOX_PASSWORD_2 override the blank (or, on an old
+    # box, public) values the tracked .env still carries.
+    #   ./secrets/creds.env      VELOX_PASSWORD (GUI user), VELOX_PASSWORD_2 (`api`)
+    #   ../elk/secrets/creds.env ELASTIC_PASSWORD for the Elastic upload artifact
+    # required: false so a box without ELK, or not migrated yet, still starts.
     env_file:
       - .env
+      - path: ./secrets/creds.env
+        required: false
+      - path: ../elk/secrets/creds.env
+        required: false
     environment:
       - VELOX_FRONTEND_HOSTNAME=${VELOX_FRONTEND_HOSTNAME:-localhost}
       - VELOX_PUBLIC_IP=${VELOX_PUBLIC_IP:-localhost}

@@ -46,11 +46,10 @@ def _find(name):
     return next((s for s in sources() if s["id"] == name), None)
 
 
-def _clean(line):
-    line = sb._ANSI.sub("", line.rstrip("\r\n"))
-    for pat, rep in sb._SECRET_PATTERNS:
-        line = pat.sub(rep, line)
-    return line
+def _clean(line, values=None):
+    """`values`: sb.known_secret_values(), read once per poll/download by the
+    caller -- not per line, which would reopen every secret file per log line."""
+    return sb.redact_line(sb._ANSI.sub("", line.rstrip("\r\n")), values)
 
 
 def _level(msg):
@@ -66,6 +65,7 @@ def _norm_ts(sec, frac):
 def parse(text, cursor=None):
     """`docker logs --timestamps` output -> (entries, cursor of the last one)."""
     logs, last = [], cursor
+    values = sb.known_secret_values()
     for raw in text.splitlines():
         m = _TS.match(raw)
         if not m:
@@ -75,7 +75,7 @@ def parse(text, cursor=None):
         # ponytail: two lines in the same nanosecond across a poll would lose the second; never seen.
         if cursor and ts <= cursor:
             continue
-        msg = _clean(raw[m.end():])
+        msg = _clean(raw[m.end():], values)
         logs.append({"timestamp": ts, "level": _level(msg), "message": msg})
         last = ts
     return logs, last
@@ -102,11 +102,12 @@ def download(name):
         return None
 
     def gen():
+        values = sb.known_secret_values()
         p = subprocess.Popen(["docker", "logs", "--timestamps", "--tail", str(DOWNLOAD_LINES), name],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:
             for raw in p.stdout:
-                yield _clean(raw.decode("utf-8", "replace")) + "\n"
+                yield _clean(raw.decode("utf-8", "replace"), values) + "\n"
         finally:
             p.kill()
             p.wait()

@@ -15,20 +15,28 @@ set -euo pipefail
 
 ES_URL="http://elasticsearch:9200"
 
-: "${ELASTIC_PASSWORD:?ELASTIC_PASSWORD must be set}"
-: "${KIBANA_PASSWORD:?KIBANA_PASSWORD must be set}"
+# Both come from modules/elk/secrets/creds.env (env_file). Two different values:
+# KIBANA_PASSWORD is kibana_system's own, never shown to a human. Never echoed.
+: "${ELASTIC_PASSWORD:?ELASTIC_PASSWORD must be set (modules/elk/secrets/creds.env)}"
+: "${KIBANA_PASSWORD:?KIBANA_PASSWORD must be set (modules/elk/secrets/creds.env)}"
+
+# curl as `elastic`, with the credentials on stdin as a curl config (-K-) rather
+# than `-u elastic:<pw>` in argv, where every process on the host can read them
+# from /proc. printf is a builtin, so the value is in no command line either.
+_cfg_quote() { local v="${1//\\/\\\\}"; printf '"%s"' "${v//\"/\\\"}"; }
+es() { printf 'user = %s\n' "$(_cfg_quote "elastic:${ELASTIC_PASSWORD}")" | curl -K- "$@"; }
 
 echo "[elk-setup] Waiting for Elasticsearch to accept 'elastic' credentials..."
-until curl -sf -u "elastic:${ELASTIC_PASSWORD}" "${ES_URL}/_cluster/health" >/dev/null 2>&1; do
+until es -sf "${ES_URL}/_cluster/health" >/dev/null 2>&1; do
   sleep 3
 done
 
 echo "[elk-setup] Setting kibana_system password..."
-http_code=$(curl -s -o /tmp/kibana-user-setup-response.json -w '%{http_code}' \
-  -u "elastic:${ELASTIC_PASSWORD}" \
+# The body (KIBANA_PASSWORD) goes in on fd 3 from a here-string, not -d <json>.
+http_code=$(es -s -o /tmp/kibana-user-setup-response.json -w '%{http_code}' \
   -X POST "${ES_URL}/_security/user/kibana_system/_password" \
   -H 'Content-Type: application/json' \
-  -d "{\"password\":\"${KIBANA_PASSWORD}\"}")
+  --data-binary @/dev/fd/3 3<<<"{\"password\":\"${KIBANA_PASSWORD}\"}")
 
 if [[ "$http_code" != "200" ]]; then
   echo "[elk-setup] Failed to set kibana_system password (HTTP ${http_code}):"
@@ -55,7 +63,7 @@ echo "[elk-setup] kibana_system password set successfully."
 # So on a single-node cluster, ask for zero replicas and get an honest GREEN.
 # Guarded on the actual node count: the moment this is a real multi-node
 # deployment, replicas matter and nothing here touches them.
-nodes=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" "${ES_URL}/_cluster/health" \
+nodes=$(es -s "${ES_URL}/_cluster/health" \
         | sed -n 's/.*"number_of_nodes":\([0-9]*\).*/\1/p')
 if [[ "$nodes" == "1" ]]; then
   echo "[elk-setup] Single-node cluster — setting replicas to 0 (a replica cannot be allocated on one node, which is what leaves the cluster yellow forever)."
@@ -71,7 +79,7 @@ if [[ "$nodes" == "1" ]]; then
   # this script correctly reported green (2026-08-16). The follow-up sweep lives
   # in elk_settle_single_node_replicas() (lib/modules/elk.sh), which runs late in
   # the install and only when the cluster is actually single-node and yellow.
-  curl -s -o /dev/null -u "elastic:${ELASTIC_PASSWORD}" \
+  es -s -o /dev/null \
     -X PUT "${ES_URL}/_index_template/intact-single-node" \
     -H 'Content-Type: application/json' \
     -d '{"index_patterns":["*"],"priority":0,"template":{"settings":{"number_of_replicas":0}}}' \
@@ -79,7 +87,7 @@ if [[ "$nodes" == "1" ]]; then
 
   # Indices that already exist, system/hidden ones included: those are exactly
   # the .kibana* and .security* indices that keep the cluster yellow on their own.
-  curl -s -o /dev/null -u "elastic:${ELASTIC_PASSWORD}" \
+  es -s -o /dev/null \
     -X PUT "${ES_URL}/*/_settings?expand_wildcards=all" \
     -H 'Content-Type: application/json' \
     -d '{"index":{"number_of_replicas":0}}' \
@@ -87,7 +95,7 @@ if [[ "$nodes" == "1" ]]; then
 
   # Report what it actually achieved rather than assuming.
   for _ in $(seq 1 10); do
-    st=$(curl -s -u "elastic:${ELASTIC_PASSWORD}" "${ES_URL}/_cluster/health" \
+    st=$(es -s "${ES_URL}/_cluster/health" \
          | sed -n 's/.*"status":"\([a-z]*\)".*/\1/p')
     [[ "$st" == "green" ]] && break
     sleep 2

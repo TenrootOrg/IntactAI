@@ -15,14 +15,18 @@ Three things in here are load-bearing and easy to "simplify" into a security
 hole. Each is commented at its implementation:
 
   1. write_first_login() truncates in place and MUST NOT rename-into-place.
-  2. The setup endpoint writes first_login=false BEFORE storing the credential.
+  2. The setup endpoint consumes the one-time setup token and writes
+     first_login=false BEFORE storing the credential.
   3. A lockout must never flip first_login to true.
 """
 
+import collections
+import hmac
 import json
 import os
 import re
 import shutil
+import socket
 import threading
 import time
 from datetime import datetime, timezone
@@ -31,11 +35,12 @@ from typing import Optional, Tuple
 import yaml
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from services.storage.base import STORAGE_BASE
 from services.storage.secret_store import get_secret, set_secret
 
 # --- where state lives -------------------------------------------------------
 #
-# The credential hash, session key and lockout counters live in the `secrets`
+# The credential hash and session key live in the `secrets`
 # table of /app/data/intact.db. /app/data is a HOST BIND MOUNT
 # (../../data:/app/data → /home/tenroot/intact/data), which is the most durable
 # location in the appliance: it survives container recreate, image swap,
@@ -51,9 +56,8 @@ from services.storage.secret_store import get_secret, set_secret
 _K_HASH = "auth_password_hash"
 _K_USER = "auth_username"
 _K_SESSION_KEY = "auth_session_key"
-_K_FAILED = "auth_failed_count"
-_K_LOCK_UNTIL = "auth_lock_until"
-_K_STRIKES = "auth_lock_strikes"
+# auth_failed_count / auth_lock_until / auth_lock_strikes rows may still sit in
+# old boxes' DBs from the global lockout; nothing reads them any more.
 _K_GENERATION = "auth_credential_generation"
 
 # --- session policy ----------------------------------------------------------
@@ -76,22 +80,51 @@ SESSION_TOUCH_INTERVAL_SECONDS = 60 * 60
 
 # --- lockout policy ----------------------------------------------------------
 #
-# 10 consecutive failures locks for 15 minutes; each further block of 10 doubles
-# it, capped at 24h. A TIMED lock rather than a permanent one on purpose:
-# /api/auth/login has to be reachable unauthenticated, and with a single user
-# the failure counter is inherently global, so a permanent lock would let anyone
-# who can route to port 443 lock the real operator out of their own appliance in
-# 10 requests and force a trip to the console. This self-heals.
+# 10 failures from one client address locks THAT address for 15 minutes; each
+# further block of 10 doubles it, capped at 24h. Timed, so it self-heals.
+#
+# PER CLIENT, not global (QA). The counter used to be one global row, so anyone
+# who could route to port 443 locked the real operator out in 10 requests --
+# and the documented way out (reopen setup) then handed the box to whoever
+# reached the setup page first, i.e. the attacker who caused the lockout. Now a
+# locked address only locks itself, and setup needs a token from the host.
+#
+# The address is X-Real-IP, which nginx sets from $remote_addr -- but ONLY when
+# the request really comes from nginx (see client_address). Kept in memory: a
+# restart forgets the counters, which an attacker cannot trigger, and it keeps
+# an unauthenticated endpoint from writing to SQLite per request.
 LOCKOUT_THRESHOLD = 10
 LOCKOUT_BASE_MINUTES = 15
 LOCKOUT_CAP_MINUTES = 24 * 60
 
 # Independent of the counter above: without this, ten failures burn in ~10ms and
-# the "10 strikes" rule is decorative against a script.
+# the "10 strikes" rule is decorative against a script. Per client too, or one
+# scanner's attempts would bounce the operator's login with "too fast".
 MIN_SECONDS_BETWEEN_ATTEMPTS = 1.0
 
+# Bound on tracked addresses: /api/auth/login is unauthenticated, so a sweep
+# from many addresses must not grow this without limit. An entry with no lock
+# in force and no attempt for a day is forgotten (its strikes with it).
+MAX_TRACKED_CLIENTS = 4096
+CLIENT_FORGET_SECONDS = 24 * 60 * 60
+
+# Global soft brake (red team): per-address counters do nothing against a
+# sweep from many addresses. More than GLOBAL_BRAKE_FAILURES failures across ALL
+# clients inside GLOBAL_BRAKE_WINDOW seconds => the whole box accepts at most
+# one login/setup attempt per GLOBAL_BRAKE_INTERVAL until the rate drops.
+# Rejected, not slept: a sleep would park a server thread per attempt, which a
+# parallel attacker turns into a denial of service. The operator's own attempt
+# still gets through on a retry.
+GLOBAL_BRAKE_FAILURES = 100
+GLOBAL_BRAKE_WINDOW = 60.0
+GLOBAL_BRAKE_INTERVAL = 1.0
+
 _attempt_lock = threading.Lock()
-_last_attempt_at = 0.0
+# addr -> {"failed", "strikes", "lock_until", "last"}; times are time.monotonic()
+_clients = {}
+# The last GLOBAL_BRAKE_FAILURES+1 failure times: bounded whatever the sweep size.
+_recent_failures = collections.deque(maxlen=GLOBAL_BRAKE_FAILURES + 1)
+_last_braked_attempt = 0.0
 
 # --- audit log ---------------------------------------------------------------
 #
@@ -146,9 +179,9 @@ def read_first_login() -> str:
     """One of FIRST_LOGIN_{TRUE,FALSE,ABSENT,ERROR}.
 
     Re-read from disk on EVERY call, never cached. The documented recovery path
-    for a forgotten password is "edit config.yaml on the host and set
-    first_login: true" — caching would silently make that a no-op until someone
-    remembered to `docker restart intact_backend`.
+    for a forgotten password is `sudo scripts/reset-login.sh`, which sets
+    first_login: true in config.yaml on the host — caching would silently make
+    that a no-op until someone remembered to `docker restart intact_backend`.
 
     ABSENT means the key isn't in the file at all, which identifies a box
     upgraded from a version that predates app-level auth (the shipped
@@ -330,19 +363,87 @@ def session_secret_key() -> str:
 # Lockout
 # =============================================================================
 
-def lock_remaining_seconds() -> int:
-    """Seconds until the lock lifts, or 0 if not locked."""
-    until = _int_secret(_K_LOCK_UNTIL, 0)
-    if until <= 0:
-        return 0
-    remaining = until - int(time.time())
-    return remaining if remaining > 0 else 0
+# =============================================================================
+# Which address a request counts against
+# =============================================================================
+#
+# X-Real-IP is only as trustworthy as whoever set it. nginx overwrites it with
+# $remote_addr, but the backend is also reachable WITHOUT nginx: any peer
+# container on intact_network (the F-010 threat) and 127.0.0.1:5001 on the host.
+# Trusting the header from those let a script send a fresh X-Real-IP per guess
+# and never meet the lockout (red team). So the header counts only when the TCP
+# peer is the nginx container; anyone else is keyed by their real address.
+NGINX_HOST = "intact_nginx"
+NGINX_REFRESH_SECONDS = 300     # nginx recreated -> new address; re-resolve
+NGINX_MISS_RETRY_SECONDS = 30   # bound DNS lookups a non-nginx caller can cause
+_nginx = {"addrs": frozenset(), "at": None}
 
 
-def reset_lockout() -> None:
-    set_secret(_K_FAILED, "0")
-    set_secret(_K_STRIKES, "0")
-    set_secret(_K_LOCK_UNTIL, "0")
+def _resolve_nginx() -> frozenset:
+    try:
+        return frozenset(socket.gethostbyname_ex(NGINX_HOST)[2])
+    except (OSError, UnicodeError):
+        return frozenset()      # not on intact_network (tests, dev): trust nobody
+
+
+def _is_nginx(addr: str) -> bool:
+    now = time.monotonic()
+    at = _nginx["at"]
+    if (at is None or now - at > NGINX_REFRESH_SECONDS
+            or (addr not in _nginx["addrs"] and now - at > NGINX_MISS_RETRY_SECONDS)):
+        _nginx["addrs"], _nginx["at"] = _resolve_nginx(), now
+    return addr in _nginx["addrs"]
+
+
+def client_address(request) -> str:
+    """The address lockout and audit count `request` against."""
+    addr = request.remote_addr or "unknown"
+    real = (request.headers.get("X-Real-IP") or "").strip()
+    return real if real and _is_nginx(addr) else addr
+
+
+def _entry(client: str) -> dict:
+    """The counters for one address (caller holds _attempt_lock)."""
+    client = client or "unknown"
+    entry = _clients.get(client)
+    if entry is None:
+        if len(_clients) >= MAX_TRACKED_CLIENTS:
+            _prune(time.monotonic())
+        entry = _clients[client] = {"failed": 0, "strikes": 0,
+                                    "lock_until": 0.0, "last": 0.0}
+    return entry
+
+
+def _prune(now: float) -> None:
+    for addr in [a for a, e in _clients.items()
+                 if e["lock_until"] <= now and now - e["last"] > CLIENT_FORGET_SECONDS]:
+        del _clients[addr]
+    # Still full (a sweep from many fresh addresses): drop the least recently
+    # seen. That can free a locked address early, but an attacker holding that
+    # many addresses is not slowed by a per-address lock anyway.
+    while len(_clients) >= MAX_TRACKED_CLIENTS:
+        del _clients[min(_clients, key=lambda a: _clients[a]["last"])]
+
+
+def lock_remaining_seconds(client: str) -> int:
+    """Seconds until `client`'s lock lifts, or 0 if not locked."""
+    with _attempt_lock:
+        entry = _clients.get(client or "unknown")
+        if not entry:
+            return 0
+        remaining = entry["lock_until"] - time.monotonic()
+        return int(remaining + 0.999) if remaining > 0 else 0
+
+
+def reset_lockout(client: Optional[str] = None) -> None:
+    """Clear one address's counters, or every address's when None (a new
+    credential starts everyone afresh)."""
+    with _attempt_lock:
+        if client is None:
+            _clients.clear()
+            _recent_failures.clear()
+        else:
+            _clients.pop(client or "unknown", None)
 
 
 def lock_duration_minutes(strikes: int) -> int:
@@ -353,42 +454,196 @@ def lock_duration_minutes(strikes: int) -> int:
     return min(minutes, LOCKOUT_CAP_MINUTES)
 
 
-def register_failure() -> int:
-    """Count one failed attempt. Returns the lock duration in seconds if this
-    attempt triggered a lock, else 0.
+def register_failure(client: str) -> int:
+    """Count one failed attempt from `client`. Returns the lock duration in
+    seconds if this attempt triggered a lock, else 0.
 
     Never touches first_login. Flipping it here would mean an attacker could
     deliberately fail 10 times to open the unauthenticated setup page and claim
     the account — turning the lockout into an account-takeover primitive.
     """
-    failed = _int_secret(_K_FAILED, 0) + 1
-    set_secret(_K_FAILED, str(failed))
-
-    if failed % LOCKOUT_THRESHOLD != 0:
-        return 0
-
-    strikes = _int_secret(_K_STRIKES, 0) + 1
-    set_secret(_K_STRIKES, str(strikes))
-    minutes = lock_duration_minutes(strikes)
-    set_secret(_K_LOCK_UNTIL, str(int(time.time()) + minutes * 60))
-    return minutes * 60
-
-
-def throttle_ok() -> bool:
-    """False if attempts are arriving faster than MIN_SECONDS_BETWEEN_ATTEMPTS."""
-    global _last_attempt_at
     with _attempt_lock:
+        entry = _entry(client)
+        entry["last"] = time.monotonic()
+        _recent_failures.append(entry["last"])
+        entry["failed"] += 1
+        if entry["failed"] % LOCKOUT_THRESHOLD != 0:
+            return 0
+        entry["strikes"] += 1
+        minutes = lock_duration_minutes(entry["strikes"])
+        entry["lock_until"] = time.monotonic() + minutes * 60
+        return minutes * 60
+
+
+def _braked(now: float) -> bool:
+    """More than GLOBAL_BRAKE_FAILURES failures inside the window (lock held)."""
+    return (len(_recent_failures) > GLOBAL_BRAKE_FAILURES
+            and now - _recent_failures[0] <= GLOBAL_BRAKE_WINDOW)
+
+
+def throttle_ok(client: str) -> bool:
+    """False if `client`'s attempts arrive faster than MIN_SECONDS_BETWEEN_ATTEMPTS,
+    or the global brake is on and another attempt was let through < 1 s ago."""
+    global _last_braked_attempt
+    with _attempt_lock:
+        entry = _entry(client)
         now = time.monotonic()
-        if now - _last_attempt_at < MIN_SECONDS_BETWEEN_ATTEMPTS:
+        if entry["last"] and now - entry["last"] < MIN_SECONDS_BETWEEN_ATTEMPTS:
             return False
-        _last_attempt_at = now
+        if _braked(now):
+            if now - _last_braked_attempt < GLOBAL_BRAKE_INTERVAL:
+                return False
+            _last_braked_attempt = now
+        entry["last"] = now
         return True
 
 
-def failures_before_lock() -> int:
+def failures_before_lock(client: str) -> int:
     """How many more failures until the next lock — shown on the login page."""
-    failed = _int_secret(_K_FAILED, 0)
+    with _attempt_lock:
+        entry = _clients.get(client or "unknown")
+        failed = entry["failed"] if entry else 0
     return LOCKOUT_THRESHOLD - (failed % LOCKOUT_THRESHOLD)
+
+
+# =============================================================================
+# One-time setup token
+# =============================================================================
+#
+# While first_login is true the setup endpoint used to accept the FIRST visitor
+# from the network (QA): an attacker could lock the operator out, wait for them
+# to reopen setup, and claim the box. Now setup also needs the token that
+# lib/setup_token.sh writes on the host (install.sh prints it; so does
+# `sudo scripts/reset-login.sh`). Only root on the host can read the file, so
+# reaching the page is no longer enough. Deleting the file is how it is spent.
+
+def setup_token_path() -> str:
+    return (os.environ.get("INTACT_SETUP_TOKEN_PATH")
+            or os.path.join(STORAGE_BASE, "state", "backend", "setup_token"))
+
+
+def read_setup_token() -> Optional[str]:
+    """The current token, or None when there is none (spent, or never made)."""
+    try:
+        with open(setup_token_path(), "r", encoding="utf-8") as handle:
+            return handle.read().strip() or None
+    except OSError:
+        return None
+
+
+def setup_token_matches(given) -> bool:
+    expected = read_setup_token()
+    if not expected or not isinstance(given, str) or not given.strip():
+        return False
+    return hmac.compare_digest(given.strip().encode("utf-8"), expected.encode("utf-8"))
+
+
+_token_stamp = None
+
+
+def forgive_lockouts_on_new_token() -> None:
+    """Clear every lockout the first time a new token file is seen.
+
+    The usual reason to run reset-login.sh is having locked OUR OWN address
+    with ten wrong passwords; without this the operator would then be refused
+    setup for 15+ minutes. Only root on the host can make a token, so an
+    attacker cannot use this to shed a lock.
+    """
+    global _token_stamp
+    try:
+        st = os.stat(setup_token_path())
+    except OSError:
+        return
+    stamp = (st.st_ino, st.st_mtime_ns)
+    with _attempt_lock:
+        if stamp != _token_stamp:
+            _clients.clear()
+            _token_stamp = stamp
+
+
+def consume_setup_token() -> bool:
+    """Delete the token. True only for the caller whose unlink removed it, so
+    two concurrent setups with the right token cannot both succeed."""
+    try:
+        os.unlink(setup_token_path())
+        return True
+    except OSError:
+        return False
+
+
+# =============================================================================
+# Password rule — setup and change-password only
+# =============================================================================
+#
+# Same rule as lib/secrets.sh:secret_check. The minimum used to be removed on
+# purpose so the shipped default (123123) could be the dashboard password; QA
+# flagged that as a known/weak credential on a tool that controls every
+# endpoint. Applied only when a password is SET -- never at login, so a box
+# whose operator set a short password before this rule keeps signing in.
+KNOWN_DEFAULT_PASSWORDS = frozenset({"123123", "Ch4nge-Me!Intact2026", "1234qwer!@#$", "changeme"})
+PASSWORD_RULE = ("12+ characters with an uppercase letter, a lowercase letter and "
+                 "a digit; only A-Z a-z 0-9 - _ . (not starting with - _ .)")
+_PASSWORD_CHARS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def weak_passwords_allowed() -> bool:
+    """True on a LAB box whose config.yaml says `allow_weak_passwords: true`.
+
+    Same switch lib/secrets.sh:secret_weak_allowed reads. Shipped false, and the
+    pre-commit sanitizer forces it back to false. Re-read on every call, like
+    first_login, so flipping it needs no backend restart. Any doubt (no file,
+    unparseable) answers False -- the rule stays on. Only true/True/TRUE, like
+    the shell: YAML 1.1 also reads `yes`/`on` as True, which secret_weak_allowed
+    does not, so the raw line must say true as well.
+    """
+    if os.environ.get("INTACT_ALLOW_WEAK_PASSWORDS") == "1":
+        return True
+    path = config_path()
+    if not path:
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        data = yaml.safe_load(text)
+    except Exception:
+        return False
+    return (isinstance(data, dict) and data.get("allow_weak_passwords") is True
+            and re.search(r"^allow_weak_passwords:[ \t]*(true|True|TRUE)[ \t]*(#.*)?$", text, re.M) is not None)
+
+
+def password_problem(password: str) -> Optional[str]:
+    """None when `password` meets the rule, else the reason (never the value)."""
+    if not password:
+        return "it is empty"
+    if weak_passwords_allowed():
+        # Lab box: anything non-empty that cannot break a header or a log line.
+        return None if password.isprintable() else "it has control characters"
+    if password in KNOWN_DEFAULT_PASSWORDS:
+        return "it is a publicly known default"
+    if len(password) < 12:
+        return "it is shorter than 12 characters"
+    if not _PASSWORD_CHARS.fullmatch(password):
+        return "it may only use A-Z a-z 0-9 - _ . and must not start with - _ ."
+    if not (re.search(r"[A-Z]", password) and re.search(r"[a-z]", password)
+            and re.search(r"[0-9]", password)):
+        return "it needs an uppercase letter, a lowercase letter and a digit"
+    return None
+
+
+def needs_change(password: str) -> bool:
+    """True when a password that just LOGGED IN must be replaced before the
+    session may do anything else: a public default, or one that fails the rule.
+    Login still accepts it (old boxes must get in); the gate then holds the
+    session to change-password. Never on a lab box."""
+    if weak_passwords_allowed():
+        return False
+    return password in KNOWN_DEFAULT_PASSWORDS or password_problem(password) is not None
+
+
+def must_change(session) -> bool:
+    """The session logged in with a password that needs_change(). Flipping the
+    lab switch on lifts it without a re-login."""
+    return bool(session and session.get("must_change")) and not weak_passwords_allowed()
 
 
 # =============================================================================
@@ -399,6 +654,9 @@ SESSION_OK = "ok"
 SESSION_NONE = "none"
 SESSION_EXPIRED = "expired"
 SESSION_CREDENTIALS_CHANGED = "credentials_changed"
+# Not a session state: gate_decision's answer for a valid session that must
+# change its password first (403, not 401 -- the session is fine).
+PASSWORD_CHANGE_REQUIRED = "password_change_required"
 
 # Cached so the hot path (every gated request, plus one nginx auth_request
 # subrequest per tus PATCH) is a pure signed-cookie check with no SQLite hit.
@@ -438,6 +696,8 @@ def evaluate_session(session) -> str:
 
 def start_session(session, user: str) -> None:
     session.permanent = True
+    # A fresh login or a completed change decides must_change anew.
+    session.pop("must_change", None)
     session["user"] = user
     session["gen"] = generation_cached()
     session["iat"] = time.time()
@@ -447,6 +707,7 @@ def start_session(session, user: str) -> None:
 # --- the request gate -------------------------------------------------------
 #
 # Reachable without a session. Everything else under /api/ requires one.
+# (logout and status stay reachable for a must_change session too: they are here.)
 EXEMPT_PATHS = frozenset({
     '/api/auth/status',
     '/api/auth/login',
@@ -478,9 +739,14 @@ EXEMPT_PATHS = frozenset({
 LOOPBACK_ADDRS = frozenset({'127.0.0.1', '::1'})
 
 
+# The one gated route a must_change session may call.
+CHANGE_PASSWORD_PATH = '/api/auth/change-password'
+
+
 def gate_decision(path: str, method: str, remote_addr: str, session) -> Optional[str]:
     """None to allow the request; otherwise the reason to report in the 401
-    (one of SESSION_NONE / SESSION_EXPIRED / SESSION_CREDENTIALS_CHANGED).
+    (one of SESSION_NONE / SESSION_EXPIRED / SESSION_CREDENTIALS_CHANGED), or
+    PASSWORD_CHANGE_REQUIRED for the 403 a must_change session gets.
 
     Pure and side-effect free so it can be tested directly rather than through a
     live Flask app — app.py's before_request hook is a thin wrapper over this.
@@ -497,7 +763,11 @@ def gate_decision(path: str, method: str, remote_addr: str, session) -> Optional
     if remote_addr in LOOPBACK_ADDRS:
         return None
     state = evaluate_session(session)
-    return None if state == SESSION_OK else state
+    if state != SESSION_OK:
+        return state
+    if path != CHANGE_PASSWORD_PATH and must_change(session):
+        return PASSWORD_CHANGE_REQUIRED
+    return None
 
 
 def touch_session(session) -> bool:
@@ -546,7 +816,7 @@ def audit(event: str, request=None, username_value: str = None, **extra) -> None
     }
     if request is not None:
         try:
-            entry["ip"] = request.headers.get("X-Real-IP") or request.remote_addr
+            entry["ip"] = client_address(request)
             entry["user_agent"] = (request.headers.get("User-Agent") or "")[:200]
         except Exception:
             pass
@@ -622,9 +892,10 @@ def recovery_hint() -> str:
     password needs a visible way out, and the operator asked for it to be
     stated up front.
 
-    No restart in the instructions on purpose: read_first_login() re-reads
-    config.yaml on every call, so the edit takes effect on the next page load.
+    Not "edit first_login" any more: setup also needs the one-time token, and
+    reset-login.sh writes both. No restart: read_first_login() and
+    read_setup_token() re-read the files on every call.
     """
-    return ("Locked out, or forgotten the password? On the appliance host, set "
-            "first_login: true in config.yaml (top level), then reload this "
-            "page to set up new credentials. No restart needed.")
+    return ("Locked out, or forgotten the password? On the appliance, run "
+            "sudo scripts/reset-login.sh, then open the setup page and enter "
+            "the setup token it prints. No restart needed.")

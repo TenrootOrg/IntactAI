@@ -213,6 +213,24 @@ test_yellow_matching_the_pre_upgrade_baseline_is_up() {
     unset -f curl _u_is_running read_env_var
 }
 
+test_the_elk_probe_quotes_an_old_password_for_curl() {
+    # An old box's password may hold " \ or spaces; a bare printf into curl's
+    # config broke the line and the probe reported a healthy cluster down.
+    source ../lib/upgrade/modules/elk.sh
+    _reset_run_state
+    U_ELK_BASELINE_STATUS=green
+    curl() {
+        local a; for a in "$@"; do [[ "$a" == /dev/fd/* ]] && cat "$a" > "$STUB_LOG.curlrc.out"; done
+        echo '{"status":"green"}'
+    }
+    _u_is_running() { return 0; }
+    secret_get() { printf '%s' 'a"b\c d'; }
+    read_env_var() { echo elastic; }
+    assert_contains "$(_u_probe_elk)" "up"
+    assert_eq "$(cat "$STUB_LOG.curlrc.out")" 'user = "elastic:a\"b\\c d"'
+    unset -f curl _u_is_running secret_get read_env_var
+}
+
 test_green_degrading_to_yellow_is_a_real_regression() {
     _reset_run_state
     U_ELK_BASELINE_STATUS=green

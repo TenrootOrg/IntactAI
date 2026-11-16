@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="vendor/flatpickr/dark.css">
     <script src="vendor/flatpickr/flatpickr.min.js"></script>
     <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-    <script src="js/active-case.js?v=14"></script>
+    <script src="js/active-case.js?v=15"></script>
 </head>
 <body class="bg-gray-900 text-white" x-data x-cloak>
     <!-- Load splash — covers the brief window while partials inject + Alpine
@@ -334,6 +334,23 @@
         <!-- Main Content Area -->
         <main class="main-content flex-1 p-6 min-h-screen transition-all duration-300"
               :class="{ 'main-content-collapsed': $store.app.sidebarCollapsed }">
+            <!-- An upgraded old box can still run a machine-used password on a
+                 public default (the upgrade never changes those under a running
+                 tool), and an upgrade rotates human-only defaults the operator
+                 has not seen yet; routes/security_routes.py reports both from
+                 data/state/default-passwords.json. On every tab until fixed. -->
+            <div x-data="{ mods: [], rotated: [] }"
+                 x-init="fetch('/api/security/default-passwords').then(r => r.ok ? r.json() : {}).then(d => { mods = (d && d.modules) || []; rotated = (d && d.rotated) || [] }).catch(() => {})">
+                <div x-show="mods.length" x-cloak role="alert"
+                     class="mb-5 px-3 py-2 rounded-lg bg-red-950 border border-red-500 text-red-100 text-sm font-medium">
+                    Default password still in use: <span x-text="mods.join(', ')"></span>. Set new ones in config.yaml and run: <code>sudo scripts/apply-passwords.sh</code>
+                </div>
+                <div x-show="rotated.length" x-cloak role="status"
+                     class="mb-5 px-3 py-2 rounded-lg bg-yellow-900 border border-yellow-500 text-yellow-100 text-sm font-medium">
+                    Passwords were changed for: <span x-text="rotated.join(', ')"></span>. View them with: <code>sudo scripts/show-credentials.sh</code>
+                </div>
+            </div>
+
             <!-- Active case selector — visible on every tab. Changing it
                  re-scopes every run list/launch to that case. -->
             <div id="workspace-bar"
@@ -682,7 +699,7 @@
     <script src="js/components/workspace-bar.js?v=5"></script>
     <script src="js/components/cloud-datepickers.js?v=8"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=280"></script>
+    <script src="js/bootstrap/partial-loader.js?v=281"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

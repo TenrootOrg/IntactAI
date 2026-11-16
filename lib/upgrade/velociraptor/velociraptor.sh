@@ -116,6 +116,16 @@ upgrade_module_velociraptor() {
     # a server that mints a new CA.
     u_do "confirm a CA survived the migration" -- _velo_require_ca
 
+    # The GUI and `api` passwords into modules/velociraptor/secrets/creds.env,
+    # which the container now reads, before the snapshot/backup and before
+    # anything restarts it. On the install path this is also where a new
+    # Velociraptor gets its generated passwords -- the same resolution as
+    # install.sh's ensure_module_credentials, minus its prompt (an upgrade may
+    # have a terminal but must not stop to ask) and minus its stop on a
+    # differing config.yaml value (on an old box the store, not config.yaml,
+    # is what the tool runs with).
+    u_do "velociraptor credentials" -- _u_creds_migrate velociraptor
+
     ca_before="$(velo_ca_fp)"
     if [[ -z "$ca_before" ]]; then
         log_warn "  could not read the CA fingerprint before the upgrade;"
@@ -170,6 +180,7 @@ upgrade_module_velociraptor() {
     if (( rc == 0 )); then
         discard_backup "$bak"
         rm -rf "$snap"
+        _u_creds_after velociraptor
     else
         log_warn "  the pre-upgrade snapshot is kept at ${snap}"
     fi

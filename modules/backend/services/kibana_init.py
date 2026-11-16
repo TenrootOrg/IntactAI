@@ -48,7 +48,7 @@ def _auth():
         return (C.get('user') or 'elastic', C.get('password') or '')
     except Exception:
         return (os.environ.get('ELASTICSEARCH_USER') or 'elastic',
-                os.environ.get('ELASTICSEARCH_PASSWORD', ''))
+                os.environ.get('ELASTIC_PASSWORD') or os.environ.get('ELASTICSEARCH_PASSWORD', ''))
 
 
 def _wait_for_kibana(logger: Callable, timeout: int = 120) -> bool:

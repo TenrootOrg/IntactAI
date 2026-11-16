@@ -16,7 +16,7 @@ ensure_dashboard_login_is_reachable() {
     # Guard against a silent total lockout: config.yaml saying the login is
     # already set up (first_login: false) while the backend holds NO credential.
     # auth_service fails closed on that combination by design, so nobody can sign
-    # in, and the only way out is knowing to set first_login: true by hand.
+    # in, and the only way out is knowing to run scripts/reset-login.sh.
     #
     # It is easy to reach and gives no warning at install time:
     #   - restoring a config.yaml backup onto a fresh/wiped data/intact.db
@@ -74,9 +74,17 @@ with open(p, "w") as f:          # truncate in place -- preserves the inode
     f.write("".join(lines))
 PYFIX
     then
-        log_warn "  Done — open the dashboard to set your username and password."
+        # Setup refuses a request without the one-time token (it fails closed),
+        # so reopening setup means minting one. Shown with the credentials at the
+        # end of the install (_show_credentials_once in install.sh), never here:
+        # this output is teed into the install log.
+        if new_setup_token >/dev/null; then
+            log_warn "  Done — open the dashboard with the setup token shown at the end of the install."
+        else
+            log_error "  Could not create a setup token; run sudo scripts/reset-login.sh on the appliance."
+        fi
     else
-        log_error "  Could not edit config.yaml; set 'first_login: true' there by hand."
+        log_error "  Could not edit config.yaml; run sudo scripts/reset-login.sh on the appliance."
     fi
 }
 

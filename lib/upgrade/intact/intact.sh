@@ -96,6 +96,17 @@ upgrade_module_intact() {
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
     u_undo "_intact_restore '${snap}'"
 
+    # Every module's passwords into its private store, copied unchanged from
+    # where this box keeps them today. Here, not in each module: the new
+    # backend recreated below reads ../elk and ../timesketch stores, and a
+    # module that does not move this run is never visited again. BEFORE the
+    # mirrors and the sidecar refresh, which deliver composes that read the
+    # stores: a step failing after them left store-reading composes and no
+    # store, and the next `compose up` (a reboot) started every tool with an
+    # empty password. Copy only -- the old places are cleared after the commit
+    # below, so a rollback finds them intact.
+    u_do "module passwords into their stores" -- _u_creds_migrate_all
+
     # 3. Mirror the new code in. Backend is mandatory -- every package
     #    layout carries it. The frontend and the upgrade engine itself
     #    (lib/, scripts/, install.sh) are best-effort: a package built
@@ -172,6 +183,10 @@ upgrade_module_intact() {
             UPGRADE_DEGRADED+=("intact — nginx/tusd are still on their old versions (see the log)")
         fi
         _intact_clear_legacy_upgrade_state || true
+        # The composes that read the stores are on disk now and cannot be
+        # rolled back: rotate the public human-only passwords, clear the old
+        # copies, refresh the default-password marker.
+        _u_creds_after_all
     else
         log_warn "  the pre-upgrade tree snapshot is kept at ${snap}"
     fi

@@ -72,17 +72,23 @@ modules/volweb/secrets/*
 !modules/volweb/secrets/.gitkeep
 
 # Kibana's xpack encryptedSavedObjects / security / reporting encryption keys
-# (generated on install). Same reason as the Timesketch entry below: NOT
-# modules/elk/.env, which is tracked. These are never rotated — the key is
-# what decrypts every saved object already written.
+# (generated on install), and creds.env with the elastic and kibana_system
+# passwords. Same reason as the Timesketch entry below: NOT modules/elk/.env,
+# which is tracked. The keys are never rotated — they decrypt every saved
+# object already written.
 modules/elk/secrets/*
 !modules/elk/secrets/.gitkeep
 
-# Timesketch Postgres password (generated on install). NOT modules/timesketch/
-# .env — that file is tracked, so a credential written there gets staged by the
-# next `git add`.
+# Timesketch Postgres password and creds.env with the Timesketch user's
+# password (generated on install). NOT modules/timesketch/.env — that file is
+# tracked, so a credential written there gets staged by the next `git add`.
 modules/timesketch/secrets/*
 !modules/timesketch/secrets/.gitkeep
+
+# Velociraptor creds.env: the GUI user's password and the `api` user's random
+# one (generated on install). Same reason: modules/velociraptor/.env is tracked.
+modules/velociraptor/secrets/*
+!modules/velociraptor/secrets/.gitkeep
 
 # Legacy Nginx Basic Auth password + htpasswd. No longer generated (the
 # dashboard login is an app-level session now — see
@@ -177,10 +183,10 @@ data/upgrade_packages/
 # If you drop a new .pem somewhere, add it explicitly.
 
 # Env files at the repo root (developer-local). The per-module
-# `.env` files (modules/<mod>/.env) are install-time defaults the
-# operator rotates per-host — they're tracked on purpose with
-# placeholder passwords (see docs/SECRETS.md). Pre-commit gitleaks
-# is the actual defense against secrets in tracked files.
+# `.env` files (modules/<mod>/.env) are tracked on purpose — compose
+# needs them — with every password value EMPTY; the real ones are in
+# modules/<mod>/secrets/ (see docs/SECRETS.md). The pre-commit hook
+# blanks a password typed into one, and gitleaks is the backstop.
 .env
 .env.*
 !.env.example
@@ -272,6 +278,11 @@ qa/**/qa-runs/
 # what survives here is per-box incident state, never something to commit.
 modules/*/.env.upgrade-bak-*
 backups/
+# The same class anywhere: upgrade copies of config.yaml (pre-upgrade-backup,
+# pre-migration-backup) and of any file the upgrade edits. They hold every
+# old password the live file had before it was blanked.
+config.yaml.pre-*
+*.upgrade-bak-*
 
 # Operator-staged Volatility3 ISF symbol files for air-gapped Windows memory
 # analysis (lib/modules/volweb.sh:seed_volweb_symbols copies them into VolWeb's

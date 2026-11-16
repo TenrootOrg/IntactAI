@@ -154,6 +154,9 @@ def register(runner, cfg):
                     creds.append(v.strip())
         except Exception:                                     # noqa: BLE001
             creds = []
+        # The module passwords this install generated (platform.install) are
+        # exactly what a support bundle must never carry.
+        creds += list(ctx.get("module_passwords") or [])
         secrets = creds or [s for s in (cfg.secrets() or []) if len(s) >= 8]
         matchers = []
         for sec in secrets:

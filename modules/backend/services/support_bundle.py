@@ -136,6 +136,14 @@ def _mask_url(m):
     return m.group(0) if not _is_real_secret(m.group(2)) else m.group(1) + _REDACTED + m.group(3)
 
 
+def _mask_userpass(m):
+    """`-u user:<secret>` -> `-u user:[REDACTED]`, except `docker -u 1000:1000`:
+    a uid:gid has the same shape and is exactly what a support engineer needs."""
+    if m.group(2).isdigit() and m.group(3).isdigit():
+        return m.group(0)
+    return m.group(0) if not _is_real_secret(m.group(3)) else m.group(1) + _REDACTED
+
+
 def _mask_bearer(m):
     """`Bearer <token>`, but only when the token actually looks like one.
 
@@ -167,6 +175,10 @@ _SECRET_PATTERNS = [
                 r'\s*[:=]\s*)(\S+)', re.I), _mask_pair),
     # Authorization: Bearer <jwt>
     (re.compile(r'((?:Bearer|Basic)\s+)(\S+)'), _mask_bearer),
+    # curl's `-u user:pass` / `--user user:pass` / `--user=user:pass`: the elk
+    # setup and healthchecks used exactly this, so a `ps` or a traced command in
+    # a log carried the password with no `password` label anywhere on the line.
+    (re.compile(r'''((?:^|\s)(?:-u|--user)(?:\s+|=)['"]?([^\s:'"]+):)([^\s'"]+)'''), _mask_userpass),
     # Credentials inside a URL: scheme://user:secret@host
     (re.compile(r'(://[^:/@\s]+:)([^@/\s]+)(@)'), _mask_url),
     # A key in a URL's QUERY STRING. Anchored on `?`/`&`, which is what makes a
@@ -181,6 +193,63 @@ _SECRET_PATTERNS = [
     (re.compile(r'\b(?:sk-(?:or-v1-|ant-[a-z0-9]+-|proj-)?[A-Za-z0-9_\-]{20,}|AIza[0-9A-Za-z_\-]{35})'),
      lambda m: _REDACTED),
 ]
+
+
+# THE BOX'S OWN PASSWORDS, BY VALUE. The patterns above need a label next to
+# the secret; a tool that prints one bare (an argv, a connection string in an
+# unexpected shape, a stack trace) slips past every one of them. Every password
+# on this box lives in a known private file (lib/secrets.sh), so read them and
+# replace each literal occurrence. Generated values are 12+ letters and digits,
+# so a literal match cannot hit ordinary log text.
+#   modules/<m>/secrets/*.env   KEY=VALUE lines (creds.env, postgres.env, ...)
+#   modules/<m>/secrets/<FILE>  one value (IRIS_ADM_PASSWORD, ADMIN_PASSWORD,
+#                               admin_password)
+# Values under _MIN_LITERAL are skipped: an old box's '123123' would otherwise
+# eat every number with that substring, and the labelled patterns still catch it.
+_MIN_LITERAL = 8
+
+
+def _workdir() -> str:
+    return os.environ.get('INTACT_PATH') or '/app/workdir'
+
+
+def known_secret_values(workdir: Optional[str] = None) -> List[str]:
+    """Every password value stored on this box, longest first (so a value that
+    contains another is replaced whole). Never raises; unreadable files are
+    skipped."""
+    import glob
+    vals = set()
+    for f in glob.glob(os.path.join(workdir or _workdir(), 'modules', '*', 'secrets', '*')):
+        try:
+            if not os.path.isfile(f) or os.path.getsize(f) > 65536:
+                continue
+            with open(f, encoding='utf-8', errors='replace') as fh:
+                text = fh.read()
+        except Exception:
+            continue
+        if f.endswith('.env'):
+            cands = [ln.split('=', 1)[1] for ln in text.splitlines()
+                     if '=' in ln and not ln.lstrip().startswith('#')]
+        elif '\n' not in text.strip():
+            cands = [text]          # a single-value secret file
+        else:
+            continue                # multi-line: a key/cert, not a password
+        for v in cands:
+            v = v.strip().strip('"').strip("'")
+            if len(v) >= _MIN_LITERAL and not any(c.isspace() for c in v):
+                vals.add(v)
+    return sorted(vals, key=len, reverse=True)
+
+
+def redact_line(line: str, values: Optional[List[str]] = None) -> str:
+    """One line through the literal values (known_secret_values) and then the
+    labelled patterns."""
+    for v in values or ():
+        if v in line:
+            line = line.replace(v, _REDACTED)
+    for pattern, repl in _SECRET_PATTERNS:
+        line = pattern.sub(repl, line)
+    return line
 
 
 def _redact_file(path: str) -> int:
@@ -199,14 +268,14 @@ def _redact_file(path: str) -> int:
         return 0
     tmp = path + '.redacting'
     changed = 0
+    values = known_secret_values()
     try:
         # errors='replace' so a binary-ish log line can't abort the pass.
         with open(path, 'r', encoding='utf-8', errors='replace') as src, \
                 open(tmp, 'w', encoding='utf-8') as dst:
             for line in src:
                 original = line
-                for pattern, repl in _SECRET_PATTERNS:
-                    line = pattern.sub(repl, line)
+                line = redact_line(line, values)
                 if line != original:
                     changed += 1
                 dst.write(line)

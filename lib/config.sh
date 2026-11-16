@@ -2,6 +2,11 @@
 # Intact.AI Platform Installer - Configuration Functions
 # Config reading, validation, and env file updates
 
+# Module passwords (secret_get/secret_set/...). Sourced here and not only by
+# install.sh because every entry point that touches credentials sources this
+# file: scripts/upgrade.sh, change_ip.sh, show-credentials.sh.
+declare -F secret_get >/dev/null || source "$(dirname "${BASH_SOURCE[0]}")/secrets.sh"
+
 # ============================================================================
 # Configuration Reading
 # ============================================================================
@@ -10,7 +15,7 @@ check_config() {
     # config.yaml is TRACKED. There is no config.yaml.example any more: the
     # pre-commit hook (scripts/git-hooks/sanitize-config-yaml.sh) rewrites the
     # STAGED copy back to shipping defaults on every commit -- empty
-    # github_token, module passwords 123123, first_login: true -- so what is in
+    # github_token, empty module passwords, first_login: true -- so what is in
     # git is always the template while the operator's working file keeps their
     # real values. That means a clone or an extracted release already has a
     # config.yaml to edit before install, which the old seed-on-first-run dance
@@ -163,7 +168,388 @@ read_config() {
         return 1
     fi
 
-    python3 -c "import yaml; print(yaml.safe_load(open('${CONFIG_FILE}'))${key})" 2>/dev/null || echo ""
+    # YAML null prints as '' -- never the string "None", which used to land in
+    # .env files and, for a password, became the password.
+    python3 -c "import yaml; v = yaml.safe_load(open('${CONFIG_FILE}'))${key}; print('' if v is None else v)" 2>/dev/null || echo ""
+}
+
+# ============================================================================
+# Module credentials
+# ============================================================================
+# config.yaml is INPUT ONLY for module passwords: a value typed there is
+# checked, stored under modules/<m>/secrets (see lib/secrets.sh) and blanked.
+# The file is tracked in git and bind-mounted into the backend, so a password
+# left in it is one `git commit -a` or one container compromise from public.
+
+INTACT_CRED_MODULES=(elk timesketch velociraptor iris volweb portainer)
+
+_cred_label() {
+    case "$1" in
+        elk) echo "Elasticsearch/Kibana" ;; timesketch) echo "Timesketch" ;;
+        velociraptor) echo "Velociraptor" ;; iris) echo "IRIS" ;;
+        volweb) echo "VolWeb" ;; portainer) echo "Portainer" ;;
+    esac
+}
+
+# Login name: config.yaml `id`, else the name the tool's own code defaults to.
+_cred_user() {
+    local u; u="$(read_config "['modules']['$1']['id']")"
+    if [[ -z "$u" ]]; then
+        case "$1" in elk) u=elastic ;; iris) u=administrator ;; portainer) u=admin ;; *) u=tenroot ;; esac
+    fi
+    printf '%s' "$u"
+}
+
+# elk/timesketch/velociraptor keep theirs in creds.env (compose env_file).
+# IRIS, VolWeb and Portainer keep their one-value files: their composes and
+# consumers (IRIS's /run/secrets, volweb_client.py, --admin-password-file)
+# already read exactly those paths.
+_cred_key() {
+    case "$1" in elk) echo ELASTIC_PASSWORD ;; timesketch) echo TIMESKETCH_PASSWORD ;; velociraptor) echo VELOX_PASSWORD ;; esac
+}
+_cred_file() {
+    case "$1" in
+        iris) echo "$(secret_dir iris)/IRIS_ADM_PASSWORD" ;;
+        volweb) echo "$(secret_dir volweb)/ADMIN_PASSWORD" ;;
+        portainer) echo "$(secret_dir portainer)/admin_password" ;;
+    esac
+}
+
+# Portainer only reads its password file at FIRST start, so a Portainer with
+# data whose password was lost gets a random file (the bind mount needs one)
+# plus this empty marker: the file's value is NOT the admin password.
+_cred_placeholder() { printf '%s.placeholder' "$(_cred_file "$1")"; }
+
+# cred_get <module> -- the stored human password on stdout, or exit 1.
+# "unknown" for a Portainer placeholder (see _cred_placeholder).
+cred_get() {
+    local k f
+    k="$(_cred_key "$1")"
+    if [[ -n "$k" ]]; then secret_get "$1" "$k"; return; fi
+    f="$(_cred_file "$1")"
+    [[ -n "$f" && -s "$f" ]] || return 1
+    if [[ -e "$(_cred_placeholder "$1")" ]]; then printf 'unknown'; return 0; fi
+    cat "$f"
+}
+
+_cred_put() {
+    local m="$1" v="$2" k f d
+    k="$(_cred_key "$m")"
+    if [[ -n "$k" ]]; then secret_set "$m" "$k" "$v"; return; fi
+    [[ -n "$v" ]] || return 1
+    f="$(_cred_file "$m")"; d="${f%/*}"
+    # readlink -m: a dangling secrets symlink (see secret_set) is recreated.
+    { ( umask 077; mkdir -p "$(readlink -m "$d")" ) && chmod 700 "$d"; } || return 1
+    # Truncate in place, never temp+mv: state_registry hard-links these files
+    # into data/state, and a rename would split the link.
+    ( umask 077; printf '%s' "$v" > "$f" ) || return 1
+    # IRIS reads its file as uid 65534 through a compose file-secret bind mount:
+    # 0644 inside the 0700 dir is readable there and by nobody else on the host
+    # (proven with a throwaway iris_app container; see lib/permissions.sh).
+    if [[ "$m" == iris ]]; then chmod 644 "$f"; else chmod 600 "$f"; fi
+    # A real value replaces a placeholder.
+    rm -f "$(_cred_placeholder "$m")"
+}
+
+# _cred_tool_has_data <module> -- 0 when the tool already holds a password
+# that a newly minted one would NOT replace. Three tools are like that:
+# Elasticsearch reads ELASTIC_PASSWORD on an empty data dir only, Portainer
+# reads its password file at first start only. Velociraptor's entrypoint now
+# re-applies a stored value that differs from its stamp, so a minted one would
+# take effect there -- it stays listed so an old box keeps the password its
+# operator knows (the legacy value) instead of silently getting a new one.
+# The other three get the stored value re-applied
+# on every install/upgrade (tsctl create-user, enforce_iris_admin_password,
+# seed_volweb_admin), so a value minted for them always takes effect.
+_cred_tool_has_data() {
+    case "$1" in
+        elk) ! secret_tool_is_new vol:elk_elasticsearch_data ;;
+        portainer) ! secret_tool_is_new vol:portainer_portainer_data ;;
+        velociraptor) ! secret_tool_is_new vol:velociraptor_velociraptor_datastore ;;
+        *) return 1 ;;
+    esac
+}
+
+# _config_password_raw <module> <key> -- the value exactly as typed. Not
+# read_config: safe_load turns 0x1F2e... into an int, 1e10 into a float, yes
+# into True and an empty value into None.
+_config_password_raw() {
+    python3 - "$CONFIG_FILE" "$1" "$2" 2>/dev/null <<'PYRAW'
+import sys, yaml
+try:
+    d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+except Exception:
+    sys.exit(0)
+for k in ("modules", sys.argv[2], sys.argv[3]):
+    d = d.get(k) if isinstance(d, dict) else None
+if isinstance(d, str) and d not in ("~", "null", "Null", "NULL"):
+    sys.stdout.write(d)
+PYRAW
+}
+
+# _cred_legacy <module> -- the value a box from before the stores ran with:
+# its live modules/<m>/.env, else config.yaml. Taken unchecked: it is what the
+# tool's data already has, and refusing it locks the operator out.
+_cred_legacy() {
+    local v=""
+    # Where a pre-change box kept the value its tool's data was created with.
+    case "$1" in
+        elk) v="$(sed -n 's/^ELASTIC_PASSWORD=//p' "${SCRIPT_DIR}/modules/elk/.env" 2>/dev/null | tail -1)" ;;
+        velociraptor) v="$(sed -n 's/^VELOX_PASSWORD=//p' "${SCRIPT_DIR}/modules/velociraptor/.env" 2>/dev/null | tail -1)" ;;
+    esac
+    [[ -n "$v" ]] || v="$(_config_password_raw "$1" password)"
+    [[ -n "$v" ]] && printf '%s' "$v"
+}
+
+# A seam for tests; an install with stdin from a pipe or /dev/null never asks.
+_cred_have_tty() { [[ -t 0 ]]; }
+
+# _cred_prompt <module> <user> -- typed (hidden, twice) or generated on Enter.
+_cred_prompt() {
+    local label a b reason
+    label="$(_cred_label "$1")"
+    while :; do
+        read -r -s -p "Password for ${label} (${2}) — type one, or press Enter to generate: " a || a=""
+        echo >&2
+        if [[ -z "$a" ]]; then secret_generate; return 0; fi
+        if ! reason="$(secret_check "$a")"; then
+            echo "  Not accepted: ${reason}. Rule: ${INTACT_PASSWORD_RULE}" >&2
+            continue
+        fi
+        read -r -s -p "Type it again: " b || b=""
+        echo >&2
+        if [[ "$a" == "$b" ]]; then printf '%s' "$a"; return 0; fi
+        echo "  The two entries differ — try again." >&2
+    done
+}
+
+# ensure_module_credentials [module...] -- every module (default: all six,
+# enabled or not) ends up with a stored password and config.yaml with none.
+# Runs before update_env_files, so before any container or image build.
+#   stored         -> kept; a DIFFERENT config.yaml value stops the install
+#                     (changing one is scripts/apply-passwords.sh's job)
+#   tool has data  -> (no stored value) the old value from .env/config.yaml,
+#                     else stop -- never mint one the tool would reject.
+#                     Portainer is the exception: a placeholder, shown "unknown"
+#   config.yaml    -> must pass secret_check, else stop
+#   enabled + tty  -> asked, typed twice hidden, or generated on Enter
+#   otherwise      -> generated
+# Everything is resolved before anything is stored, so a refusal leaves the
+# stores and config.yaml exactly as they were.
+#
+# With module arguments (generate_elk_secrets, create_timesketch_admin_user,
+# ...) only those modules' config.yaml lines are blanked and no EXIT trap is
+# armed: a deploy step for elk must not wipe a timesketch value the operator
+# typed for scripts/apply-passwords.sh.
+ensure_module_credentials() {
+    local -a mods=("$@")
+    local full=0
+    (( ${#mods[@]} )) || { mods=("${INTACT_CRED_MODULES[@]}"); full=1; }
+    local -A new=() placeholder=()
+    local m stored cfg reason v enabled
+    for m in "${mods[@]}"; do
+        cfg="$(_config_password_raw "$m" password)"
+        enabled="$(read_config "['modules']['$m']['enabled']")"
+        if stored="$(cred_get "$m")"; then
+            if [[ -n "$cfg" && "$cfg" != "$stored" ]]; then
+                log_error "config.yaml modules.${m}.password: the $(_cred_label "$m") password is already set — to change it,"
+                log_error "  keep the new value in config.yaml and run: sudo scripts/apply-passwords.sh"
+                log_error "  (the current one: sudo scripts/show-credentials.sh)"
+                return 1
+            fi
+            continue
+        fi
+        if _cred_tool_has_data "$m"; then
+            if v="$(_cred_legacy "$m")"; then
+                secret_is_known_default "$v" && ! secret_weak_allowed && \
+                    log_warn "  $(_cred_label "$m") keeps the publicly known password its data was created with — change it in the tool"
+                new[$m]="$v"
+                continue
+            fi
+            if [[ "$m" == portainer ]]; then
+                # Portainer ignores the file once it has data, so a random one is
+                # harmless, and the rest of the box must not wait on Portainer.
+                log_warn "  Portainer already has data but its admin password is not stored on this box — shown as \"unknown\"."
+                log_warn "  Set it in the Portainer UI, then put that value in config.yaml and run: sudo scripts/apply-passwords.sh"
+                new[$m]="$(secret_generate)"; placeholder[$m]=1
+                continue
+            fi
+            if is_enabled "$enabled"; then
+                local rel
+                if [[ -n "$(_cred_key "$m")" ]]; then rel="secrets/creds.env"; else rel="secrets/$(basename "$(_cred_file "$m")")"; fi
+                log_error "$(_cred_label "$m") already has data but its password is not stored anywhere on this box."
+                log_error "  A new one would be refused by the existing data. Restore modules/${m}/${rel}"
+                log_error "  (an upgraded box keeps a copy at data/state/${m}/${rel} — install.sh re-links it when present),"
+                [[ "$m" == elk ]] && log_error "  or read ELASTIC_PASSWORD from: docker inspect intact_elasticsearch (older boxes passed it in the environment),"
+                log_error "  or set modules.${m}.password in config.yaml to the password it was created with."
+                return 1
+            fi
+            log_info "  ${m}: disabled, has old data and no stored password — left alone"
+            continue
+        fi
+        if [[ -n "$cfg" ]]; then
+            if ! reason="$(secret_check "$cfg")"; then
+                log_error "config.yaml modules.${m}.password is not accepted: ${reason}."
+                log_error "  Rule: ${INTACT_PASSWORD_RULE}."
+                log_error "  Fix it, or blank it to be asked (or have one generated)."
+                return 1
+            fi
+            new[$m]="$cfg"
+        elif is_enabled "$enabled" && _cred_have_tty; then
+            new[$m]="$(_cred_prompt "$m" "$(_cred_user "$m")")"
+        else
+            new[$m]="$(secret_generate)"
+        fi
+    done
+
+    for m in "${!new[@]}"; do
+        _cred_put "$m" "${new[$m]}" || { log_error "Could not store the ${m} password"; return 1; }
+        if [[ -n "${placeholder[$m]:-}" ]]; then
+            ( umask 077; : > "$(_cred_placeholder "$m")" ) || return 1
+        fi
+    done
+    # Only now: every typed value is stored, so blanking (also on EXIT) can no
+    # longer destroy the operator's only copy.
+    (( full )) && _cred_arm_exit_blank
+    # Machine-only companions nobody types or sees: kibana_system is re-set by
+    # the elk setup container and Velociraptor's `api` user re-added by its
+    # entrypoint on every start, so minting one when missing is always safe.
+    for m in "${mods[@]}"; do
+        case "$m" in
+            elk) secret_get elk KIBANA_PASSWORD >/dev/null || secret_set elk KIBANA_PASSWORD "$(secret_generate)" || return 1 ;;
+            velociraptor) secret_get velociraptor VELOX_PASSWORD_2 >/dev/null || secret_set velociraptor VELOX_PASSWORD_2 "$(secret_generate)" || return 1 ;;
+        esac
+    done
+    (( ${#new[@]} )) && log_success "Module passwords stored under modules/<module>/secrets"
+    if (( full )); then blank_config_passwords; else blank_config_passwords "${mods[@]}"; fi
+}
+
+# From the first stored value on, any exit blanks config.yaml -- an install
+# aborted between storing and blanking must not leave typed passwords there.
+# Chains whatever EXIT trap was already set (lib/deps.sh sets one).
+_cred_arm_exit_blank() {
+    [[ -n "${_CRED_EXIT_ARMED:-}" ]] && return 0
+    _CRED_EXIT_ARMED=1
+    _CRED_PREV_EXIT="$(trap -p EXIT)"
+    trap '_cred_on_exit' EXIT
+}
+_cred_on_exit() {
+    blank_config_passwords >/dev/null 2>&1 || true
+    if [[ -n "${_CRED_PREV_EXIT:-}" ]]; then
+        eval "set -- ${_CRED_PREV_EXIT#trap -- }"
+        eval "$1"
+    fi
+}
+
+# blank_config_passwords [module...] -- empty every modules.<m>.password /
+# api_password in config.yaml (only those modules' when named). Same rules as
+# _pin_module_version: a line edit (comments and key order kept) and
+# truncate-in-place (the backend mounts the file by inode).
+blank_config_passwords() {
+    [[ -f "$CONFIG_FILE" ]] || return 0
+    local out
+    out="$(python3 - "$CONFIG_FILE" "$@" <<'PYBLANK'
+import os, re, sys, tempfile
+path = sys.argv[1]
+only = set(sys.argv[2:])
+with open(path, encoding="utf-8") as fh:
+    lines = fh.readlines()
+key = re.compile(r"^(\s+(?:password|api_password)\s*:[ \t]*)(.*?)(\r?\n?)\Z")
+
+def split_value(rest):
+    """(value, tail): tail is a trailing comment, kept as written."""
+    if rest[:1] in ("'", '"'):
+        q, i = rest[0], 1
+        while i < len(rest):
+            if q == '"' and rest[i] == "\\":
+                i += 2
+                continue
+            if rest[i] == q:
+                if q == "'" and rest[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                return rest[:i + 1], rest[i + 1:]
+            i += 1
+        return rest, ""
+    m = re.search(r"\s#", rest)
+    return (rest[:m.start()], rest[m.start():]) if m else (rest, "")
+
+section = re.compile(r"^(\s+)([A-Za-z0-9_]+)\s*:\s*(#.*)?$")
+in_modules = changed = False
+mod = None
+mod_indent = None
+for i, line in enumerate(lines):
+    if line[:1] not in (" ", "\t", "#", "\r", "\n", ""):      # a column-0 key
+        in_modules = re.match(r"modules\s*:", line) is not None
+        mod = mod_indent = None
+        continue
+    if not in_modules:
+        continue
+    s = section.match(line.rstrip("\r\n"))
+    if s and (mod_indent is None or len(s.group(1)) <= mod_indent):
+        mod, mod_indent = s.group(2), len(s.group(1))     # "  elk:"
+        continue
+    m = key.match(line)
+    if not m or (only and mod not in only):
+        continue
+    value, tail = split_value(m.group(2))
+    if value.strip() in ("", "''", '""'):
+        continue
+    lines[i] = m.group(1) + "''" + tail + m.group(3)
+    changed = True
+
+if changed:
+    payload = "".join(lines)
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".config.yaml.blank-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload); fh.flush(); os.fsync(fh.fileno())
+        with open(path, "w", encoding="utf-8") as fh:     # in place: keeps the inode
+            fh.write(payload); fh.flush(); os.fsync(fh.fileno())
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    print("blanked")
+PYBLANK
+)" || { log_warn "Could not blank the module passwords in ${CONFIG_FILE} — blank them by hand"; return 1; }
+    [[ "$out" == blanked ]] && log_info "  config.yaml: module passwords blanked (stored under modules/<module>/secrets)"
+    return 0
+}
+
+# es_curl <curl args...> -- curl as Elasticsearch's user with the stored
+# password fed through `-K -` (stdin), so it never sits in argv / ps.
+es_curl() {
+    local u p
+    u="$(_cred_user elk)"
+    p="$(cred_get elk 2>/dev/null)" || p=""
+    p="${p//\\/\\\\}"; p="${p//\"/\\\"}"
+    printf 'user = "%s:%s"\n' "$u" "$p" | curl -K - "$@"
+}
+
+# credential_lines [--enabled|--ids] -- "label|user|password" for every stored
+# human login: input for secret_show_once. --enabled: enabled modules only;
+# --ids: the module id instead of the label (scripts/show-credentials.sh, which
+# QA parses). Velociraptor's `api` and kibana_system are machine-only and never
+# listed.
+credential_lines() {
+    local m pw name
+    for m in "${INTACT_CRED_MODULES[@]}"; do
+        if [[ "${1:-}" == --enabled ]] && ! is_enabled "$(read_config "['modules']['$m']['enabled']")"; then
+            continue
+        fi
+        pw="$(cred_get "$m")" || continue
+        name="$(_cred_label "$m")"; [[ "${1:-}" == --ids ]] && name="$m"
+        if [[ -e "$(_cred_placeholder "$m")" ]]; then
+            # A 4th field: QA's parse_show_credentials skips non-3-field lines,
+            # so "unknown" is never mistaken for a password to redact.
+            printf '%s|%s|unknown|set it in the Portainer UI, then put that value in config.yaml and run sudo scripts/apply-passwords.sh\n' "$name" "$(_cred_user "$m")"
+            continue
+        fi
+        printf '%s|%s|%s\n' "$name" "$(_cred_user "$m")" "$pw"
+    done
 }
 
 # Point the backend container at the operator's OWN codex install.
@@ -353,7 +739,7 @@ _stamp_host_codex_paths() {
 #
 #   * Line-scan, never yaml.safe_load + dump. A round-trip through PyYAML
 #     strips every comment and reorders keys, and config.yaml is the operator's
-#     file -- it carries their github_token, module passwords and the
+#     file -- it carries their github_token, ports and the
 #     explanatory comments above half the pins.
 #
 #   * INODE-PRESERVING. config.yaml is bind-mounted into the backend BY INODE
@@ -713,6 +1099,13 @@ update_env_var() {
         log_warn "Env file not found: $env_file"
         return 1
     fi
+    # An empty password in a .env is a password the tool then rejects (or, via
+    # compose's own .env, one that overrides the real value from secrets/), and
+    # "None" is read_config's old spelling of "not set". Neither is ever a value.
+    if [[ "$var_value" == "None" || ( -z "$var_value" && "$var_name" == *PASSWORD* ) ]]; then
+        log_warn "Refusing to write ${var_name}='${var_value}' to ${env_file}"
+        return 1
+    fi
 
     if grep -q "^${var_name}=" "$env_file"; then
         # ADD-ONLY MODE: leave an existing value exactly as it is.
@@ -756,46 +1149,40 @@ update_env_files() {
         if [[ -f "$velo_env" ]]; then
             local velo_version=$(read_config "['versions']['velociraptor']")
             local velo_user=$(read_config "['modules']['velociraptor']['id']")
-            local velo_pass=$(read_config "['modules']['velociraptor']['password']")
             local velo_api_user=$(read_config "['modules']['velociraptor']['api_id']")
-            local velo_api_pass=$(read_config "['modules']['velociraptor']['api_password']")
-            # Elasticsearch credentials (config.yaml modules.elk) — consumed by
-            # the Custom.Elastic.Flows.Upload server artifact via environ(), so
-            # the auto-upload keeps working now that Elasticsearch requires auth.
+            # Elasticsearch user — consumed by the Custom.Elastic.Flows.Upload
+            # server artifact via environ(). Passwords are NOT written here any
+            # more: VELOX_PASSWORD(_2) and ELASTIC_PASSWORD reach the container
+            # from modules/{velociraptor,elk}/secrets/creds.env (env_file), the
+            # only copy on the box (see lib/secrets.sh).
             local es_user=$(read_config "['modules']['elk']['id']")
-            local es_pass=$(read_config "['modules']['elk']['password']")
 
             # Extract major.minor tag from version (e.g., "0.75.6" -> "0.75")
             local velo_tag=$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')
             update_env_var "$velo_env" "VELOCIRAPTOR_TAG" "$velo_tag"
             update_env_var "$velo_env" "VELOCIRAPTOR_VERSION" "$velo_version"
             update_env_var "$velo_env" "VELOX_USER" "$velo_user"
-            update_env_var "$velo_env" "VELOX_PASSWORD" "$velo_pass"
-            update_env_var "$velo_env" "VELOX_USER_2" "$velo_api_user"
-            update_env_var "$velo_env" "VELOX_PASSWORD_2" "$velo_api_pass"
+            update_env_var "$velo_env" "VELOX_USER_2" "${velo_api_user:-api}"
             update_env_var "$velo_env" "VELOX_FRONTEND_HOSTNAME" "$domain"
             update_env_var "$velo_env" "VELOX_PUBLIC_IP" "$domain"
             update_env_var "$velo_env" "VELOX_SERVER_URL" "https://${domain}:${agent_port}/"
-            [[ -n "$es_user" && "$es_user" != "None" ]] && update_env_var "$velo_env" "ELASTIC_USER" "$es_user"
-            [[ -n "$es_pass" && "$es_pass" != "None" ]] && update_env_var "$velo_env" "ELASTIC_PASSWORD" "$es_pass"
+            [[ -n "$es_user" ]] && update_env_var "$velo_env" "ELASTIC_USER" "$es_user"
             log_success "Updated Velociraptor .env"
         else
             log_warn "Velociraptor .env not found, skipping"
         fi
     fi
 
-    # TimeSketch - update version and credentials
+    # TimeSketch - version and user (password: secrets/creds.env)
     local ts_enabled=$(read_config "['modules']['timesketch']['enabled']")
     if is_enabled "$ts_enabled"; then
         local ts_env="${SCRIPT_DIR}/modules/timesketch/.env"
         if [[ -f "$ts_env" ]]; then
             local ts_version=$(read_config "['versions']['timesketch']")
             local ts_user=$(read_config "['modules']['timesketch']['id']")
-            local ts_pass=$(read_config "['modules']['timesketch']['password']")
 
             update_env_var "$ts_env" "TIMESKETCH_VERSION" "$ts_version"
             update_env_var "$ts_env" "TIMESKETCH_USER" "$ts_user"
-            update_env_var "$ts_env" "TIMESKETCH_PASSWORD" "$ts_pass"
             log_success "Updated TimeSketch .env"
         else
             log_warn "TimeSketch .env not found, skipping"
@@ -815,20 +1202,17 @@ update_env_files() {
         fi
     fi
 
-    # ELK - update version and credentials
+    # ELK - version and user (passwords: secrets/creds.env)
     local elk_enabled=$(read_config "['modules']['elk']['enabled']")
     if is_enabled "$elk_enabled"; then
         local elk_env="${SCRIPT_DIR}/modules/elk/.env"
         if [[ -f "$elk_env" ]]; then
             local elk_version=$(read_config "['versions']['elk']")
             local elk_user=$(read_config "['modules']['elk']['id']")
-            local elk_pass=$(read_config "['modules']['elk']['password']")
 
             update_env_var "$elk_env" "ELASTIC_VERSION" "$elk_version"
             update_env_var "$elk_env" "KIBANA_VERSION" "$elk_version"
             update_env_var "$elk_env" "ELASTIC_USER" "$elk_user"
-            update_env_var "$elk_env" "ELASTIC_PASSWORD" "$elk_pass"
-            update_env_var "$elk_env" "KIBANA_PASSWORD" "$elk_pass"
             log_success "Updated ELK .env"
         else
             log_warn "ELK .env not found, skipping"
@@ -867,13 +1251,13 @@ update_env_files() {
     fi
 
 
-    # Backend - update credentials and Plaso version
+    # Backend - service users and pins. The ES/Timesketch passwords reach the
+    # backend from ../elk/secrets/creds.env and ../timesketch/secrets/creds.env
+    # (compose env_file), never from this .env.
     local backend_env="${SCRIPT_DIR}/modules/backend/.env"
     if [[ -f "$backend_env" ]]; then
         local ts_user=$(read_config "['modules']['timesketch']['id']")
-        local ts_pass=$(read_config "['modules']['timesketch']['password']")
         local es_user=$(read_config "['modules']['elk']['id']")
-        local es_pass=$(read_config "['modules']['elk']['password']")
         local plaso_version=$(read_config "['versions']['plaso']")
         local cloudtrail_version=$(read_config "['versions']['aws_sigma']")
         local o365rc_version=$(read_config "['versions']['o365rc']")
@@ -885,9 +1269,7 @@ update_env_files() {
         local presidio_model=$(read_config "['versions']['presidio_model']")
 
         update_env_var "$backend_env" "TIMESKETCH_USER" "$ts_user"
-        update_env_var "$backend_env" "TIMESKETCH_PASS" "$ts_pass"
-        [[ -n "$es_user" && "$es_user" != "None" ]] && update_env_var "$backend_env" "ELASTICSEARCH_USER" "$es_user"
-        [[ -n "$es_pass" && "$es_pass" != "None" ]] && update_env_var "$backend_env" "ELASTICSEARCH_PASSWORD" "$es_pass"
+        [[ -n "$es_user" ]] && update_env_var "$backend_env" "ELASTICSEARCH_USER" "$es_user"
         update_env_var "$backend_env" "PLASO_VERSION" "$plaso_version"
         # Presidio on-demand image pins (versions.presidio / versions.presidio_model)
         # -> PRESIDIO_VERSION / PRESIDIO_MODEL in the backend .env, read by

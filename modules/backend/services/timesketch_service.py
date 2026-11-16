@@ -54,7 +54,14 @@ def _connect_timesketch_api(timesketch_config, logger=None):
     try:
         ts_host = timesketch_config.get('host', 'https://localhost')
         ts_username = timesketch_config.get('username', 'admin')
-        ts_password = timesketch_config.get('password', 'admin')
+        # No 'admin' fallback: a guessed default is never the right password,
+        # and trying one only hides that the real one never arrived.
+        ts_password = timesketch_config.get('password') or ''
+        if not ts_password:
+            log("✗ No Timesketch password configured on intact_backend: "
+                "TIMESKETCH_PASSWORD (modules/timesketch/secrets/creds.env) is empty or missing.",
+                "error")
+            return None
 
         log("Connecting to Timesketch API...")
 
@@ -83,7 +90,7 @@ def _connect_timesketch_api(timesketch_config, logger=None):
                 "error",
             )
             log(
-                "  Check that TIMESKETCH_USER / TIMESKETCH_PASS on intact_backend match "
+                "  Check that TIMESKETCH_USER / TIMESKETCH_PASSWORD on intact_backend match "
                 "a real user in the TimeSketch DB. Verify with:",
                 "error",
             )

@@ -42,6 +42,11 @@ EOF
     # the Intact checkout: the real scripts under test, the real config.yaml
     cp "$REPO/scripts/migrate/risx_to_intact.sh" "$REPO/scripts/migrate/risx_lib.sh" "$W/intact/scripts/migrate/"
     cp "$REPO/config.yaml" "$W/intact/config.yaml"
+    # what the install leaves: lib/secrets.sh and the Velociraptor store
+    mkdir -p "$W/intact/lib" "$W/intact/modules/velociraptor/secrets"
+    cp "$REPO/lib/secrets.sh" "$W/intact/lib/"
+    printf 'VELOX_USER=tenroot\nVELOX_ROLE=administrator\nVELOX_USER_2=api\n' > "$W/intact/modules/velociraptor/.env"
+    printf 'VELOX_PASSWORD=GuiStored1Abc\nVELOX_PASSWORD_2=ApiStored2Xyz\n' > "$W/intact/modules/velociraptor/secrets/creds.env"
     cat > "$W/intact/install.sh" <<EOF
 echo "install \$*" >> "$W/log/calls"
 EOF
@@ -58,9 +63,19 @@ EOF
     cat > "$W/bin/docker" <<EOF
 #!/bin/bash
 echo "docker \$*" >> "$W/log/calls"
+# user add: the value arrives in the exec's environment (\$_P), never its argv
+[[ "\$*" == *"user add"* ]] && echo "\${@: -2:1} \$_P" >> "$W/log/velo_pw"
 [[ "\$1" == exec ]] && echo '[{"client_id": "C.1234", "host": "endpoint-1"}, {"client_id": "C.5678", "host": "endpoint-2"}]'
 [[ "\$*" == *--filter* ]] && echo "Up 2 minutes"
 exit 0
+EOF
+    # The GUI login check after the recreate (never the real 127.0.0.1:8889):
+    # 200 unless $W/log/velo_refuse exists. Records the URL, never the password.
+    cat > "$W/bin/curl" <<EOF
+#!/bin/bash
+cat >/dev/null
+echo "curl \${*: -1}" >> "$W/log/calls"
+[[ -e "$W/log/velo_refuse" ]] && echo 401 || echo 200
 EOF
     chmod +x "$W/bin/"* "$W/risx/setup_platform/scripts/cleanup.sh"
 }
@@ -71,7 +86,7 @@ _state() { echo "$W/backup/.risx_to_intact.$(cat /etc/machine-id 2>/dev/null || 
 _run() {
     local answers="$1"; shift
     RC=0
-    OUT="$(printf '%b' "$answers" | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=true \
+    OUT="$(printf '%b' "$answers" | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=true VELO_LOGIN_WAIT=1 \
            RISX_ROOT="$W/risx/setup_platform" \
            bash "$W/intact/scripts/migrate/risx_to_intact.sh" --backup-dir "$W/backup" "$@" 2>&1)" || RC=$?
 }
@@ -99,6 +114,69 @@ test_a_normal_run_asks_twice_and_does_every_step_in_order() {
     done
     # exactly two answers were read
     assert_eq "$(grep -c 'answer:' "$W"/backup/risx_to_intact-*.log)" "2" "a normal run asks twice"
+}
+
+test_the_adopted_users_get_the_stored_passwords() {
+    _world
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    local calls; calls="$(cat "$W/log/calls")"
+    assert_contains "$(cat "$W/log/velo_pw")" "tenroot GuiStored1Abc" "the GUI user gets the stored password"
+    assert_contains "$(cat "$W/log/velo_pw")" "api ApiStored2Xyz" "api gets its stored password"
+    assert_contains "$calls" 'docker exec -e _P intact_velociraptor sh -c'
+    assert_contains "$calls" '--role "$2" _ tenroot administrator'
+    assert_contains "$calls" '--role "$2" _ api api,administrator' "api keeps its identity and roles"
+    assert_not_contains "$calls" "GuiStored1Abc" "not in the docker argv (docker events log it)"
+    assert_not_contains "$calls" "ApiStored2Xyz"
+    assert_not_contains "$calls" "user delete" "api is never removed"
+    assert_not_contains "$calls" "user_delete" "api is never removed"
+    assert_not_contains "$(cat "$W"/backup/risx_to_intact-*.log)" "GuiStored1Abc" "the password stays out of the log"
+}
+
+test_the_users_take_their_new_passwords_only_after_a_recreate() {
+    # 0.77.3: a running server does not see `user add` until it restarts, and
+    # a plain restart would keep the old env_file. So: user add, recreate, log in.
+    _world
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    local add rec login
+    add="$(grep -n '_ api api,administrator' "$W/log/calls" | cut -d: -f1)"
+    rec="$(grep -n 'docker compose up -d --force-recreate --no-build --pull never velociraptor' "$W/log/calls" | cut -d: -f1)"
+    login="$(grep -n '^curl http://127.0.0.1:8889/velociraptor/app/index.html' "$W/log/calls" | tail -1 | cut -d: -f1)"
+    assert_true test -n "$rec"
+    assert_true test "$add" -lt "$rec"
+    assert_true test "$rec" -lt "$login"
+    assert_eq "$(grep -c '^curl ' "$W/log/calls")" "2" "both the GUI user and api are checked"
+    assert_not_contains "$(cat "$W/log/calls")" "docker restart"
+}
+
+test_a_login_refused_after_the_recreate_stops_before_verified() {
+    _world
+    : > "$W/log/velo_refuse"
+    _run "$NORMAL"
+    assert_ne "$RC" "0"
+    assert_contains "$OUT" "does not accept the stored password"
+    assert_false grep -qx verified "$(_state)"
+}
+
+test_a_missing_store_stops_before_verified() {
+    _world
+    rm -f "$W/intact/modules/velociraptor/secrets/creds.env"
+    _run "$NORMAL"
+    assert_ne "$RC" "0"
+    assert_contains "$OUT" "passwords Intact stored"
+    assert_false grep -qx verified "$(_state)"
+}
+
+test_every_known_default_is_flagged_not_only_123123() {
+    _world
+    printf '#!/bin/bash\nsed -i "0,/password:.*/s//password: changeme/" "$1"\n' > "$W/bin/ed-weak"
+    chmod +x "$W/bin/ed-weak"
+    RC=0
+    OUT="$(printf 'r\ny\n' | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=ed-weak \
+           RISX_ROOT="$W/risx/setup_platform" \
+           bash "$W/intact/scripts/migrate/risx_to_intact.sh" --backup-dir "$W/backup" 2>&1)" || RC=$?
+    assert_contains "$OUT" "publicly known password"
 }
 
 test_the_archive_keeps_history_and_drops_the_installers() {

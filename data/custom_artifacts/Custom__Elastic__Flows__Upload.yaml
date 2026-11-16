@@ -18,7 +18,7 @@ sources:
       # Elasticsearch now requires authentication (xpack.security.enabled).
       # Read the credentials from this (server) process's own environment
       # rather than hardcoding them, so they stay in sync with the
-      # ELASTIC_USER/ELASTIC_PASSWORD set in modules/velociraptor/.env.
+      # ELASTIC_USER (modules/velociraptor/.env) and ELASTIC_PASSWORD (modules/elk/secrets/creds.env, via env_file).
       - LET _creds <= SELECT ELASTIC_USER, ELASTIC_PASSWORD FROM environ()
 
       - LET completions = SELECT * FROM watch_monitoring(

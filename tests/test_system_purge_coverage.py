@@ -60,9 +60,10 @@ class TheElkSectionMustAuthenticate(unittest.TestCase):
             self.assertIn("auth=", c)
 
     def test_credentials_come_from_the_environment(self):
+        # Through config's resolution: the password now arrives as ELASTIC_PASSWORD
+        # (modules/elk/secrets/creds.env), with ELASTICSEARCH_PASSWORD as the old name.
         s = _src()
-        self.assertIn("ELASTICSEARCH_USER", s)
-        self.assertIn("ELASTICSEARCH_PASSWORD", s)
+        self.assertIn("from config import ELASTICSEARCH_CONFIG", s.split("def _es_auth():")[1][:600])
 
     def test_unreachable_is_still_distinguishable_from_empty(self):
         """_es_indices returns None for unreachable and [] for 'no indices' --
