@@ -33,6 +33,7 @@ _intact_refresh_sidecars() {
             cp -p "$s" "$d" || return 1
             n=$((n + 1))
             log_info "    refreshed modules/${m}/docker-compose.yaml"
+            _intact_note_refreshed "$m"
         fi
         _intact_deliver_mount_assets "${src}/modules/${m}" "${SCRIPT_DIR}/modules/${m}" "$d" || return 1
         _intact_refresh_module_code "${src}/modules/${m}" "${SCRIPT_DIR}/modules/${m}" "$m" || return 1
@@ -62,7 +63,8 @@ _intact_refresh_sidecars() {
 #                       with backups)
 #   secrets/            generated passwords
 #   clients/            the MSI/deb installers generated for this box
-#   bundled_artifacts/  written by the backend at runtime
+#   bundled_artifacts/  baked into the velociraptor image, which arrives as
+#                       its package tar (plan.sh always re-applies velociraptor)
 #
 # Staying at depth 1 means none of those can be touched here. No deletion
 # either: only files the package actually ships are considered, so anything
@@ -93,7 +95,54 @@ _intact_refresh_module_code() {
         fi
     done < <(find "$psrc" -maxdepth 1 -type f 2>/dev/null | sort)
 
-    (( n )) && log_info "    modules/${name}: ${n} code file(s) refreshed"
+    (( n )) && { log_info "    modules/${name}: ${n} code file(s) refreshed"; _intact_note_refreshed "$name"; }
+    return 0
+}
+
+# A module whose compose or code files were just replaced runs on the OLD ones
+# until it is recreated, and a module that is not moving this run never is: on
+# 2026-11-16 a 20261021 -> 20261116 upgrade wrote IRIS's and Timesketch's
+# 127.0.0.1-only port bindings to disk while both kept publishing 0.0.0.0
+# (8443 and 5000, past nginx's login), because their versions had not changed.
+# The refresh runs under u_do --timeout, a subshell, so it can only write the
+# names down (_INTACT_REFRESHED, a file); _intact_reapply_refreshed reads them
+# in the main shell once intact has committed -- a rollback puts the old files
+# back, and then there is nothing to re-apply.
+_intact_note_refreshed() {
+    [[ -n "${_INTACT_REFRESHED:-}" ]] && echo "$1" >>"$_INTACT_REFRESHED"
+    return 0
+}
+
+# Turn the refreshed modules that this run would leave alone back into
+# upgrades: same version, so the module's own code just re-applies it (its
+# health checks, rollback and passwords included) -- the path the GUI's
+# "reinstall" tick takes. Not one excluded by --skip or disabled in config.yaml.
+# "excluded by --only" IS re-applied: its files are already replaced either way,
+# and the dashboard's --only is only the list of what its plan saw moving --
+# but only a module that is enabled, installed and staying at its version:
+# plan_build labels --only BEFORE it looks at any of that, so the label also
+# covers a switched-off tool, an unticked install and a version change the
+# operator left out (one that never went through the downgrade or disk checks).
+# Not velociraptor: plan.sh owns it, and without its package tar a re-apply is
+# only a restart onto the same old image.
+_intact_reapply_refreshed() {
+    local f="$1" m
+    [[ -s "$f" ]] || return 0
+    for m in $(sort -u "$f"); do
+        [[ "$m" == velociraptor ]] && continue
+        case "${PLAN_ACTION[$m]:-}" in
+            noop:*) ;;
+            "skip:excluded by --only")
+                _plan_module_enabled "$m" || continue
+                [[ -n "${PLAN_CURRENT[$m]:-}" && "${PLAN_CURRENT[$m]}" == "${PLAN_TARGET[$m]:-}" ]] || continue ;;
+            *) continue ;;
+        esac
+        declare -F "upgrade_module_${m}" >/dev/null || continue
+        PLAN_ACTION[$m]="upgrade"
+        PLAN_NOTE[$m]="this release changed its files, re-applied"
+        U_STEP_TOTAL=$(( ${U_STEP_TOTAL:-0} + 1 ))
+        log_info "  ${m}: this release changed its compose/code files — re-applying it so its containers use them"
+    done
     return 0
 }
 

@@ -7,6 +7,38 @@
 #
 # Split out of install.sh unchanged.
 
+# _intact_curl_resume <dest> <url> -- one release asset, as a loop of FRESH
+# curl runs that each resume (-C -) where the file stands.
+#
+# Not curl's own --retry. On 2026-11-16 a 20261021 -> 20261116 upgrade lost an
+# hour on the 1.99 GB ELK asset: a GitHub CDN connection that starts slow stays
+# slow (~0.3 MB/s, while a new one got 16-20 MB/s), --max-time 3600 capped the
+# attempt, and when an HTTP/2 stream error hit at 96% curl 8.5's --retry began
+# again at byte 0 despite -C -: an in-process retry does not re-read the file
+# size. A NEW curl does. So each run gets at most 5 minutes (a slow connection
+# is swapped for a fresh one instead of being kept for an hour) and is dropped
+# after a minute without data, and the asset only fails after three runs in a
+# row that added no bytes -- a slow link still finishes, it just reconnects --
+# or after 6 hours in all, so a link crawling at a few KB/s ends in a clear
+# failure instead of a run that sits on "downloading" for days.
+# shortcut: needs Range support (GitHub, serve_local_release.sh have it); a
+# mirror or proxy without it can only deliver what fits in one 5-minute run.
+_intact_curl_resume() {
+    local dest="$1" url="$2" before err rc stuck=0 start=$SECONDS
+    while (( stuck < 3 && SECONDS - start < ${_DL_TOTAL_SECS:-21600} )); do
+        before="$(stat -c%s "$dest" 2>/dev/null || echo 0)"
+        err="$(curl -fsSL -C - --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
+                    --max-time "${_DL_ATTEMPT_SECS:-300}" -o "$dest" "$url" 2>&1)"
+        rc=$?
+        (( rc == 0 )) && return 0
+        # 28 is our own 5-minute cap, the normal case on a big asset: no news.
+        (( rc == 28 )) || printf '%s\n' "$err" >>"${_DL_LOG:-/dev/null}"
+        if (( "$(stat -c%s "$dest" 2>/dev/null || echo 0)" > before )); then stuck=0; else stuck=$((stuck + 1)); fi
+        sleep "${_DL_RETRY_DELAY:-5}"
+    done
+    return 1
+}
+
 # Fetch the release package this checkout corresponds to, so an ONLINE install
 # runs the same code as an air-gapped one.
 #
@@ -323,27 +355,16 @@ for n, whole, sha in sorted(set(want)):
         name="${line%%|*}"
         digest="${line#*|}"
         dest="${_DL_DEST}/${name}"
-        # --retry-all-errors: plain --retry only retries a curated list of
-        # conditions (timeouts, 5xx, a few others) -- an HTTP/2 stream error
-        # (curl exit 92, "stream N was not closed cleanly: PROTOCOL_ERROR"),
-        # seen for real against GitHub's release CDN under 4-way concurrency,
-        # is NOT on that list, so it failed the whole install on one bad
-        # stream instead of retrying. -C -: resume, so a retry on a
-        # multi-hundred-MB asset continues instead of restarting at byte 0 --
-        # the same fix prepare_package.sh's downloader already carries.
-        #
-        # Resume has its own failure mode though, also seen for real: a run
-        # that dies mid-write (like the HTTP/2 error above) can leave a
-        # partial file that is not cleanly truncated, and a LATER run's -C -
-        # then builds on top of it -- ending up the right SIZE but the wrong
-        # CONTENT, since curl's resume trusts the existing bytes rather than
-        # re-checking them. The digest check right below is what actually
-        # catches that; without it this would silently ship a corrupt
-        # package that only fails much later, at tar extraction.
-        if curl -fsSL -C - --retry 3 --retry-all-errors --retry-delay 5 --max-time 3600 \
-                -o "$dest" \
-                "${INTACT_GH_DL_BASE:-https://github.com}/${_DL_REPO}/releases/download/${_DL_TAG}/${name}" \
-                2>>"${_DL_LOG}"; then
+        # Resume has its own failure mode, seen for real: a run that dies
+        # mid-write (an HTTP/2 stream error) can leave a partial file that is
+        # not cleanly truncated, and a LATER run's -C - then builds on top of
+        # it -- ending up the right SIZE but the wrong CONTENT, since curl's
+        # resume trusts the existing bytes rather than re-checking them. The
+        # digest check right below is what actually catches that; without it
+        # this would silently ship a corrupt package that only fails much
+        # later, at tar extraction.
+        if _intact_curl_resume "$dest" \
+                "${INTACT_GH_DL_BASE:-https://github.com}/${_DL_REPO}/releases/download/${_DL_TAG}/${name}"; then
             if [[ -n "$digest" ]]; then
                 got="$(sha256sum "$dest" 2>/dev/null | awk '{print $1}')"
                 if [[ "$got" != "$digest" ]]; then
@@ -359,7 +380,7 @@ for n, whole, sha in sorted(set(want)):
             return 1
         fi
     }
-    export -f _intact_fetch_asset
+    export -f _intact_fetch_asset _intact_curl_resume
     export _DL_DEST="$dest_dir" _DL_REPO="$repo" _DL_TAG="$tag" _DL_LOG="$LOG_FILE" \
            _DL_STATUS_DIR="$_dl_status_dir"
 

@@ -588,6 +588,32 @@ else
          "stopping first races the engine to death before it can unwind"
 fi
 
+echo "== velociraptor: a same-tag re-apply can still roll back to the old image =="
+# plan.sh re-applies velociraptor on every upgrade, at the same upstream tag,
+# so the load moves the tag; a rollback must put the old image back under it.
+(
+    T="$(mktemp -d)"; export T
+    cat > "$T/docker" <<'SH'
+#!/bin/bash
+echo "$*" >> "$T/calls"
+case "$1 $2" in
+    "inspect -f") [[ "$3" == "{{.Image}}" ]] && echo sha256:old || echo velociraptor-server:0.77.3 ;;
+esac
+exit 0
+SH
+    chmod +x "$T/docker"; DOCKER_BIN="$T/docker"
+    log_info() { :; }; log_warn() { :; }; log_error() { :; }
+    source "${ROOT}/lib/upgrade/velociraptor/image.sh"
+    _velo_keep_running_image; _velo_put_back_image; _velo_drop_kept_image
+    grep -qx 'tag sha256:old velociraptor-server:0.77.3-pre-upgrade' "$T/calls" && \
+    grep -qx 'tag velociraptor-server:0.77.3-pre-upgrade velociraptor-server:0.77.3' "$T/calls" && \
+    grep -qx 'image rm velociraptor-server:0.77.3-pre-upgrade' "$T/calls"
+) && ok "keep -> put back -> drop tags the running image ID and restores its tag" \
+  || fail "keep -> put back -> drop tags the running image ID and restores its tag"
+[[ "$(grep -n '_velo_keep_running_image\|"stop velociraptor"' "${ROOT}/lib/upgrade/velociraptor/velociraptor.sh" | head -1)" == *keep_running* ]] \
+  && ok "the image is kept before the stop removes its container" \
+  || fail "the image is kept before the stop removes its container"
+
 echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1

@@ -135,6 +135,7 @@ upgrade_module_intact() {
         log_warn "  package has no scripts/ — this box's upgrade engine will not be updated"
     fi
     u_do "mirror install.sh" -- _intact_mirror_install_sh "$src"
+    _INTACT_REFRESHED="$(mktemp -p "${SCRIPT_DIR}/data/tmp" intact-refreshed-XXXXXX 2>/dev/null || mktemp)"
     u_do --timeout 600 "refresh sidecar compose files and assets" -- _intact_refresh_sidecars "$src"
     # The shared Nginx TLS pair is PLATFORM state, not any one module's: three
     # modules bind-mount it as ../nginx/ssl/nginx-cert.{crt,key} and none of
@@ -183,6 +184,9 @@ upgrade_module_intact() {
             UPGRADE_DEGRADED+=("intact — nginx/tusd are still on their old versions (see the log)")
         fi
         _intact_clear_legacy_upgrade_state || true
+        # Before the passwords: a module re-applied here counts as moving, so
+        # its human-only defaults are rotated below too.
+        _intact_reapply_refreshed "$_INTACT_REFRESHED"
         # The composes that read the stores are on disk now and cannot be
         # rolled back: rotate the public human-only passwords, clear the old
         # copies, refresh the default-password marker.
@@ -190,5 +194,6 @@ upgrade_module_intact() {
     else
         log_warn "  the pre-upgrade tree snapshot is kept at ${snap}"
     fi
+    rm -f "$_INTACT_REFRESHED"; _INTACT_REFRESHED=""
     return $rc
 }

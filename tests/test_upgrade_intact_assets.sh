@@ -182,6 +182,73 @@ test_dockers_fabricated_empty_directory_is_replaced_by_the_file() {
 # bundled_artifacts/), so it cannot be reached from here.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# A module whose files changed is re-applied even when its version did not
+# (2026-11-16: IRIS and Timesketch kept publishing 0.0.0.0 ports their new
+# compose files had moved to 127.0.0.1).
+# ---------------------------------------------------------------------------
+_two_modules() {   # package and box each with iris (compose differs) and elk (identical)
+    _fresh
+    REFRESH_SRC="$(mktemp -d)"
+    mkdir -p "$REFRESH_SRC/modules/iris" "$REFRESH_SRC/modules/elk" "$SCRIPT_DIR/modules/iris" "$SCRIPT_DIR/modules/elk"
+    printf 'services:\n  w:\n    ports: ["127.0.0.1:8443:8443"]\n' > "$REFRESH_SRC/modules/iris/docker-compose.yaml"
+    printf 'services:\n  w:\n    ports: ["8443:8443"]\n'           > "$SCRIPT_DIR/modules/iris/docker-compose.yaml"
+    printf 'services:\n  e: {}\n' | tee "$REFRESH_SRC/modules/elk/docker-compose.yaml" > "$SCRIPT_DIR/modules/elk/docker-compose.yaml"
+    _INTACT_REFRESHED="$(mktemp)"
+}
+
+test_a_refreshed_compose_names_its_module_and_an_identical_one_does_not() {
+    _two_modules
+    assert_true _intact_refresh_sidecars "$REFRESH_SRC"
+    assert_eq "$(sort -u "$_INTACT_REFRESHED")" "iris"
+}
+
+test_a_changed_code_file_names_its_module() {
+    _fresh
+    _INTACT_REFRESHED="$(mktemp)"
+    echo new > "${PSRC}/entrypoint.sh"; echo old > "${PDST}/entrypoint.sh"
+    _intact_refresh_module_code "$PSRC" "$PDST" velociraptor
+    assert_eq "$(cat "$_INTACT_REFRESHED")" "velociraptor"
+}
+
+test_refreshed_modules_that_would_be_left_alone_are_re_applied() {
+    declare -gA PLAN_ACTION=() PLAN_NOTE=() PLAN_CURRENT=() PLAN_TARGET=()
+    local m; for m in iris timesketch volweb elk portainer presidio plaso velociraptor; do
+        eval "upgrade_module_${m}() { :; }"; PLAN_CURRENT[$m]=1.0; PLAN_TARGET[$m]=1.0
+    done
+    _plan_module_enabled() { [[ "$1" != portainer ]]; }
+    local f; f="$(mktemp)"
+    printf '%s\n' iris timesketch volweb elk portainer presidio plaso velociraptor backend > "$f"
+    PLAN_ACTION[iris]="skip:excluded by --only"
+    PLAN_ACTION[timesketch]="noop:already at 1.0"
+    PLAN_ACTION[volweb]="skip:excluded by --skip"
+    PLAN_ACTION[elk]="upgrade"
+    PLAN_ACTION[portainer]="skip:excluded by --only"                         # disabled in config.yaml
+    PLAN_ACTION[presidio]="skip:excluded by --only"; PLAN_CURRENT[presidio]=""   # not installed
+    PLAN_ACTION[plaso]="skip:excluded by --only"; PLAN_TARGET[plaso]=2.0         # a version change left out
+    PLAN_ACTION[velociraptor]="skip:excluded by --only"
+    U_STEP_TOTAL=1
+    _intact_reapply_refreshed "$f"
+    assert_eq "${PLAN_ACTION[iris]}" "upgrade" "the dashboard's --only is not a reason to keep old containers"
+    assert_eq "${PLAN_ACTION[timesketch]}" "upgrade" "a same-version module is re-applied"
+    assert_eq "${PLAN_ACTION[volweb]}" "skip:excluded by --skip" "--skip means hands off"
+    assert_eq "${PLAN_ACTION[elk]}" "upgrade"
+    assert_eq "${PLAN_ACTION[portainer]}" "skip:excluded by --only" "a switched-off tool is not started"
+    assert_eq "${PLAN_ACTION[presidio]}" "skip:excluded by --only" "an unticked install is not installed"
+    assert_eq "${PLAN_ACTION[plaso]}" "skip:excluded by --only" "no version change past the downgrade/disk checks"
+    assert_eq "${PLAN_ACTION[velociraptor]}" "skip:excluded by --only" "plan.sh owns velociraptor"
+    assert_eq "${PLAN_ACTION[backend]:-}" "" "the platform's own dirs are not modules of the loop"
+    assert_eq "$U_STEP_TOTAL" "3" "two more steps for the progress count"
+    for m in iris timesketch volweb elk portainer presidio plaso velociraptor; do unset -f "upgrade_module_${m}"; done
+    unset -f _plan_module_enabled
+}
+
+test_nothing_refreshed_changes_no_plan() {
+    declare -gA PLAN_ACTION=([iris]="noop:already at v2.4.29") PLAN_NOTE=()
+    _intact_reapply_refreshed "$(mktemp)"
+    assert_eq "${PLAN_ACTION[iris]}" "noop:already at v2.4.29"
+}
+
 test_a_changed_module_dockerfile_is_refreshed() {
     _fresh
     printf 'FROM alpine\nRUN echo new\n' > "${PSRC}/Dockerfile"

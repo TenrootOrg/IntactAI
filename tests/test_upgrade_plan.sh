@@ -251,6 +251,26 @@ test_intact_is_never_a_noop_when_the_package_carries_it() {
     assert_eq "${PLAN_ACTION[intact]}" "upgrade"
 }
 
+test_velociraptor_is_never_a_noop_when_the_package_carries_it() {
+    # Its image bakes our artifacts under upstream's tag: same version on both
+    # sides, different content. Planned noop, the asset is never fetched
+    # (2026-11-16: an upgraded box had no Generic.Intact.RunScript).
+    _setup
+    UPKG_VERSIONS[velociraptor]=0.77.3; PLAN_CURRENT[velociraptor]=0.77.3
+    plan_build
+    assert_eq "${PLAN_ACTION[velociraptor]}" "upgrade"
+    assert_contains "${PLAN_NOTE[velociraptor]}" "always re-applied"
+}
+
+test_only_without_velociraptor_still_leaves_it_alone() {
+    _setup
+    UPKG_VERSIONS[velociraptor]=0.77.3; PLAN_CURRENT[velociraptor]=0.77.3
+    UPKG_VERSIONS[elk]=9.4.5; PLAN_CURRENT[elk]=9.4.4
+    UPGRADE_ONLY="elk"
+    plan_build
+    assert_contains "${PLAN_ACTION[velociraptor]}" "excluded by --only"
+}
+
 test_only_restricts_the_set() {
     _setup
     UPKG_VERSIONS[elk]=9.4.5; PLAN_CURRENT[elk]=9.4.4

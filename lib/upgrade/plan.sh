@@ -323,6 +323,21 @@ plan_build() {
             PLAN_NOTE[intact]="rolling tag, always re-applied"
         fi
     fi
+
+    # velociraptor is never a no-op either: its image bakes OUR content
+    # (bundled_artifacts, entrypoint.sh) under UPSTREAM's version tag, so a
+    # release that changes an artifact without a new Velociraptor shows the same
+    # version on both sides. Planned noop, the dashboard leaves it out of --only,
+    # its asset is never downloaded and the box keeps the old image: a
+    # 20261021 -> 20261116 upgrade (2026-11-16) had no Generic.Intact.RunScript
+    # at all. Re-applied, _velo_resolve_image loads the release's own tar. Cost:
+    # a ~300 MB asset and a Velociraptor restart per upgrade; clients reconnect.
+    if [[ -n "${UPKG_VERSIONS[velociraptor]:-}" && "${PLAN_ACTION[velociraptor]:-}" == noop:* ]]; then
+        if [[ -z "${UPGRADE_ONLY:-}" || ",${UPGRADE_ONLY}," == *",velociraptor,"* ]]; then
+            PLAN_ACTION[velociraptor]="upgrade"
+            PLAN_NOTE[velociraptor]="bakes Intact's artifacts, always re-applied"
+        fi
+    fi
     return 0
 }
 

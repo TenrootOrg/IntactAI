@@ -214,4 +214,74 @@ test_install_filters_only_through_install_release_modules() {
         "and that variable comes from install_release_modules"
 }
 
+# ---------------------------------------------------------------------------
+# _intact_curl_resume: fresh resuming curl runs, failing only on no progress.
+# The fake curl appends to its -o file and returns what each scenario says.
+# ---------------------------------------------------------------------------
+_fake_curl_appending() {   # adds CURL_BYTES per call; call N exits with word N of CURL_RCS
+    # Counted in a file: _intact_curl_resume runs curl inside $(...), so a
+    # variable the fake changed would be gone by the next call.
+    curl() {
+        local out="" i
+        for ((i=1; i<=$#; i++)); do [[ "${!i}" == "-o" ]] && { local j=$((i+1)); out="${!j}"; }; done
+        echo "$*" >>"${CURL_ARGS_LOG}"
+        head -c "${CURL_BYTES}" /dev/zero >>"$out"
+        local -a rcs=($CURL_RCS)
+        return "${rcs[$(( $(wc -l <"$CURL_ARGS_LOG") - 1 ))]}"
+    }
+}
+
+test_resume_survives_timeouts_and_stream_errors() {
+    # The 2026-11-16 ELK case: capped attempts and an HTTP/2 error (92), each
+    # adding bytes, then success. Never restarts: every byte is kept.
+    local f; f="$(mktemp)"; : >"$f"
+    CURL_ARGS_LOG="$(mktemp)"
+    CURL_BYTES=100 CURL_RCS="28 92 28 0 "
+    _fake_curl_appending
+    _DL_RETRY_DELAY=0 _intact_curl_resume "$f" "https://example/a.tar.gz"
+    assert_eq "$?" "0" "progressing attempts must end in success"
+    assert_eq "$(stat -c%s "$f")" "400" "four runs of 100 bytes: nothing was thrown away"
+    assert_eq "$(wc -l <"$CURL_ARGS_LOG")" "4" "one fresh curl per attempt"
+    assert_true grep -q -- '-C -' "$CURL_ARGS_LOG"
+    assert_not_contains "$(cat "$CURL_ARGS_LOG")" "--retry" "no in-process retry: it restarts at byte 0"
+    unset -f curl; rm -f "$f" "$CURL_ARGS_LOG"
+}
+
+test_resume_gives_up_after_three_runs_without_progress() {
+    local f; f="$(mktemp)"; : >"$f"
+    CURL_ARGS_LOG="$(mktemp)"
+    CURL_BYTES=0 CURL_RCS="7 7 7 7 7 7 "
+    _fake_curl_appending
+    _DL_RETRY_DELAY=0 _intact_curl_resume "$f" "https://example/a.tar.gz"
+    assert_eq "$?" "1" "an asset that never moves must fail"
+    assert_eq "$(wc -l <"$CURL_ARGS_LOG")" "3" "three stuck runs, then stop"
+    unset -f curl; rm -f "$f" "$CURL_ARGS_LOG"
+}
+
+test_progress_resets_the_stuck_count() {
+    # Two stuck runs, one that moves, two more stuck, then done: five stuck in
+    # total but never three IN A ROW, so a slow link still finishes.
+    local f; f="$(mktemp)"; : >"$f"
+    CURL_ARGS_LOG="$(mktemp)"
+    curl() {
+        local out="" i
+        for ((i=1; i<=$#; i++)); do [[ "${!i}" == "-o" ]] && { local j=$((i+1)); out="${!j}"; }; done
+        local n; n=$(( $(wc -l <"$CURL_ARGS_LOG") + 1 )); echo x >>"$CURL_ARGS_LOG"
+        case "$n" in 3) head -c 10 /dev/zero >>"$out"; return 28 ;; 6) return 0 ;; *) return 28 ;; esac
+    }
+    _DL_RETRY_DELAY=0 _intact_curl_resume "$f" "https://example/a.tar.gz"
+    assert_eq "$?" "0" "progress in between must reset the stuck count"
+    unset -f curl; rm -f "$f" "$CURL_ARGS_LOG"
+}
+
+test_resume_stops_at_the_overall_deadline() {
+    local f; f="$(mktemp)"
+    curl() { echo called >>"$CURL_ARGS_LOG"; return 28; }
+    CURL_ARGS_LOG="$(mktemp)"
+    _DL_TOTAL_SECS=0 _DL_RETRY_DELAY=0 _intact_curl_resume "$f" "https://example/a.tar.gz"
+    assert_eq "$?" "1" "past the deadline the asset fails"
+    assert_eq "$(wc -l <"$CURL_ARGS_LOG")" "0"
+    unset -f curl; rm -f "$f" "$CURL_ARGS_LOG"
+}
+
 run_all_tests

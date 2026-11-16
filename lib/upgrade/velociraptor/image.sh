@@ -61,6 +61,34 @@ _velo_stage_binaries() {
     return 0
 }
 
+# The image a rollback must come back to. plan.sh re-applies velociraptor on
+# every upgrade, usually at the SAME upstream tag, and _velo_resolve_image's
+# load then moves velociraptor-server:<tag> to the new image -- so the undo's
+# "compose up the old one" would start the new image and call it restored.
+# Kept under <ref>-pre-upgrade; _VELO_KEPT names <ref>, "" when nothing ran.
+_VELO_KEPT=""
+_velo_keep_running_image() {
+    local d="${DOCKER_BIN:-docker}" id ref
+    _VELO_KEPT=""
+    id="$("$d" inspect -f '{{.Image}}' intact_velociraptor 2>/dev/null)" || return 0
+    ref="$("$d" inspect -f '{{.Config.Image}}' intact_velociraptor 2>/dev/null)" || return 0
+    [[ -n "$id" && -n "$ref" ]] || return 0
+    "$d" tag "$id" "${ref}-pre-upgrade" || return 1
+    _VELO_KEPT="$ref"
+}
+_velo_put_back_image() {
+    [[ -n "$_VELO_KEPT" ]] || return 0
+    "${DOCKER_BIN:-docker}" tag "${_VELO_KEPT}-pre-upgrade" "$_VELO_KEPT"
+}
+# Either way afterwards: after a rollback it only drops the extra tag; after a
+# same-tag success it also frees the old image, which nothing else would --
+# _u_prune_old_module_images skips a module whose version did not change.
+_velo_drop_kept_image() {
+    [[ -n "$_VELO_KEPT" ]] || return 0
+    "${DOCKER_BIN:-docker}" image rm "${_VELO_KEPT}-pre-upgrade" >/dev/null 2>&1 || true
+    _VELO_KEPT=""
+}
+
 # Package tar -> present -> build. Building is last and loudly flagged: it
 # runs apt-get and cannot work air-gapped.
 _velo_resolve_image() {

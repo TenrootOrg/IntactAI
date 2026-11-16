@@ -143,6 +143,10 @@ upgrade_module_velociraptor() {
     u_undo "_u_compose_up_old velociraptor"
     u_undo "_velo_restore '${snap}'"
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
+    # Before the stop (it removes the container that names the image). Its undo
+    # is registered last so it runs first: the tag is back before compose up.
+    u_do "keep the running image for a rollback" -- _velo_keep_running_image
+    u_undo "_velo_put_back_image"
 
     # Best-effort: hand-written artifacts the operator added through the GUI.
     # Wrapped so a failure here never colours the run -- there may be none, as
@@ -177,6 +181,7 @@ upgrade_module_velociraptor() {
 
     u_end velociraptor rollback 240
     local rc=$?
+    _velo_drop_kept_image
     if (( rc == 0 )); then
         discard_backup "$bak"
         rm -rf "$snap"

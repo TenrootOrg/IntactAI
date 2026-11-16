@@ -66,7 +66,7 @@ YAML
     creds_stubs "$T"
     PATH="$T/bin:$ORIG_PATH"
     unset DOCKER_BIN
-    declare -gA PLAN_ACTION=()
+    declare -gA PLAN_ACTION=() PLAN_CURRENT=()
     U_CREDS_SHOW=(); CREDS_ROTATED=(); CREDS_ROTATED_SHOW=()
 }
 ORIG_PATH="$PATH"
@@ -166,6 +166,29 @@ test_a_module_not_in_the_package_loses_its_env_copy_once_its_compose_reads_the_s
     assert_eq "$(grep '^ELASTIC_PASSWORD=' "$SCRIPT_DIR/modules/elk/.env")" "ELASTIC_PASSWORD=" "leftover copy cleared"
     assert_eq "$(secret_get elk ELASTIC_PASSWORD)" "Live1Elastic" "the store keeps it"
     assert_eq "$(sed -n 's/^TIMESKETCH_PASSWORD=//p' "$SCRIPT_DIR/modules/timesketch/.env")" "Live1Sketch" "--skip means hands off"
+}
+
+test_a_module_left_out_of_the_dashboards_only_still_loses_its_env_copy() {
+    # The dashboard's --only lists what its plan saw moving; a same-version
+    # module never gets "its own run" (2026-11-16: 123123 stayed in .env).
+    _world
+    printf '%s\n' elk_elasticsearch_data timesketch_timesketch_postgres_data > "$T/volumes"
+    _env timesketch "TIMESKETCH_PASSWORD=Live1Sketch"
+    _compose_reads_stores timesketch
+    PLAN_ACTION[timesketch]="skip:excluded by --only"; PLAN_CURRENT[timesketch]=20261014
+    _u_creds_migrate_all && _u_creds_after_all
+    assert_eq "$(grep '^TIMESKETCH_PASSWORD=' "$SCRIPT_DIR/modules/timesketch/.env")" "TIMESKETCH_PASSWORD=" "leftover copy cleared"
+    assert_eq "$(secret_get timesketch TIMESKETCH_PASSWORD)" "Live1Sketch" "the store keeps it"
+}
+
+test_a_module_left_out_by_only_and_not_installed_is_not_touched() {
+    _world
+    printf '%s\n' elk_elasticsearch_data timesketch_timesketch_postgres_data > "$T/volumes"
+    _env timesketch "TIMESKETCH_PASSWORD=Live1Sketch"
+    _compose_reads_stores timesketch
+    PLAN_ACTION[timesketch]="skip:excluded by --only"; PLAN_CURRENT[timesketch]=""
+    _u_creds_migrate_all && _u_creds_after_all
+    assert_eq "$(sed -n 's/^TIMESKETCH_PASSWORD=//p' "$SCRIPT_DIR/modules/timesketch/.env")" "Live1Sketch" "not on the box: left to its install"
 }
 
 # --- 4. a module installed later (the upgrade engine's install path) -----------

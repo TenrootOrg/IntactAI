@@ -275,13 +275,20 @@ _u_creds_after() {
 }
 
 # The intact module's turn, after it committed: every module that stays on
-# this box this run (moving or not). Excluded (--skip/--only) and being-
-# installed ones are left to their own run.
+# this box this run (moving or not). Excluded by --skip and being-installed
+# ones are left to their own run. Excluded by --only is NOT left: the dashboard
+# passes --only = whatever its plan saw moving, so a module whose version stays
+# put never gets "its own run" -- after a 20261021 -> 20261116 upgrade
+# (2026-11-16) IRIS's admin and the Velociraptor GUI still took 123123, with
+# the value still in their .env, and nothing said so.
 _u_creds_after_all() {
     local m
     for m in "${_U_CREDS_MODULES[@]}"; do
         case "${PLAN_ACTION[$m]:-}" in
             upgrade|noop:*) _u_creds_after "$m" ;;
+            # Installed ones only: plan_build applies this label before it
+            # looks at whether the module is on the box at all.
+            "skip:excluded by --only") [[ -n "${PLAN_CURRENT[$m]:-}" ]] && _u_creds_after "$m" ;;
             # Not in the package, but the sidecar refresh just gave it a compose
             # that reads the store, so its .env copy is only a plaintext leftover
             # (2026-11-16 dev box: elk + timesketch kept their values in .env).
