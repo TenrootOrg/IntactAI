@@ -72,6 +72,34 @@ else
     log "reusing cached 8-module assets: $CACHE_TAR"
 fi
 
+# The cache holds the PUBLISHED release's module images. When this checkout's
+# config.yaml pins newer ones, the package silently carries the old images and
+# an offline install dies with "No such image: ...:9.5.6" (2026-11-16). Stop
+# before the slow intact build rather than ship a package that cannot install.
+_pin_idx="$CACHE_DIR/.pin-check.index.json"
+tar -xOf "$CACHE_TAR" "$TAG.index.json" > "$_pin_idx" || {
+    err "could not read $TAG.index.json from $CACHE_TAR"; exit 1; }
+set +e
+_pin_drift="$(python3 "$REPO_DIR/scripts/dev/check_cached_pins.py" \
+    "$_pin_idx" "$REPO_DIR/config.yaml" "$CACHED_MODULES" 2>&1)"
+_pin_rc=$?
+set -e
+rm -f "$_pin_idx"
+if [ "$_pin_rc" -eq 3 ]; then
+    _drifted="$(printf '%s\n' "$_pin_drift" | cut -d: -f1 | paste -sd, -)"
+    err "the cached $TAG bundle is not at this checkout's config.yaml pins:"
+    printf '%s\n' "$_pin_drift" | sed 's/^/[local-release][ERROR]   /' >&2
+    err "a package from it would fail an offline install with 'No such image'."
+    err "Build those modules at the checkout's pins instead:"
+    err "  scripts/dev/build_local_release_assets.sh $TAG <out_dir> $_drifted"
+    err "(or leave the module list off to build the whole release from this checkout)"
+    exit 1
+elif [ "$_pin_rc" -ne 0 ]; then
+    err "could not compare the cached bundle with config.yaml pins:"
+    printf '%s\n' "$_pin_drift" >&2
+    exit 1
+fi
+
 # ── Step 2: rebuild the intact module fresh, from current source ──────────
 # /app/data inside the backend container is bind-mounted to the box's
 # data/ dir on the host -- staging the current repo checkout under there

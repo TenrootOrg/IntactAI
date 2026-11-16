@@ -297,8 +297,15 @@ printf '%s' "$COMMIT" > "$STAMP"
 # package.py now labels what it bakes and refuses a label that disagrees;
 # this handles the images baked before the label existed, which it cannot
 # tell apart from CI's legitimately unlabelled pre-tag.
+#
+# Only when this run builds `intact`: no other module bakes or ships that
+# image, and on a dev box intact-backend:<tag> is usually the one the running
+# intact_backend uses. `rmi -f` untags it under the container, and the next
+# install.sh --package refuses with "intact-backend:<tag> was not shipped by
+# the release package ... images present: none" (2026-11-16, an
+# elk,portainer,plaso,presidio build).
 _beimg="intact-backend:${TAG}"
-if docker image inspect "$_beimg" >/dev/null 2>&1; then
+if [[ " $MODULES " == *" intact "* ]] && docker image inspect "$_beimg" >/dev/null 2>&1; then
     _was="$(docker image inspect -f '{{index .Config.Labels "org.intact.commit"}}' \
             "$_beimg" 2>/dev/null || true)"
     if [ "$_was" = "$COMMIT" ]; then
