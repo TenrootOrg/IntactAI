@@ -249,6 +249,56 @@ test_nothing_refreshed_changes_no_plan() {
     assert_eq "${PLAN_ACTION[iris]}" "noop:already at v2.4.29"
 }
 
+# A box already upgraded by an engine without the re-apply has the new compose
+# on disk and the old containers running; only comparing the two catches it.
+_fake_compose_docker() {   # $1 = HostIp the running container publishes on, $2 = its mounts (JSON list)
+    _fresh
+    mkdir -p "$SCRIPT_DIR/modules/iris"; : > "$SCRIPT_DIR/modules/iris/docker-compose.yaml"
+    DOCKER_BIN="$(mktemp)"; chmod +x "$DOCKER_BIN"
+    cat > "$DOCKER_BIN" <<EOF
+#!/bin/bash
+case "\$*" in
+  "compose config --format json") echo '{"services":{"w":{"ports":[{"host_ip":"127.0.0.1","published":"8443","target":8443,"protocol":"tcp"}],"volumes":[{"type":"bind","target":"/data"}]}}}' ;;
+  "compose ps -a -q w") echo c1 ;;
+  "inspect c1") echo '[{"HostConfig":{"PortBindings":{"8443/tcp":[{"HostIp":"$1","HostPort":"8443"}]}},"Mounts":$2}]' ;;
+  *) exit 1 ;;
+esac
+EOF
+}
+
+test_a_container_matching_its_compose_has_not_drifted() {
+    _fake_compose_docker 127.0.0.1 '[{"Destination":"/data"},{"Destination":"/anon"}]'
+    assert_false _intact_compose_drifted iris
+}
+
+test_a_container_publishing_a_port_its_compose_moved_has_drifted() {
+    _fake_compose_docker "" '[{"Destination":"/data"}]'
+    assert_true _intact_compose_drifted iris
+}
+
+test_a_container_missing_a_mount_its_compose_added_has_drifted() {
+    _fake_compose_docker 127.0.0.1 '[]'
+    assert_true _intact_compose_drifted iris
+}
+
+test_a_module_without_compose_or_with_a_broken_one_has_not_drifted() {
+    _fresh
+    DOCKER_BIN=false
+    assert_false _intact_compose_drifted presidio
+    mkdir -p "$SCRIPT_DIR/modules/presidio"; : > "$SCRIPT_DIR/modules/presidio/docker-compose.yaml"
+    assert_false _intact_compose_drifted presidio
+}
+
+test_a_drifted_module_is_re_applied_though_no_file_changed() {
+    _fake_compose_docker "" '[{"Destination":"/data"}]'
+    declare -gA PLAN_ACTION=([iris]="noop:already at v2.4.29") PLAN_NOTE=() PLAN_CURRENT=() PLAN_TARGET=()
+    upgrade_module_iris() { :; }
+    _intact_reapply_refreshed "$(mktemp)"
+    assert_eq "${PLAN_ACTION[iris]}" "upgrade"
+    assert_contains "${PLAN_NOTE[iris]:-}" "no longer match"
+    unset -f upgrade_module_iris
+}
+
 test_a_changed_module_dockerfile_is_refreshed() {
     _fresh
     printf 'FROM alpine\nRUN echo new\n' > "${PSRC}/Dockerfile"

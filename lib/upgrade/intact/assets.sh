@@ -126,9 +126,8 @@ _intact_note_refreshed() {
 # Not velociraptor: plan.sh owns it, and without its package tar a re-apply is
 # only a restart onto the same old image.
 _intact_reapply_refreshed() {
-    local f="$1" m
-    [[ -s "$f" ]] || return 0
-    for m in $(sort -u "$f"); do
+    local f="$1" m why
+    for m in $(printf '%s\n' "${!PLAN_ACTION[@]}" | sort); do
         [[ "$m" == velociraptor ]] && continue
         case "${PLAN_ACTION[$m]:-}" in
             noop:*) ;;
@@ -138,12 +137,57 @@ _intact_reapply_refreshed() {
             *) continue ;;
         esac
         declare -F "upgrade_module_${m}" >/dev/null || continue
+        if [[ -s "$f" ]] && grep -qx "$m" "$f"; then
+            why="this release changed its files"
+        elif _intact_compose_drifted "$m"; then
+            why="its containers no longer match its compose file"
+        else
+            continue
+        fi
         PLAN_ACTION[$m]="upgrade"
-        PLAN_NOTE[$m]="this release changed its files, re-applied"
+        PLAN_NOTE[$m]="${why}, re-applied"
         U_STEP_TOTAL=$(( ${U_STEP_TOTAL:-0} + 1 ))
-        log_info "  ${m}: this release changed its compose/code files — re-applying it so its containers use them"
+        log_info "  ${m}: ${why} — re-applying it so its containers use them"
     done
     return 0
+}
+
+# A box upgraded by an engine without the re-apply above already has the new
+# compose files on disk, so "this run changed them" never fires again there:
+# 20261116 boxes kept IRIS's and Timesketch's 0.0.0.0 ports after a second
+# upgrade. Compare the running containers with the compose file instead --
+# only published ports and mount targets. Not compose's config-hash label: it
+# also differed on every untouched ELK container of that box (env/compose
+# version noise), which would restart every module on every upgrade.
+# 0 = drifted. Any error (no compose, a missing secret file) = not drifted.
+_intact_compose_drifted() {
+    local dir="${SCRIPT_DIR}/modules/$1"
+    [[ -f "$dir/docker-compose.yaml" ]] || return 1
+    ( cd "$dir" && INTACT_DOCKER="${DOCKER_BIN:-docker}" timeout 120 python3 -c '
+import json, os, subprocess, sys
+d = os.environ["INTACT_DOCKER"]
+def run(*a):
+    r = subprocess.run([d, *a], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+try:
+    services = json.loads(run("compose", "config", "--format", "json")).get("services") or {}
+except ValueError:
+    sys.exit(1)
+for name, svc in services.items():
+    want = {"%s:%s->%s/%s" % (p.get("host_ip") or "0.0.0.0", p["published"], p["target"], p.get("protocol") or "tcp")
+            for p in svc.get("ports") or [] if p.get("published")}
+    for cid in run("compose", "ps", "-a", "-q", name).split():
+        try:
+            c = json.loads(run("inspect", cid))[0]
+        except (ValueError, IndexError):
+            continue
+        have = {"%s:%s->%s" % (b.get("HostIp") or "0.0.0.0", b.get("HostPort"), k)
+                for k, bs in ((c.get("HostConfig") or {}).get("PortBindings") or {}).items() for b in bs or []}
+        mounts = {m.get("Destination") for m in c.get("Mounts") or []}
+        if have != want or any(v.get("target") not in mounts for v in svc.get("volumes") or []):
+            sys.exit(0)
+sys.exit(1)
+' )
 }
 
 # Deliver every host-side bind-mount source the compose file names, when the
