@@ -52,7 +52,10 @@ const tick = () => new Promise(r => setTimeout(r, 120));
   await w.renderTopWorkspace(wsb);
   await tick();
   assert.match(wsb.textContent, /Case:\s*Acme IR/);
-  assert.strictEqual(wsb.querySelector('#ws-org b').textContent, 'Acme (OFM5G)', 'the org next to the case');
+  const orgA = wsb.querySelector('#ws-org-link'), caseA = wsb.querySelector('#ws-link');
+  assert.strictEqual(orgA.textContent, 'Acme (OFM5G)', 'the org next to the case');
+  assert.strictEqual(orgA.getAttribute('style'), caseA.getAttribute('style'), 'the org looks the same as the case');
+  assert.strictEqual(orgA.getAttribute('href'), '#cases', 'it opens Case Management, where the org is set');
 
   // a module page: read-only, never a picker
   const slot = w.document.querySelector('.velo-org-slot');

@@ -15,14 +15,16 @@ async function renderTopWorkspace(bar) {
     bar.innerHTML =
         `<span style="font-size:12px;color:#8b949e">Case:</span>
          <a href="#cases" id="ws-link" style="color:#58a6ff;font-weight:600">${escWs(name)}</a>
-         <span id="ws-org" style="font-size:12px;color:#8b949e" title="The case's Velociraptor org: everything this case does in Velociraptor runs there. Change it by editing the case.">Org: <b style="color:#c9d1d9;font-weight:600">${escWs(org)}</b></span>`;
+         <span style="font-size:12px;color:#8b949e;margin-left:8px">Org:</span>
+         <a href="#cases" id="ws-org-link" style="color:#58a6ff;font-weight:600" title="The case's Velociraptor org: everything this case does in Velociraptor runs there. Change it by editing the case.">${escWs(org)}</a>`;
     if (window.VeloOrg) window.VeloOrg.nameOf(org).then(n => {
-        const b = bar.querySelector('#ws-org b'); if (b) b.textContent = n;
+        const a = bar.querySelector('#ws-org-link'); if (a) a.textContent = n;
     });
-    bar.querySelector('#ws-link').addEventListener('click', function (e) {
+    // Both open Case Management: the org is set on the case there.
+    bar.querySelectorAll('#ws-link, #ws-org-link').forEach(el => el.addEventListener('click', function (e) {
         e.preventDefault();
         if (window.Alpine) Alpine.store('app').switchTab('cases');
-    });
+    }));
 }
 
 (function initWorkspaceBar() {
