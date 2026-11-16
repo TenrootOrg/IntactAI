@@ -36,6 +36,11 @@ from lib import clients as clients_lib, shell
 UNIT = "intact-qa-velociraptor"
 CLIENT_BIN = "/usr/local/bin/intact-qa-velociraptor-client"
 WRITEBACK = "/etc/velociraptor.writeback.yaml"
+# The client keeps a copy of its writeback beside it and restores the identity
+# from it when the main file is missing. Removing only WRITEBACK made the next
+# run's client come back under the previous run's id, so "a new C.<hex>" never
+# appeared and enrol_linux waited out its 600 s (2026-11-16).
+WRITEBACK_FILES = [WRITEBACK, WRITEBACK + ".bak"]
 
 # A repacked client is ~27 MB. The realistic failure is not "no file" but "a
 # 200 carrying an HTML error page" or a truncated body, both of which write a
@@ -82,6 +87,9 @@ def register(runner, cfg):
         # rather than filtered through the process umask afterwards. The same
         # masked-execute-bit bug has bitten the Velociraptor CLI and the legacy
         # client downloads already; the security phase checks for both.
+        # A run that died before teardown leaves its identity behind; start clean.
+        shell.sudo(["rm", "-f", *WRITEBACK_FILES], cfg.sudo_password,
+                   timeout=60, tl=tl, stage="enrol_linux")
         r = shell.sudo(["install", "-m", "0755", path, CLIENT_BIN],
                        cfg.sudo_password, timeout=120, tl=tl, stage="enrol_linux")
         ctx.check("the client is installed and executable", r.ok,
@@ -156,7 +164,7 @@ def register(runner, cfg):
 
         shell.sudo(["systemctl", "stop", UNIT + ".service"], cfg.sudo_password,
                    timeout=120, tl=tl, stage="teardown_linux")
-        shell.sudo(["rm", "-f", CLIENT_BIN, WRITEBACK], cfg.sudo_password,
+        shell.sudo(["rm", "-f", CLIENT_BIN, *WRITEBACK_FILES], cfg.sudo_password,
                    timeout=60, tl=tl, stage="teardown_linux")
 
         r = shell.run(["systemctl", "is-active", UNIT + ".service"])
