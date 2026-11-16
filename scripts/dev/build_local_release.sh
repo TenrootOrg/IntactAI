@@ -8,8 +8,8 @@
 # between backend-only edits.
 #
 # What it does:
-#   1. The other 7 modules (elk/iris/timesketch/plaso/velociraptor/volweb/
-#      portainer) are downloaded ONCE per tag into a local cache
+#   1. The other 8 modules (elk/iris/timesketch/plaso/velociraptor/volweb/
+#      portainer/presidio) are downloaded ONCE per tag into a local cache
 #      and reused on every later run for that tag — they don't change when
 #      you're iterating on backend code, so there's no reason to re-fetch
 #      them over a slow link every time.
@@ -38,7 +38,8 @@ BACKEND_CONTAINER="${INTACT_BACKEND_CONTAINER:-intact_backend}"
 # INTACT_LOCAL_RELEASE_MODULES narrows it (e.g. "velociraptor" for a quick
 # core + Velociraptor box); use its own INTACT_LOCAL_RELEASE_CACHE, since the
 # cache is one tarball per tag.
-CACHED_MODULES="${INTACT_LOCAL_RELEASE_MODULES:-elk,iris,timesketch,plaso,velociraptor,volweb,portainer}"
+# presidio is in ALWAYS_INSTALLED (lib/upgrade/plan.sh), so every install expects its asset.
+CACHED_MODULES="${INTACT_LOCAL_RELEASE_MODULES:-elk,iris,timesketch,plaso,velociraptor,volweb,portainer,presidio}"
 
 log() { printf '[local-release] %s\n' "$1"; }
 err() { printf '[local-release][ERROR] %s\n' "$1" >&2; }
