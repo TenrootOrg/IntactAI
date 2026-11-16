@@ -236,11 +236,35 @@ test_refreshed_modules_that_would_be_left_alone_are_re_applied() {
     assert_eq "${PLAN_ACTION[portainer]}" "skip:excluded by --only" "a switched-off tool is not started"
     assert_eq "${PLAN_ACTION[presidio]}" "skip:excluded by --only" "an unticked install is not installed"
     assert_eq "${PLAN_ACTION[plaso]}" "skip:excluded by --only" "no version change past the downgrade/disk checks"
-    assert_eq "${PLAN_ACTION[velociraptor]}" "skip:excluded by --only" "plan.sh owns velociraptor"
+    assert_eq "${PLAN_ACTION[velociraptor]}" "skip:excluded by --only" "no velociraptor image in the package: a re-apply would only restart it"
     assert_eq "${PLAN_ACTION[backend]:-}" "" "the platform's own dirs are not modules of the loop"
     assert_eq "$U_STEP_TOTAL" "3" "two more steps for the progress count"
     for m in iris timesketch volweb elk portainer presidio plaso velociraptor; do unset -f "upgrade_module_${m}"; done
     unset -f _plan_module_enabled
+}
+
+# The 20261116 Import modal ticks only rows whose version changes, so a
+# same-version velociraptor arrives as "excluded by --only" with its image in
+# the package -- and RunScript never reached the box.
+test_velociraptor_left_out_by_only_is_re_applied_when_the_package_carries_its_image() {
+    declare -gA PLAN_ACTION=([velociraptor]="skip:excluded by --only") PLAN_NOTE=() \
+                PLAN_CURRENT=([velociraptor]=0.77.3) PLAN_TARGET=([velociraptor]=0.77.3)
+    upgrade_module_velociraptor() { :; }
+    _plan_module_enabled() { :; }
+    local UPKG_DIR; UPKG_DIR="$(mktemp -d)"; mkdir -p "$UPKG_DIR/images"
+    _intact_reapply_refreshed "$(mktemp)"
+    assert_eq "${PLAN_ACTION[velociraptor]}" "skip:excluded by --only" "no image tar: left alone"
+    : > "$UPKG_DIR/images/velociraptor-0.77.3.tar"
+    _intact_reapply_refreshed "$(mktemp)"
+    assert_eq "${PLAN_ACTION[velociraptor]}" "upgrade" "its image is in the package"
+    PLAN_ACTION[velociraptor]="skip:excluded by --only"; rm "$UPKG_DIR/images/velociraptor-0.77.3.tar"
+    local UPKG_DEFERRED="iris=/x/iris.tar velociraptor=/x/velo.tar"
+    _intact_reapply_refreshed "$(mktemp)"
+    assert_eq "${PLAN_ACTION[velociraptor]}" "upgrade" "a lazily extracted asset counts too"
+    PLAN_ACTION[velociraptor]="skip:excluded by --skip"
+    _intact_reapply_refreshed "$(mktemp)"
+    assert_eq "${PLAN_ACTION[velociraptor]}" "skip:excluded by --skip" "--skip means hands off"
+    unset -f upgrade_module_velociraptor _plan_module_enabled
 }
 
 test_nothing_refreshed_changes_no_plan() {

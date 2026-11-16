@@ -123,12 +123,14 @@ _intact_note_refreshed() {
 # plan_build labels --only BEFORE it looks at any of that, so the label also
 # covers a switched-off tool, an unticked install and a version change the
 # operator left out (one that never went through the downgrade or disk checks).
-# Not velociraptor: plan.sh owns it, and without its package tar a re-apply is
-# only a restart onto the same old image.
+# velociraptor: plan.sh re-applies it whenever --only does not leave it out.
+# The 20261116 dashboard's Import modal does leave it out -- it ticks only rows
+# whose version changes -- so here it is taken back in when the package really
+# carries its image (offline / Import). An online --only run did not download
+# that asset, and a re-apply without it is only a restart onto the old image.
 _intact_reapply_refreshed() {
     local f="$1" m why
     for m in $(printf '%s\n' "${!PLAN_ACTION[@]}" | sort); do
-        [[ "$m" == velociraptor ]] && continue
         case "${PLAN_ACTION[$m]:-}" in
             noop:*) ;;
             "skip:excluded by --only")
@@ -137,7 +139,12 @@ _intact_reapply_refreshed() {
             *) continue ;;
         esac
         declare -F "upgrade_module_${m}" >/dev/null || continue
-        if [[ -s "$f" ]] && grep -qx "$m" "$f"; then
+        if [[ "$m" == velociraptor ]]; then
+            [[ "${PLAN_ACTION[$m]}" == "skip:excluded by --only" ]] || continue
+            [[ -f "${UPKG_DIR:-/nonexistent}/images/velociraptor-${PLAN_TARGET[$m]}.tar" \
+               || " ${UPKG_DEFERRED:-} " == *" velociraptor="* ]] || continue
+            why="its image bakes Intact's artifacts"
+        elif [[ -s "$f" ]] && grep -qx "$m" "$f"; then
             why="this release changed its files"
         elif _intact_compose_drifted "$m"; then
             why="its containers no longer match its compose file"
