@@ -4,8 +4,8 @@
 # The real script runs end to end against a fake risx box and a fake Intact
 # checkout. sudo, docker, install.sh and the adopt script are stubs that record
 # what they were asked to do; every answer is fed on stdin exactly as an
-# operator would type it. A normal run asks exactly twice: "r" at the pause,
-# and "y" on the config. install.sh and the identity swap have their own suites.
+# operator would type it. A normal run asks three times: Enter on the backup
+# choice (configuration + data), "r" at the pause, and "y" on the config. install.sh and the identity swap have their own suites.
 
 source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
 
@@ -53,7 +53,7 @@ EOF
     cat > "$W/intact/scripts/adopt_velociraptor_identity.sh" <<EOF
 echo "adopt \$*" >> "$W/log/calls"
 # record what the datastore dir held, then "adopt": install the backed-up config
-[[ "\$*" == *--datastore* ]] && find "\${@: -1}" -type f | sed 's|.*/velociraptor/|ds: |' >> "$W/log/calls"
+[[ "\$*" == *--datastore* ]] && { d="\${@: -1}"; find "\$d" -type f | sed "s|^\$d/|ds: |"; } >> "$W/log/calls"
 [[ -n "\${ADOPT_NOOP:-}" ]] && exit 0
 # write into the checkout this stub lives in (a cloned one in the clone test)
 d="\$(dirname "\$0")/../data/velociraptor"; mkdir -p "\$d"
@@ -91,17 +91,18 @@ _run() {
            bash "$W/intact/scripts/migrate/risx_to_intact.sh" --backup-dir "$W/backup" "$@" 2>&1)" || RC=$?
 }
 
-# The only two answers a normal run needs: r at the pause, y on the config.
-NORMAL='r\ny\n'
+# The answers a normal run needs: Enter (= configuration + data) on the backup
+# choice, r at the pause, y on the config.
+NORMAL='\nr\ny\n'
 
-test_a_normal_run_asks_twice_and_does_every_step_in_order() {
+test_a_normal_run_asks_three_times_and_does_every_step_in_order() {
     _world
     _run "$NORMAL"
     assert_eq "$RC" "0" "the whole run must succeed: $(tail -5 <<<"$OUT")"
     local calls; calls="$(cat "$W/log/calls")"
     assert_contains "$calls" "cleanup " "risx removed with its own cleanup.sh"
     assert_contains "$calls" "install " "install.sh ran"
-    assert_contains "$calls" "adopt --from $W/backup -y --datastore" "adopted, always with the history"
+    assert_contains "$calls" "adopt --from $W/backup -y --datastore $W/backup/datastore" "adopted with the moved history"
     assert_not_contains "$calls" "reboot" "no reboot"
     local c i a
     c=$(grep -n '^cleanup' "$W/log/calls" | cut -d: -f1); i=$(grep -n '^install' "$W/log/calls" | cut -d: -f1)
@@ -112,8 +113,8 @@ test_a_normal_run_asks_twice_and_does_every_step_in_order() {
     for s in find backup copied removed config installed adopted verified; do
         assert_true grep -qx "$s" "$(_state)"
     done
-    # exactly two answers were read
-    assert_eq "$(grep -c 'answer:' "$W"/backup/risx_to_intact-*.log)" "2" "a normal run asks twice"
+    # exactly three answers were read
+    assert_eq "$(grep -c 'answer:' "$W"/backup/risx_to_intact-*.log)" "3" "a normal run asks three times"
 }
 
 test_the_adopted_users_get_the_stored_passwords() {
@@ -173,35 +174,92 @@ test_every_known_default_is_flagged_not_only_123123() {
     printf '#!/bin/bash\nsed -i "0,/password:.*/s//password: changeme/" "$1"\n' > "$W/bin/ed-weak"
     chmod +x "$W/bin/ed-weak"
     RC=0
-    OUT="$(printf 'r\ny\n' | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=ed-weak \
+    OUT="$(printf '\nr\ny\n' | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=ed-weak \
            RISX_ROOT="$W/risx/setup_platform" \
            bash "$W/intact/scripts/migrate/risx_to_intact.sh" --backup-dir "$W/backup" 2>&1)" || RC=$?
     assert_contains "$OUT" "publicly known password"
 }
 
-test_the_archive_keeps_history_and_drops_the_installers() {
+test_data_mode_moves_the_datastore_instead_of_archiving_it() {
     _world
     _run "$NORMAL"
-    local tarball; tarball="$(ls "$W"/backup/velociraptor-full-*.tar.gz)"
-    local list; list="$(tar -tzf "$tarball")"
-    assert_contains "$list" "velociraptor/server.config.yaml"
-    assert_contains "$list" "velociraptor/clients/C.1234/collections/flow.json" "client records kept"
-    assert_not_contains "$list" "clients/linux" "repacked installers left out"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_true test -f "$W/backup/datastore/clients/C.1234/collections/flow.json"
+    assert_false compgen -G "$W/backup/velociraptor-full-*.tar.gz" "no archive any more"
+    assert_contains "$OUT" "same disk, instant"
     assert_contains "$(cat "$W/log/calls")" "ds: clients/C.1234/collections/flow.json" "history handed to the adopt step"
-    assert_eq "$(stat -c %a "$tarball")" "600" "the archive holds the CA key"
+    assert_eq "$(stat -c %a "$W/backup/datastore")" "700" "the datastore holds the CA key"
+    assert_eq "$(stat -c %U "$W/backup/datastore/clients/C.1234/collections/flow.json")" "$(id -un)" "yours, so scp can read it"
+    assert_true grep -qx backup_mode=data "$(_state)"
 }
 
-test_the_pause_shows_scp_lines_and_waits_for_r() {
+test_configuration_only_brings_the_identity_and_no_history() {
     _world
-    _run 'c\nx\n'                            # anything but r keeps waiting; then end of input
+    _run '1\nr\ny\n'
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    local calls; calls="$(cat "$W/log/calls")"
+    assert_contains "$calls" "adopt --from $W/backup -y"
+    assert_not_contains "$calls" "--datastore" "no history in configuration-only mode"
+    assert_false test -e "$W/backup/datastore"
+    assert_true test -f "$W/backup/server.config.yaml"
+    assert_contains "$OUT" "configuration only: the old history stays behind"
+}
+
+test_the_backup_option_skips_the_question() {
+    _world
+    _run 'r\ny\n' --backup config
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_eq "$(grep -c 'answer:' "$W"/backup/risx_to_intact-*.log)" "2" "no backup question"
+    assert_not_contains "$(cat "$W/log/calls")" "--datastore"
+    _world
+    _run 'x\n' --backup everything
     assert_ne "$RC" "0"
-    assert_contains "$OUT" "PowerShell:"
-    assert_contains "$OUT" "bash (Linux/macOS):"
+    assert_contains "$OUT" "--backup must be config or data"
+}
+
+test_the_pause_shows_one_scp_line_and_waits_for_r() {
+    _world
+    _run '\nc\nx\n'                          # anything but r keeps waiting; then end of input
+    assert_ne "$RC" "0"
+    assert_not_contains "$OUT" "PowerShell:"
+    assert_eq "$(grep -c 'scp -r' <<<"$OUT")" "1" "one command for every shell"
     assert_contains "$OUT" "scp -r \"$(id -un)@"
+    assert_contains "$OUT" "sudo mv $W/backup/datastore $W/risx/setup_platform/workdir/velociraptor/velociraptor" "how to put risx back"
     assert_contains "$OUT" "NEXT: risx-mssp is REMOVED"
     assert_eq "$(stat -c %a "$W/backup/server.config.yaml")" "600" "the config copy is a credential"
     assert_false grep -q '^cleanup' "$W/log/calls"
-    assert_true test -f "$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml"
+}
+
+test_a_rerun_after_stopping_at_the_pause_still_removes_risx() {
+    # data mode moved risx's server.config.yaml away with the datastore: a
+    # re-run must still find risx, and must still run its cleanup.sh
+    _world
+    _run '\n'                                # backed up (moved), stopped at the pause
+    assert_false test -e "$W/risx/setup_platform/workdir/velociraptor/velociraptor"
+    _run 'r\ny\n'
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_not_contains "$OUT" "no longer on this box"
+    assert_eq "$(grep -c '^cleanup' "$W/log/calls")" "1" "risx removed by its own cleanup.sh"
+    assert_contains "$(cat "$W/log/calls")" "--datastore $W/backup/datastore"
+}
+
+test_an_archive_from_the_old_script_is_unpacked_once_and_reused() {
+    _world
+    # a backup the previous version made, stopped before the install
+    mkdir -p "$W/backup"
+    local velo="$W/risx/setup_platform/workdir/velociraptor"
+    cp "$velo/velociraptor/server.config.yaml" "$W/backup/"
+    tar -czf "$W/backup/velociraptor-full-20261112-120000.tar.gz" -C "$velo" velociraptor
+    rm -rf "$W/risx/setup_platform/workdir/"*
+    printf 'find\nbackup\ndskb=10\ncopied\nremoved\n' > "$(_state)"
+    ADOPT_NOOP=1 _run 'y\n'                  # the adopt "fails": a retry follows
+    assert_ne "$RC" "0"
+    assert_contains "$OUT" "unpacking $W/backup/velociraptor-full-20261112-120000.tar.gz into $W/backup/datastore"
+    assert_contains "$(cat "$W/log/calls")" "ds: clients/C.1234/collections/flow.json"
+    _run ''
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_not_contains "$OUT" "unpacking" "the retry reuses the unpacked datastore"
+    assert_contains "$(cat "$W/log/calls")" "--datastore $W/backup/datastore"
 }
 
 test_the_client_count_is_reported() {
@@ -212,7 +270,7 @@ test_the_client_count_is_reported() {
 
 test_a_rerun_after_risx_is_gone_continues() {
     _world
-    _run 'r\n'                               # removed, then end of input at the config
+    _run '\nr\n'                             # removed, then end of input at the config
     assert_true grep -qx removed "$(_state)"
     assert_false grep -qx config "$(_state)"
     _run 'y\n'
@@ -223,7 +281,7 @@ test_a_rerun_after_risx_is_gone_continues() {
 
 test_a_removal_cut_off_midway_continues_from_the_backup() {
     _world
-    _run ''                                  # backed up, stopped at the pause
+    _run '\n'                                # backed up, stopped at the pause
     rm -rf "$W/risx/setup_platform/workdir/"*  # cleanup ran but was never recorded
     _run 'y\n'
     assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
@@ -236,7 +294,7 @@ test_a_wrong_domain_is_caught_before_install() {
     printf '#!/bin/bash\nsed -i "s/^domain:.*/domain: elsewhere.example/" "$1"\n' > "$W/bin/ed-wrong"
     chmod +x "$W/bin/ed-wrong"
     RC=0
-    OUT="$(printf 'r\ny\nn\n' | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=ed-wrong \
+    OUT="$(printf '\nr\ny\nn\n' | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=ed-wrong \
            RISX_ROOT="$W/risx/setup_platform" \
            bash "$W/intact/scripts/migrate/risx_to_intact.sh" --backup-dir "$W/backup" 2>&1)" || RC=$?
     assert_contains "$OUT" "NOT what the clients dial (10.9.8.7)"

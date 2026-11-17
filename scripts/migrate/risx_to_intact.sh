@@ -7,15 +7,16 @@
 #
 # Run it as your normal login user (sudo is used where needed), from anywhere:
 #
-#   bash risx_to_intact.sh [--backup-dir DIR] [--package TAR]
+#   bash risx_to_intact.sh [--backup config|data] [--backup-dir DIR] [--package TAR]
 #
 # Outside an Intact checkout it clones the latest Intact release into ~/intact
 # (or $INTACT_DIR) and carries on from there. Run it; do not pipe it into bash.
 #
 # What it does — it stops only twice:
 #   1 find risx and show the fleet's identity
-#   2 back up (graceful stop, server.config.yaml, the datastore)
-#   3 PAUSE: scp lines to copy the backup off; press r to continue  <- you
+#   2 back up (graceful stop, server.config.yaml; with "data" the datastore is
+#     MOVED into the backup folder — instant on the same disk, no archive)
+#   3 PAUSE: one scp line to copy the backup off; press r to continue  <- you
 #   4 remove risx (its own cleanup.sh)
 #   5 config.yaml in nano, then: y = install / e = edit again        <- you
 #   6 install.sh   7 adopt the identity, with the old history   8 verify
@@ -28,6 +29,9 @@
 # (mode 600); on an error it lists every log to collect.
 #
 # Options:
+#   --backup MODE      config = the fleet's identity only (clients reconnect, the
+#                      old history and client list do not come across);
+#                      data = also the history. Asked at step 2 when not given.
 #   --backup-dir DIR   where the backup lives (default ~/velociraptor_backup)
 #   --package TAR      air-gapped: passed to install.sh --package
 # Environment: RISX_ROOT (the risx setup_platform dir, if discovery fails),
@@ -71,10 +75,14 @@ source "$ROOT/lib/secrets.sh" || die "cannot load $ROOT/lib/secrets.sh"   # INTA
 
 BACKUP_DIR="${BACKUP_DIR:-$HOME/velociraptor_backup}"
 PACKAGE=""
+BACKUP_MODE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --backup-dir) BACKUP_DIR="${2:?--backup-dir needs a directory}"; shift ;;
         --package)    PACKAGE="${2:?--package needs a file}"; shift ;;
+        --backup)     BACKUP_MODE="${2:?--backup needs config or data}"; shift
+                      [[ "$BACKUP_MODE" == config || "$BACKUP_MODE" == data ]] \
+                          || die "--backup must be config or data, not '$BACKUP_MODE'" ;;
         -h|--help)    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
@@ -85,6 +93,8 @@ BACKUP_DIR="$(realpath -m "$BACKUP_DIR")"
 [[ -n "$PACKAGE" ]] && PACKAGE="$(realpath -m "$PACKAGE")"
 STATE="$BACKUP_DIR/.risx_to_intact.${RISX_MIG_MACHINE:-$(cat /etc/machine-id 2>/dev/null || hostname)}.state"
 CFG="$ROOT/config.yaml"
+# data mode: risx's datastore directory, moved here at step 2 (see move_datastore)
+DS="$BACKUP_DIR/datastore"
 
 [[ "$(id -u)" -eq 0 ]] && die "run as your normal login user, not root (the script calls sudo itself)"
 command -v python3 >/dev/null || die "python3 is required"
@@ -131,11 +141,21 @@ confirm() {  # y/N, with the answer in the log
     [[ "$_a" == y || "$_a" == Y || "$_a" == yes ]]
 }
 risx_present() {
-    if [[ -n "${RISX_ROOT:-}" ]]; then
-        [[ -f "$RISX_ROOT/workdir/velociraptor/velociraptor/server.config.yaml" ]]
-    else
-        compgen -G "/home/*/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml" >/dev/null
+    local base="${RISX_ROOT:-/home/*/setup_platform}"
+    compgen -G "$base/workdir/velociraptor/velociraptor/server.config.yaml" >/dev/null && return 0
+    # data mode moved the datastore out at step 2; the rest of risx stays
+    # until its cleanup.sh empties workdir/
+    [[ -d "$DS" ]] && compgen -G "$base/workdir/velociraptor" >/dev/null
+}
+state_val() { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | tail -1; }
+# config | data. A state written before the choice existed: data when the
+# backup holds any history (a moved datastore or an old archive).
+backup_mode() {
+    local m; m="$(state_val backup_mode)"
+    if [[ -z "$m" ]]; then
+        if [[ -d "$DS" ]] || compgen -G "$BACKUP_DIR/velociraptor-full-*.tar.gz" >/dev/null; then m=data; else m=config; fi
     fi
+    echo "$m"
 }
 free_kb() { df -Pk "$1" 2>/dev/null | awk 'NR==2{print $4}'; }
 
@@ -185,45 +205,75 @@ PYEOF
 
 find_risx() {
     if done_step find; then          # re-run: re-read what later steps need
-        discover_risx; identity "$VELO_DATA/server.config.yaml" sudo; return 0
+        # From the state, not discover_risx: in data mode the datastore (and
+        # risx's server.config.yaml with it) has already moved to the backup.
+        RISX_ROOT="${RISX_ROOT:-$(state_val risx_root)}"
+        if [[ -n "$RISX_ROOT" ]]; then VELO_DIR="$RISX_ROOT/workdir/velociraptor"; VELO_DATA="$VELO_DIR/velociraptor"
+        else discover_risx; fi
+        if done_step backup; then identity "$BACKUP_DIR/server.config.yaml"
+        else identity "$VELO_DATA/server.config.yaml" sudo; fi
+        return 0
     fi
     step find "1. Find risx-mssp and its Velociraptor identity"
     discover_risx
+    echo "risx_root=$RISX_ROOT" >> "$STATE"
     say "this is the identity your whole fleet is pinned to (write the fingerprint down):"
     identity "$VELO_DATA/server.config.yaml" sudo
     show_identity
     mark find
 }
 
+choose_mode() {
+    MODE="${BACKUP_MODE:-$(state_val backup_mode)}"
+    while [[ -z "$MODE" ]]; do
+        cat <<EOF
+
+  What should come across from risx?
+    1  configuration only — the fleet's identity. Every client keeps its ID and
+       reconnects; the old hunts, collections and client list stay behind.
+    2  configuration + data — also that history. The datastore is moved, not
+       copied: instant on the same disk, and nothing is zipped or unzipped.
+EOF
+        local ans; ask ans "  1 or 2 [2]: "
+        case "${ans:-2}" in 1) MODE=config ;; 2) MODE=data ;; *) warn "type 1 or 2" ;; esac
+    done
+    [[ "$(state_val backup_mode)" == "$MODE" ]] || echo "backup_mode=$MODE" >> "$STATE"
+    say "backup: $([[ $MODE == data ]] && echo 'configuration + data' || echo 'configuration only')"
+}
+
+# risx's cleanup.sh empties workdir/, so the datastore has to leave it first.
+# A rename, not tar.gz + unzip: risx is removed next anyway, and on the same
+# disk it is instant and needs no space. Another disk makes mv a plain copy.
+move_datastore() {
+    if [[ -d "$DS" ]]; then say "the datastore is already in $DS"; return 0; fi
+    local need; need=$(sudo du -sk --exclude=clients/linux --exclude=clients/mac --exclude=clients/windows "$VELO_DATA" | cut -f1)
+    if [[ "$(stat -c %d "$VELO_DATA")" == "$(stat -c %d "$BACKUP_DIR")" ]]; then
+        say "moving the datastore ($((need/1024)) MB) to $DS — same disk, instant"
+    else
+        (( $(free_kb "$BACKUP_DIR") > need )) \
+            || die "not enough free space in $BACKUP_DIR: the datastore is $((need/1024)) MB, $(( $(free_kb "$BACKUP_DIR")/1024 )) MB free"
+        say "moving the datastore ($((need/1024)) MB) to $DS — another disk, so this is a copy"
+    fi
+    sudo mv "$VELO_DATA" "$DS" || die "could not move $VELO_DATA to $DS"
+    # yours, like the rest of the backup, so the scp in step 3 can read it
+    sudo chown -R "$(id -un):$(id -gn)" "$DS" && chmod 700 "$DS"
+    echo "dskb=$need" >> "$STATE"
+}
+
 backup() {
-    step backup "2. Back up the Velociraptor files to $BACKUP_DIR" || return 0
+    step backup "2. Back up to $BACKUP_DIR" || return 0
+    choose_mode
     # A graceful stop flushes the fleet list (client_info/snapshot.json); without
     # it Intact shows an EMPTY client list until each endpoint re-enrols.
     graceful_stop_legacy_velo
     mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
-    local need have
-    need=$(sudo du -sk --exclude=clients/linux --exclude=clients/mac --exclude=clients/windows "$VELO_DATA" | cut -f1)
-    have=$(free_kb "$BACKUP_DIR")
-    (( have > need )) || die "not enough free space in $BACKUP_DIR: the datastore is $((need/1024)) MB, $((have/1024)) MB free"
     sudo install -m 600 -o "$(id -un)" -g "$(id -gn)" "$VELO_DATA/server.config.yaml" "$BACKUP_DIR/server.config.yaml" \
         || die "could not copy server.config.yaml"
     sudo install -m 600 -o "$(id -un)" -g "$(id -gn)" "$VELO_DATA/client.config.yaml" "$BACKUP_DIR/client.config.yaml" 2>/dev/null || true
     local fp_src="$ID_FP"
     identity "$BACKUP_DIR/server.config.yaml"
     [[ "$ID_FP" == "$fp_src" ]] || die "the copied server.config.yaml does not match the original"
-
-    # Datastore + filestore (history and the fleet list). The repacked client
-    # installers are left out: Intact builds its own, and they are most of the size.
-    local tarball rc=0; tarball="$BACKUP_DIR/velociraptor-full-$(date +%Y%m%d-%H%M%S).tar.gz"
-    say "archiving the datastore ($((need/1024)) MB; this can take a few minutes)…"
-    sudo tar -czf "$tarball" -C "$(dirname "$VELO_DATA")" \
-        --exclude='velociraptor/clients/linux' --exclude='velociraptor/clients/mac' \
-        --exclude='velociraptor/clients/windows' "$(basename "$VELO_DATA")" || rc=$?
-    if (( rc != 0 )); then sudo rm -f "$tarball"; die "the archive failed (tar exit $rc) — nothing else was done"; fi
-    sudo chown "$(id -un):$(id -gn)" "$tarball" && chmod 600 "$tarball"
-    tar -tzf "$tarball" "velociraptor/server.config.yaml" >/dev/null 2>&1 \
-        || die "the archive is not readable — nothing else was done"
-    echo "dskb=$need" >> "$STATE"
+    [[ "$MODE" == data ]] && move_datastore
     echo; ls -lh "$BACKUP_DIR"
     mark backup
 }
@@ -235,13 +285,15 @@ pause_for_copy() {
     cat <<EOF
 
   The backup is ready in ${BACKUP_DIR} (it holds the fleet's CA key: a credential).
-  To keep a copy off this box, run on your laptop:
+  To keep a copy off this box, run on your laptop (PowerShell or a Linux/macOS shell):
 
-    PowerShell:              scp -r "${src}" .
-    bash (Linux/macOS):      scp -r "${src}" .
+    scp -r "${src}" .
 
   NEXT: risx-mssp is REMOVED from this box.
   (Ctrl+C stops here; risx's Velociraptor is stopped — to start it again:
+EOF
+    [[ "$(backup_mode)" == data ]] && echo "   sudo mv ${DS} ${VELO_DATA}"
+    cat <<EOF
    docker update --restart=unless-stopped velociraptor && docker start velociraptor)
 
 EOF
@@ -257,8 +309,9 @@ remove_risx_box() {
     step removed "4. Remove risx-mssp from this machine" || return 0
     local cleanup="$RISX_ROOT/scripts/cleanup.sh"
     [[ -f "$cleanup" ]] || die "no $cleanup — remove risx by hand, then re-run"
-    [[ -s "$BACKUP_DIR/server.config.yaml" ]] && compgen -G "$BACKUP_DIR/velociraptor-full-*.tar.gz" >/dev/null \
-        || die "the backup is incomplete — refusing to remove risx"
+    [[ -s "$BACKUP_DIR/server.config.yaml" ]] || die "the backup is incomplete — refusing to remove risx"
+    [[ "$(backup_mode)" == config || -d "$DS" ]] \
+        || die "the datastore is not in $DS — refusing to remove risx (re-run to move it)"
     (cd "$RISX_ROOT/scripts" && bash cleanup.sh) || warn "cleanup.sh reported a problem"
     mark removed      # from here risx is gone even if the rest is interrupted
     local left; left="$(docker ps -a --format '{{.Names}}' | grep -v '^intact_' || true)"
@@ -346,34 +399,45 @@ install_intact() {
     mark installed
 }
 
+# The cheapest history source the backup holds: the moved datastore as it is;
+# an archive from an older version of this script, unpacked ONCE into $DS
+# and kept there, so a retry does not unpack it again.
+history_source() {
+    [[ "$(backup_mode)" == data ]] || { say "configuration only: the old history stays behind"; return 1; }
+    [[ -d "$DS" ]] && return 0
+    local tarball; tarball="$(ls -t "$BACKUP_DIR"/velociraptor-full-*.tar.gz 2>/dev/null | head -1)"
+    [[ -n "$tarball" ]] || { warn "no datastore in $DS: only the identity moves, history starts empty"; return 1; }
+    local dskb; dskb="$(state_val dskb)"; dskb="${dskb:-$(( $(stat -c %s "$tarball") * 3 / 1024 ))}"
+    if (( $(free_kb "$BACKUP_DIR") < dskb )); then
+        warn "not enough free space to unpack $tarball (about $((dskb/1024)) MB): the history stays in it"
+        return 1
+    fi
+    say "unpacking $tarball into $DS (once; a retry reuses it)…"
+    sudo rm -rf "$DS.part"; mkdir -p "$DS.part" && sudo tar -xzf "$tarball" -C "$DS.part" --strip-components=1 \
+        || { sudo rm -rf "$DS.part"; die "could not unpack $tarball"; }
+    sudo chown -R "$(id -un):$(id -gn)" "$DS.part" && mv "$DS.part" "$DS"
+}
+
 adopt() {
     step adopted "7. Adopt the fleet's Velociraptor identity, with its history" || return 0
     echo "  the fleet's CA     : $ID_FP"
     echo "  CA on this box now : $(live_fp || true)"
-    local tarball extract="" ds=()
-    tarball="$(ls -t "$BACKUP_DIR"/velociraptor-full-*.tar.gz 2>/dev/null | head -1)"
-    if [[ -z "$tarball" ]]; then
-        warn "no datastore archive in $BACKUP_DIR: only the identity moves, history starts empty"
-    else
-        # Unpacked here, then copied into the datastore volume: about 2x its size.
-        local dskb; dskb="$(sed -n 's/^dskb=//p' "$STATE" | tail -1)"
-        dskb="${dskb:-$(( $(stat -c %s "$tarball") * 3 / 1024 ))}"
-        if (( $(free_kb "$BACKUP_DIR") < dskb * 2 )); then
-            warn "not enough free space to bring the old history (about $((dskb*2/1024)) MB needed)."
-            warn "  The identity still moves and clients reconnect; the history stays in $tarball."
+    local ds=()
+    if history_source; then
+        # One copy, into the Velociraptor datastore volume (adopt's rsync).
+        local dskb root; dskb="$(state_val dskb)"; dskb="${dskb:-0}"
+        root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)"
+        if [[ -n "$root" ]] && (( $(free_kb "$root") < dskb )); then
+            warn "not enough free space under $root to bring the history (about $((dskb/1024)) MB needed)."
+            warn "  The identity still moves and clients reconnect; the history stays in $DS."
         else
-            extract="$BACKUP_DIR/.datastore-extract"
-            say "unpacking $tarball…"
-            sudo rm -rf "$extract"; mkdir -p "$extract"
-            sudo tar -xzf "$tarball" -C "$extract" || die "could not unpack $tarball"
-            ds=(--datastore "$extract/velociraptor")
+            ds=(--datastore "$DS")
         fi
     fi
     # -y: the address check is this script's (step 5), and there is nothing on a
     # fresh install to protect from the swap.
     local rc=0
     (cd "$ROOT" && sudo bash scripts/adopt_velociraptor_identity.sh --from "$BACKUP_DIR" -y "${ds[@]}") || rc=$?
-    [[ -n "$extract" ]] && sudo rm -rf "$extract"
     (( rc == 0 )) || die "the adopt step failed (exit $rc) — see adopt_velo_identity_*.log in $ROOT; re-run to retry"
     [[ "$(live_fp)" == "$ID_FP" ]] \
         || die "the adopt step finished but this box does not run $ID_FP — re-run to retry"
@@ -477,7 +541,7 @@ print("[migrate] clients known to the new server: %d" % len(hosts)
     - open https://${ID_HOST}/ and finish the first-login setup
     - a large fleet reconnects over minutes to hours; check that a collection reaches one client
     - ${BACKUP_DIR}/server.config.yaml is a plain copy of the fleet's CA key: delete it
-      (shred -u) once you are satisfied; keep the velociraptor-full-*.tar.gz archive safe
+      (shred -u) once you are satisfied$([[ -d "$DS" ]] && printf '; %s is the old datastore\n      (also holds the CA): keep it safe until you no longer need the history' "$DS")
 EOF
     echo; list_logs
 }

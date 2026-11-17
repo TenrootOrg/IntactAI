@@ -17,19 +17,20 @@ user (not root, not piped into `bash`):
 ```
 bash risx_to_intact.sh                 # or: bash ~/intact/scripts/migrate/risx_to_intact.sh
                                        # air-gapped: add --package <tar>
+                                       # skip the backup question: --backup config|data
 ```
 
-A normal run asks you **twice**:
+A normal run asks you **three times**:
 
 | Step | What it does | You |
 |---|---|---|
 | 1 Find | Locates risx; prints the CA fingerprint, the address clients dial and the nonce check (stops by itself if any is missing) | — |
-| 2 Back up | Stops risx's Velociraptor gracefully (so the fleet list is saved), copies `server.config.yaml`, archives the datastore into `~/velociraptor_backup` | — |
-| 3 Pause | Prints `scp` lines for PowerShell and bash to copy the backup off the box; the next step removes risx | press **r** |
+| 2 Back up | Asks what comes across: **1** configuration only (the fleet's identity: clients keep their IDs and reconnect; old hunts, collections and the client list stay behind) or **2** configuration + data. Stops risx's Velociraptor gracefully (so the fleet list is saved) and copies `server.config.yaml` into `~/velociraptor_backup`. With **2** the datastore is **moved** there as `datastore/` — instant on the same disk, nothing is zipped or unzipped | **1** / **2** (Enter = 2) |
+| 3 Pause | Prints one `scp -r` line (PowerShell and Linux/macOS alike) to copy the backup off the box, and how to put risx back; the next step removes risx | press **r** |
 | 4 Remove risx | risx's own `cleanup.sh` (asks about `--force` only if containers are left) | — |
 | 5 Config | Sets `domain` (and `agent_port`) to what clients dial, opens `nano config.yaml`, shows a summary | **y** install / **e** edit again |
 | 6 Install | `sudo bash install.sh` — downloads only the modules you enabled | — |
-| 7 Adopt | `scripts/adopt_velociraptor_identity.sh` with the old history (hunts, flows, fleet list) | — |
+| 7 Adopt | `scripts/adopt_velociraptor_identity.sh`; with **2** it copies `datastore/` once into Intact's datastore volume (a `velociraptor-full-*.tar.gz` left by an older version of the script is unpacked into `datastore/` once and reused) | — |
 | 8 Verify | The CA in use matches the backup; prints how many clients the server knows | — |
 
 Other questions appear only when something is wrong: the domain or port does not
