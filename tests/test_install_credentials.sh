@@ -323,6 +323,18 @@ test_credential_lines_exclude_machine_users() {
     assert_contains "$(credential_lines --ids)" "elk|elastic|" "ids for show-credentials"
 }
 
+# show-credentials printed passwords with no address to use them at (2026-11-17).
+test_access_urls_list_only_enabled_modules() {
+    _setup "$(printf '  iris:\n    enabled: false\n  elk:\n    enabled: true')"
+    local out; out="$(print_access_urls --enabled)"
+    assert_contains "$out" "Dashboard:"
+    assert_contains "$out" "https://10.0.0.5/"
+    assert_contains "$out" "Kibana:"
+    assert_not_contains "$out" "IRIS:" "a switched-off module has no address"
+    assert_not_contains "$out" "|" "QA parses the | rows of show-credentials"
+    assert_contains "$(print_access_urls)" "IRIS:" "without --enabled: every module, as the install prints"
+}
+
 test_show_credentials_refuses_non_root() {
     [[ $EUID -eq 0 ]] && { echo "  (skipped: running as root)"; return 0; }
     assert_false bash ../scripts/show-credentials.sh

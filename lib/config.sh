@@ -140,6 +140,29 @@ PYPORTS
 # One public port by .env var name, for printed URLs (prints even when invalid).
 public_port() { config_public_ports 2>/dev/null | sed -n "s/^$1=//p"; }
 
+# Where each web UI is: the install's last screen and show-credentials.sh, which
+# printed passwords with no address to use them at. --enabled: only the modules
+# config.yaml switches on. No `|` in these lines: QA parses show-credentials'
+# `module | user | password` rows.
+print_access_urls() {
+    local domain row m label url
+    domain="$(read_config "['domain']")"; [[ -n "$domain" ]] || domain=localhost
+    for row in "-|Dashboard|https://${domain}/" \
+               "velociraptor|Velociraptor|https://${domain}/velociraptor" \
+               "timesketch|TimeSketch|https://${domain}:$(public_port TIMESKETCH_PORT)" \
+               "iris|IRIS|https://${domain}:$(public_port IRIS_PORT)" \
+               "elk|Kibana|https://${domain}:$(public_port KIBANA_PORT)" \
+               "portainer|Portainer|https://${domain}:$(public_port PORTAINER_PORT)" \
+               "volweb|VolWeb|https://${domain}:$(public_port VOLWEB_PORT)"; do
+        IFS='|' read -r m label url <<<"$row"
+        if [[ "${1:-}" == --enabled && "$m" != - ]] && ! is_enabled "$(read_config "['modules']['$m']['enabled']")"; then
+            continue
+        fi
+        if [[ -t 1 ]]; then printf '  %-14s %b%s%b\n' "${label}:" "$BLUE" "$url" "$NC"
+        else printf '  %-14s %s\n' "${label}:" "$url"; fi      # no colour codes in a log or a pipe
+    done
+}
+
 # Write the public ports into the .env files compose reads. nginx and
 # Velociraptor listen on fixed container ports; only the host side moves.
 write_public_port_env() {

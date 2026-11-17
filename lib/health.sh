@@ -212,13 +212,7 @@ print_summary() {
 
     echo "Access your services:"
     echo ""
-    echo -e "  Dashboard:     ${BLUE}http://${domain}${NC}"
-    echo -e "  Velociraptor:  ${BLUE}https://${domain}/velociraptor${NC}"
-    echo -e "  TimeSketch:    ${BLUE}https://${domain}:$(public_port TIMESKETCH_PORT)${NC}"
-    echo -e "  IRIS:          ${BLUE}https://${domain}:$(public_port IRIS_PORT)${NC}"
-    echo -e "  Kibana:        ${BLUE}https://${domain}:$(public_port KIBANA_PORT)${NC}"
-    echo -e "  Portainer:     ${BLUE}https://${domain}:$(public_port PORTAINER_PORT)${NC}"
-    echo -e "  VolWeb:        ${BLUE}https://${domain}:$(public_port VOLWEB_PORT)${NC}"
+    print_access_urls
     echo ""
     echo "Next steps:"
     echo "  1. Access the dashboard to verify all services"

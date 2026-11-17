@@ -43,6 +43,10 @@ if [[ -n "$lines" ]]; then
     done <<< "$lines"
 fi
 [[ -n "$tok" ]] && printf 'Dashboard setup token | - | %s\n' "$tok"
+echo
+echo "Where to sign in:"
+print_access_urls --enabled
+echo "  (the Dashboard login is your own, set at first sign-in; forgot it: sudo bash scripts/reset-login.sh)"
 
 # The admin has now seen every password, so the backend's "Passwords were
 # changed for: ..." banner (the marker's "rotated" list) has done its job.
