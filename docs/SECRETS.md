@@ -152,6 +152,10 @@ by hand no longer re-opens setup on its own: setup needs the token. The
 - *Keep and warn:* a machine-used password still on a known default is
   kept, and Settings shows "default password in use" for that module.
 
+This runs for every installed module, including one the upgrade does not move
+and one the dashboard's `--only` leaves out — a module's version not changing
+is no reason to keep a public password.
+
 ## Rules for adding a new secret
 
 1. **Never hardcode** a secret in a tracked file. Even a "temporary"

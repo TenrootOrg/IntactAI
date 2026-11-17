@@ -101,11 +101,21 @@ come back, a cluster that went from green to yellow.
 `--dry-run` is the safe way to see what a package would do. It runs every
 verification and prints the full version table, then stops.
 
+`--only` names what *moves*; it is not a promise that nothing else is touched.
+An installed, enabled module left out of it that stays at its version is still
+re-applied when this release changed its compose or code files, or when its
+running containers no longer match its compose file (published ports, mounts) —
+and its human-only default passwords are still rotated. Velociraptor left out
+by `--only` is re-applied only when the package carries its image (an offline
+or Import package; an online `--only` run never downloaded it). `--skip` is
+hands-off: a skipped module is never touched.
+
 ## Reading the report
 
 ```
 Upgraded (3):
   ✔ elk 9.4.2 -> 9.4.4
+  ✔ iris v2.4.29 -> v2.4.29
 Skipped (2):
   · volweb — already at 3.16.0
 Applied but degraded (1):
@@ -115,6 +125,12 @@ Rolled back (1) — these are back on their previous version:
 NEEDS MANUAL REPAIR (1):
   ✘ timesketch — pg_dump failed (rc=1) AND ROLLBACK FAILED
 ```
+
+A line like `iris v2.4.29 -> v2.4.29` is a re-apply at the same version: the
+release changed that module's files, or its containers had drifted from its
+compose file, so it was recreated. Velociraptor is re-applied on every upgrade
+whose package carries it, because its image bakes Intact's own artifacts
+(about 300 MB and a one-minute restart; agents reconnect by themselves).
 
 The last two are different situations and are deliberately not merged.
 **Rolled back** means the module is back on its old version and working —
@@ -131,7 +147,7 @@ below exist to make that true rather than hoped-for.
 | Timesketch | `pg_dump` before anything, kept afterwards under `backups/timesketch/`. Row and OpenSearch document counts compared across the upgrade; a drop fails the module. A Postgres major-version change requires wiping the data volume, and that is **refused outright** if the dump failed. |
 | IRIS | `pg_dump` before the swap, kept under `backups/iris/`. |
 | VolWeb | `pg_dump` before the swap, kept under `backups/volweb/`. |
-| Velociraptor | The CA fingerprint is captured before and verified after. A changed CA fails the upgrade and restores the original config. |
+| Velociraptor | The CA fingerprint is captured before and verified after. A changed CA fails the upgrade and restores the original config. The running image is kept as `velociraptor-server:<version>-pre-upgrade` until the module succeeds, and a rollback puts it back. |
 | Elasticsearch | Downgrades refused. Credentials are never rotated. |
 | All | `.env` snapshotted and restored on failure. Named volumes are never removed except by Timesketch's Postgres-major path, which requires a dump. |
 
@@ -166,7 +182,12 @@ printed at the end of every run.
 - **The Velociraptor refresh failed.** Velociraptor itself is fine; artifacts
   or tools may be stale. Re-run just that step:
   `sudo bash scripts/upgrade.sh --velo-refresh --package <dir>`.
-- **Re-running is safe.** Modules already at the target version are skipped.
+- **Re-running is safe.** Modules already at the target version are skipped,
+  except the re-applies described under *Reading the report*.
+- **A download is slow or stalls.** Each release asset is fetched in 5-minute
+  attempts that resume where the last one stopped, so a slow connection is
+  replaced by a fresh one. It fails only after 3 attempts in a row add nothing,
+  or after 6 hours. The server must support resume (GitHub does).
 
 ## Air-gapped upgrades
 

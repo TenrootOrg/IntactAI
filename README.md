@@ -261,7 +261,12 @@ Notes:
 - **Module names** are `intact`, `presidio`, `elk`, `timesketch`, `plaso`, `iris`,
   `velociraptor`, `aws_sigma`, `o365rc`, `volweb`, `portainer`. Anything else is
   rejected with the list.
-- **`--skip <csv>`** is the inverse — upgrade everything except these.
+- **`--skip <csv>`** is the inverse — upgrade everything except these. Skipped
+  modules are never touched.
+- **`--only` does not freeze the rest.** A module left out of it that stays at its
+  version is still re-applied when the release changed its files or its containers
+  drifted from its compose file, and its human-only default passwords are rotated.
+  See *Reading the report* in [docs/UPGRADE.md](docs/UPGRADE.md).
 - **Afterwards the box calls itself `intact-20261021`** even though only some
   modules moved — `VERSION` is stamped from the tag you upgraded to, not from
   what actually changed. So a box that took `--only intact` reports the same
