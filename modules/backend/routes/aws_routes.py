@@ -105,8 +105,7 @@ def get_aws_status():
                 # what the page opens with: what was last picked there (may be empty)
                 'regions': (aws_config['regions'] if isinstance(aws_config.get('regions'), list)
                             else default_regions(aws_config)),
-                'time_window': (aws_config['time_window'] if isinstance(aws_config.get('time_window'), dict)
-                                else AWS_TIME_WINDOW_DEFAULT),
+                'time_window': _aws_window(aws_config.get('time_window')),
                 'access_key_id': (aws_config.get('access_key_id', '')[:6] + '...') if aws_config.get('access_key_id') else None,
             },
             'capabilities': {
@@ -202,7 +201,26 @@ def save_aws_regions():
     return jsonify({"regions": regions})
 
 
-AWS_TIME_WINDOW_DEFAULT = {"hours": 30 * 24}      # a month, until the operator changes it
+# CloudTrail's event history keeps 90 days; a scan reaches no further back. The page
+# starts there (89, not 90: the 90th day is already partly gone) and a saved start
+# older than that is shown as the default (2026-11-17: a July start was still offered).
+AWS_MAX_DAYS = 89
+AWS_TIME_WINDOW_DEFAULT = {"hours": AWS_MAX_DAYS * 24}
+
+
+def _aws_window(tw):
+    """The saved window, or the default when it is missing or reaches back further
+    than CloudTrail keeps."""
+    from datetime import datetime, timedelta, timezone
+    if not isinstance(tw, dict):
+        return AWS_TIME_WINDOW_DEFAULT
+    if "hours" in tw:
+        return tw if 0 < int(tw.get("hours") or 0) <= AWS_MAX_DAYS * 24 else AWS_TIME_WINDOW_DEFAULT
+    try:
+        start = datetime.strptime(str(tw.get("start") or "").rstrip("Z")[:16], "%Y-%m-%dT%H:%M").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return AWS_TIME_WINDOW_DEFAULT
+    return tw if start >= datetime.now(timezone.utc) - timedelta(days=AWS_MAX_DAYS) else AWS_TIME_WINDOW_DEFAULT
 _TW_TS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z?$")
 
 

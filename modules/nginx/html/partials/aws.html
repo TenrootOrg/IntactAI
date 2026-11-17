@@ -84,7 +84,7 @@
                              }
                              // The time window saved on the box (a month until the operator changes it).
                              if (!this.awsTimeWindowLoaded) {
-                                 setCloudTimeWindow('aws', (this.awsStatus.aws_credentials || {}).time_window || { hours: 720 });
+                                 setCloudTimeWindow('aws', (this.awsStatus.aws_credentials || {}).time_window || { hours: 89 * 24 });   // CloudTrail keeps 90 days
                                  this.awsTimeWindowSaved = JSON.stringify(cloudTimeWindowToSave('aws'));
                                  this.awsTimeWindowLoaded = true;
                              }

@@ -120,16 +120,21 @@ class TheScanRouteRemembers(unittest.TestCase):
             self.assertEqual(c.put("/api/aws/regions", json={"regions": ["us-east"]}).status_code, 400)
             self.assertEqual(c.put("/api/aws/regions", json={"regions": ["eu-west-2", "us-east-1"]}).status_code, 200)
 
-            # The time window: a month until changed, then whatever the page saved.
-            self.assertEqual(c.get("/api/aws/status").get_json()["aws_credentials"]["time_window"], {"hours": 720})
+            # The time window: 89 days (all CloudTrail keeps) until changed, then whatever
+            # the page saved -- unless that starts further back than CloudTrail keeps.
+            from datetime import datetime, timedelta, timezone
+            day = lambda n: (datetime.now(timezone.utc) - timedelta(days=n)).strftime("%Y-%m-%dT%H:%M:%S")
+            self.assertEqual(c.get("/api/aws/status").get_json()["aws_credentials"]["time_window"], {"hours": 89 * 24})
             self.assertEqual(c.put("/api/aws/time-window", json={"hours": 168}).status_code, 200)
             self.assertEqual(store["cloud"]["aws"]["time_window"], {"hours": 168})
-            fixed = {"start": "2026-09-01T00:00:00", "end": "2026-10-01T12:00:00"}
+            fixed = {"start": day(30), "end": day(10)}
             self.assertEqual(c.put("/api/aws/time-window", json=fixed).status_code, 200)
             self.assertEqual(c.get("/api/aws/status").get_json()["aws_credentials"]["time_window"], fixed)
             open_end = {"start": "2025-09-01T10:49:00", "end": ""}
             self.assertEqual(c.put("/api/aws/time-window", json=open_end).status_code, 200)
             self.assertEqual(store["cloud"]["aws"]["time_window"], open_end)
+            self.assertEqual(c.get("/api/aws/status").get_json()["aws_credentials"]["time_window"], {"hours": 89 * 24},
+                             "a start older than CloudTrail keeps is offered as the 89-day default")
             self.assertEqual(c.put("/api/aws/time-window", json=fixed).status_code, 200)
             for bad in ({"hours": 0}, {"hours": "x"}, {"hours": 99999}, {"start": "2026-10-01T00:00", "end": "2026-09-01T00:00"},
                         {"start": "yesterday", "end": "2026-10-01T00:00"}, []):
