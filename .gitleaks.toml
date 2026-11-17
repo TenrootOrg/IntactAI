@@ -90,6 +90,16 @@ keywords = ["sk-or-v1-"]
 [allowlist]
 description = "Documented dev placeholders, public Microsoft GUIDs, IOC examples, test fixtures"
 
+# Two HISTORY commits only (2026-11-12): tests/test_risx_to_intact.sh carried a
+# fake PEM private-key block as a fixture ("FAKEKEY"), replaced by a non-PEM
+# string in 00fac033. Exempted by commit, not by path, so a key committed to
+# that file (or anywhere) after those two commits is still caught. These two
+# kept secret-scan red on every push since.
+commits = [
+  "09fcd759f9b1501c989545206cc85082837c1562",
+  "2c85e4ce94eff0c58f71c62fdb973bfcd9cb6b27",
+]
+
 paths = [
   # ── Runtime / generated data on disk (all gitignored) ──
   # gitleaks `detect --no-git` walks every file regardless of gitignore;
