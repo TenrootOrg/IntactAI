@@ -187,6 +187,13 @@ if [ -d "$REPO_DIR/data/yara-seed" ]; then
     sudo mkdir -p "$STAGE/data"
     sudo rsync -a "$REPO_DIR/data/yara-seed" "$STAGE/data/"
 fi
+# ...and data/tools_inventory.yaml (tracked), for the same reason: without it the
+# velociraptor asset logged "tools_inventory.yaml not loadable — skipping tool
+# bundling" and shipped no default tools, unlike a CI build of the same commit.
+if [ -f "$REPO_DIR/data/tools_inventory.yaml" ]; then
+    sudo mkdir -p "$STAGE/data"
+    sudo cp "$REPO_DIR/data/tools_inventory.yaml" "$STAGE/data/"
+fi
 sudo chown -R "$(id -u):$(id -g)" "$STAGE"
 
 # A THIN BUNDLE: --bundle-only with a module list.
