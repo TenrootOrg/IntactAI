@@ -47,6 +47,21 @@ data/velociraptor/*
 # those carry.
 data/state/
 data/upgrade-backups/
+# ...and the symlinks it leaves. A moved DIRECTORY becomes one symlink at the
+# old path, and `modules/iris/secrets/*` matches what is inside a directory,
+# never a link with that name -- so the links showed as untracked on every
+# upgraded box. Listed exactly (no trailing slash, so it matches the link);
+# the tracked .gitkeep files stay tracked.
+/modules/iris/secrets
+/modules/timesketch/secrets
+/modules/velociraptor/secrets
+/modules/iris/config/certificates/rootCA
+/modules/iris/config/certificates/web_certificates
+# Other per-box data that `data/*.json` (top level only) does not reach: the
+# AWS account baseline the cloud scan keeps, and the YARA rule sets the
+# install stages from the release package.
+data/aws_baseline/
+data/yara-seed/
 
 # Python cache
 __pycache__/
