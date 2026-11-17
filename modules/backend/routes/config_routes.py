@@ -898,7 +898,7 @@ def save_cloud_config_endpoint():
         # The AWS region is chosen on the AWS page and remembered by the scan --
         # a Settings save (maybe from a page opened before that scan) keeps it.
         if isinstance(config.get('aws'), dict):
-            for k in ('region', 'regions', 'time_window', 'member_accounts', 'member_role'):
+            for k in ('region', 'regions', 'time_window'):
                 if k in existing.get('aws', {}):
                     config['aws'][k] = existing['aws'][k]
 

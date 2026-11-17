@@ -108,8 +108,6 @@ def get_aws_status():
                 'time_window': (aws_config['time_window'] if isinstance(aws_config.get('time_window'), dict)
                                 else AWS_TIME_WINDOW_DEFAULT),
                 'access_key_id': (aws_config.get('access_key_id', '')[:6] + '...') if aws_config.get('access_key_id') else None,
-                'member_accounts': aws_config.get('member_accounts') or [],
-                'member_role': aws_config.get('member_role') or '',
             },
             'capabilities': {
                 'online_mode': has_credentials,
@@ -202,28 +200,6 @@ def save_aws_regions():
         return jsonify({"error": err}), 400
     _remember_regions(regions)
     return jsonify({"regions": regions})
-
-
-@aws_bp.route('/api/aws/members', methods=['PUT'])
-def save_aws_members():
-    """Other accounts to scan through a role in each (services/aws/members.py):
-    {"accounts": "111122223333, ..." | "all" | [], "role": "<role name>"}."""
-    from services.aws import members as _m
-    d = request.json or {}
-    accounts, err = _m.clean(d.get('accounts'))
-    role = str(d.get('role') or '').strip()
-    if err:
-        return jsonify({"error": err}), 400
-    if role and not _m._ROLE.match(role):
-        return jsonify({"error": f"invalid role name {role!r}"}), 400
-    import copy
-    from routes.config_routes import _save_cloud_config
-    cloud = copy.deepcopy(_load_cloud_config())
-    aws = cloud.setdefault('aws', {})
-    if aws.get('member_accounts') != accounts or (aws.get('member_role') or '') != role:
-        aws['member_accounts'], aws['member_role'] = accounts, role
-        _save_cloud_config(cloud)
-    return jsonify({"accounts": accounts, "role": role or _m.DEFAULT_ROLE})
 
 
 AWS_TIME_WINDOW_DEFAULT = {"hours": 30 * 24}      # a month, until the operator changes it

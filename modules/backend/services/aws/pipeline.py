@@ -17,7 +17,7 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from . import boto_client, members
+from . import boto_client
 from .collectors import LOG_SOURCES, collect_aws_logs, demo_fixtures_enabled, parse_uploaded_logs
 from .sigma_runner import load_aws_rules, validate_rules_directory
 
@@ -487,33 +487,6 @@ def run_aws_pipeline(
             # blueprint default → hard fallback in cloudtrail_runner.
             max_events_per_region=options.get('max_events_per_region') or bp_settings.get('max_events_per_region'),
         )
-        # Other accounts (Settings: member accounts + a role to assume in each): the same
-        # collection per account, merged. One account failing costs only that account.
-        _members = members.member_accounts(aws_config, log=lambda m, l="info": add_log_to_run(run_id, m, l))
-        for _acct, _cfg, _err in members.member_configs(aws_config, _members, preflight_account=result.get('aws_account')):
-            if is_cancelled(run_id):
-                break
-            if _err:
-                collection_status.setdefault('errors', []).append(f"account {_acct}: {_err}")
-                add_log_to_run(run_id, f"[AWS] account {_acct}: skipped — {_err}", "warning")
-                continue
-            add_log_to_run(run_id, f"[AWS] account {_acct}: collecting with the member role", "info")
-            try:
-                _data, _st = collect_aws_logs(
-                    run_id=run_id, aws_config=_cfg, sources=sources,
-                    time_filter=time_filter if isinstance(time_filter, dict) else None,
-                    regions=options.get('regions'), target_principals=options.get('target_principals'),
-                    scope_mode=options.get('scope_mode', 'targeted'), cloudtrail_mode=ct_mode,
-                    freshness_window_days=bp_settings.get('time_range_days'),
-                    max_events_per_region=options.get('max_events_per_region') or bp_settings.get('max_events_per_region'))
-            except Exception as _e:                                # noqa: BLE001
-                collection_status.setdefault('errors', []).append(f"account {_acct}: {_e}")
-                add_log_to_run(run_id, f"[AWS] account {_acct}: collection failed — {_e}", "error")
-                continue
-            members.merge(collected_data, _data, _acct)
-            collection_status['errors'] = collection_status.get('errors', []) + [f"account {_acct}: {e}" for e in _st.get('errors', [])]
-            for k in ('sources_attempted', 'sources_with_data', 'sources_failed'):
-                collection_status[k] = sorted(set(collection_status.get(k, [])) | set(_st.get(k, [])))
         total_records = sum(len(v) for v in collected_data.values())
         collection_errors = collection_status.get('errors', [])
         # Attach the evidence to the result NOW, before anything that can
