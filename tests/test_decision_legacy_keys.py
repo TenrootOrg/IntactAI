@@ -106,8 +106,17 @@ class StalePagePut(unittest.TestCase):
         saved = {}
         app = flask.Flask(__name__)
         app.register_blueprint(cr.config_bp)
+        from services import openrouter_key as ok
+        self.secrets = secrets = {}
+        _cfg = {"agentic": {"decision_model": stored["agentic"]["decision_model"]}}
         with mock.patch.object(cr, "load_frontend_config", return_value=stored), \
-             mock.patch.object(cr, "save_frontend_config", side_effect=lambda c: saved.update(c)):
+             mock.patch.object(cr, "save_frontend_config", side_effect=lambda c: saved.update(c)), \
+             mock.patch.object(ok, "load_frontend_config", return_value=_cfg), \
+             mock.patch.object(ok, "save_frontend_config"), \
+             mock.patch.object(ok, "get_secret", lambda k: secrets.get(k)), \
+             mock.patch.object(ok, "set_secret", lambda k, v: secrets.__setitem__(k, v) or True), \
+             mock.patch.object(ok, "delete_secret", lambda k: secrets.pop(k, None)), \
+             mock.patch.object(ok, "_sync_timesketch"):
             self.assertEqual(app.test_client().put("/api/config", json=body).status_code, 200)
         return saved["agentic"]
 
@@ -115,14 +124,14 @@ class StalePagePut(unittest.TestCase):
         ag = self.put({"agentic": {"jev": {"enabled": False, "api_key": "••••••••real"}}})
         self.assertNotIn("jev", ag)
         self.assertTrue(ag["decision_model"]["enabled"])
-        self.assertEqual(ag["decision_model"]["api_key"], "sk-or-real")
+        self.assertEqual(self.secrets.get("openrouter_api_key"), "sk-or-real", "kept as the box's one OpenRouter key")
 
     def test_new_block_in_body_wins(self):
         ag = self.put({"agentic": {"jev": {"enabled": True},
                                    "decision_model": {"enabled": False, "api_key": "••••••••real"}}})
         self.assertNotIn("jev", ag)
         self.assertFalse(ag["decision_model"]["enabled"])
-        self.assertEqual(ag["decision_model"]["api_key"], "sk-or-real")
+        self.assertEqual(self.secrets.get("openrouter_api_key"), "sk-or-real", "kept as the box's one OpenRouter key")
 
 
 class DbDump(unittest.TestCase):

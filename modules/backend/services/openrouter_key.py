@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""One OpenRouter API key for Settings -> Agentic and Settings -> Timesketch.
+"""One OpenRouter API key for Case Analysis, the decision model and Timesketch.
+
+2026-11-17: one key, entered once, for all three (the models stay per section).
+Wherever it is saved -- Settings -> Agentic (model or decision model) or
+Settings -> Timesketch -- it is the key of every OpenRouter user on the box:
+  - Case Analysis's OpenRouter copy (online_llm.api_key) follows, an empty one
+    included: setting the key turns OpenRouter on for Case Analysis too.
+  - The decision model reads it directly (decision_model._key), no copy.
+  - Timesketch: an Agentic save rewrites timesketch.conf through the Timesketch
+    settings workflow (routes/timesketch_llm_routes.start_shared_key_sync), which
+    restarts Timesketch's four processes in parallel and only when the file
+    changed. Timesketch's own AI features stay off until a user turns them on.
+Earlier rules (kept below for the history): the sharing was one-way and never
+filled an empty Agentic key.
 
 QA (2026-11): "enter openrouter api in agentic tab, move to timesketch: you
 should enter it again". The two sections kept separate copies -- Agentic in
@@ -83,8 +96,13 @@ def get():
     key = get_secret(SECRET)
     if key or get_secret(_ADOPTED):
         return key or ""
-    on = _agentic_online(load_frontend_config())
+    cfg = load_frontend_config() or {}
+    on = _agentic_online(cfg)
     key = (on.get("api_key") or "").strip() if on.get("provider") == "openrouter" else ""
+    if not key:                         # the decision model's own key (OpenRouter is its default)
+        dm = ((cfg.get("agentic") or {}).get("decision_model") or {})
+        if (dm.get("provider") or "openrouter") == "openrouter":
+            key = (dm.get("api_key") or "").strip()
     if key.startswith(MASK):            # never adopt a mask as a key
         key = ""
     key = key or conf_key()
@@ -98,9 +116,9 @@ def save(value, from_timesketch=False):
     """Apply what a Settings form sent as the OpenRouter key; returns the real key.
 
     Masked -> the stored key, unchanged. Anything else becomes the shared key
-    ('' removes it). from_timesketch: also carry the change into an Agentic
-    OpenRouter key that is already set (see the module docstring for why an
-    empty one is left alone).
+    ('' removes it) and every copy follows: Case Analysis's OpenRouter copy (an
+    empty one too), and -- unless the Timesketch save itself is writing its
+    file (from_timesketch) -- Timesketch.
     """
     current = get()
     if isinstance(value, str) and value.startswith(MASK):
@@ -112,13 +130,24 @@ def save(value, from_timesketch=False):
         set_secret(SECRET, value)
     else:
         delete_secret(SECRET)
-    if from_timesketch:
-        cfg = load_frontend_config() or {}
-        on = _agentic_online(cfg)
-        if on.get("provider") == "openrouter" and on.get("api_key") and on["api_key"] != value:
-            on["api_key"] = value
-            save_frontend_config({"agentic": cfg["agentic"]})
+    cfg = load_frontend_config() or {}
+    on = _agentic_online(cfg)
+    if on.get("provider") == "openrouter" and on.get("api_key") != value:
+        on["api_key"] = value
+        save_frontend_config({"agentic": cfg["agentic"]})
+    if not from_timesketch:
+        _sync_timesketch()
     return value
+
+
+def _sync_timesketch():
+    """Carry the key into timesketch.conf (a background settings run). Never fails
+    the save that called it: Settings -> Timesketch shows the key as pending then."""
+    try:
+        from routes.timesketch_llm_routes import start_shared_key_sync
+        start_shared_key_sync()
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[OPENROUTER] could not hand the key to Timesketch: {e}", flush=True)
 
 
 def mask(key):

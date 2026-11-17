@@ -33,15 +33,26 @@ class ConfigRoute(unittest.TestCase):
         saved = {}
         app = flask.Flask(__name__)
         app.register_blueprint(cr.config_bp)
+        from services import openrouter_key as ok
+        secrets = {}
         with mock.patch.object(cr, "load_frontend_config", return_value=store), \
-             mock.patch.object(cr, "save_frontend_config", side_effect=lambda c: saved.update(c)):
+             mock.patch.object(cr, "save_frontend_config", side_effect=lambda c: saved.update(c)), \
+             mock.patch.object(ok, "load_frontend_config", return_value=store), \
+             mock.patch.object(ok, "save_frontend_config"), \
+             mock.patch.object(ok, "get_secret", lambda k: secrets.get(k)), \
+             mock.patch.object(ok, "set_secret", lambda k, v: secrets.__setitem__(k, v) or True), \
+             mock.patch.object(ok, "delete_secret", lambda k: secrets.pop(k, None)), \
+             mock.patch.object(ok, "_sync_timesketch"):
             c = app.test_client()
             got = c.get("/api/config").get_json()
             self.assertEqual(got["agentic"]["decision_model"]["api_key"], "••••••••1234")
             self.assertNotIn("sk-or-realkey1234", str(got))
             got["agentic"]["decision_model"]["enabled"] = False
             self.assertEqual(c.put("/api/config", json=got).status_code, 200)
-        self.assertEqual(saved["agentic"]["decision_model"]["api_key"], "sk-or-realkey1234")
+        # OpenRouter is one key for the box (2026-11-17): the saved decision key is
+        # adopted as the shared key, not dropped, and the block keeps none of its own.
+        self.assertEqual(secrets.get(ok.SECRET), "sk-or-realkey1234")
+        self.assertEqual(saved["agentic"]["decision_model"]["api_key"], "")
         self.assertFalse(saved["agentic"]["decision_model"]["enabled"])
 
 

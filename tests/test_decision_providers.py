@@ -296,8 +296,17 @@ class KeyGuard(unittest.TestCase):
         saved = {}
         app = flask.Flask(__name__)
         app.register_blueprint(cr.config_bp)
+        from services import openrouter_key as ok
+        self.secrets = secrets = {}
+        _cfg = {"agentic": {"decision_model": stored_dm}}
         with mock.patch.object(cr, "load_frontend_config", return_value={"agentic": {"decision_model": stored_dm}}), \
-             mock.patch.object(cr, "save_frontend_config", side_effect=lambda c: saved.update(c)):
+             mock.patch.object(cr, "save_frontend_config", side_effect=lambda c: saved.update(c)), \
+             mock.patch.object(ok, "load_frontend_config", return_value=_cfg), \
+             mock.patch.object(ok, "save_frontend_config"), \
+             mock.patch.object(ok, "get_secret", lambda k: secrets.get(k)), \
+             mock.patch.object(ok, "set_secret", lambda k, v: secrets.__setitem__(k, v) or True), \
+             mock.patch.object(ok, "delete_secret", lambda k: secrets.pop(k, None)), \
+             mock.patch.object(ok, "_sync_timesketch"):
             self.assertEqual(app.test_client().put("/api/config", json=body).status_code, 200)
         return saved["agentic"]["decision_model"]
 
@@ -313,7 +322,9 @@ class KeyGuard(unittest.TestCase):
         stored = {"enabled": True, "api_key": "sk-or-real"}               # saved before provider existed
         out = self.put({"agentic": {"decision_model": {"enabled": True, "mode": "online", "provider": "openrouter",
                                                        "model": "cloudflare/clef", "api_key": "••••••••real"}}}, stored)
-        self.assertEqual(out["api_key"], "sk-or-real")
+        # OpenRouter: one key for the box (2026-11-17) -- kept as the shared key, not here.
+        self.assertEqual(out["api_key"], "")
+        self.assertEqual(self.secrets.get("openrouter_api_key"), "sk-or-real")
 
 
 if __name__ == "__main__":

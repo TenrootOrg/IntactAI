@@ -774,6 +774,17 @@ def get_config():
             config = json.loads(json.dumps(config))  # cheap deep copy
             key = config['agentic']['online_llm']['api_key']
             config['agentic']['online_llm']['api_key'] = '••••••••' + key[-4:] if len(key) > 4 else '••••••••'
+        # The decision model on OpenRouter uses the box's one OpenRouter key: show it.
+        _dmc = (config.get('agentic') or {}).get('decision_model')
+        if isinstance(_dmc, dict) and not _dmc.get('api_key'):
+            from services.fusion import decision_model as _dm
+            if _dm.provider(config.get('agentic') or {}) == 'openrouter':
+                from services import openrouter_key
+                _shared = openrouter_key.get()
+                if _shared:
+                    config = json.loads(json.dumps(config))
+                    config['agentic']['decision_model']['api_key'] = _shared
+                    config['agentic']['decision_model']['key_from_shared'] = True
         # The decision model's own key: same masking.
         if (config.get('agentic', {}).get('decision_model') or {}).get('api_key'):
             config = json.loads(json.dumps(config))
@@ -824,8 +835,24 @@ def save_config():
                 if stored is not None:
                     ag['decision_model'] = stored
         dmc = config.get('agentic', {}).get('decision_model')
-        if isinstance(dmc, dict) and str(dmc.get('api_key') or '').startswith('••••'):
-            dmc['api_key'] = _stored_decision_key(dmc, config.get('agentic'))
+        if isinstance(dmc, dict):
+            dmc.pop('key_from_shared', None)              # a GET-only hint, never stored
+            from services.fusion import decision_model as _dm
+            if _dm.provider({**(config.get('agentic') or {}), 'decision_model': dmc}) == 'openrouter':
+                # OpenRouter's key is the box's one key: what is typed here is it
+                # (masked keeps it, '' removes it everywhere); nothing is stored here.
+                if 'api_key' in dmc:
+                    from services import openrouter_key
+                    v = dmc.get('api_key')
+                    if str(v or '').startswith('••••'):
+                        # Masked = keep: the shared key, or -- on a box saved before the
+                        # key was shared -- the decision model's own one, which becomes
+                        # the shared key here instead of being dropped.
+                        v = openrouter_key.get() or _stored_decision_key(dmc, config.get('agentic'))
+                    openrouter_key.save(v)
+                dmc['api_key'] = ''
+            elif str(dmc.get('api_key') or '').startswith('••••'):
+                dmc['api_key'] = _stored_decision_key(dmc, config.get('agentic'))
         # A caller that reads this config and saves it back whole now gets the
         # cloud secrets masked: keep the stored ones rather than store the mask.
         if isinstance(config.get('cloud'), dict):

@@ -291,6 +291,7 @@ def _run_timesketch_settings_workflow(run_id, config_data):
             content = f.read()
 
         add_log_to_run(run_id, f"Successfully read config file: {TIMESKETCH_CONFIG_PATH}")
+        original = content
 
         # Phase 2: Update configuration
         update_run_status(run_id, "running", progress=20)
@@ -369,6 +370,13 @@ def _run_timesketch_settings_workflow(run_id, config_data):
                 content += f"\n{replacement}\n"
         add_log_to_run(run_id, f"Forced feature flags ON: {', '.join(feature_flags)}")
 
+        # Nothing to change: no write and, above all, no restart. A save with the
+        # same values used to take Timesketch down for a minute for nothing.
+        if content == original:
+            add_log_to_run(run_id, "timesketch.conf already holds these settings — no restart needed", "success")
+            update_run_status(run_id, "completed", progress=100)
+            return
+
         # Phase 3: Write config file
         update_run_status(run_id, "running", progress=30)
         add_log_to_run(run_id, "Writing updated configuration to file...")
@@ -402,23 +410,25 @@ def _run_timesketch_settings_workflow(run_id, config_data):
                       'intact_timesketch_web_legacy', 'intact_timesketch_web_v3']
         update_run_status(run_id, "running", progress=40)
 
-        for i, container in enumerate(containers):
-            add_log_to_run(run_id, f"Restarting container: {container}...")
+        # All four at once: each reads timesketch.conf only when it starts, none
+        # depends on another restarting first, and one after another kept
+        # Timesketch down four times as long (2026-11-17).
+        add_log_to_run(run_id, f"Restarting {', '.join(containers)} (in parallel)...")
+        from concurrent.futures import ThreadPoolExecutor
 
-            result = subprocess.run(
-                ['docker', 'restart', container],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-
-            if result.returncode != 0:
-                add_log_to_run(run_id, f"Failed to restart {container}: {result.stderr}", "error")
-                update_run_status(run_id, "failed", error=f"Container restart failed: {container}")
-                return
-
-            add_log_to_run(run_id, f"Container {container} restart initiated", "success")
-            update_run_status(run_id, "running", progress=50 + (i * 10))
+        def _restart(container):
+            return container, subprocess.run(['docker', 'restart', container],
+                                             capture_output=True, text=True, timeout=60)
+        with ThreadPoolExecutor(max_workers=len(containers)) as pool:
+            results = list(pool.map(_restart, containers))
+        failed = [(c, r.stderr) for c, r in results if r.returncode != 0]
+        for c, err in failed:
+            add_log_to_run(run_id, f"Failed to restart {c}: {err}", "error")
+        if failed:
+            update_run_status(run_id, "failed", error=f"Container restart failed: {', '.join(c for c, _e in failed)}")
+            return
+        add_log_to_run(run_id, "All four Timesketch containers restarted", "success")
+        update_run_status(run_id, "running", progress=60)
 
         # Phase 5: Wait for containers to be healthy
         update_run_status(run_id, "running", progress=70)
@@ -521,6 +531,41 @@ def _run_timesketch_settings_workflow(run_id, config_data):
         traceback.print_exc()
     finally:
         _settings_save_lock.release()
+
+
+def start_shared_key_sync():
+    """The OpenRouter key changed in Settings -> Agentic: it is Timesketch's key too
+    (services/openrouter_key.py). Rewrite timesketch.conf with it, on Timesketch's
+    current OpenRouter model, through the same settings run as a Timesketch save.
+    Only when Timesketch is on OpenRouter (the default) and its file does not hold
+    this key yet. Returns the run id, or None (nothing to do, or a Timesketch save
+    is running -- the tab then shows the key as pending)."""
+    try:
+        with open(TIMESKETCH_CONFIG_PATH) as f:
+            content = f.read()
+    except OSError:
+        return None
+    if _detect_llm_mode(content) != 'openrouter':
+        return None                       # the operator chose another provider there
+    key = openrouter_key.get()
+    on_or = re.search(r"'nl2q':\s*\{\s*'openrouter'", content)
+    if on_or and _read_conf_value(content, 'openrouter', 'api_key') == key:
+        return None
+    if not _settings_save_lock.acquire(blocking=False):
+        return None
+    try:
+        data = {'llm_mode': 'openrouter', 'openrouter_key': key,
+                'openrouter_model': _read_conf_value(content, 'openrouter', 'model') or DEFAULT_OPENROUTER_MODEL}
+        run_id = create_automation_run(
+            automation_type="settings", name="Timesketch LLM Configuration (shared OpenRouter key)",
+            details={"llm_mode": "openrouter", "provider": "openrouter",
+                     "openrouter_model": data['openrouter_model'], "trigger": "shared key"})
+        add_log_to_run(run_id, "The OpenRouter key changed in Settings → Agentic; it is Timesketch's key too")
+        threading.Thread(target=_run_timesketch_settings_workflow, args=(run_id, data), daemon=True).start()
+        return run_id
+    except Exception:
+        _settings_save_lock.release()
+        raise
 
 
 @timesketch_llm_bp.route('/api/timesketch/config/llm', methods=['PUT'])

@@ -134,12 +134,30 @@ class SharedKeyService(unittest.TestCase):
             self.assertEqual(f.online()["api_key"], "sk-or-new-3333")
             self.assertEqual(f.online()["model"], "m", "the model is never shared")
 
-    def test_timesketch_save_never_switches_case_analysis_ai_on(self):
-        # Agentic had no key: filling it would start sending case data to the cloud.
-        with Fake(agentic(key="")) as f:
+    def test_one_key_fills_an_empty_case_analysis_openrouter_copy(self):
+        # 2026-11-17: one key for the whole box -- setting it turns OpenRouter on for
+        # Case Analysis too (it used to be left empty on purpose).
+        with Fake(agentic(key="")) as f, mock.patch.object(ok, "_sync_timesketch"):
             ok.save("sk-or-ts-4444", from_timesketch=True)
-            self.assertEqual(f.online()["api_key"], "")
+            self.assertEqual(f.online()["api_key"], "sk-or-ts-4444")
             self.assertEqual(ok.get(), "sk-or-ts-4444")
+
+    def test_a_change_from_agentic_goes_to_timesketch_once(self):
+        with Fake(agentic()), mock.patch.object(ok, "_sync_timesketch") as sync:
+            ok.save("sk-or-a-1111")
+            ok.save(ok.mask("sk-or-a-1111"))                 # masked: unchanged, no sync
+            ok.save("sk-or-a-1111")                          # same value: no sync
+            ok.save("sk-or-ts-2222", from_timesketch=True)   # Timesketch writes its own file
+            self.assertEqual(sync.call_count, 1)
+
+    def test_the_decision_model_on_openrouter_uses_the_shared_key(self):
+        from services.fusion import decision_model as dm
+        with Fake(agentic()), mock.patch.object(ok, "_sync_timesketch"):
+            ok.save("sk-or-shared-7777")
+            cfg = {"decision_model": {"provider": "openrouter", "api_key": "sk-or-old-own"}}
+            self.assertEqual(dm._key(cfg), "sk-or-shared-7777", "one key: the shared one wins")
+            self.assertEqual(dm._key({"decision_model": {"provider": "openai", "api_key": "sk-oa"}}), "sk-oa",
+                             "another provider keeps its own key")
 
     def test_timesketch_save_leaves_another_vendors_key_alone(self):
         with Fake(agentic("claude", "sk-ant-5555")) as f:
@@ -199,6 +217,63 @@ class RouteHelpers(unittest.TestCase):
                              "sk-or-shared")
         self.assertEqual(cr._stored_online_key({"provider": "claude"}, {"provider": "claude", "api_key": "sk-ant"}), "sk-ant")
         self.assertEqual(cr._stored_online_key({"provider": "claude"}, {"provider": "openrouter", "api_key": "sk-or"}), "")
+
+
+class TimesketchFollowsTheKey(unittest.TestCase):
+    """routes/timesketch_llm_routes: the sync after an Agentic save, and the worker's
+    restart -- only when timesketch.conf changed, all four Timesketch processes at once."""
+
+    def setUp(self):
+        self.ts = route("timesketch_llm_routes")
+        self.dir = tempfile.mkdtemp()
+        self.conf = os.path.join(self.dir, "timesketch.conf")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        for name in ("add_log_to_run", "update_run_status"):
+            p = mock.patch.object(self.ts, name, lambda *a, **k: None); p.start(); self.addCleanup(p.stop)
+        for name, val in (("TIMESKETCH_CONFIG_PATH", self.conf), ("_ensure_conf_from_template", lambda r: True),
+                          ("_ensure_dfiq_data", lambda r: None)):
+            p = mock.patch.object(self.ts, name, val); p.start(); self.addCleanup(p.stop)
+
+    def _write(self, text):
+        with open(self.conf, "w") as f:
+            f.write(text)
+
+    def test_sync_skips_another_provider_and_a_key_already_there(self):
+        started = []
+        with mock.patch.object(self.ts, "create_automation_run", lambda **k: started.append(k) or "run1"), \
+             mock.patch.object(self.ts.threading, "Thread"), \
+             mock.patch.object(self.ts.openrouter_key, "get", lambda: "sk-or-key"):
+            self._write(TS_CONF_OPENROUTER % "sk-or-key")
+            self.assertIsNone(self.ts.start_shared_key_sync(), "Timesketch already runs on this key")
+            self._write(TS_CONF_OPENROUTER.replace("openrouter", "ollama") % "x")
+            self.assertIsNone(self.ts.start_shared_key_sync(), "the operator chose another provider there")
+            self._write(TS_CONF_OPENROUTER % "sk-or-OLD")
+            self.assertEqual(self.ts.start_shared_key_sync(), "run1")
+            self.ts._settings_save_lock.release()           # the (mocked) worker would release it
+            self._write(TS_CONF_TEMPLATE)                     # the shipped template: OpenRouter by default
+            self.assertEqual(self.ts.start_shared_key_sync(), "run1")
+            self.ts._settings_save_lock.release()
+        self.assertEqual(len(started), 2)
+
+    def _run_worker(self, key):
+        calls = []
+        def fake_run(argv, **k):
+            calls.append(argv)
+            return mock.Mock(returncode=0, stdout="healthy" if "inspect" in argv else "Up 2 seconds", stderr="")
+        self.ts._settings_save_lock.acquire()
+        with mock.patch.object(self.ts.subprocess, "run", fake_run), mock.patch.object(self.ts.time, "sleep"), \
+             mock.patch("urllib.request.urlopen", lambda *a, **k: mock.Mock(status=200)):
+            self.ts._run_timesketch_settings_workflow("run1", {"llm_mode": "openrouter", "openrouter_key": key,
+                                                               "openrouter_model": "openai/gpt-4o-mini"})
+        return [c for c in calls if c[:2] == ["docker", "restart"]]
+
+    def test_a_changed_conf_restarts_all_four_and_an_unchanged_one_none(self):
+        self._write(TS_CONF_TEMPLATE)
+        restarted = self._run_worker("sk-or-new-1")
+        self.assertEqual(sorted(c[2] for c in restarted),
+                         sorted(["intact_timesketch_web", "intact_timesketch_worker",
+                                 "intact_timesketch_web_legacy", "intact_timesketch_web_v3"]))
+        self.assertEqual(self._run_worker("sk-or-new-1"), [], "the same settings again: no restart")
 
 
 @unittest.skipUnless(HAVE_FLASK, "needs Flask (the backend image has it)")

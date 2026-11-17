@@ -285,6 +285,14 @@ def _key(cfg):
     own = s.get("api_key") or ""
     if p == "local":
         return own if (s.get("url") or "").strip() else None
+    if p == "openrouter":                  # one OpenRouter key for the whole box (services/openrouter_key.py)
+        try:
+            from services import openrouter_key
+            shared = openrouter_key.get()
+        except Exception:                  # noqa: BLE001
+            shared = ""
+        if shared:
+            return shared
     if own:
         return own
     online = cfg.get("online_llm") or {}
