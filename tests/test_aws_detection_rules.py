@@ -99,8 +99,6 @@ CASES = [  # (rule, firing event, near miss)
     ("AWS Security Or Logging Service Disabled", ev("DeleteDetector", "guardduty"), ev("DeleteDetector", "foo")),
     ("AWS Lightsail Instance Credentials Retrieved By A Person", ev("GetInstanceAccessDetails", "lightsail"),
      ev("GetInstanceAccessDetails", "lightsail", who="AssumedRole")),
-    ("AWS Lightsail Instance Credentials Retrieved By A Role", ev("GetInstanceAccessDetails", "lightsail", who="AssumedRole"),
-     ev("GetInstanceAccessDetails", "lightsail")),
     ("AWS Offensive Tool Used", ev("ListUsers", userAgent="stratus-red-team_abc"), ev("ListUsers")),
     ("AWS Cloud Audit Tool Used", ev("ListUsers", userAgent="Scout Suite/5.0"), ev("ListUsers")),
     ("AWS Organizations Account Left", ev("LeaveOrganization", "organizations"), ev("DescribeOrganization", "organizations")),
@@ -290,6 +288,19 @@ class CountAndSequenceRules(unittest.TestCase):
         self.assertIn("AWS Burst Of Denied Calls", self._detect(cli))
         con = [ev("ListUsers", t=t, errorCode="AccessDenied", userAgent="Mozilla/5.0") for t in self._times(25)]
         self.assertNotIn("AWS Burst Of Denied Calls", self._detect(con))
+
+    def test_a_role_pulling_lightsail_keys_is_one_finding_with_a_count(self):
+        # 2026-11-17: one role's polling made 312 separate low findings.
+        from services.aws.detections import detect
+        pulls = [ev("GetInstanceAccessDetails", "lightsail", who="AssumedRole", t=t) for t in self._times(312)]
+        f, _ = detect({"AWS.CloudTrail": pulls}, min_level="low")
+        got = [x for v in f.values() for x in v if x["rule_title"] == "AWS Lightsail Instance Credentials Retrieved By A Role"]
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["count"], 312)
+        person = [ev("GetInstanceAccessDetails", "lightsail", t=t) for t in self._times(3)]
+        found = self._detect(person)
+        self.assertIn("AWS Lightsail Instance Credentials Retrieved By A Person", found, "a person is still every time")
+        self.assertNotIn("AWS Lightsail Instance Credentials Retrieved By A Role", found)
 
     def test_discovery_sweep_needs_many_different_apis(self):
         sweep = [ev(f"List{chr(65 + i)}Things", t=t) for i, t in enumerate(self._times(26))]

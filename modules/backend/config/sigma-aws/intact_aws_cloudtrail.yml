@@ -1083,11 +1083,10 @@ falsepositives:
 - A security tool or an administrator script running under a user rather than a role
 level: medium
 ---
-title: AWS Lightsail Instance Credentials Retrieved By A Role
-id: 14402d8d-0853-58a3-8895-acc915443d5d
+title: AWS Lightsail Instance Credentials Retrieval By A Role
+id: 379e3015-b061-591e-9620-e79276eb566d
 status: experimental
-description: 'A role (an integration, an instance, a pipeline) retrieved Lightsail instance credentials -- context: who can reach your servers''
-  keys.'
+description: 'Counted by: AWS Lightsail Instance Credentials Retrieved By A Role'
 author: Intact.AI (built on real CloudTrail attack recordings)
 date: '2026-10-26'
 tags:
@@ -1106,6 +1105,30 @@ detection:
   filter:
     errorCode|exists: true
   condition: selection and not person and not filter
+falsepositives:
+- An administrator doing this on purpose; check who, from where, and whether it was planned
+level: informational
+name: intact_aws_lightsail_creds_role
+---
+title: AWS Lightsail Instance Credentials Retrieved By A Role
+id: 14402d8d-0853-58a3-8895-acc915443d5d
+status: experimental
+description: 'A role (an integration, an instance, a pipeline) retrieved Lightsail instance credentials -- context: who can reach your servers''
+  keys. One finding per role, with how many times: a role polling these is one fact, not hundreds (312 rows from one role, 2026-11-17).'
+author: Intact.AI (built on real CloudTrail attack recordings)
+date: '2026-10-26'
+tags:
+- attack.credential-access
+- attack.t1552.004
+correlation:
+  type: event_count
+  rules:
+  - intact_aws_lightsail_creds_role
+  group-by:
+  - userIdentity.arn
+  timespan: 90d
+  condition:
+    gte: 1
 falsepositives:
 - An administrator doing this on purpose; check who, from where, and whether it was planned
 level: low
