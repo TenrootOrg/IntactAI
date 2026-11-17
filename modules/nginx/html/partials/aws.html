@@ -308,10 +308,10 @@
                         <!-- Time window: the same two date+time fields as Case Analysis (UTC) -->
                         <div x-init="$nextTick(() => initCloudTimeWindow('aws', 720, () => saveAwsTimeWindow()))" class="space-y-2">
                             <label class="block text-sm font-medium text-gray-300">Time window — start <span class="text-xs text-gray-500">(UTC — applies to CloudTrail · remembered for the next scan)</span></label>
-                            <input type="text" id="aws-tw-start" placeholder="pick date + time…"
+                            <input type="text" id="aws-tw-start" data-keep placeholder="pick date + time…"
                                    class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono">
                             <label class="block text-sm font-medium text-gray-300">Time window — end <span class="text-xs text-gray-500">(UTC, empty = up to now)</span></label>
-                            <input type="text" id="aws-tw-end" placeholder="empty = now"
+                            <input type="text" id="aws-tw-end" data-keep placeholder="empty = now"
                                    class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono">
                         </div>
 

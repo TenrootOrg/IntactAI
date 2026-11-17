@@ -120,6 +120,11 @@ document.addEventListener('alpine:init', () => {
                 if (!panel) return;
                 panel.querySelectorAll('input, select, textarea').forEach(el => {
                     if (el.hasAttribute('x-model')) return;
+                    // data-keep: a value the page fills ONCE and means to keep (the AWS /
+                    // Azure time window, "remembered for the next scan"). Resetting it to
+                    // its empty markup default left "pick date + time…" after any tab
+                    // switch, since the page does not fill it again (2026-11-17).
+                    if (el.hasAttribute('data-keep')) return;
                     if (el.type === 'checkbox' || el.type === 'radio') {
                         el.checked = el.defaultChecked;
                     } else if (el.tagName === 'SELECT') {

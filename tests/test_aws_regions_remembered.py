@@ -46,6 +46,20 @@ class PagesHaveOneRegionControl(unittest.TestCase):
         with open(os.path.join(ROOT, "modules/nginx/html/partials/settings.html")) as fh:
             self.assertNotIn("cloud.aws.region", fh.read())
 
+    def test_a_tab_switch_keeps_the_time_window(self):
+        """switchTab() resets every input to its markup default; the time window's is
+        empty and the page fills it only once, so after a tab switch the start read
+        "pick date + time..." (2026-11-17, real Chromium). data-keep exempts them."""
+        import re
+        for page in ("aws", "azure"):
+            with open(os.path.join(ROOT, f"modules/nginx/html/partials/{page}.html")) as fh:
+                html = fh.read()
+            for f in ("start", "end"):
+                tag = re.search(rf'<input[^>]*id="{page}-tw-{f}"[^>]*>', html, re.S).group(0)
+                self.assertIn("data-keep", tag, f"{page}-tw-{f}")
+        with open(os.path.join(ROOT, "modules/nginx/html/js/stores/app.js")) as fh:
+            self.assertIn("if (el.hasAttribute('data-keep')) return;", fh.read())
+
     def test_the_page_component_has_no_double_quote_inside(self):
         """The whole component sits in x-data="{ ... }": one " in a comment ends the
         attribute and the page silently loses every control (2026-10-26)."""
