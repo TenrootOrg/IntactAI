@@ -250,15 +250,19 @@ def get_timesketch_llm_config():
             content = ''
             print(f"[TIMESKETCH] Config file not found: {TIMESKETCH_CONFIG_PATH}", flush=True)
 
-        # The OpenRouter key is the one shared with Settings -> Agentic, not
-        # only what this file holds: a key entered there has to show up here.
-        shared = openrouter_key.get()
-        config['openrouter_key'] = _mask_secret(shared)
-        # True while Timesketch is not running on that key yet: the file is
-        # only rewritten (and Timesketch restarted) by a save on this tab.
-        in_force = (_read_conf_value(content, 'openrouter', 'api_key')
-                    if re.search(r"'nl2q':\s*\{\s*'openrouter'", content) else '')
-        config['openrouter_key_pending'] = bool(shared) and in_force != shared
+        # The OpenRouter and Google keys are the ones shared with Settings ->
+        # Agentic, not only what this file holds: a key entered there has to
+        # show up here.
+        for mode in openrouter_key.KEYS:
+            ts_provider, fields = _TS_PROVIDERS[mode]
+            ui_key = next(u for _c, u, secret in fields if secret)
+            shared = openrouter_key.get(mode)
+            config[ui_key] = _mask_secret(shared)
+            # True while Timesketch is not running on that key yet: it is
+            # rewritten (and restarted) only while on that provider.
+            in_force = (_read_conf_value(content, ts_provider, 'api_key')
+                        if re.search(r"'nl2q':\s*\{\s*'" + ts_provider + "'", content) else '')
+            config[ui_key + '_pending'] = bool(shared) and in_force != shared
 
         return jsonify(config)
 
@@ -533,34 +537,40 @@ def _run_timesketch_settings_workflow(run_id, config_data):
         _settings_save_lock.release()
 
 
-def start_shared_key_sync():
-    """The OpenRouter key changed in Settings -> Agentic: it is Timesketch's key too
-    (services/openrouter_key.py). Rewrite timesketch.conf with it, on Timesketch's
-    current OpenRouter model, through the same settings run as a Timesketch save.
-    Only when Timesketch is on OpenRouter (the default) and its file does not hold
-    this key yet. Returns the run id, or None (nothing to do, or a Timesketch save
-    is running -- the tab then shows the key as pending)."""
+def start_shared_key_sync(mode='openrouter'):
+    """A shared key (OpenRouter or Google) changed in Settings -> Agentic: it is
+    Timesketch's key too (services/openrouter_key.py). Rewrite timesketch.conf with
+    it, on Timesketch's current model, through the same settings run as a
+    Timesketch save. Only when Timesketch is on that provider and its file does not
+    hold this key yet. Returns the run id, or None (nothing to do, or a Timesketch
+    save is running -- the tab then shows the key as pending)."""
     try:
         with open(TIMESKETCH_CONFIG_PATH) as f:
             content = f.read()
     except OSError:
         return None
-    if _detect_llm_mode(content) != 'openrouter':
+    if _detect_llm_mode(content) != mode:
         return None                       # the operator chose another provider there
-    key = openrouter_key.get()
-    on_or = re.search(r"'nl2q':\s*\{\s*'openrouter'", content)
-    if on_or and _read_conf_value(content, 'openrouter', 'api_key') == key:
+    ts_provider, fields = _TS_PROVIDERS[mode]
+    key = openrouter_key.get(mode)
+    on_it = re.search(r"'nl2q':\s*\{\s*'" + ts_provider + "'", content)
+    if on_it and _read_conf_value(content, ts_provider, 'api_key') == key:
         return None
     if not _settings_save_lock.acquire(blocking=False):
         return None
     try:
-        data = {'llm_mode': 'openrouter', 'openrouter_key': key,
-                'openrouter_model': _read_conf_value(content, 'openrouter', 'model') or DEFAULT_OPENROUTER_MODEL}
+        # The key, plus the provider's other fields as the file has them now.
+        data = {'llm_mode': mode}
+        for conf_key, ui_key, secret in fields:
+            data[ui_key] = key if secret else _read_conf_value(content, ts_provider, conf_key)
+        if mode == 'openrouter':
+            data['openrouter_model'] = data['openrouter_model'] or DEFAULT_OPENROUTER_MODEL
+        label = 'Google' if mode == 'google' else 'OpenRouter'
         run_id = create_automation_run(
-            automation_type="settings", name="Timesketch LLM Configuration (shared OpenRouter key)",
-            details={"llm_mode": "openrouter", "provider": "openrouter",
-                     "openrouter_model": data['openrouter_model'], "trigger": "shared key"})
-        add_log_to_run(run_id, "The OpenRouter key changed in Settings → Agentic; it is Timesketch's key too")
+            automation_type="settings", name=f"Timesketch LLM Configuration (shared {label} key)",
+            details=dict({"llm_mode": mode, "provider": ts_provider, "trigger": "shared key"},
+                         **{u: data[u] for _c, u, secret in fields if not secret}))
+        add_log_to_run(run_id, f"The {label} key changed in Settings → Agentic; it is Timesketch's key too")
         threading.Thread(target=_run_timesketch_settings_workflow, args=(run_id, data), daemon=True).start()
         return run_id
     except Exception:
@@ -596,9 +606,10 @@ def update_timesketch_llm_config():
         # Resolved here, not in the worker: the shared key (Settings ->
         # Agentic sees it too) must be stored before this returns, and a
         # masked key must become the shared one rather than this file's old one.
-        if llm_mode == 'openrouter':
-            data['openrouter_key'] = openrouter_key.save(data.get('openrouter_key'),
-                                                         from_timesketch=True)
+        if llm_mode in openrouter_key.KEYS:
+            ui_key = next(u for _c, u, secret in _TS_PROVIDERS[llm_mode][1] if secret)
+            data[ui_key] = openrouter_key.save(data.get(ui_key), from_timesketch=True,
+                                               provider=llm_mode)
 
         _ts_provider, _fields = _TS_PROVIDERS[llm_mode]
 

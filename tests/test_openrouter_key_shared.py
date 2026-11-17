@@ -120,6 +120,28 @@ class SharedKeyService(unittest.TestCase):
             self.assertEqual(ok.get(), "sk-or-agentic-1111")
             self.assertEqual(f.secrets[ok.SECRET], "sk-or-agentic-1111")
 
+    def test_the_google_key_is_shared_on_its_own(self):
+        self.assertEqual((ok.for_agentic("gemini"), ok.for_agentic("openrouter"), ok.for_agentic("claude")),
+                         ("google", "openrouter", None))
+        with Fake(agentic("gemini"), conf=TS_CONF_TEMPLATE.replace("'api_key': ''", "'api_key': 'AIzaTS'")) as f, \
+             mock.patch.object(ok, "_sync_timesketch") as sync:
+            self.assertEqual(ok.get("google"), "AIzaTS", "adopted from timesketch.conf")
+            ok.save("AIzaNEW", from_timesketch=True, provider="google")
+            self.assertEqual(f.online()["api_key"], "AIzaNEW", "Agentic on Google follows")
+            self.assertEqual(f.secrets["google_api_key"], "AIzaNEW")
+            self.assertEqual(ok.get(), "", "the OpenRouter key is a different key")
+            sync.assert_not_called()
+            ok.save("AIzaAGENTIC", provider="google")
+            sync.assert_called_once_with("google")
+            ok.save("", provider="google")
+            self.assertNotIn("google_api_key", f.secrets)
+            self.assertEqual(f.online()["api_key"], "")
+
+    def test_a_google_key_never_lands_in_another_agentic_provider(self):
+        with Fake(agentic("claude", "sk-ant")) as f, mock.patch.object(ok, "_sync_timesketch"):
+            ok.save("AIzaX", from_timesketch=True, provider="google")
+            self.assertEqual(f.online()["api_key"], "sk-ant")
+
     def test_masked_round_trip_keeps_the_shared_key(self):
         with Fake(agentic()):
             ok.save("sk-or-real-2222")
@@ -217,6 +239,9 @@ class RouteHelpers(unittest.TestCase):
                              "sk-or-shared")
         self.assertEqual(cr._stored_online_key({"provider": "claude"}, {"provider": "claude", "api_key": "sk-ant"}), "sk-ant")
         self.assertEqual(cr._stored_online_key({"provider": "claude"}, {"provider": "openrouter", "api_key": "sk-or"}), "")
+        with mock.patch.object(ok, "get", lambda p="openrouter": {"google": "AIzaShared"}.get(p, "")):
+            self.assertEqual(cr._stored_online_key({"provider": "gemini"}, {"provider": "openrouter", "api_key": "sk-or"}),
+                             "AIzaShared")
 
 
 class TimesketchFollowsTheKey(unittest.TestCase):
@@ -242,7 +267,7 @@ class TimesketchFollowsTheKey(unittest.TestCase):
         started = []
         with mock.patch.object(self.ts, "create_automation_run", lambda **k: started.append(k) or "run1"), \
              mock.patch.object(self.ts.threading, "Thread"), \
-             mock.patch.object(self.ts.openrouter_key, "get", lambda: "sk-or-key"):
+             mock.patch.object(self.ts.openrouter_key, "get", lambda *a: "sk-or-key"):
             self._write(TS_CONF_OPENROUTER % "sk-or-key")
             self.assertIsNone(self.ts.start_shared_key_sync(), "Timesketch already runs on this key")
             self._write(TS_CONF_OPENROUTER.replace("openrouter", "ollama") % "x")
@@ -254,6 +279,23 @@ class TimesketchFollowsTheKey(unittest.TestCase):
             self.assertEqual(self.ts.start_shared_key_sync(), "run1")
             self.ts._settings_save_lock.release()
         self.assertEqual(len(started), 2)
+
+    def test_a_google_key_reaches_timesketch_on_google_with_its_model_kept(self):
+        started = []
+        google = TS_CONF_TEMPLATE.replace("'api_key': ''", "'api_key': 'AIzaOLD'")
+        with mock.patch.object(self.ts, "create_automation_run", lambda **k: started.append(k) or "run1"), \
+             mock.patch.object(self.ts.threading, "Thread") as thread, \
+             mock.patch.object(self.ts.openrouter_key, "get", lambda p="openrouter": {"google": "AIzaNEW"}.get(p, "")):
+            self._write(google)
+            self.assertIsNone(self.ts.start_shared_key_sync("openrouter"), "Timesketch is on Google")
+            self.assertEqual(self.ts.start_shared_key_sync("google"), "run1")
+            self.ts._settings_save_lock.release()
+            data = thread.call_args.kwargs["args"][1]
+            self.assertEqual(data, {"llm_mode": "google", "google_ai_key": "AIzaNEW",
+                                    "google_ai_model": "gemini-2.5-flash"})
+            self.assertNotIn("AIzaNEW", json.dumps(started), "the key never goes into the run details")
+            self._write(google.replace("AIzaOLD", "AIzaNEW"))
+            self.assertIsNone(self.ts.start_shared_key_sync("google"), "already there")
 
     def _run_worker(self, key):
         calls = []
@@ -320,7 +362,8 @@ global.fetch = async (url, opt) => {
   if (url === '/api/config') return { ok: true, json: async () => ({ agentic: { llm_mode: 'online',
       online_llm: { provider: 'claude', api_key: '••••••••ant1', model: 'claude-sonnet-latest' } } }) };
   if (url === '/api/timesketch/config/llm') return { ok: true, json: async () => ({ llm_mode: 'openrouter',
-      openrouter_key: '••••••••or99', openrouter_key_pending: true, openrouter_model: 'openai/gpt-4o-mini' }) };
+      openrouter_key: '••••••••or99', openrouter_key_pending: true, openrouter_model: 'openai/gpt-4o-mini',
+      google_ai_key: '••••••••gg77', google_ai_key_pending: true }) };
   if (url.includes('/llm/test')) return { ok: true, json: async () => ({ success: true, elapsed_ms: 5 }) };
   return { ok: true, json: async () => ({ models: [] }) };
 };
@@ -346,6 +389,16 @@ global.fetch = async (url, opt) => {
   await store.testTimesketchLlm();
   out.test = posts.find(p => p.url === '/api/config/llm/test').body;
   out.result = store.tsLlmTestResult;
+  out.gPending = s.timesketch.google_ai_key_pending;
+  s.agentic.online_llm.provider = 'gemini';
+  s.agentic.online_llm.api_key = '••••••••ant1';
+  await store.onProviderChange();
+  out.agOnGemini = s.agentic.online_llm.api_key;
+  store.shareOpenrouterKey('AIzaTyped', 'timesketch', 'gemini');
+  out.gAg = s.agentic.online_llm.api_key;
+  out.orUntouched = s.timesketch.openrouter_key;
+  store.shareOpenrouterKey('AIzaAg', 'agentic');
+  out.gTs = s.timesketch.google_ai_key;
   console.log(JSON.stringify(out));
 })();
 """
@@ -369,6 +422,11 @@ class PageStore(unittest.TestCase):
         on = got["test"]["agentic"]["online_llm"]
         self.assertEqual((on["provider"], on["model"], on["api_key"]), ("openrouter", "openai/gpt-4o-mini", "sk-or-newer"))
         self.assertTrue(got["result"]["success"])
+        # Google's key: the same, between Agentic "Google (API)" and Timesketch "Google AI Studio".
+        self.assertTrue(got["gPending"])
+        self.assertEqual(got["agOnGemini"], "••••••••gg77", "picking Google shows the shared Google key")
+        self.assertEqual((got["gAg"], got["gTs"]), ("AIzaTyped", "AIzaAg"))
+        self.assertEqual(got["orUntouched"], "sk-or-newer", "a Google key never goes into the OpenRouter field")
 
 
 class PageSource(unittest.TestCase):
@@ -383,6 +441,7 @@ class PageSource(unittest.TestCase):
         self.assertIn("$store.settings.testTimesketchLlm()", tab)
         self.assertIn("$store.settings.updateCatalog()", tab)
         self.assertIn("shareOpenrouterKey($event.target.value, 'timesketch')", tab)
+        self.assertIn("shareOpenrouterKey($event.target.value, 'timesketch', 'gemini')", tab)
         self.assertIn("shareOpenrouterKey($event.target.value, 'agentic')", html)
 
     def test_timesketch_defaults_to_openrouter_in_the_page(self):

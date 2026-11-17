@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """One OpenRouter API key for Case Analysis, the decision model and Timesketch.
 
+2026-11-17, later: the Google AI key too (Agentic's "Google (API)" = Timesketch's
+"Google AI Studio"), same rules, under its own secret (KEYS below). Every
+function takes the Timesketch provider name ('openrouter', 'google'); the
+default keeps the OpenRouter callers as they were. The decision model has no
+Google provider, so only Agentic and Timesketch share that one.
+
 2026-11-17: one key, entered once, for all three (the models stay per section).
 Wherever it is saved -- Settings -> Agentic (model or decision model) or
 Settings -> Timesketch -- it is the key of every OpenRouter user on the box:
@@ -45,11 +51,20 @@ import re
 from services.storage.config_store import load_frontend_config, save_frontend_config
 from services.storage.secret_store import delete_secret, get_secret, set_secret
 
-SECRET = "openrouter_api_key"
-# Set once the one-time adoption below has run, so a key the operator later
-# REMOVED is not re-adopted from a copy that still holds it (timesketch.conf
-# keeps its key until Timesketch is saved).
-_ADOPTED = "openrouter_api_key_adopted"
+# Timesketch provider -> (secrets-table name, Agentic online_llm provider,
+# timesketch.conf provider). "<secret>_adopted" is set once the one-time adoption
+# in get() has run, so a key the operator later REMOVED is not re-adopted from a
+# copy that still holds it (timesketch.conf keeps its key until Timesketch is saved).
+KEYS = {
+    "openrouter": ("openrouter_api_key", "openrouter", "openrouter"),
+    "google":     ("google_api_key",     "gemini",     "aistudio"),
+}
+SECRET = KEYS["openrouter"][0]
+
+
+def for_agentic(agentic_provider):
+    """The shared key name behind an Agentic online provider, None if it has none."""
+    return next((k for k, v in KEYS.items() if v[1] == agentic_provider), None)
 # What every GET substitutes for a saved key; anything sent back with this
 # prefix means "keep the stored one".
 MASK = "••••"
@@ -69,11 +84,11 @@ def read_conf_value(content, ts_provider, conf_key):
     return match.group(1) if match else ""
 
 
-def conf_key(path=None):
-    """The OpenRouter key timesketch.conf holds now ('' if none / no file)."""
+def conf_key(path=None, provider="openrouter"):
+    """The provider's key timesketch.conf holds now ('' if none / no file)."""
     try:
         with open(path or TIMESKETCH_CONF) as f:
-            return read_conf_value(f.read(), "openrouter", "api_key")
+            return read_conf_value(f.read(), KEYS[provider][2], "api_key")
     except OSError:
         return ""
 
@@ -84,8 +99,8 @@ def _agentic_online(cfg):
     return on if isinstance(on, dict) else {}
 
 
-def get():
-    """The shared OpenRouter key, '' when there is none.
+def get(provider="openrouter"):
+    """The shared key of that provider, '' when there is none.
 
     The first call on a box that predates sharing adopts whichever section
     already has one. Both differ: Agentic's wins -- it is the copy the backend
@@ -93,26 +108,27 @@ def get():
     Timesketch keeps running on its own key until its section is saved, and
     its GET says the key is pending until then.
     """
-    key = get_secret(SECRET)
-    if key or get_secret(_ADOPTED):
+    secret, agentic, _ts = KEYS[provider]
+    key = get_secret(secret)
+    if key or get_secret(secret + "_adopted"):
         return key or ""
     cfg = load_frontend_config() or {}
     on = _agentic_online(cfg)
-    key = (on.get("api_key") or "").strip() if on.get("provider") == "openrouter" else ""
-    if not key:                         # the decision model's own key (OpenRouter is its default)
+    key = (on.get("api_key") or "").strip() if on.get("provider") == agentic else ""
+    if not key and provider == "openrouter":   # the decision model's own key (OpenRouter is its default)
         dm = ((cfg.get("agentic") or {}).get("decision_model") or {})
         if (dm.get("provider") or "openrouter") == "openrouter":
             key = (dm.get("api_key") or "").strip()
     if key.startswith(MASK):            # never adopt a mask as a key
         key = ""
-    key = key or conf_key()
+    key = key or conf_key(provider=provider)
     if key:
-        set_secret(SECRET, key)
-    set_secret(_ADOPTED, "1")
+        set_secret(secret, key)
+    set_secret(secret + "_adopted", "1")
     return key
 
 
-def save(value, from_timesketch=False):
+def save(value, from_timesketch=False, provider="openrouter"):
     """Apply what a Settings form sent as the OpenRouter key; returns the real key.
 
     Masked -> the stored key, unchanged. Anything else becomes the shared key
@@ -120,32 +136,33 @@ def save(value, from_timesketch=False):
     empty one too), and -- unless the Timesketch save itself is writing its
     file (from_timesketch) -- Timesketch.
     """
-    current = get()
+    secret, agentic, _ts = KEYS[provider]
+    current = get(provider)
     if isinstance(value, str) and value.startswith(MASK):
         return current
     value = (value or "").strip() if isinstance(value, str) else ""
     if value == current:
         return current
     if value:
-        set_secret(SECRET, value)
+        set_secret(secret, value)
     else:
-        delete_secret(SECRET)
+        delete_secret(secret)
     cfg = load_frontend_config() or {}
     on = _agentic_online(cfg)
-    if on.get("provider") == "openrouter" and on.get("api_key") != value:
+    if on.get("provider") == agentic and on.get("api_key") != value:
         on["api_key"] = value
         save_frontend_config({"agentic": cfg["agentic"]})
     if not from_timesketch:
-        _sync_timesketch()
+        _sync_timesketch(provider)
     return value
 
 
-def _sync_timesketch():
+def _sync_timesketch(provider="openrouter"):
     """Carry the key into timesketch.conf (a background settings run). Never fails
     the save that called it: Settings -> Timesketch shows the key as pending then."""
     try:
         from routes.timesketch_llm_routes import start_shared_key_sync
-        start_shared_key_sync()
+        start_shared_key_sync(provider)
     except Exception as e:                                   # noqa: BLE001
         print(f"[OPENROUTER] could not hand the key to Timesketch: {e}", flush=True)
 

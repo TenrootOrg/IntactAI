@@ -236,7 +236,13 @@ def get_provider_api_key(provider: str) -> Optional[str]:
         online = (cfg.get("agentic") or {}).get("online_llm") or {}
         if online.get("provider") == provider:
             key = online.get("api_key") or ""
-            return key.strip() or None
+            if key.strip():
+                return key.strip()
+        # OpenRouter's and Google's key is shared with Settings -> Timesketch, so
+        # it exists while another provider is selected (services/openrouter_key.py).
+        from services import openrouter_key
+        name = openrouter_key.for_agentic(provider)
+        return (openrouter_key.get(name) or None) if name else None
     except Exception:
         pass
     return None

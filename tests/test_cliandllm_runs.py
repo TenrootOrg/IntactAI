@@ -62,7 +62,7 @@ SUB = _stub("services.agentic.subscription_cli",
             is_run_active=lambda rid: rid == "alive",
             _mark_active=mock.Mock())
 _stub("services.agentic", subscription_cli=SUB)
-_stub("services.openrouter_key", save=lambda v, **k: v,
+_stub("services.openrouter_key", save=lambda v, **k: v, KEYS={"openrouter": (), "google": ()},
       read_conf_value=lambda *a, **k: None)
 _stub("services", workflow_service=WS, agentic=sys.modules["services.agentic"],
       openrouter_key=sys.modules["services.openrouter_key"],

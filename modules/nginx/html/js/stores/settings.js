@@ -23,6 +23,7 @@ document.addEventListener('alpine:init', () => {
                 // routes/timesketch_llm_routes.py.
                 llm_mode: 'openrouter',
                 google_ai_key: '',
+                google_ai_key_pending: false,
                 google_ai_model: 'gemini-2.5-flash',
                 ollama_url: 'http://localhost:11434',
                 ollama_model: 'llama3.1:8b',
@@ -124,7 +125,9 @@ document.addEventListener('alpine:init', () => {
                     const tsData = await tsResponse.json();
                     this.config.timesketch = {
                         llm_mode: tsData.llm_mode || 'openrouter',
+                        // Shared with Agentic's Google (API) too, like OpenRouter's.
                         google_ai_key: tsData.google_ai_key || '',
+                        google_ai_key_pending: !!tsData.google_ai_key_pending,
                         google_ai_model: tsData.google_ai_model || 'gemini-2.5-flash',
                         ollama_url: tsData.ollama_url || '',
                         ollama_model: tsData.ollama_model || '',
@@ -644,11 +647,16 @@ document.addEventListener('alpine:init', () => {
         // separate). Typing it in either field shows it in the other at once,
         // not only after a save and a reload -- the QA ticket was exactly
         // "entered it in Agentic, Timesketch asked for it again".
-        shareOpenrouterKey(value, from) {
+        // Google's key is shared the same way (Agentic "Google (API)" = Timesketch
+        // "Google AI Studio"). `provider` is the Agentic name a Timesketch field is for.
+        _SHARED_KEYS: { openrouter: 'openrouter_key', gemini: 'google_ai_key' },
+        shareOpenrouterKey(value, from, provider = 'openrouter') {
             const on = this.config.agentic.online_llm;
-            if (from === 'agentic' && on.provider !== 'openrouter') return;   // another vendor's key
-            this.config.timesketch.openrouter_key = value;
-            if (on.provider === 'openrouter') on.api_key = value;
+            const p = from === 'agentic' ? on.provider : provider;
+            const field = this._SHARED_KEYS[p];
+            if (!field) return;                                   // another vendor's key
+            this.config.timesketch[field] = value;
+            if (on.provider === p) on.api_key = value;
         },
 
         // The key an online provider should show when picked: OpenRouter's is
@@ -656,7 +664,8 @@ document.addEventListener('alpine:init', () => {
         // saved for that provider (the backend applies the same rule to a
         // masked key, so what is shown is what Save keeps).
         _onlineKeyFor(provider) {
-            if (provider === 'openrouter') return this.config.timesketch.openrouter_key || '';
+            const field = this._SHARED_KEYS[provider];
+            if (field) return this.config.timesketch[field] || '';
             return this._savedOnline.provider === provider ? (this._savedOnline.api_key || '') : '';
         },
 
@@ -665,8 +674,10 @@ document.addEventListener('alpine:init', () => {
                 const r = await fetch('/api/timesketch/config/llm');
                 if (!r.ok) return;
                 const d = await r.json();
-                this.config.timesketch.openrouter_key = d.openrouter_key || '';
-                this.config.timesketch.openrouter_key_pending = !!d.openrouter_key_pending;
+                for (const f of Object.values(this._SHARED_KEYS)) {
+                    this.config.timesketch[f] = d[f] || '';
+                    this.config.timesketch[f + '_pending'] = !!d[f + '_pending'];
+                }
             } catch (e) { /* the tab shows the last value; a reload fixes it */ }
         },
 
@@ -705,6 +716,7 @@ document.addEventListener('alpine:init', () => {
                     window.currentConfig = this.config;
                     this.showMessage('Timesketch settings saved - containers restarting...', 'success');
                     if (this.config.timesketch.llm_mode === 'openrouter') this.config.timesketch.openrouter_key_pending = false;
+                    if (this.config.timesketch.llm_mode === 'google') this.config.timesketch.google_ai_key_pending = false;
                     // Same fire-and-forget catalog refresh saveAgentic() does, so
                     // the model combobox on this tab works for an operator who has
                     // never opened Agentic. The OpenRouter catalog is shared and
