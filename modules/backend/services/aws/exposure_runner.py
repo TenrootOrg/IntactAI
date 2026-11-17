@@ -274,9 +274,16 @@ def collect_exposure(aws_config: Dict[str, Any], *, regions: Optional[List[str]]
                                            f"{region}: {lb_.get('DNSName')}", since=_iso(lb_.get("CreatedTime")),
                                            OpenPorts=_ports_text(ports)))
 
-        for what, fn in (("EC2 security groups", ec2), ("Lightsail", lightsail), ("RDS", rds),
-                         ("public images and snapshots", images_and_snapshots), ("Lambda URLs", lambda_urls),
-                         ("ECR", ecr), ("OpenSearch", opensearch), ("EKS", eks), ("load balancers", load_balancers)):
+        for what, service, fn in (("EC2 security groups", "ec2", ec2), ("Lightsail", "lightsail", lightsail),
+                                  ("RDS", "rds", rds), ("public images and snapshots", "ec2", images_and_snapshots),
+                                  ("Lambda URLs", "lambda", lambda_urls), ("ECR", "ecr", ecr),
+                                  ("OpenSearch", "opensearch", opensearch), ("EKS", "eks", eks),
+                                  ("load balancers", "elbv2", load_balancers)):
+            # Not every service exists in every region (Lightsail has no us-west-1).
+            # Calling it there aborted the whole exposure check as "no route to AWS".
+            if not boto_client.offered(service, region):
+                log(f"[exposure] {what} is not offered in {region} — skipped", "info")
+                continue
             guarded(what, region, fn)
 
     def s3():

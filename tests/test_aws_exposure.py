@@ -151,6 +151,19 @@ class ExposureCheck(unittest.TestCase):
         self.assertIn(("Repository", "pub"), got)
         self.assertTrue(any("Lambda URLs" in m and "could not be read" in m for m in logs))
 
+    def test_a_service_not_offered_in_the_region_is_skipped_not_fatal(self):
+        # 2026-11-17: Lightsail has no us-west-1 endpoint; the DNS failure read as
+        # "no route to AWS", aborted the exposure check and failed the whole run.
+        orig = boto_client.offered
+        boto_client.offered = lambda service, region: service != "lightsail"
+        try:
+            got, logs = run(broken=("lightsail",))
+        finally:
+            boto_client.offered = orig
+        self.assertIn(("Repository", "pub"), got, "the other services still ran")
+        self.assertTrue(any("Lightsail is not offered in us-east-1 — skipped" in m for m in logs))
+        self.assertFalse(any("Lightsail" in m and "could not be read" in m for m in logs))
+
     def test_a_star_policy_with_a_condition_is_not_public(self):
         self.assertTrue(ex._open_to_anyone(OPEN))
         self.assertFalse(ex._open_to_anyone(ORG_ONLY))

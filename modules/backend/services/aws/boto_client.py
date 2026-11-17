@@ -144,6 +144,18 @@ def default_regions(aws_config: Dict[str, Any]) -> List[str]:
     return list(aws_config.get("regions") or []) or [aws_config.get("region") or "us-east-1"]
 
 
+def offered(service: str, region: str) -> bool:
+    """False only when boto3's own endpoint data says SERVICE has no endpoint in
+    REGION (Lightsail in us-west-1: calling it there is a DNS failure that
+    classify() can only read as "no route to AWS"). Unknown data -> True."""
+    try:
+        import boto3
+        regions = boto3.session.Session().get_available_regions(service)
+    except Exception:                                        # noqa: BLE001
+        return True
+    return not regions or region in regions
+
+
 def client(service: str, aws_config: Dict[str, Any], region: Optional[str] = None):
     """A boto3 client with the bounded timeouts above.
 
