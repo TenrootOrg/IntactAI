@@ -284,6 +284,15 @@ def register(runner, cfg):
                       expected=f">{before}", actual=len(after),
                       note="triage that is not persisted is triage the analyst "
                            "has to redo on every reload")
+        elif not cfg.plant_evidence:
+            # Same rule as pipelines' detection assertion: without planted
+            # evidence findings>0 is never guaranteed -- it depends on what the
+            # host's own logs happen to hold (one fresh 20261198 install fused 0,
+            # the next run on the same box 10). Say it was skipped, do not fail.
+            ctx.check("there was a finding to triage", True,
+                      actual="SKIPPED: evidence planting is disabled and the "
+                             "fused case produced no finding",
+                      note="the triage loop was not exercised this run")
         else:
             ctx.check("there was a finding to triage", False,
                       note="the fused case produced none, so the triage loop "
