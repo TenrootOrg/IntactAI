@@ -111,18 +111,73 @@ mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
 LOG="$BACKUP_DIR/risx_to_intact-$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M%S).log"
 ( umask 077; : > "$LOG" ) || die "cannot write the log $LOG"
 exec > >(tee -a "$LOG") 2>&1
-list_logs() {
-    echo "  Logs to collect (they may name hosts and accounts; check before sending):"
-    echo "    $LOG"
-    local f
-    for f in "$(ls -t "$ROOT"/install_*.log 2>/dev/null | head -1)" \
-             "$(ls -t "$ROOT"/adopt_velo_identity_*.log 2>/dev/null | head -1)"; do
-        if [[ -n "$f" ]]; then echo "    $f"; fi
+
+# Masks what looks like a credential: KEY=value / key: value pairs named like a
+# password, token, secret or key, and whole PEM blocks. A safety net for the
+# bundle -- the log itself is written to hold none.
+redact() {
+    python3 -c '
+import re, sys
+t = sys.stdin.read()
+t = re.sub(r"-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----", "[REDACTED PEM]", t)
+t = re.sub(r"(?im)^(\s*[\w.-]*(?:password|passwd|token|secret|api_?key|private_key|nonce)[\w.-]*\s*[:=]\s*)\S.*$",
+           lambda m: m.group(1) + "[REDACTED]", t)
+sys.stdout.write(t)'
+}
+
+# What the box looked like: enough to diagnose a run from another machine.
+box_report() {
+    echo "== $(date '+%F %T') on $(hostname) as $(id -un)"
+    uname -a; grep -h PRETTY_NAME /etc/os-release 2>/dev/null
+    echo "Intact: $(git -C "$ROOT" describe --tags --always 2>/dev/null || cat "$ROOT/VERSION" 2>/dev/null || echo '?') at $ROOT"
+    echo "risx_to_intact.sh sha256: $(sha256sum "$0" | cut -c1-16)"
+    echo; echo "== docker"; docker version --format 'engine {{.Server.Version}}, client {{.Client.Version}}' 2>&1
+    docker compose version 2>&1; echo "root: $(docker info -f '{{.DockerRootDir}}' 2>&1)"
+    echo; echo "== disk and memory"; df -h / "$BACKUP_DIR" "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /)" 2>&1 | uniq; free -m 2>&1
+    echo; echo "== containers"; docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' 2>&1
+    echo; echo "== migration state ($STATE)"; cat "$STATE" 2>/dev/null
+    echo; echo "== risx (${RISX_ROOT:-$(state_val risx_root)})"
+    ls -la "${RISX_ROOT:-$(state_val risx_root)}/workdir" 2>&1 | head -30
+    echo; echo "== backup folder"; ls -la "$BACKUP_DIR" 2>&1
+    if sudo -n true 2>/dev/null; then
+        local d; for d in "$DS" "${VELO_DATA:-}"; do
+            [[ -n "$d" ]] && sudo test -d "$d" || continue
+            echo "$d: $(sudo du -sh "$d" 2>/dev/null | cut -f1), clients: $(sudo find "$d/clients" -maxdepth 1 -name 'C.*' 2>/dev/null | wc -l)," \
+                 "snapshot: $(sudo stat -c %y "$d/client_info/snapshot.json" 2>/dev/null || echo none)"
+        done
+    fi
+    local c; for c in velociraptor intact_velociraptor; do
+        docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$c" || continue
+        echo; echo "== docker logs --tail 200 $c"; docker logs --tail 200 "$c" 2>&1
     done
+}
+
+# One file to send back, made at every exit: this run's log, the install and
+# adopt logs, the progress state, box_report and config.yaml -- all through
+# redact(). Never server.config.yaml or the datastore (the fleet's CA key).
+bundle_logs() {
+    local tmp out f
+    tmp="$(mktemp -d)" || return 1
+    out="${LOG%.log}-logs.tar.gz"
+    sleep 0.5        # shortcut: lets tee flush the last lines; a lost line or two at worst
+    for f in "$LOG" "$(ls -t "$ROOT"/install_*.log 2>/dev/null | head -1)" \
+             "$(ls -t "$ROOT"/adopt_velo_identity_*.log 2>/dev/null | head -1)"; do
+        [[ -n "$f" && -r "$f" ]] && redact < "$f" > "$tmp/$(basename "$f")"
+    done
+    box_report 2>&1 | redact > "$tmp/box.txt"
+    redact < "$CFG" > "$tmp/config.yaml" 2>/dev/null
+    ( umask 077; tar -czf "$out" -C "$tmp" . ) && rm -rf "$tmp" || { rm -rf "$tmp"; return 1; }
+    local ip; ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    echo "  Everything to send back is in one file (passwords and keys masked):"
+    echo "    $out"
+    echo "  To copy it to your laptop (PowerShell or a Linux/macOS shell):"
+    echo "    scp \"$(id -un)@${ip:-<this-box-ip>}:$out\" ."
 }
 on_exit() {
     local rc=$?
-    if (( rc != 0 )); then echo "  stopped at $(date '+%F %T') (exit $rc)"; list_logs; fi
+    # plain, not a second WARN: the ERROR above already said what went wrong
+    if (( rc != 0 )); then echo "  stopped at $(date '+%F %T') (exit $rc)"; fi
+    echo; bundle_logs || echo "  (could not pack the logs; send $LOG)"
 }
 trap on_exit EXIT
 echo "risx_to_intact.sh: $(date '+%F %T') on $(hostname) as $(id -un); Intact $(git -C "$ROOT" describe --tags --always 2>/dev/null || echo '?') at $ROOT"
@@ -164,6 +219,9 @@ backup_mode() {
     echo "$m"
 }
 free_kb() { df -Pk "$1" 2>/dev/null | awk 'NR==2{print $4}'; }
+# The history's size: risx keeps its client installers under clients/<os>,
+# which are not history and do not come across (a test box: 317 MB in all, 75 MB of history).
+ds_kb() { sudo du -sk --exclude=clients/linux --exclude=clients/mac --exclude=clients/windows "$1" 2>/dev/null | cut -f1; }
 
 ensure_yaml() {
     python3 -c 'import yaml' 2>/dev/null && return 0
@@ -255,7 +313,7 @@ EOF
 # disk it is instant and needs no space. Another disk makes mv a plain copy.
 move_datastore() {
     if [[ -d "$DS" ]]; then say "the datastore is already in $DS"; return 0; fi
-    local need; need=$(sudo du -sk --exclude=clients/linux --exclude=clients/mac --exclude=clients/windows "$VELO_DATA" | cut -f1)
+    local need; need=$(ds_kb "$VELO_DATA")
     if [[ "$(stat -c %d "$VELO_DATA")" == "$(stat -c %d "$BACKUP_DIR")" ]]; then
         say "moving the datastore ($((need/1024)) MB) to $DS — same disk, instant"
     else
@@ -437,7 +495,7 @@ check_ready() {
     fi
     local src="$VELO_DATA" kb root gb
     [[ -d "$DS" ]] && src="$DS"
-    kb=$(sudo du -sk "$src" 2>/dev/null | cut -f1); kb="${kb:-0}"
+    kb=$(ds_kb "$src"); kb="${kb:-0}"
     root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/var/lib/docker}"
     gb="$(df -B1G --output=avail "$root" 2>/dev/null | tail -1 | tr -d ' ')"
     echo "    risx's datastore : $((kb/1024)) MB (moves into Intact)"
@@ -612,7 +670,6 @@ EOF
     if [[ -n "$risx" && -d "$risx" ]]; then
         echo "    - $risx now holds only risx's scripts: delete it (sudo rm -rf $risx)"
     fi
-    echo; list_logs
 }
 
 # --- main --------------------------------------------------------------------

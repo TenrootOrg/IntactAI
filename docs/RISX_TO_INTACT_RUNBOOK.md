@@ -46,8 +46,19 @@ cleanup. No reboot is needed.
 
 Every finished step is recorded, so after a failure or Ctrl+C, run the script
 again and it continues from the next step. Everything printed, and every answer,
-goes to `~/velociraptor_backup/risx_to_intact-<host>-<time>.log`; on an error the
-script lists that log, the `install_*.log` and the adopt log to send.
+goes to `~/velociraptor_backup/risx_to_intact-<host>-<time>.log`. Whenever the
+script ends, finished or stopped, it packs everything needed to diagnose the run
+into one file next to it, `risx_to_intact-<host>-<time>-logs.tar.gz`, and prints
+the `scp` line to copy it off. Send that one file:
+- the run's log, the `install_*.log` and the adopt log;
+- the step-progress state;
+- `box.txt`: OS, Docker and Intact versions, disk and memory, every container,
+  the old datastore's client count and snapshot time, and the last 200 lines
+  of both Velociraptor containers;
+- `config.yaml`.
+
+Passwords, tokens, keys and the nonce are masked, and the fleet's
+`server.config.yaml` is never included.
 
 **Moving to another machine** is not scripted: follow the steps below by hand
 with **Path A** — back up on the risx box (Step 1, or the one-paste appendix),

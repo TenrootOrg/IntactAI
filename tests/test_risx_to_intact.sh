@@ -230,7 +230,7 @@ test_the_pause_shows_one_scp_line_and_waits_for_r() {
     _run '\ny\nc\nx\n'                       # anything but r keeps waiting; then end of input
     assert_ne "$RC" "0"
     assert_not_contains "$OUT" "PowerShell:"
-    assert_eq "$(grep -c '^    scp ' <<<"$OUT")" "1" "one command for every shell"
+    assert_eq "$(grep -c '^    scp .*config.yaml' <<<"$OUT")" "1" "one command for every shell"
     assert_contains "$OUT" "scp \"$(id -un)@"
     assert_contains "$OUT" "sudo mv $W/backup/datastore $W/risx/setup_platform/workdir/velociraptor/velociraptor" "how to put risx back"
     assert_contains "$OUT" "NEXT: risx-mssp is REMOVED"
@@ -432,12 +432,39 @@ test_the_log_has_output_answers_and_steps_but_no_secrets() {
     assert_not_contains "$body" "FAKEKEY" "the CA key never reaches the log"
 }
 
-test_an_error_lists_the_logs_to_collect() {
+test_an_error_leaves_one_file_to_send_back() {
     _world
     _run ''
     assert_ne "$RC" "0"
-    assert_contains "$OUT" "Logs to collect"
-    assert_contains "$OUT" "$W/backup/risx_to_intact-"
+    assert_contains "$OUT" "Everything to send back is in one file"
+    local tgz; tgz="$(ls "$W"/backup/risx_to_intact-*-logs.tar.gz)"
+    assert_true test -f "$tgz"
+    assert_eq "$(stat -c %a "$tgz")" "600" "it may name hosts and accounts"
+    assert_contains "$OUT" "scp \"$(id -un)@" "how to copy it off"
+    assert_contains "$OUT" "$tgz\" ."
+}
+
+test_the_bundle_has_the_logs_and_the_box_but_no_secret() {
+    _world
+    printf 'install log line\nVELOX_PASSWORD=GuiStored1Abc\n' > "$W/intact/install_20261117.log"
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    local tgz x; tgz="$(ls "$W"/backup/risx_to_intact-*-logs.tar.gz)"
+    x="$(mktemp -d)"; tar -xzf "$tgz" -C "$x"
+    assert_true test -f "$x/box.txt"
+    assert_true test -f "$x/config.yaml"
+    assert_true test -f "$x/install_20261117.log"
+    assert_true compgen -G "$x/risx_to_intact-*.log"
+    assert_contains "$(cat "$x/box.txt")" "== containers"
+    assert_contains "$(cat "$x/box.txt")" "== migration state"
+    assert_contains "$(cat "$x"/risx_to_intact-*.log)" "CA in use matches the backup" "the whole run is in it"
+    assert_contains "$(cat "$x/install_20261117.log")" "VELOX_PASSWORD=[REDACTED]"
+    local all; all="$(cat "$x"/* )"
+    assert_not_contains "$all" "GuiStored1Abc"
+    assert_not_contains "$all" "FAKEKEY"
+    assert_not_contains "$all" "FAKENONCE"
+    assert_false test -e "$x/server.config.yaml" "never the fleet's CA config"
+    rm -rf "$x"
 }
 
 test_help() {
