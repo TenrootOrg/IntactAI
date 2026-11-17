@@ -12,14 +12,18 @@
 # Outside an Intact checkout it clones the latest Intact release into ~/intact
 # (or $INTACT_DIR) and carries on from there. Run it; do not pipe it into bash.
 #
-# What it does — it stops only twice:
+# Intact always gets BOTH the configuration (the fleet's identity) and the data
+# (hunts, collections, client list). Every question and check comes first,
+# while risx still runs; after the pause it runs to the end by itself:
 #   1 find risx and show the fleet's identity
-#   2 back up (graceful stop, server.config.yaml; with "data" the datastore is
-#     MOVED into the backup folder — instant on the same disk, no archive)
-#   3 PAUSE: one scp line to copy the backup off; press r to continue  <- you
-#   4 remove risx (its own cleanup.sh)
-#   5 config.yaml in nano, then: y = install / e = edit again        <- you
-#   6 install.sh   7 adopt the identity, with the old history   8 verify
+#   2 what goes into the backup you copy off the box: 1 config / 2 config + data
+#   3 config.yaml in nano, then: y = use it / e = edit again          <- you
+#   4 check everything the rest needs (the checkout, docker, disk space)
+#   5 back up (graceful stop, server.config.yaml; the datastore is MOVED next
+#     to it — instant on the same disk, no archive)
+#   6 PAUSE: one scp line to copy the backup off; press r to continue  <- you
+#   7 remove risx (its own cleanup.sh)
+#   8 install.sh   9 adopt the identity, with the old history   10 verify
 # Other questions appear only when something is wrong (the address clients dial
 # does not match, containers are left after the cleanup, ...).
 #
@@ -29,9 +33,10 @@
 # (mode 600); on an error it lists every log to collect.
 #
 # Options:
-#   --backup MODE      config = the fleet's identity only (clients reconnect, the
-#                      old history and client list do not come across);
-#                      data = also the history. Asked at step 2 when not given.
+#   --backup MODE      what the backup you copy off the box holds (Intact gets
+#                      both either way): config = the configuration files only
+#                      (KB, seconds to copy); data = also the datastore (large).
+#                      Asked at step 2 when not given.
 #   --backup-dir DIR   where the backup lives (default ~/velociraptor_backup)
 #   --package TAR      air-gapped: passed to install.sh --package
 # Environment: RISX_ROOT (the risx setup_platform dir, if discovery fails),
@@ -83,7 +88,7 @@ while [[ $# -gt 0 ]]; do
         --backup)     BACKUP_MODE="${2:?--backup needs config or data}"; shift
                       [[ "$BACKUP_MODE" == config || "$BACKUP_MODE" == data ]] \
                           || die "--backup must be config or data, not '$BACKUP_MODE'" ;;
-        -h|--help)    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)    sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
     shift
@@ -93,7 +98,7 @@ BACKUP_DIR="$(realpath -m "$BACKUP_DIR")"
 [[ -n "$PACKAGE" ]] && PACKAGE="$(realpath -m "$PACKAGE")"
 STATE="$BACKUP_DIR/.risx_to_intact.${RISX_MIG_MACHINE:-$(cat /etc/machine-id 2>/dev/null || hostname)}.state"
 CFG="$ROOT/config.yaml"
-# data mode: risx's datastore directory, moved here at step 2 (see move_datastore)
+# risx's datastore directory, moved here at step 5 (see move_datastore)
 DS="$BACKUP_DIR/datastore"
 
 [[ "$(id -u)" -eq 0 ]] && die "run as your normal login user, not root (the script calls sudo itself)"
@@ -102,6 +107,7 @@ command -v python3 >/dev/null || die "python3 is required"
 
 # --- log: everything printed goes to the terminal AND the log ----------------
 mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
+( umask 077; : >> "$STATE" ) || die "cannot write $STATE"
 LOG="$BACKUP_DIR/risx_to_intact-$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M%S).log"
 ( umask 077; : > "$LOG" ) || die "cannot write the log $LOG"
 exec > >(tee -a "$LOG") 2>&1
@@ -116,7 +122,7 @@ list_logs() {
 }
 on_exit() {
     local rc=$?
-    if (( rc != 0 )); then echo; warn "stopped with exit $rc at $(date '+%F %T')"; list_logs; fi
+    if (( rc != 0 )); then echo "  stopped at $(date '+%F %T') (exit $rc)"; list_logs; fi
 }
 trap on_exit EXIT
 echo "risx_to_intact.sh: $(date '+%F %T') on $(hostname) as $(id -un); Intact $(git -C "$ROOT" describe --tags --always 2>/dev/null || echo '?') at $ROOT"
@@ -143,13 +149,13 @@ confirm() {  # y/N, with the answer in the log
 risx_present() {
     local base="${RISX_ROOT:-/home/*/setup_platform}"
     compgen -G "$base/workdir/velociraptor/velociraptor/server.config.yaml" >/dev/null && return 0
-    # data mode moved the datastore out at step 2; the rest of risx stays
+    # step 5 moved the datastore out; the rest of risx stays
     # until its cleanup.sh empties workdir/
     [[ -d "$DS" ]] && compgen -G "$base/workdir/velociraptor" >/dev/null
 }
 state_val() { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | tail -1; }
-# config | data. A state written before the choice existed: data when the
-# backup holds any history (a moved datastore or an old archive).
+# config | data: what the off-box copy holds. A state written before the choice
+# existed: data when the backup holds any history (a moved datastore or an old archive).
 backup_mode() {
     local m; m="$(state_val backup_mode)"
     if [[ -z "$m" ]]; then
@@ -166,7 +172,7 @@ ensure_yaml() {
     sudo apt-get install -y python3-yaml >/dev/null || die "could not install python3-yaml"
 }
 
-# identity FILE [sudo] -> sets ID_FP ID_URL ID_HOST ID_PORT ID_NONCE (yes/no)
+# identity FILE [sudo] -> sets ID_FP ID_URL ID_HOST ID_PORT ID_NONCE (yes/no) ID_VER
 identity() {
     local out
     out=$(${2:+sudo} python3 - "$1" <<'PYEOF'
@@ -180,15 +186,17 @@ print(hashlib.sha256(key.encode()).hexdigest()[:16] if key else '')
 print(urls[0]); print(u.hostname or '')
 print(u.port or (443 if u.scheme == 'https' else 80))
 print('yes' if (d.get('Client') or {}).get('nonce') else 'no')
+print((d.get('version') or {}).get('version') or '')
 PYEOF
 ) || die "could not read $1"
-    { read -r ID_FP; read -r ID_URL; read -r ID_HOST; read -r ID_PORT; read -r ID_NONCE; } <<<"$out"
+    { read -r ID_FP; read -r ID_URL; read -r ID_HOST; read -r ID_PORT; read -r ID_NONCE; read -r ID_VER; } <<<"$out"
 }
 
 show_identity() {
     echo "    CA fingerprint : ${ID_FP:-<MISSING>}"
     echo "    clients dial   : ${ID_URL:-<MISSING>}"
     echo "    nonce present  : $ID_NONCE"
+    echo "    Velociraptor   : ${ID_VER:-unknown}"
     [[ -n "$ID_FP" && -n "$ID_HOST" && "$ID_NONCE" == yes ]] \
         || die "this is not a usable Velociraptor server config (fingerprint, address and nonce must all be present)"
 }
@@ -225,23 +233,24 @@ find_risx() {
 
 choose_mode() {
     MODE="${BACKUP_MODE:-$(state_val backup_mode)}"
+    [[ -z "$MODE" ]] && { echo; say "=== 2. Choose what the backup holds === ($(date '+%F %T'))"; }
     while [[ -z "$MODE" ]]; do
         cat <<EOF
 
-  What should come across from risx?
-    1  configuration only — the fleet's identity. Every client keeps its ID and
-       reconnects; the old hunts, collections and client list stay behind.
-    2  configuration + data — also that history. The datastore is moved, not
-       copied: instant on the same disk, and nothing is zipped or unzipped.
+  Intact gets the configuration AND the data (hunts, collections, client
+  list) either way. What should the backup you copy off this box hold?
+    1  configuration only — the fleet's identity, a few KB: the copy takes seconds
+    2  configuration + data — also the datastore: as big as risx's history
 EOF
-        local ans; ask ans "  1 or 2 [2]: "
-        case "${ans:-2}" in 1) MODE=config ;; 2) MODE=data ;; *) warn "type 1 or 2" ;; esac
+        local ans; ask ans "  1 or 2 [1]: "
+        case "${ans:-1}" in 1) MODE=config ;; 2) MODE=data ;; *) warn "type 1 or 2" ;; esac
     done
     [[ "$(state_val backup_mode)" == "$MODE" ]] || echo "backup_mode=$MODE" >> "$STATE"
-    say "backup: $([[ $MODE == data ]] && echo 'configuration + data' || echo 'configuration only')"
+    say "backup to copy off the box: $([[ $MODE == data ]] && echo 'configuration + data' || echo 'configuration only')"
 }
 
-# risx's cleanup.sh empties workdir/, so the datastore has to leave it first.
+# risx's cleanup.sh empties workdir/, so the datastore has to leave it first
+# (always: Intact gets the history whatever the backup choice).
 # A rename, not tar.gz + unzip: risx is removed next anyway, and on the same
 # disk it is instant and needs no space. Another disk makes mv a plain copy.
 move_datastore() {
@@ -255,14 +264,15 @@ move_datastore() {
         say "moving the datastore ($((need/1024)) MB) to $DS — another disk, so this is a copy"
     fi
     sudo mv "$VELO_DATA" "$DS" || die "could not move $VELO_DATA to $DS"
-    # yours, like the rest of the backup, so the scp in step 3 can read it
-    sudo chown -R "$(id -un):$(id -gn)" "$DS" && chmod 700 "$DS"
+    sudo chmod 700 "$DS"
+    # Only when it is copied off: yours, so the scp in step 6 can read it. One
+    # chown per file, so skipped when nobody needs it (the adopt reads it as root).
+    if [[ "$(backup_mode)" == data ]]; then sudo chown -R "$(id -un):$(id -gn)" "$DS"; fi
     echo "dskb=$need" >> "$STATE"
 }
 
 backup() {
-    step backup "2. Back up to $BACKUP_DIR" || return 0
-    choose_mode
+    step backup "5. Back up to $BACKUP_DIR" || return 0
     # A graceful stop flushes the fleet list (client_info/snapshot.json); without
     # it Intact shows an EMPTY client list until each endpoint re-enrols.
     graceful_stop_legacy_velo
@@ -273,26 +283,33 @@ backup() {
     local fp_src="$ID_FP"
     identity "$BACKUP_DIR/server.config.yaml"
     [[ "$ID_FP" == "$fp_src" ]] || die "the copied server.config.yaml does not match the original"
-    [[ "$MODE" == data ]] && move_datastore
+    move_datastore
     echo; ls -lh "$BACKUP_DIR"
     mark backup
 }
 
 pause_for_copy() {
-    step copied "3. Copy the backup off this machine (optional), then continue" || return 0
+    step copied "6. Copy the backup off this machine (optional), then continue" || return 0
     local ip; ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
     local src; src="$(id -un)@${ip:-<this-box-ip>}:${BACKUP_DIR}"
+    local what line
+    if [[ "$(backup_mode)" == data ]]; then
+        what="configuration + data"; line="scp -r \"${src}\" ."
+    else
+        # the two config files only: the datastore next to them is root's and large
+        what="configuration only"; line="scp \"${src}/*.config.yaml\" ."
+    fi
     cat <<EOF
 
-  The backup is ready in ${BACKUP_DIR} (it holds the fleet's CA key: a credential).
+  The backup (${what}) is ready in ${BACKUP_DIR}; it holds the fleet's CA key: a credential.
   To keep a copy off this box, run on your laptop (PowerShell or a Linux/macOS shell):
 
-    scp -r "${src}" .
+    ${line}
 
   NEXT: risx-mssp is REMOVED from this box.
   (Ctrl+C stops here; risx's Velociraptor is stopped — to start it again:
 EOF
-    [[ "$(backup_mode)" == data ]] && echo "   sudo mv ${DS} ${VELO_DATA}"
+    echo "   sudo mv ${DS} ${VELO_DATA}"
     cat <<EOF
    docker update --restart=unless-stopped velociraptor && docker start velociraptor)
 
@@ -306,13 +323,27 @@ EOF
 }
 
 remove_risx_box() {
-    step removed "4. Remove risx-mssp from this machine" || return 0
+    step removed "7. Remove risx-mssp from this machine" || return 0
     local cleanup="$RISX_ROOT/scripts/cleanup.sh"
     [[ -f "$cleanup" ]] || die "no $cleanup — remove risx by hand, then re-run"
     [[ -s "$BACKUP_DIR/server.config.yaml" ]] || die "the backup is incomplete — refusing to remove risx"
-    [[ "$(backup_mode)" == config || -d "$DS" ]] \
-        || die "the datastore is not in $DS — refusing to remove risx (re-run to move it)"
-    (cd "$RISX_ROOT/scripts" && bash cleanup.sh) || warn "cleanup.sh reported a problem"
+    # A backup made by an older version of this script ("configuration only")
+    # left the datastore in risx: move it now, before cleanup.sh deletes it.
+    [[ -d "$DS" ]] || move_datastore
+    [[ -d "$DS" ]] || die "the datastore is not in $DS — refusing to remove risx"
+    # Its ~40 lines (a bare path after every app) go to the log; the screen gets
+    # the list of what it removed. `username` set and stdin closed: cleanup.sh
+    # asks for one (read -p) when risx's .env has none, and must never wait
+    # unseen. risx builds its paths from /home/$username/setup_platform.
+    say "running risx's own cleanup.sh (its output goes to the log)"
+    local out rc=0
+    out="$(cd "$RISX_ROOT/scripts" && username="$(basename "$(dirname "$RISX_ROOT")")" bash cleanup.sh </dev/null 2>&1)" || rc=$?
+    printf '%s\n' "$out" >> "$LOG"
+    local gone; gone="$(sed -n 's/^Deleting the \(.*\) app files.*/\1/p' <<<"$out" | grep -vx '.env' | paste -sd, - | sed 's/,/, /g')"
+    say "removed: ${gone:-nothing listed}"
+    if (( rc != 0 )); then
+        warn "cleanup.sh stopped with exit $rc; its last lines:"; tail -8 <<<"$out" | sed 's/^/    /'
+    fi
     mark removed      # from here risx is gone even if the rest is interrupted
     local left; left="$(docker ps -a --format '{{.Names}}' | grep -v '^intact_' || true)"
     if [[ -n "$left" ]]; then
@@ -326,7 +357,7 @@ remove_risx_box() {
 }
 
 edit_config() {
-    step config "5. Configure Intact (config.yaml)" || return 0
+    step config "3. Configure Intact (config.yaml)" || return 0
     [[ -f "$CFG" ]] || die "$CFG not found"
     # Pre-set the values that MUST match what clients dial. Written in place:
     # the backend mounts config.yaml by inode, so never write-and-rename it.
@@ -387,8 +418,42 @@ PYEOF
     mark config
 }
 
+# What the steps after the removal need, checked while risx still runs: the
+# old migrate_from_risx.sh found a missing piece only after it had deleted
+# risx (QA, 2026-11-17). Runs again on a re-run until risx is removed.
+check_ready() {
+    done_step removed && return 0
+    echo; say "=== 4. Check that everything the rest needs is here === ($(date '+%F %T'))"
+    local f
+    for f in install.sh lib/secrets.sh scripts/adopt_velociraptor_identity.sh scripts/migrate/transform_config.py; do
+        [[ -f "$ROOT/$f" ]] || die "this Intact checkout ($ROOT) has no $f — use a complete release, then re-run"
+    done
+    [[ -z "$PACKAGE" || -r "$PACKAGE" ]] || die "cannot read --package $PACKAGE"
+    echo "    Intact checkout  : $ROOT (complete)"
+    # Lab-verified client window (docs/RISX_MIGRATION.md): 0.6.9 and newer.
+    if [[ -n "$ID_VER" && "$(printf '%s\n' 0.6.9 "$ID_VER" | sort -V | head -1)" != 0.6.9 ]]; then
+        warn "risx runs Velociraptor $ID_VER, older than the tested 0.6.9: its clients may not reconnect"
+        confirm "Continue anyway (see the stepping-stone path in docs/RISX_MIGRATION.md)?" || die "stopped before anything changed"
+    fi
+    local src="$VELO_DATA" kb root gb
+    [[ -d "$DS" ]] && src="$DS"
+    kb=$(sudo du -sk "$src" 2>/dev/null | cut -f1); kb="${kb:-0}"
+    root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/var/lib/docker}"
+    gb="$(df -B1G --output=avail "$root" 2>/dev/null | tail -1 | tr -d ' ')"
+    echo "    risx's datastore : $((kb/1024)) MB (moves into Intact)"
+    echo "    free for Docker  : ${gb:-?} GB under $root"
+    if [[ -n "$gb" ]]; then
+        (( gb * 1024 * 1024 > kb )) \
+            || die "not enough space under $root for the history ($((kb/1024)) MB, ${gb} GB free) — free some, then re-run"
+        if (( gb * 1024 * 1024 < kb + 100 * 1024 * 1024 )); then
+            warn "Intact wants 100 GB free on top of the history (README); this box has ${gb} GB"
+            confirm "Continue anyway?" || die "stopped before anything changed"
+        fi
+    fi
+}
+
 install_intact() {
-    step installed "6. Install Intact.AI" || return 0
+    step installed "8. Install Intact.AI" || return 0
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx intact_velociraptor \
             && ! confirm "Intact is already running on this box. Re-run install.sh anyway?"; then
         say "keeping the running install"; mark installed; return 0
@@ -403,7 +468,6 @@ install_intact() {
 # an archive from an older version of this script, unpacked ONCE into $DS
 # and kept there, so a retry does not unpack it again.
 history_source() {
-    [[ "$(backup_mode)" == data ]] || { say "configuration only: the old history stays behind"; return 1; }
     [[ -d "$DS" ]] && return 0
     local tarball; tarball="$(ls -t "$BACKUP_DIR"/velociraptor-full-*.tar.gz 2>/dev/null | head -1)"
     [[ -n "$tarball" ]] || { warn "no datastore in $DS: only the identity moves, history starts empty"; return 1; }
@@ -419,7 +483,7 @@ history_source() {
 }
 
 adopt() {
-    step adopted "7. Adopt the fleet's Velociraptor identity, with its history" || return 0
+    step adopted "9. Adopt the fleet's Velociraptor identity, with its history" || return 0
     echo "  the fleet's CA     : $ID_FP"
     echo "  CA on this box now : $(live_fp || true)"
     local ds=()
@@ -504,7 +568,7 @@ velo_login() {
 }
 
 verify() {
-    step verified "8. Verify" || return 0
+    step verified "10. Verify" || return 0
     local live; live="$(live_fp)"
     [[ "$live" == "$ID_FP" ]] \
         || die "CA in use is '${live:-unreadable}', the backup's is $ID_FP — the adoption did not take"
@@ -543,6 +607,11 @@ print("[migrate] clients known to the new server: %d" % len(hosts)
     - ${BACKUP_DIR}/server.config.yaml is a plain copy of the fleet's CA key: delete it
       (shred -u) once you are satisfied$([[ -d "$DS" ]] && printf '; %s is the old datastore\n      (also holds the CA): keep it safe until you no longer need the history' "$DS")
 EOF
+    # cleanup.sh empties workdir/ but leaves risx's scripts and resources
+    local risx="${RISX_ROOT:-$(state_val risx_root)}"
+    if [[ -n "$risx" && -d "$risx" ]]; then
+        echo "    - $risx now holds only risx's scripts: delete it (sudo rm -rf $risx)"
+    fi
     echo; list_logs
 }
 
@@ -555,6 +624,10 @@ docker ps >/dev/null 2>&1 || die "this user cannot run docker — add it to the 
 if done_step backup && ! risx_present && ! done_step removed; then
     warn "risx-mssp is no longer on this box — continuing from the backup"; mark removed
 fi
-done_step removed || { find_risx; backup; pause_for_copy; remove_risx_box; }
+# Every question and check while risx still runs; from the pause on, unattended.
+done_step removed || { find_risx; choose_mode; edit_config; check_ready; backup; pause_for_copy; remove_risx_box; }
 identity "$BACKUP_DIR/server.config.yaml"
-edit_config; install_intact; adopt; verify
+# config.yaml is normally done before the removal; a state from an older
+# version of this script reaches it only here.
+done_step config || edit_config
+install_intact; adopt; verify

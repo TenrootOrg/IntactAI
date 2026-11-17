@@ -1,6 +1,6 @@
 # Migrating a risx-mssp box to Intact.AI (Velociraptor preserved)
 
-`scripts/migrate/migrate_from_risx.sh` converts a legacy risx-mssp install
+`scripts/migrate/risx_to_intact.sh` converts a legacy risx-mssp install
 into a fresh intact install **on the same machine**, preserving exactly one
 thing: the Velociraptor deployment. Every already-enrolled endpoint keeps
 connecting — same `client_id`, no reinstall, no touch — and all historical
@@ -36,44 +36,16 @@ cert from the transplanted CA.
 
 ```bash
 # on the risx-mssp box, as the platform user (not root):
-export GITHUB_TOKEN=...   # repo read access to TenrootOrg/IntactAI
-bash scripts/migrate/migrate_from_risx.sh
+bash ~/intact/scripts/migrate/risx_to_intact.sh
 ```
 
-Phases (interactive checkpoints in **bold**):
+The steps, the three questions and the options are in
+[RISX_TO_INTACT_RUNBOOK.md](RISX_TO_INTACT_RUNBOOK.md#the-quick-way-same-machine-one-script).
+Every question and check comes before risx is removed.
 
-0. **Preflight** — finds the risx install, prints legacy version, CA
-   fingerprint, client count + agent-version histogram, disk math, and a
-   tiered compatibility verdict. Aborts on missing identity material.
-1. **Backup** — stops the legacy `velociraptor` **gracefully** (see the
-   client_info note below) and copies its entire data dir to
-   `~/velo-migration-backup-<ts>/`. This backup is the
-   seed source AND the rollback artifact; the script never mutates it and
-   never deletes it — you do, by hand, when satisfied.
-2. **Remove risx-mssp** — shows what will be destroyed and requires typing
-   `REMOVE`. Re-verifies the backup immediately before `rm -rf`.
-3. **Download intact** — latest GitHub release (or `--release TAG` /
-   `--from-dir DIR` for air-gap).
-4. **Configure** — pre-sets `domain:` to the host your clients dial, then
-   opens `config.yaml` in `$EDITOR` for modules/IP. An accidental editor
-   exit loops back to a summary + proceed/edit/abort prompt. Changing
-   `domain` away from the legacy host triggers a hard warning (it would
-   strand every deployed client).
-5. **Transplant + install** — transforms the legacy `server.config.yaml`
-   into intact's shape (`scripts/migrate/transform_config.py`), seeds it and
-   the datastore volume, then runs `install.sh`.
-6. **Verify** — CA fingerprint unchanged, api.config.yaml signed by the
-   transplanted CA, client.config.yaml carries the legacy nonce/endpoint,
-   client-record count matches, backend gRPC round-trip, and (informational)
-   waits up to 5 min for a real endpoint to reconnect.
-7. **Fleet upgrade guidance** — how to push the 0.77.x client binary through
-   the new server (`Admin.Client.Upgrade`), canary-first.
-
-Options: `--force` (pass the orange compat gate), `--datastore-mode bind`
-(huge datastores: the volume binds the backup dir — 1× disk instead of 2×,
-but the backup then IS live data), `--skip-remove` (leave risx stopped on
-disk; needs 3× disk), `--backup-dir` (reuse a previous run's backup after a
-failure — re-runs are cheap).
+`migrate_from_risx.sh` was the first, all-in-one version. Retired 2026-11-17
+after QA on a demo box: it copied the whole datastore, found an existing
+`~/intact` only after it had removed risx, and could not resume. The name now runs `risx_to_intact.sh`.
 
 > **Doing this on a customer site?** [RISX_TO_INTACT_RUNBOOK.md](RISX_TO_INTACT_RUNBOOK.md) is the step-by-step
 > operator version: back up, decommission risx, install Intact, adopt, verify.
@@ -81,7 +53,7 @@ failure — re-runs are cheap).
 
 ## The other shape: adopting a fleet onto a box that is *already* installed
 
-`migrate_from_risx.sh` above replaces a risx box in place, and it seeds the
+`risx_to_intact.sh` above replaces a risx box in place, and it seeds the
 Velociraptor config **before the first install** — which is the only moment
 that works, because `lib/modules/velociraptor.sh` short-circuits
 `deploy_velociraptor` when the container is already running.
@@ -218,7 +190,7 @@ pairs the new binary with the new config).
 
 Newer-server caveats that still apply (upstream "best effort"): artifacts
 using post-0.6.9 VQL features won't run on old clients until the fleet
-upgrade — run phase 7 soon after migrating.
+upgrade — push the 0.77.x client (`Admin.Client.Upgrade`, canary first) soon after migrating.
 
 ### Stepping-stone path (fleets older than 0.6.9)
 
@@ -243,7 +215,7 @@ the intact fleet list comes up **empty**, and a client only reappears when its
 process restarts (which re-enrolls it). On a box with thousands of endpoints
 that looks like total data loss even though nothing was lost.
 
-Phase 1 therefore signals the server process itself inside the container,
+The backup step therefore signals the server process itself inside the container,
 waits for `client_info/snapshot.json` to land, and only then stops the
 container. If the snapshot still doesn't appear the script warns loudly and
 continues — the migration is safe, the fleet list just refills gradually.
