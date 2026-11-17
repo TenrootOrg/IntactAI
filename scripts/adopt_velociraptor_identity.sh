@@ -229,10 +229,30 @@ fi
 
 # --- what adoption costs ----------------------------------------------------
 
+# How many clients this box's current identity has, asked of the running server
+# (a separate `query --config` process reads none). Right after a fresh install
+# it is 0, and the warning below was pure alarm on every risx_to_intact.sh run
+# (QA, 2026-11-17). Unknown (server down, API not up) keeps the warning.
+ENROLLED=""
 if [[ -n "$CUR_FP" ]]; then
+    ENROLLED="$(timeout 30 "$DOCKER_BIN" exec intact_velociraptor ./velociraptor \
+        --api_config /velociraptor/api.config.yaml \
+        query 'SELECT count() AS n FROM clients() GROUP BY 1' --format json 2>/dev/null \
+        | python3 -c 'import json, sys
+t = sys.stdin.read(); t = t[t.find("["):] if "[" in t else ""
+try:
+    rows = json.loads(t); print(rows[0]["n"] if rows else 0)
+except Exception:
+    pass' 2>/dev/null)"
+fi
+
+if [[ -n "$CUR_FP" && "$ENROLLED" == 0 ]]; then
+    log_info "This box's own Velociraptor identity (${CUR_FP}) has no enrolled clients:"
+    log_info "  replacing it costs nothing (its config is backed up first)."
+elif [[ -n "$CUR_FP" ]]; then
     echo
     log_warn "Adopting ${IN_FP} REPLACES this box's Velociraptor identity (${CUR_FP}):"
-    log_warn "  · anything enrolled against ${CUR_FP} stops reporting until re-deployed"
+    log_warn "  · ${ENROLLED:-every} client(s) enrolled against ${CUR_FP} stop reporting until re-deployed"
     log_warn "  · the incoming obfuscation_nonce makes this box's existing Velociraptor"
     log_warn "    datastore files unreadable (they are named with the current one)"
     log_warn "  The current config is backed up first, so this is reversible."

@@ -403,13 +403,21 @@ remove_risx_box() {
         warn "cleanup.sh stopped with exit $rc; its last lines:"; tail -8 <<<"$out" | sed 's/^/    /'
     fi
     mark removed      # from here risx is gone even if the rest is interrupted
-    local left; left="$(docker ps -a --format '{{.Names}}' | grep -v '^intact_' || true)"
+    # cleanup.sh only takes down the apps in its APPS_TO_INSTALL: QA's box kept
+    # MISP (installed, not listed), elk-setup and a few one-off `docker run`s.
+    local left; left="$(docker ps -a --format '{{.Names}}  ({{.Image}}, {{.Status}})' | grep -v '^intact_' || true)"
     if [[ -n "$left" ]]; then
         warn "still present after cleanup.sh:"; echo "$left" | sed 's/^/    /'
         echo "  cleanup.sh --force removes EVERY container, network and volume on this host,"
         echo "  not only risx's. Right on a dedicated box, a disaster on a shared one."
         if confirm "Run cleanup.sh --force?"; then
-            (cd "$RISX_ROOT/scripts" && bash cleanup.sh --force) || warn "cleanup.sh --force reported a problem"
+            # its output (container ids, "bridge is a pre-defined network") goes to the log
+            rc=0
+            out="$(cd "$RISX_ROOT/scripts" && username="$(basename "$(dirname "$RISX_ROOT")")" bash cleanup.sh --force </dev/null 2>&1)" || rc=$?
+            printf '%s\n' "$out" >> "$LOG"
+            left="$(docker ps -a --format '{{.Names}}' | grep -v '^intact_' || true)"
+            if [[ -z "$left" ]]; then say "removed the rest"
+            else warn "still present after cleanup.sh --force (exit $rc): $(paste -sd' ' <<<"$left")"; fi
         fi
     fi
 }
@@ -466,7 +474,7 @@ PYEOF
         if [[ "$velo_on" != yes ]]; then
             warn "Velociraptor is DISABLED — the migration needs it; enable it"; continue
         fi
-        local ans; ask ans "  y = install with this config / e = edit again: "
+        local ans; ask ans "  y = use this config / e = edit again: "
         [[ "$ans" == y || "$ans" == Y ]] || continue
         if [[ "$domain" != "$ID_HOST" || "$port" != "$ID_PORT" ]]; then
             confirm "Are you SURE? Clients will only arrive if you repoint DNS/IP to $domain:$port yourself." || continue
@@ -625,6 +633,38 @@ velo_login() {
     [[ "$code" == 200 ]]
 }
 
+# How many clients the NEW server knows, against how many the old datastore held.
+# Asked of the running server through its API: a separate `query --config`
+# process reads the datastore on its own and finds NO clients -- QA's run
+# (2026-11-17) reported 0 of 12 that way, and a healthy box 0 of 19. The server
+# also converts risx's older client index on its first start, so the count is
+# polled until it reaches the old one or stops for VELO_COUNT_WAIT seconds.
+count_clients() {
+    local want=0 n=-1 last=-2 waited=0 out hosts
+    if sudo test -d "$DS/clients"; then want=$(sudo find "$DS/clients" -mindepth 1 -maxdepth 1 -type d -name 'C.*' | wc -l); fi
+    while :; do
+        out="$(docker exec intact_velociraptor ./velociraptor --api_config /velociraptor/api.config.yaml \
+               query "SELECT client_id, os_info.hostname AS host FROM clients()" --format json 2>/dev/null)"
+        hosts="$(python3 -c '
+import json, re, sys
+rows = []
+for chunk in re.findall(r"\[[\s\S]*?\]", sys.stdin.read()):
+    try: rows += json.loads(chunk)
+    except ValueError: pass
+names = [str(r.get("host") or r.get("client_id")) for r in rows if isinstance(r, dict)]
+print(len(names)); print(", ".join(names[:5]))' <<<"$out" 2>/dev/null)"
+        n="$(head -1 <<<"$hosts")"; n="${n:-0}"
+        (( n >= want || waited >= ${VELO_COUNT_WAIT:-90} )) && break
+        (( n == last && waited >= 30 )) && break
+        last=$n; sleep 5; waited=$((waited + 5))
+    done
+    local eg; eg="$(sed -n 2p <<<"$hosts")"
+    say "clients known to the new server: $n of the $want risx had${eg:+ (e.g. $eg)}"
+    if (( n < want )); then
+        say "  the other $((want - n)) appear as they reconnect (minutes to hours on a large fleet)"
+    fi
+}
+
 verify() {
     step verified "10. Verify" || return 0
     local live; live="$(live_fp)"
@@ -637,25 +677,7 @@ verify() {
     fi
     say "intact_velociraptor is up"
     apply_velo_passwords || die "could not give the Velociraptor users the passwords Intact stored — re-run to retry"
-    local out rc=0
-    out="$(docker exec intact_velociraptor ./velociraptor --config /velociraptor/server.config.yaml \
-           query "SELECT client_id, os_info.hostname AS host FROM clients()" 2>&1)" || rc=$?
-    if (( rc != 0 )); then
-        warn "could not list the clients (exit $rc):"; tail -5 <<<"$out" | sed 's/^/    /'
-    else
-        python3 -c '
-import json, re, sys
-raw = sys.stdin.read()
-rows = []
-for chunk in re.findall(r"\[[\s\S]*?\]", raw):
-    try: rows += json.loads(chunk)
-    except ValueError: pass
-hosts = [r.get("host") or r.get("client_id") for r in rows if isinstance(r, dict)]
-print("[migrate] clients known to the new server: %d" % len(hosts)
-      + (" (e.g. %s)" % ", ".join(map(str, hosts[:5])) if hosts else
-         " -- the old fleet list did not come across; clients re-appear as they reconnect"))
-' <<<"$out" || warn "could not read the client list: $(tail -1 <<<"$out")"
-    fi
+    count_clients
     mark verified
     cat <<EOF
 

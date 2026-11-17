@@ -19,7 +19,7 @@ python3 -c 'import yaml' 2>/dev/null || {
 _world() {
     W="$(mktemp -d)"
     local velo="$W/risx/setup_platform/workdir/velociraptor/velociraptor"
-    mkdir -p "$velo/clients/C.1234/collections" "$velo/clients/linux" \
+    mkdir -p "$velo/clients/C.1234/collections" "$velo/clients/C.5678" "$velo/clients/linux" \
              "$W/risx/setup_platform/scripts" "$W/intact/scripts/migrate" \
              "$W/intact/data/velociraptor" "$W/bin" "$W/log" "$W/home"
     cat > "$velo/server.config.yaml" <<'YAML'
@@ -39,6 +39,9 @@ YAML
 #!/bin/bash
 echo "cleanup \$*" >> "$W/log/calls"
 rm -rf "$W/risx/setup_platform/workdir/"*
+# --force: takes the leftovers, and says what the real one says about Docker's own networks
+[[ "\$1" == --force ]] && { rm -f "$W/log/left"; echo "Error response from daemon: bridge is a pre-defined network and cannot be removed"; }
+exit 0
 EOF
     # the Intact checkout: the real scripts under test, the real config.yaml
     cp "$REPO/scripts/migrate/risx_to_intact.sh" "$REPO/scripts/migrate/risx_lib.sh" \
@@ -70,6 +73,8 @@ echo "docker \$*" >> "$W/log/calls"
 [[ "\$*" == *"user add"* ]] && echo "\${@: -2:1} \$_P" >> "$W/log/velo_pw"
 [[ "\$1" == exec ]] && echo '[{"client_id": "C.1234", "host": "endpoint-1"}, {"client_id": "C.5678", "host": "endpoint-2"}]'
 [[ "\$*" == *--filter* ]] && echo "Up 2 minutes"
+# containers cleanup.sh left behind (the test creates \$W/log/left)
+[[ "\$*" == "ps -a --format"* && -e "$W/log/left" ]] && cat "$W/log/left"
 exit 0
 EOF
     # The GUI login check after the recreate (never the real 127.0.0.1:8889):
@@ -318,10 +323,36 @@ test_a_configuration_only_backup_from_the_previous_version_still_moves_the_histo
     assert_contains "$(cat "$W/log/calls")" "ds: clients/C.1234/collections/flow.json"
 }
 
+test_leftover_containers_are_described_and_force_stays_quiet() {
+    _world
+    echo "misp-db-1  (mysql:8, Exited (0) 2 hours ago)" > "$W/log/left"
+    _run '\ny\nr\ny\n'                       # the normal three, then y to --force
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_contains "$OUT" "still present after cleanup.sh"
+    assert_contains "$OUT" "misp-db-1  (mysql:8, Exited (0) 2 hours ago)" "what it is, not just a name"
+    assert_contains "$OUT" "removed the rest"
+    assert_contains "$(cat "$W/log/calls")" "cleanup --force"
+    assert_not_contains "$OUT" "pre-defined network" "cleanup.sh's own noise stays in the log"
+    assert_contains "$(cat "$W"/backup/risx_to_intact-*.log)" "pre-defined network"
+}
+
 test_the_client_count_is_reported() {
     _world
     _run "$NORMAL"
-    assert_contains "$OUT" "clients known to the new server: 2 (e.g. endpoint-1, endpoint-2)"
+    assert_contains "$OUT" "clients known to the new server: 2 of the 2 risx had (e.g. endpoint-1, endpoint-2)"
+    # asked of the running server: a separate --config query process reads none
+    assert_contains "$(cat "$W/log/calls")" "--api_config /velociraptor/api.config.yaml query"
+    assert_not_contains "$OUT" "appear as they reconnect"
+}
+
+test_clients_still_missing_are_named_not_warned_about() {
+    _world
+    mkdir -p "$W/risx/setup_platform/workdir/velociraptor/velociraptor/clients/C.9abc"
+    VELO_COUNT_WAIT=0 _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_contains "$OUT" "clients known to the new server: 2 of the 3 risx had"
+    assert_contains "$OUT" "the other 1 appear as they reconnect"
+    assert_not_contains "$OUT" "WARN"
 }
 
 test_a_rerun_after_risx_is_gone_continues() {
