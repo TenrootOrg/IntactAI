@@ -43,9 +43,9 @@ The steps, the three questions and the options are in
 [RISX_TO_INTACT_RUNBOOK.md](RISX_TO_INTACT_RUNBOOK.md#the-quick-way-same-machine-one-script).
 Every question and check comes before risx is removed.
 
-`migrate_from_risx.sh` was the first, all-in-one version. Retired 2026-11-17
+`migrate_from_risx.sh` was the first, all-in-one version. Removed 2026-11-17
 after QA on a demo box: it copied the whole datastore, found an existing
-`~/intact` only after it had removed risx, and could not resume. The name now runs `risx_to_intact.sh`.
+`~/intact` only after it had removed risx, and could not resume.
 
 > **Doing this on a customer site?** [RISX_TO_INTACT_RUNBOOK.md](RISX_TO_INTACT_RUNBOOK.md) is the step-by-step
 > operator version: back up, decommission risx, install Intact, adopt, verify.

@@ -38,8 +38,6 @@ by itself:
 | 9 Adopt | `scripts/adopt_velociraptor_identity.sh`; copies `datastore/` once into Intact's datastore volume (a `velociraptor-full-*.tar.gz` left by an older version of the script is unpacked into `datastore/` once and reused) | — |
 | 10 Verify | The CA in use matches the backup; the Velociraptor users get the passwords Intact stored; prints how many clients the server knows | — |
 
-`migrate_from_risx.sh`, the older all-in-one script, now simply runs this one.
-
 Other questions appear only when something is wrong: the domain or port does not
 match what clients dial, `python3-yaml` is missing, or containers survive the
 cleanup. No reboot is needed.

@@ -9,7 +9,7 @@
 # configuration file on the new machine. Client records are NOT needed: a client
 # re-enrols and keeps its client_id.
 #
-# The old scripts/migrate/migrate_from_risx.sh (retired 2026-11-17) did this, but only as part of a
+# The old scripts/migrate/migrate_from_risx.sh (removed 2026-11-17) did this, but only as part of a
 # whole-platform replacement that ends in install.sh, i.e. BEFORE the first
 # install. deploy_velociraptor() short-circuits once the container is running
 # (lib/modules/velociraptor.sh:23-26), so that path cannot adopt a config onto a
