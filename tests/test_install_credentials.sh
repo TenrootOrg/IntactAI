@@ -323,18 +323,6 @@ test_credential_lines_exclude_machine_users() {
     assert_contains "$(credential_lines --ids)" "elk|elastic|" "ids for show-credentials"
 }
 
-# show-credentials printed passwords with no address to use them at (2026-11-17).
-test_access_urls_list_only_enabled_modules() {
-    _setup "$(printf '  iris:\n    enabled: false\n  elk:\n    enabled: true')"
-    local out; out="$(print_access_urls --enabled)"
-    assert_contains "$out" "Dashboard:"
-    assert_contains "$out" "https://10.0.0.5/"
-    assert_contains "$out" "Kibana:"
-    assert_not_contains "$out" "IRIS:" "a switched-off module has no address"
-    assert_not_contains "$out" "|" "QA parses the | rows of show-credentials"
-    assert_contains "$(print_access_urls)" "IRIS:" "without --enabled: every module, as the install prints"
-}
-
 test_show_credentials_refuses_non_root() {
     [[ $EUID -eq 0 ]] && { echo "  (skipped: running as root)"; return 0; }
     assert_false bash ../scripts/show-credentials.sh
@@ -360,6 +348,16 @@ test_show_credentials_prints_token_and_unknown() {
     assert_contains "$out" "portainer | admin | unknown | " "unknown with a 4th-column hint"
     assert_not_contains "$out" "$(secret_get velociraptor VELOX_PASSWORD_2)" "no api password"
     assert_not_contains "$out" "$(secret_get elk KIBANA_PASSWORD)" "no kibana_system password"
+    # The dashboard login: its user from the running backend, never a password
+    # (only the hash is stored); 4 fields, so QA's 3-field password rows skip it.
+    mkdir -p "$WORK/bin"; printf '#!/bin/sh\nexit 1\n' > "$WORK/bin/docker"; chmod +x "$WORK/bin/docker"
+    out="$(PATH="$WORK/bin:$PATH" unshare -r bash "$WORK/scripts/show-credentials.sh" 2>&1)"
+    assert_not_contains "$out" "dashboard | " "no backend answering: no dashboard row"
+    printf '#!/bin/sh\necho analyst1\n' > "$WORK/bin/docker"
+    out="$(PATH="$WORK/bin:$PATH" unshare -r bash "$WORK/scripts/show-credentials.sh" 2>&1)"
+    local row; row="$(grep '^dashboard | ' <<<"$out")"
+    assert_contains "$row" "dashboard | analyst1 | - | " "the dashboard user, no password"
+    assert_eq "$(awk -F'|' '{print NF}' <<<"$row")" "4" "not a 3-field password row"
 }
 
 # install.sh wiring: restore before resolving; rotate once the tools are up,

@@ -43,10 +43,13 @@ if [[ -n "$lines" ]]; then
     done <<< "$lines"
 fi
 [[ -n "$tok" ]] && printf 'Dashboard setup token | - | %s\n' "$tok"
-echo
-echo "Where to sign in:"
-print_access_urls --enabled
-echo "  (the Dashboard login is your own, set at first sign-in; forgot it: sudo bash scripts/reset-login.sh)"
+# The dashboard login: the operator set it at first sign-in and only its hash is
+# stored, so the user is shown and the password cannot be. Asked of the running
+# backend (it is in the encrypted DB). 4 fields, like Portainer's note: QA reads
+# the 3-field rows as passwords.
+dash_user="$(docker exec intact_backend python3 -c \
+    'from services.auth_service import username; print(username() or "")' 2>/dev/null | tail -1)"
+[[ -n "$dash_user" ]] && printf 'dashboard | %s | - | your own password; forgot it: sudo bash scripts/reset-login.sh\n' "$dash_user"
 
 # The admin has now seen every password, so the backend's "Passwords were
 # changed for: ..." banner (the marker's "rotated" list) has done its job.
