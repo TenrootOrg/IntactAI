@@ -17,13 +17,17 @@ const tick = () => new Promise(r => setTimeout(r, 120));
                         { url: 'https://intact.local/', runScripts: 'outside-only' });
   const w = dom.window;
   const sent = [];
+  let orgCalls = 0;
   const cases = [{ case_id: 'c-def', name: 'Default', is_default: true, velo_org: 'root' },
                  { case_id: 'c-acme', name: 'Acme IR', velo_org: 'OFM5G' }];
   w.fetch = async (url, init) => {
     const h = new w.Headers((init && init.headers) || {});
     sent.push({ url: String(url), caseId: h.get('X-Case-Id') });
     const body = String(url).startsWith('/api/cases') ? { cases }
-      : String(url).startsWith('/api/velociraptor/orgs') ? { orgs: [{ id: 'root', name: 'root' }, { id: 'OFM5G', name: 'Acme' }] }
+      // The first answer predates the case's org (made in Velociraptor after the page
+      // loaded): nameOf must ask again, not show the id (2026-11-17: "OBH40" in the bar).
+      : String(url).startsWith('/api/velociraptor/orgs') ? { orgs: (++orgCalls === 1 ? [{ id: 'root', name: 'root' }]
+          : [{ id: 'root', name: 'root' }, { id: 'OFM5G', name: 'Acme' }]) }
       : String(url).startsWith('/api/clients') ? { total: 0, items: [] } : {};
     return { ok: true, status: 200, json: async () => body, clone() { return this; } };
   };
@@ -43,7 +47,7 @@ const tick = () => new Promise(r => setTimeout(r, 120));
   assert.ok(changed >= 1, 'pages hear about it (client lists reload)');
   const org = w.document.querySelector('#bar .ac-org');
   assert.ok(org, 'the top bar shows the org');
-  assert.strictEqual(org.querySelector('b').textContent, 'Acme (OFM5G)');
+  assert.strictEqual(org.querySelector('b').textContent, 'Acme', 'the org by name only');
   assert.ok(!w.document.querySelector('#bar select.velo-org-select'), 'no org dropdown in the top bar');
 
   // the DASHBOARD top bar (js/components/workspace-bar.js): "Case: X  Org: Y"
@@ -53,14 +57,14 @@ const tick = () => new Promise(r => setTimeout(r, 120));
   await tick();
   assert.match(wsb.textContent, /Case:\s*Acme IR/);
   const orgA = wsb.querySelector('#ws-org-link'), caseA = wsb.querySelector('#ws-link');
-  assert.strictEqual(orgA.textContent, 'Acme (OFM5G)', 'the org next to the case');
+  assert.strictEqual(orgA.textContent, 'Acme', 'the org next to the case, by name only');
   assert.strictEqual(orgA.getAttribute('style'), caseA.getAttribute('style'), 'the org looks the same as the case');
   assert.strictEqual(orgA.getAttribute('href'), '#cases', 'it opens Case Management, where the org is set');
 
   // a module page: read-only, never a picker
   const slot = w.document.querySelector('.velo-org-slot');
   assert.ok(!slot.querySelector('select'), 'no org dropdown on a module page');
-  assert.match(slot.textContent, /Velociraptor org: Acme \(OFM5G\)/);
+  assert.match(slot.textContent, /Velociraptor org: Acme /);
   assert.match(slot.textContent, /Imports land here\./);
   assert.ok(!('set' in w.VeloOrg), 'nothing can pick an org any more');
 

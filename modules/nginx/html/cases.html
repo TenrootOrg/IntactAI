@@ -307,7 +307,7 @@
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-<script src="js/active-case.js?v=17"></script>
+<script src="js/active-case.js?v=18"></script>
 <!-- set embed + view mode before body renders (no flash) -->
 <script>(function(){var q=new URLSearchParams(location.search);
   if(q.get('embed')==='1')document.documentElement.classList.add('embed');
@@ -837,6 +837,8 @@ const CASE_STATUS_LABEL={open:'Open',contained:'Contained',closed:'Closed'};
 let _orgOpts=[];
 const orgsReady=(window.VeloOrg?window.VeloOrg.list():Promise.resolve([])).then(o=>{_orgOpts=o||[];});
 function orgLabel(id){ id=id||'root'; const o=_orgOpts.find(x=>x.id===id); return o&&o.id!=='root'&&o.name!==o.id?`${o.name} (${o.id})`:id; }
+// The case card shows the name only (the picker above keeps "Name (ID)" to tell two apart).
+function orgName(id){ id=id||'root'; const o=_orgOpts.find(x=>x.id===id); return o?o.name:id; }
 function orgOptionsHtml(cur){
   cur=cur||'root';
   const L=_orgOpts.length?_orgOpts.slice():[{id:'root',name:'root'}];
@@ -853,7 +855,7 @@ function caseMetaHtml(info){
   return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:3px 0;font-size:12px">`
     +`<span class="sg-hint" style="border-style:solid;color:${col};border-color:${col}">${esc(st)}</span>`
     +(own?`<span style="color:var(--muted)">owner: ${esc(own)}</span>`:'')
-    +`<span style="color:var(--muted)" title="Velociraptor org of this case">org: ${esc(orgLabel(info.velo_org))}</span>`
+    +`<span style="color:var(--muted)" title="Velociraptor org of this case">org: ${esc(orgName(info.velo_org))}</span>`
     +(desc?`<span style="color:var(--muted);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(desc)}">— ${esc(desc)}</span>`:'')
     +`</div>`;
 }

@@ -413,11 +413,15 @@
     }
     return _orgs;
   }
-  /** Display name of an org id ('Name (ID)'; the id when Velociraptor is down). */
+  /** An org's name, as the top bar shows it (the id only when Velociraptor cannot
+   *  say: down, or the org is gone). The list is cached for the page, so an org
+   *  made in Velociraptor after the page loaded is looked up once more first --
+   *  the bar showed "OBH40" for a case's new org (2026-11-17). */
   async function nameOf(id) {
     id = id || 'root';
-    const o = (await list()).find(x => x.id === id);
-    return o && o.id !== 'root' && o.name !== o.id ? `${o.name} (${o.id})` : id;
+    let o = (await list()).find(x => x.id === id);
+    if (!o && id !== 'root') { _orgs = null; o = (await list()).find(x => x.id === id); }
+    return o ? o.name : id;
   }
   /** Velociraptor GUI url in the case's org (its GUI takes ?org_id=). */
   function guiUrl(hash) {
