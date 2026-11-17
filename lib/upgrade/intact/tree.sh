@@ -196,3 +196,18 @@ _intact_mirror_install_sh() {
     log_info "  updated install.sh"
     return 0
 }
+
+# .gitignore, same shape. A box installed by `git clone` is a checkout, and
+# nothing refreshed its ignore rules: a 20261021 box upgraded to 20261116+
+# kept the old file, so modules/velociraptor/secrets/creds.env and the
+# config.yaml.pre-* copies (passwords) showed as plain untracked files a
+# `git add -A` would stage. Never rolled back and never fatal: newer rules only
+# ignore more.
+_intact_mirror_gitignore() {
+    local s="$1/.gitignore" d="${SCRIPT_DIR}/.gitignore"
+    [[ -f "$s" ]] || return 0
+    cmp -s "$s" "$d" 2>/dev/null && return 0
+    cp -p "$s" "$d" 2>/dev/null || { log_warn "  could not update .gitignore"; return 0; }
+    log_info "  updated .gitignore"
+    return 0
+}

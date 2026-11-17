@@ -101,6 +101,26 @@ test_mirror_install_sh_copies_when_present() {
     assert_eq "$(cat "$SCRIPT_DIR/install.sh")" "new installer"
 }
 
+# _intact_mirror_gitignore: an upgraded git checkout must get the release's
+# ignore rules, or its new secret files show as untracked.
+test_mirror_gitignore_replaces_the_old_rules() {
+    _fresh_dirs
+    echo "old-rules" > "$SCRIPT_DIR/.gitignore"
+    printf 'modules/velociraptor/secrets/*\n' > "$SRC/.gitignore"
+    assert_true _intact_mirror_gitignore "$SRC"
+    assert_eq "$(cat "$SCRIPT_DIR/.gitignore")" "modules/velociraptor/secrets/*"
+}
+
+test_mirror_gitignore_never_fails_the_upgrade() {
+    _fresh_dirs
+    echo "keep" > "$SCRIPT_DIR/.gitignore"
+    assert_true _intact_mirror_gitignore "$SRC"               # package has none
+    assert_eq "$(cat "$SCRIPT_DIR/.gitignore")" "keep"
+    echo "new" > "$SRC/.gitignore"; chmod 444 "$SCRIPT_DIR/.gitignore"; chmod 555 "$SCRIPT_DIR"
+    assert_true _intact_mirror_gitignore "$SRC"               # cannot write: warn, not fail
+    chmod 755 "$SCRIPT_DIR"; chmod 644 "$SCRIPT_DIR/.gitignore"
+}
+
 test_mirror_install_sh_skips_not_fails_on_legacy_package() {
     # A package built before the full-repo layout existed carries no
     # top-level install.sh at all -- this must degrade gracefully, not fail

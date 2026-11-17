@@ -135,6 +135,7 @@ upgrade_module_intact() {
         log_warn "  package has no scripts/ — this box's upgrade engine will not be updated"
     fi
     u_do "mirror install.sh" -- _intact_mirror_install_sh "$src"
+    u_do "mirror .gitignore" -- _intact_mirror_gitignore "$src"
     _INTACT_REFRESHED="$(mktemp -p "${SCRIPT_DIR}/data/tmp" intact-refreshed-XXXXXX 2>/dev/null || mktemp)"
     u_do --timeout 600 "refresh sidecar compose files and assets" -- _intact_refresh_sidecars "$src"
     # The shared Nginx TLS pair is PLATFORM state, not any one module's: three
