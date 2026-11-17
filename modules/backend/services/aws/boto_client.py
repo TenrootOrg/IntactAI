@@ -136,6 +136,25 @@ import re as _re
 REGION_RE = _re.compile(r"^[a-z]{2}(-gov|-iso[a-z]?)?-[a-z]+-\d{1,2}$")
 
 
+def keep_enabled(aws_config: Dict[str, Any], regions: List[str], log=None) -> List[str]:
+    """REGIONS without the ones this account has not enabled (opt-in regions such as
+    eu-central-2). AWS answers a call to a disabled region as if the key were wrong
+    (UnrecognizedClientException) -- classified as bad credentials, it aborted
+    GuardDuty and Access Analyzer for EVERY region (2026-11-17). Asked once; when
+    AWS cannot say, or none of them is enabled, REGIONS come back unchanged."""
+    log = log or (lambda m, l="info": None)
+    try:
+        on = {r["RegionName"] for r in client("ec2", aws_config, "us-east-1").describe_regions()["Regions"]}
+    except Exception:                                        # noqa: BLE001
+        return regions
+    keep = [r for r in regions if r in on]
+    off = [r for r in regions if r not in on]
+    if off and keep:
+        log(f"[AWS] not enabled for this account (opt-in regions), skipped: {', '.join(off)}", "warning")
+        return keep
+    return regions
+
+
 def default_regions(aws_config: Dict[str, Any]) -> List[str]:
     """The regions a scan covers when it names none: the ones the AWS page last
     scanned (remembered by POST /api/aws/scan), else the old single Settings

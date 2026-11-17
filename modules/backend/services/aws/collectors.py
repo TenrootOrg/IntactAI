@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from services.workflow_service import add_log_to_run, is_cancelled
 
+from . import boto_client
 from .boto_client import AwsFatal
 
 _FAKE_DATA_DIR = Path(__file__).parent / "fake_data"
@@ -462,6 +463,7 @@ def collect_aws_logs(
         if run_id:
             add_log_to_run(run_id, msg, level)
 
+    regions = boto_client.keep_enabled(aws_config, list(regions or boto_client.default_regions(aws_config)), log)
     log(f"[AWS] Collection start — sources={sources}, regions={regions or ['(default)']}, "
         f"scope_mode={scope_mode}, cloudtrail_mode={cloudtrail_mode}, "
         f"max_events_per_region={max_events_per_region or 'default'}", "info")

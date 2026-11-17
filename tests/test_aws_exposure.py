@@ -164,6 +164,27 @@ class ExposureCheck(unittest.TestCase):
         self.assertTrue(any("Lightsail is not offered in us-east-1 — skipped" in m for m in logs))
         self.assertFalse(any("Lightsail" in m and "could not be read" in m for m in logs))
 
+    def test_regions_the_account_has_not_enabled_are_skipped(self):
+        # 2026-11-17: eu-central-2 (opt-in, not enabled) answered UnrecognizedClientException,
+        # read as bad credentials, and GuardDuty + Access Analyzer gave up on all 9 regions.
+        class Ec2:
+            def describe_regions(self):
+                return {"Regions": [{"RegionName": r} for r in ("us-east-1", "eu-west-1")]}
+        orig, logs = boto_client.client, []
+        boto_client.client = lambda service, *a, **k: Ec2()
+        try:
+            got = boto_client.keep_enabled({}, ["us-east-1", "eu-central-2", "eu-west-1"],
+                                           lambda m, l="info": logs.append((l, m)))
+            self.assertEqual(got, ["us-east-1", "eu-west-1"])
+            self.assertTrue(any(l == "warning" and "eu-central-2" in m for l, m in logs))
+            self.assertEqual(boto_client.keep_enabled({}, ["eu-central-2"]), ["eu-central-2"],
+                             "none enabled: unchanged, the collectors say what failed")
+            boto_client.client = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no route"))
+            self.assertEqual(boto_client.keep_enabled({}, ["eu-central-2", "us-east-1"]), ["eu-central-2", "us-east-1"],
+                             "AWS cannot say: unchanged")
+        finally:
+            boto_client.client = orig
+
     def test_a_star_policy_with_a_condition_is_not_public(self):
         self.assertTrue(ex._open_to_anyone(OPEN))
         self.assertFalse(ex._open_to_anyone(ORG_ONLY))
