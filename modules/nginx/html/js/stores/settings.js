@@ -2086,12 +2086,15 @@ document.addEventListener('alpine:init', () => {
         // the terminal the operator just installed from -- or any shell older than
         // the install -- is "command not found", while this page already says
         // "Found". So the commands carry the PATH themselves.
+        // --device-auth always: plain `codex login` opens a browser sign-in that
+        // calls back to localhost:1455 on the machine running it -- the appliance --
+        // and the operator's browser is on another machine, so it never completes.
         cliInstallCommands() {
             return 'curl -fsSL https://chatgpt.com/codex/install.sh | sh\n' +
                    'export PATH="$HOME/.local/bin:$PATH"\n' +
-                   'codex login';
+                   'codex login --device-auth';
         },
-        cliLoginCommand() { return 'export PATH="$HOME/.local/bin:$PATH" && codex login'; },
+        cliLoginCommand() { return 'export PATH="$HOME/.local/bin:$PATH" && codex login --device-auth'; },
         cliDocsUrl() { return 'https://developers.openai.com/codex/cli/'; },
 
         async cliRefresh() {
