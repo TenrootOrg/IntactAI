@@ -465,8 +465,9 @@ recreate_cert_consumers() {
 print_final_issues_report() {
     local n_w=${#INSTALL_WARNINGS[@]}
     local n_e=${#INSTALL_ERRORS[@]}
+    local n_d=${#INSTALL_DIAGNOSTICS[@]}
 
-    if (( n_e + n_w == 0 )); then
+    if (( n_e + n_w + n_d == 0 )); then
         log_success "No warnings or errors during install."
         return 0
     fi
@@ -518,6 +519,16 @@ print_final_issues_report() {
             _tee "${YELLOW}  (${resolved_count} of these were transient and already auto-resolved on retry — shown below as ↳ entries)${NC}"
         fi
         for entry in "${INSTALL_WARNINGS[@]}"; do
+            _tee "  $entry"
+        done
+    fi
+
+    # The container logs behind the problems above: shown, never counted.
+    if (( n_d > 0 )); then
+        _tee ""
+        _tee "CONTAINER LOGS (for the problems above):"
+        local entry
+        for entry in "${INSTALL_DIAGNOSTICS[@]}"; do
             _tee "  $entry"
         done
     fi

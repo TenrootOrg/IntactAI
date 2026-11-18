@@ -308,7 +308,9 @@ deploy_timesketch() {
     log_info "  Waiting for TimeSketch API (https://localhost:5000)..."
     local ts_ready=false
     local ts_wait=0
-    local ts_max_wait=90
+    # 5 min: its first start (schema, providers, gunicorn workers) took over the
+    # old 90 s on QA's mssp-demo (2026-11-18) and came up fine right after.
+    local ts_max_wait=300
 
     while [[ $ts_wait -lt $ts_max_wait ]]; do
         local http_code=$(curl -sk --max-time 5 "https://localhost:5000/" -o /dev/null -w "%{http_code}" 2>/dev/null)
@@ -319,7 +321,7 @@ deploy_timesketch() {
         fi
         sleep 5
         ((ts_wait+=5))
-        log_info "  Waiting for TimeSketch API... (${ts_wait}/${ts_max_wait}s)"
+        (( ts_wait % 30 == 0 )) && log_info "  Waiting for TimeSketch API... (${ts_wait}/${ts_max_wait}s)"
     done
 
     if [[ "$ts_ready" != "true" ]]; then

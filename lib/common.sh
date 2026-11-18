@@ -42,6 +42,10 @@ UNHEALTHY_MODULES=()
 # this surfaces them at the end where they can't be missed.
 INSTALL_WARNINGS=()
 INSTALL_ERRORS=()
+# Container log tails attached to a problem above (capture_diagnostic_logs).
+# Kept apart: counted as errors, one 90 s Timesketch timeout read as
+# "52 error(s)" on QA's box (2026-11-18). Nothing decides on this list.
+INSTALL_DIAGNOSTICS=()
 declare -A INSTALL_ISSUE_SEEN=()
 
 # Neutral end-of-install notes. Deliberately NOT warnings: these never feed
@@ -208,14 +212,14 @@ for line in sys.stdin:
 capture_diagnostic_logs() {
     local label="$1"
     shift
-    INSTALL_ERRORS+=("--- ${label} diagnostic; container tails follow ---")
+    INSTALL_DIAGNOSTICS+=("--- ${label}: container tails follow ---")
     local container
     for container in "$@"; do
         if docker ps -a --filter "name=^${container}$" --format '{{.Names}}' 2>/dev/null | grep -q .; then
-            INSTALL_ERRORS+=("[$container] last 20 log lines:")
+            INSTALL_DIAGNOSTICS+=("[$container] last 20 log lines:")
             local line
             while IFS= read -r line; do
-                INSTALL_ERRORS+=("  $line")
+                INSTALL_DIAGNOSTICS+=("  $line")
             done < <(docker logs --tail 20 "$container" 2>&1)
         fi
     done
