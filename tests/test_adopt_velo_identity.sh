@@ -220,6 +220,19 @@ test_restart_never_builds_or_pulls() {
     assert_false grep -q 'compose -f "$COMPOSE" up -d[^ ]*$' "$SCRIPT"
 }
 
+test_the_datastore_copy_reports_progress_until_it_ends() {
+    # mssp-demo, 2026-11-18: ~15 GB took 13 minutes with nothing on screen.
+    local d out; d="$(mktemp -d)"; mkdir -p "$d/dst"
+    head -c 2097152 /dev/zero > "$d/dst/part"            # 2 MB "copied" so far
+    out="$(SEED_EVERY=1 bash -c 'log_info() { echo "[INFO] $*"; }
+        eval "$(sed -n "/^_seed_progress() {/,/^}/p" "$1")"
+        sleep 3 & _seed_progress $! 4096 "$2"' _ "$SCRIPT" "$d/dst")"
+    assert_contains "$out" "of 0.0 GB copied ("
+    assert_true test "$(grep -c 'copied' <<<"$out")" -ge 2
+    assert_true grep -q '_seed_progress "$RSYNC_PID"' "$SCRIPT"
+    rm -rf "$d"
+}
+
 test_failure_after_the_swap_rolls_back() {
     assert_true grep -q '_rollback; _die' "$SCRIPT"
 }

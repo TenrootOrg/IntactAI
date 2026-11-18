@@ -183,7 +183,7 @@ bundle_logs() {
     box_report 2>&1 | redact > "$tmp/box.txt"
     redact < "$CFG" > "$tmp/config.yaml" 2>/dev/null
     ( umask 077; tar -czf "$out" -C "$tmp" . ) && rm -rf "$tmp" || { rm -rf "$tmp"; return 1; }
-    local ip; ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    local ip; ip="$(box_ip)"
     echo "  Everything to send back is in one file (passwords and keys masked):"
     echo "    $out"
     echo "  To copy it to your laptop (PowerShell or a Linux/macOS shell):"
@@ -428,9 +428,18 @@ backup() {
     mark backup
 }
 
+# The address this box reaches the network from: once Intact is installed the
+# first of `hostname -I` is a Docker bridge, and the bundle's scp line said
+# 172.20.0.1 instead of 10.10.10.47 (mssp-demo, 2026-11-18).
+box_ip() {
+    local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
+    [[ -n "$ip" ]] || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    echo "$ip"
+}
+
 pause_for_copy() {
     step copied "6. Copy the backup off this box (optional)" || return 0
-    local ip; ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    local ip; ip="$(box_ip)"
     local src; src="$(id -un)@${ip:-<this-box-ip>}:${BACKUP_DIR}"
     local what line
     if [[ "$(backup_mode)" == data ]]; then

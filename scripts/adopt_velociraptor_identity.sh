@@ -163,6 +163,18 @@ _is_local_address() {
 
 _die() { log_error "$1"; [[ -n "${2:-}" ]] && log_error "  $2"; exit 1; }
 
+# A line every SEED_EVERY s while rsync ($1) copies into $3: ~15 GB under a
+# running Intact stack took 13 silent minutes and looked hung (mssp-demo,
+# 2026-11-18). Sizes from du, cheap next to the copy itself.
+_seed_progress() {   # <rsync pid> <source KB> <target dir>
+    local t=0 every="${SEED_EVERY:-30}"
+    while kill -0 "$1" 2>/dev/null; do
+        sleep 1; t=$((t + 1))
+        (( t % every )) && continue
+        log_info "  … $(du -sk "$3" 2>/dev/null | awk -v s="$2" '{printf "%.1f of %.1f GB", $1/1048576, s/1048576}') copied (${t}s)"
+    done
+}
+
 # --- guards ----------------------------------------------------------------
 
 log_info "Velociraptor identity adoption — $(date '+%Y-%m-%d %H:%M:%S')"
@@ -334,6 +346,7 @@ if [[ -n "$DATASTORE_SRC" ]]; then
         log_warn "  datastore volume not found; skipping the datastore seed"
     else
         log_info "Seeding the datastore (this can take a while)…"
+        SRC_KB="$(du -sk "${DATASTORE_SRC%/}" 2>/dev/null | cut -f1)"
         # Same exclusions as risx_lib.sh:481-491 — config, the binary and the
         # repacked installers are intact's, only the RECORDS come across.
         rsync -a --info=stats2 \
@@ -341,8 +354,10 @@ if [[ -n "$DATASTORE_SRC" ]]; then
             --exclude 'api.config.yaml' --exclude 'velociraptor' \
             --exclude 'clients/linux' --exclude 'clients/mac' \
             --exclude 'clients/windows' --exclude '.env' \
-            "${DATASTORE_SRC%/}/" "${VOL}/" >>"$LOG_FILE" 2>&1 \
-            || log_warn "  rsync reported a problem; see ${LOG_FILE}"
+            "${DATASTORE_SRC%/}/" "${VOL}/" >>"$LOG_FILE" 2>&1 &
+        RSYNC_PID=$!
+        _seed_progress "$RSYNC_PID" "${SRC_KB:-0}" "$VOL"
+        wait "$RSYNC_PID" || log_warn "  rsync reported a problem; see ${LOG_FILE}"
         log_success "  datastore seeded from ${DATASTORE_SRC}"
     fi
 fi
