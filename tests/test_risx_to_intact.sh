@@ -551,6 +551,21 @@ test_stop_before_install_leaves_the_box_to_look_at_then_continues() {
     assert_eq "$(grep -cx "compose down $W/risx/setup_platform/workdir/elk" "$W/log/calls")" "1"
 }
 
+test_a_risx_velociraptor_newer_than_intacts_stops_before_anything_changes() {
+    _world
+    local cfg="$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml"
+    sed -i '1i version: {name: velociraptor, version: 0.99.1}' "$cfg"
+    _run "$NORMAL"
+    assert_ne "$RC" "0"
+    assert_contains "$OUT" "newer than Intact's"
+    assert_true test -f "$cfg"                     # still in place: nothing moved
+    _world                                          # 0.77.2 -> 0.77.3, the customer's case: goes on
+    sed -i '1i version: {name: velociraptor, version: 0.77.2}' "$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml"
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_not_contains "$OUT" "newer than Intact's"
+}
+
 test_the_client_count_is_reported() {
     _world
     _run "$NORMAL"

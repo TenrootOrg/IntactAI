@@ -722,6 +722,14 @@ check_ready() {
         [[ -f "$ROOT/$f" ]] || die "this Intact checkout ($ROOT) has no $f — use a complete release, then re-run"
     done
     [[ -z "$PACKAGE" || -r "$PACKAGE" ]] || die "cannot read --package $PACKAGE"
+    # Newer than Intact's own Velociraptor would be a downgrade: the older server
+    # may not read the newer datastore. Stops here, before anything changed.
+    local intact_velo
+    intact_velo="$(python3 -c 'import sys,yaml; print(((yaml.safe_load(open(sys.argv[1])) or {}).get("versions") or {}).get("velociraptor") or "")' "$CFG" 2>/dev/null)"
+    if [[ -n "$ID_VER" && -n "$intact_velo" && "$ID_VER" != "$intact_velo" \
+          && "$(printf '%s\n' "$intact_velo" "$ID_VER" | sort -V | tail -1)" == "$ID_VER" ]]; then
+        die "risx runs Velociraptor $ID_VER, newer than Intact's $intact_velo: its datastore may not be readable by the older server — use an Intact release with Velociraptor $ID_VER or newer"
+    fi
     # Lab-verified client window (docs/RISX_MIGRATION.md): 0.6.9 and newer.
     if [[ -n "$ID_VER" && "$(printf '%s\n' 0.6.9 "$ID_VER" | sort -V | head -1)" != 0.6.9 ]]; then
         warn "risx runs Velociraptor $ID_VER, older than the tested 0.6.9: its clients may not reconnect (docs/RISX_MIGRATION.md, stepping-stone path)"
