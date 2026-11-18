@@ -432,6 +432,9 @@ _show_credentials_once() {
     if is_enabled "$(read_config "['first_login']")"; then
         tok="$(ensure_setup_token)" || tok=""
     fi
+    # risx_to_intact.sh shows them itself after its last steps (the token made
+    # above): printed here too, they were on screen twice (mssp-demo, 2026-11-18).
+    [[ "${INTACT_LOGINS_LATER:-}" == 1 ]] && return 0
     credential_lines --enabled | secret_show_once
     [[ -n "$tok" ]] || return 0
     url="https://$(read_config "['domain']")/setup.html"

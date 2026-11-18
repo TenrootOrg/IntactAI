@@ -22,7 +22,7 @@ _harness() {   # _harness <first_login>
         echo 'log_info() { echo "[INFO] $*"; echo "[INFO] $*" >> "$LOG_FILE"; }'
         echo 'is_enabled() { [[ "$1" == true ]]; }'
         echo 'read_config() { case "$1" in *first_login*) echo '"$1"' ;; *domain*) echo box.example ;; esac; }'
-        echo 'ensure_setup_token() { echo TOK-abc123; }'
+        echo 'ensure_setup_token() { touch "'"$H"'/token_made"; echo TOK-abc123; }'
         echo 'credential_lines() { printf "Velociraptor|tenroot|PwVelo1\nIRIS|administrator|PwIris2\n"; }'
         sed -n '/^secret_show_once() {/,/^}/p' "$REPO/lib/secrets.sh"
         sed -n '/^_show_credentials_once() {/,/^}/p' "$INSTALL"
@@ -71,6 +71,17 @@ test_a_claimed_box_gets_no_token_lines() {
     local out; out="$(script -q -c "bash $H/run.sh" /dev/null </dev/null 2>&1 | tr -d '\r')"
     assert_contains "$out" "PwVelo1"
     assert_not_contains "$out" "Setup token"
+    rm -rf "$H"
+}
+
+test_under_the_migration_they_wait_for_its_end() {
+    # risx_to_intact.sh prints them after its last steps; shown here too, they
+    # were on screen twice (mssp-demo, 2026-11-18). The token is still made.
+    _harness true
+    local out; out="$(script -q -c "INTACT_LOGINS_LATER=1 bash $H/run.sh" /dev/null </dev/null 2>&1 | tr -d '\r')"
+    assert_not_contains "$out" "PwVelo1"
+    assert_not_contains "$out" "TOK-abc123"
+    assert_true test -e "$H/token_made"
     rm -rf "$H"
 }
 

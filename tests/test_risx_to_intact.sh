@@ -95,7 +95,7 @@ printf 'module | user | password\nvelociraptor | tenroot | PwVelo1\nDashboard se
 EOF
     mkdir -p "$W/intact/data/state/backend" && echo TOK-abc123 > "$W/intact/data/state/backend/setup_token"
     cat > "$W/intact/install.sh" <<EOF
-echo "install \$* reinit=\${INTACT_REINIT:-}" >> "$W/log/calls"
+echo "install \$* reinit=\${INTACT_REINIT:-} logins_later=\${INTACT_LOGINS_LATER:-}" >> "$W/log/calls"
 [[ -z "\${INSTALL_FAIL:-}" ]]
 EOF
     cat > "$W/intact/scripts/adopt_velociraptor_identity.sh" <<EOF
@@ -112,6 +112,7 @@ EOF
     cat > "$W/bin/sudo" <<EOF
 #!/bin/bash
 [[ "\$1" == reboot ]] && { echo "reboot" >> "$W/log/calls"; exit 0; }
+[[ "\$*" == "-n -v" ]] && echo "sudo keep-alive" >> "$W/log/calls"
 if [[ "\$1" == -v || "\$1" == -n ]]; then
     [[ -e "$W/log/sudo_refuse" ]] && { echo "sudo: refused" >&2; exit 1; }
     # NOPASSWD rule + sudo group: -n works, -v still wants a password
@@ -521,6 +522,17 @@ test_passwordless_sudo_is_not_asked_even_if_validating_would_ask() {
     assert_not_contains "$OUT" "this script needs sudo"
 }
 
+test_sudo_is_kept_fresh_even_when_nothing_was_asked() {
+    # mssp-demo, 2026-11-18: `sudo -n true` passed on a password cached from a
+    # `sudo rm` just before the run, so no keep-alive started; it ran out during
+    # the install and step 9 sat at a prompt for 20 minutes.
+    _world
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_not_contains "$OUT" "this script needs sudo"
+    assert_contains "$(cat "$W/log/calls")" "sudo keep-alive"
+}
+
 test_a_sudo_refused_mid_run_stops_the_step_and_a_rerun_continues() {
     # QA, 2026-11-18: sudo expired during the install, three wrong passwords in
     # step 9, and the step went on with an empty CA.
@@ -563,6 +575,16 @@ test_without_a_terminal_it_only_says_where_the_logins_are() {
     assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
     assert_contains "$OUT" "Logins and the dashboard setup token: sudo bash $W/intact/scripts/show-credentials.sh"
     assert_not_contains "$OUT" "TOK-abc123"
+}
+
+test_the_install_leaves_the_logins_to_the_end_even_when_it_fails() {
+    # install.sh used to print them too: twice on screen (mssp-demo, 2026-11-18).
+    # Left to this script, they must still show when the install fails.
+    _world
+    INSTALL_FAIL=1 _run "$NORMAL"
+    assert_ne "$RC" "0"
+    assert_contains "$(cat "$W/log/calls")" "logins_later=1"
+    assert_contains "$OUT" "Logins and the dashboard setup token: sudo bash"
 }
 
 test_every_question_is_asked_before_risx_is_touched() {
@@ -648,6 +670,19 @@ test_clients_still_missing_are_named_not_warned_about() {
     assert_contains "$OUT" "clients known to the new server: 2 of the 3 risx had"
     assert_contains "$OUT" "the other 1 appear as they reconnect"
     assert_not_contains "$OUT" "WARN"
+}
+
+test_clients_are_counted_against_risx_client_list_not_its_folders() {
+    # mssp-demo: 12 folders, 4 listed clients; "4 of the 12" read as a loss
+    _world
+    local velo="$W/risx/setup_platform/workdir/velociraptor/velociraptor"
+    mkdir -p "$velo/client_info" "$velo/clients/C.9abc"
+    printf '{"client_id":"C.1234"}{"client_id": "C.5678"}{"client_id":"C.1234"}' > "$velo/client_info/snapshot.json"
+    VELO_COUNT_WAIT=0 _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_contains "$OUT" "clients known to the new server: 2 of the 2 risx had"
+    assert_contains "$OUT" "1 more client folder(s) hold only history"
+    assert_not_contains "$OUT" "appear as they reconnect"
 }
 
 test_a_rerun_after_risx_is_gone_continues() {

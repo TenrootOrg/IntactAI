@@ -195,7 +195,8 @@ on_exit() {
     # plain, not a second WARN: the ERROR above already said what went wrong
     if (( rc != 0 )); then echo "  stopped at $(date '+%F %T') (exit $rc)"; fi
     echo; bundle_logs || echo "  (could not pack the logs; send $LOG)"
-    (( rc == 0 )) && [[ -n "${SHOW_LOGINS:-}" ]] && show_logins
+    # also after a failure: the tools that did come up need them
+    [[ -n "${SHOW_LOGINS:-}" ]] && show_logins
 }
 
 # The logins, the last thing on screen: install.sh showed them at step 8, and
@@ -247,8 +248,10 @@ keep_sudo() {
     # Already passwordless (NOPASSWD): nothing to ask. Checked with `-n true`, not
     # `-v`: validating checks EVERY matching rule, so a NOPASSWD user who is also
     # in the sudo group is still asked by `sudo -v` (mssp-demo, 2026-11-18).
-    sudo -n true 2>/dev/null && return 0
-    sudo -v || die "this script needs sudo (it is asked once, here)"
+    sudo -n true 2>/dev/null || sudo -v || die "this script needs sudo (it is asked once, here)"
+    # Kept fresh even when nothing was asked: `-n true` also passes on a password
+    # still cached from an earlier sudo, which runs out during the install;
+    # mssp-demo's step 9 then sat 20 min at a prompt nobody saw (2026-11-18).
     # its own output to /dev/null: holding the log pipe, its `sleep` kept the
     # run from ending for up to 50 s after the last line
     ( while kill -0 "$$" 2>/dev/null; do sudo -n -v 2>/dev/null; sleep 50; done ) >/dev/null 2>&1 </dev/null &
@@ -791,9 +794,10 @@ install_intact() {
     docker ps --format '{{.Names}}' 2>/dev/null | grep -qx intact_velociraptor \
         && say "Intact is already running here — install.sh runs again (it can be repeated)"
     say "running install.sh${PACKAGE:+ --package $PACKAGE} (this takes a while)"
+    SHOW_LOGINS=1   # install.sh leaves them to this script's end
     # INTACT_REINIT=1: install.sh's "Re-initialize?" is answered here, not asked
     # half an hour after every other question.
-    (cd "$ROOT" && sudo env INTACT_REINIT=1 bash install.sh ${PACKAGE:+--package "$PACKAGE"}) \
+    (cd "$ROOT" && sudo env INTACT_REINIT=1 INTACT_LOGINS_LATER=1 bash install.sh ${PACKAGE:+--package "$PACKAGE"}) \
         || die "install.sh failed — fix the cause and re-run this script; it continues from the install"
     mark installed
 }
@@ -908,8 +912,14 @@ velo_login() {
 # also converts risx's older client index on its first start, so the count is
 # polled until it reaches the old one or stops for VELO_COUNT_WAIT seconds.
 count_clients() {
-    local want=0 n=-1 last=-2 waited=0 out hosts
-    if sudo test -d "$DS/clients"; then want=$(sudo find "$DS/clients" -mindepth 1 -maxdepth 1 -type d -name 'C.*' | wc -l); fi
+    local want=0 folders=0 n=-1 last=-2 waited=0 out hosts
+    if sudo test -d "$DS/clients"; then folders=$(sudo find "$DS/clients" -mindepth 1 -maxdepth 1 -type d -name 'C.*' | wc -l); fi
+    # Compared with risx's own client list, not its folders: folders of clients
+    # risx no longer listed stay behind with their history. mssp-demo had 12
+    # folders and 4 listed clients, and "4 of the 12" read as a loss (2026-11-18).
+    want=$(sudo cat "$DS/client_info/snapshot.json" 2>/dev/null \
+           | grep -aoE '"client_id": ?"C\.[0-9a-f]+"' | sort -u | wc -l)
+    (( want > 0 )) || want=$folders
     while :; do
         out="$(docker exec intact_velociraptor ./velociraptor --api_config /velociraptor/api.config.yaml \
                query "SELECT client_id, os_info.hostname AS host FROM clients()" --format json 2>/dev/null)"
@@ -930,6 +940,9 @@ print(len(names)); print(", ".join(names[:5]))' <<<"$out" 2>/dev/null)"
     say "clients known to the new server: $n of the $want risx had${eg:+ (e.g. $eg)}"
     if (( n < want )); then
         say "  the other $((want - n)) appear as they reconnect (minutes to hours on a large fleet)"
+    fi
+    if (( folders > want )); then
+        say "  $((folders - want)) more client folder(s) hold only history (clients risx itself no longer listed)"
     fi
 }
 

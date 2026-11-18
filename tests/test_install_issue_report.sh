@@ -38,9 +38,12 @@ test_a_warning_with_attached_logs_is_one_warning() {
     assert_contains "$OUT" "install completed with 0 error(s), 1 warning(s)"
     assert_not_contains "$OUT" "ERRORS:"
     assert_contains "$OUT" "TimeSketch API not responding after 90s"
-    assert_contains "$OUT" "CONTAINER LOGS (for the problems above):"
-    assert_contains "$OUT" "log line 50" "the tails are still shown"
-    assert_contains "$LOGTXT" "log line 50" "and in the install log"
+    # a warning's tails go to the log only: on screen they buried the logins
+    # (mssp-demo, 2026-11-18)
+    assert_not_contains "$OUT" "log line 50"
+    assert_contains "$OUT" "Container logs for the warnings: in the full log below"
+    assert_contains "$LOGTXT" "CONTAINER LOGS (for the problems above):"
+    assert_contains "$LOGTXT" "log line 50"
 }
 
 test_a_real_error_is_counted_once_with_its_logs() {
@@ -49,6 +52,7 @@ test_a_real_error_is_counted_once_with_its_logs() {
     assert_contains "$OUT" "install completed with 1 error(s), 0 warning(s)"
     assert_contains "$OUT" "ERRORS:"
     assert_contains "$OUT" "CONTAINER LOGS"
+    assert_contains "$OUT" "log line 50"   # an error's tails stay on screen
 }
 
 test_errors_the_upgrade_gate_adds_directly_still_count() {

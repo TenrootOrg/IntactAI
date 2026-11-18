@@ -523,14 +523,26 @@ print_final_issues_report() {
         done
     fi
 
-    # The container logs behind the problems above: shown, never counted.
+    # The container logs behind the problems above: never counted, always in
+    # the log, on screen only for errors -- for one harmless warning (a slow
+    # Timesketch start) they put ~20 lines of worker banner right above the
+    # logins (mssp-demo, 2026-11-18).
     if (( n_d > 0 )); then
-        _tee ""
-        _tee "CONTAINER LOGS (for the problems above):"
         local entry
-        for entry in "${INSTALL_DIAGNOSTICS[@]}"; do
-            _tee "  $entry"
-        done
+        if (( n_e > 0 )); then
+            _tee ""
+            _tee "CONTAINER LOGS (for the problems above):"
+            for entry in "${INSTALL_DIAGNOSTICS[@]}"; do
+                _tee "  $entry"
+            done
+        else
+            _tee ""
+            _tee "Container logs for the warnings: in the full log below"
+            if [[ -n "${LOG_FILE:-}" ]]; then
+                { echo "CONTAINER LOGS (for the problems above):"
+                  printf '  %s\n' "${INSTALL_DIAGNOSTICS[@]}"; } | sed -E "$_strip_ansi" >> "$LOG_FILE"
+            fi
+        fi
     fi
 
     _tee ""
