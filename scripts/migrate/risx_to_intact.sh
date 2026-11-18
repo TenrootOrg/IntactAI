@@ -120,8 +120,10 @@ redact() {
 import re, sys
 t = sys.stdin.read()
 t = re.sub(r"-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----", "[REDACTED PEM]", t)
-t = re.sub(r"(?im)^(\s*[\w.-]*(?:password|passwd|token|secret|api_?key|private_key|nonce)[\w.-]*\s*[:=]\s*)\S.*$",
-           lambda m: m.group(1) + "[REDACTED]", t)
+# A yes/no or empty value is not a secret: allow_weak_passwords: true was masked.
+t = re.sub(r"(?im)^(\s*[\w.-]*(?:password|passwd|token|secret|api_?key|private_key|nonce)[\w.-]*\s*[:=]\s*)(\S.*)$",
+           lambda m: m.group(0) if re.fullmatch(r"(?i)(true|false|yes|no|\x27\x27|\"\")\s*(#.*)?", m.group(2).strip())
+                     else m.group(1) + "[REDACTED]", t)
 sys.stdout.write(t)'
 }
 
@@ -502,18 +504,22 @@ print(c.get('domain', '')); print(velo.get('agent_port', 8000))
 print('yes' if velo.get('enabled', True) else 'no'); print(', '.join(on)); print(', '.join(weak))
 PYEOF
 )" || { warn "config.yaml does not parse as YAML — fix it"; continue; }
-        local domain port velo_on mods weak
+        local domain port velo_on mods weak lab=0
         { read -r domain; read -r port; read -r velo_on; read -r mods; read -r weak; } <<<"$summary"
+        # Lab mode lets them through: the install's own rule (lib/secrets.sh), so
+        # the two cannot disagree. QA's lab box was warned "the install refuses"
+        # and the install then accepted them (2026-11-18).
+        CONFIG_FILE="$CFG" secret_weak_allowed && lab=1
         echo
         echo "  ------- config summary -------"
         echo "  domain             : $domain"
         echo "  Velociraptor port  : $port"
         echo "  enabled modules    : ${mods:-none}"
-        echo "  default passwords  : ${weak:-none}"
+        echo "  default passwords  : ${weak:-none}$( [[ -n "$weak" ]] && (( lab )) && echo '  (allowed: lab mode, allow_weak_passwords: true)')"
         echo "  ------------------------------"
         [[ "$domain" == "$ID_HOST" ]] || warn "domain $domain is NOT what the clients dial ($ID_HOST): every deployed client would be stranded"
         [[ "$port" == "$ID_PORT" ]] || warn "Velociraptor port $port is NOT the port the clients dial ($ID_PORT)"
-        [[ -n "$weak" ]] && warn "these modules have a publicly known password, which the install refuses — empty it: $weak"
+        [[ -n "$weak" ]] && (( ! lab )) && warn "these modules have a publicly known password, which the install refuses — empty it: $weak"
         if [[ "$velo_on" != yes ]]; then
             warn "Velociraptor is DISABLED — the migration needs it; enable it"; continue
         fi

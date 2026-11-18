@@ -208,6 +208,26 @@ test_every_known_default_is_flagged_not_only_123123() {
     assert_contains "$OUT" "publicly known password"
 }
 
+test_a_lab_box_is_not_warned_about_passwords_the_install_accepts() {
+    # QA, 2026-11-18: allow_weak_passwords: true, known passwords in config.yaml,
+    # step 3 said "the install refuses" -- and the install then accepted them.
+    _world
+    printf '#!/bin/bash\nsed -i "0,/password:.*/s//password: changeme/" "$1"\ngrep -q "^allow_weak_passwords:" "$1" && sed -i "s/^allow_weak_passwords:.*/allow_weak_passwords: true/" "$1" || echo "allow_weak_passwords: true" >> "$1"\n' > "$W/bin/ed-lab"
+    chmod +x "$W/bin/ed-lab"
+    RC=0
+    OUT="$(printf '%b' "$NORMAL" | PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=ed-lab VELO_LOGIN_WAIT=1 \
+           RISX_ROOT="$W/risx/setup_platform" \
+           bash "$W/intact/scripts/migrate/risx_to_intact.sh" --backup-dir "$W/backup" 2>&1)" || RC=$?
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_not_contains "$OUT" "publicly known password"
+    assert_contains "$OUT" "(allowed: lab mode, allow_weak_passwords: true)"
+    # and the bundle shows the switch, while the password itself stays masked
+    local x; x="$(mktemp -d)"; tar -xzf "$(ls "$W"/backup/risx_to_intact-*-logs.tar.gz)" -C "$x"
+    assert_contains "$(cat "$x/config.yaml")" "allow_weak_passwords: true"
+    assert_not_contains "$(cat "$x/config.yaml")" "changeme"
+    rm -rf "$x"
+}
+
 test_data_mode_moves_the_datastore_instead_of_archiving_it() {
     _world
     _run '2\ny\nr\n'
