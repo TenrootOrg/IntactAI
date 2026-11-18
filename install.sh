@@ -394,7 +394,6 @@ main() {
     fix_source_permissions
 
     print_summary
-    _show_credentials_once
     # Neutral "this is expected" notes recorded during the install. Kept
     # separate from — and printed before — the ATTENTION block so that
     # deliberate behaviour is never mistaken for something that went wrong.
@@ -423,19 +422,25 @@ _rotate_known_defaults() {
 }
 
 # Every human login this install set up, shown ONCE, on the terminal only
-# (secret_show_once) -- never stdout or the install log.
+# (secret_show_once) -- never stdout or the install log. The LAST thing the
+# install prints, the dashboard setup token at the very bottom: the reports
+# above it used to scroll it out of sight (2026-11-18).
 # The dashboard setup token only while setup is open (first_login: true): a
 # re-install of a claimed box needs none.
 _show_credentials_once() {
-    local tok=""
+    local tok="" url
     if is_enabled "$(read_config "['first_login']")"; then
         tok="$(ensure_setup_token)" || tok=""
-        [[ -n "$tok" ]] && log_info "Dashboard setup: open https://$(read_config "['domain']")/setup.html and enter the setup token shown below"
     fi
-    {
-        credential_lines --enabled
-        [[ -n "$tok" ]] && printf 'Dashboard setup token|-|%s\n' "$tok"
-    } | secret_show_once
+    credential_lines --enabled | secret_show_once
+    [[ -n "$tok" ]] || return 0
+    url="https://$(read_config "['domain']")/setup.html"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Dashboard setup: ${url} (setup token shown on the terminal only)" >> "$LOG_FILE"
+    if { : > /dev/tty; } 2>/dev/null; then
+        printf '  Dashboard setup: %s\n  Setup token:     %s\n\n' "$url" "$tok" > /dev/tty
+    else
+        log_info "Dashboard setup: ${url} — the setup token: sudo scripts/show-credentials.sh"
+    fi
 }
 
 # ============================================================================
@@ -475,6 +480,8 @@ if [[ ${#FAILED_MODULES[@]} -gt 0 ]] || [[ ${#UNHEALTHY_MODULES[@]} -gt 0 ]]; th
     fi
     log_error "Fix the underlying issue and re-run install.sh."
     log_error "Install log: $LOG_FILE"
+    _show_credentials_once      # last, even here: the tools that did come up need them
     exit 1
 fi
+_show_credentials_once
 exit 0

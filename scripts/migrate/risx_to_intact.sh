@@ -179,6 +179,31 @@ on_exit() {
     # plain, not a second WARN: the ERROR above already said what went wrong
     if (( rc != 0 )); then echo "  stopped at $(date '+%F %T') (exit $rc)"; fi
     echo; bundle_logs || echo "  (could not pack the logs; send $LOG)"
+    (( rc == 0 )) && [[ -n "${SHOW_LOGINS:-}" ]] && show_logins
+}
+
+# The logins, the last thing on screen: install.sh showed them at step 8, and
+# steps 9-10 and the log bundle scrolled them away. Written to the terminal
+# only -- never the log or the bundle (stdout here is tee'd into both).
+show_logins() {
+    if ! { : > /dev/tty; } 2>/dev/null; then
+        echo "  Logins and the dashboard setup token: sudo bash $ROOT/scripts/show-credentials.sh"; return 0
+    fi
+    local rows tok
+    rows="$(sudo bash "$ROOT/scripts/show-credentials.sh" 2>/dev/null | grep -v '^Dashboard setup token')"
+    tok="$(sudo cat "$ROOT/data/state/backend/setup_token" 2>/dev/null | tr -d '[:space:]')"
+    {
+        echo
+        echo "  ---- logins (shown here only, never in a log; again: sudo bash scripts/show-credentials.sh) ----"
+        [[ -n "$rows" ]] && sed 's/^/  /' <<<"$rows"
+        echo "  ----------------------------------------------------------------------------------------------"
+        if [[ -n "$tok" ]]; then
+            echo
+            echo "  Dashboard setup: https://${ID_HOST}/setup.html"
+            echo "  Setup token:     $tok"
+        fi
+        echo
+    } > /dev/tty
 }
 trap on_exit EXIT
 echo "risx_to_intact.sh: $(date '+%F %T') on $(hostname) as $(id -un); Intact $(git -C "$ROOT" describe --tags --always 2>/dev/null || echo '?') at $ROOT"
@@ -697,6 +722,7 @@ verify() {
     apply_velo_passwords || die "could not give the Velociraptor users the passwords Intact stored — re-run to retry"
     count_clients
     mark verified
+    SHOW_LOGINS=1
     cat <<EOF
 
   Done. Next:

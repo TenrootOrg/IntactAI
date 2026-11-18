@@ -368,7 +368,8 @@ test_install_restores_before_and_rotates_after() {
     e="$(grep -n '^    ensure_module_credentials || exit 1' "$f" | cut -d: -f1)"
     v="$(grep -n '^    verify_installation$' "$f" | cut -d: -f1)"
     rot="$(grep -n '^    _rotate_known_defaults$' "$f" | cut -d: -f1)"
-    show="$(grep -n '^    _show_credentials_once$' "$f" | cut -d: -f1)"
+    # the display is the install's last output now, after main (2026-11-18)
+    show="$(grep -n '^_show_credentials_once$' "$f" | tail -1 | cut -d: -f1)"
     [[ -n "$r" && -n "$e" && "$r" -lt "$e" ]] || _fail "state_restore_missing must run before ensure_module_credentials"
     [[ -n "$rot" && "$rot" -gt "$v" && "$rot" -lt "$show" ]] || _fail "rotation must sit between verify_installation and the display"
     _setup "$(_all_blank)"

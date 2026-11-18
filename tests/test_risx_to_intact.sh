@@ -52,6 +52,11 @@ EOF
     cp "$REPO/lib/secrets.sh" "$W/intact/lib/"
     printf 'VELOX_USER=tenroot\nVELOX_ROLE=administrator\nVELOX_USER_2=api\n' > "$W/intact/modules/velociraptor/.env"
     printf 'VELOX_PASSWORD=GuiStored1Abc\nVELOX_PASSWORD_2=ApiStored2Xyz\n' > "$W/intact/modules/velociraptor/secrets/creds.env"
+    # what show-credentials.sh prints, and the token the install left
+    cat > "$W/intact/scripts/show-credentials.sh" <<'EOF'
+printf 'module | user | password\nvelociraptor | tenroot | PwVelo1\nDashboard setup token | - | TOK-abc123\n'
+EOF
+    mkdir -p "$W/intact/data/state/backend" && echo TOK-abc123 > "$W/intact/data/state/backend/setup_token"
     cat > "$W/intact/install.sh" <<EOF
 echo "install \$*" >> "$W/log/calls"
 [[ -z "\${INSTALL_FAIL:-}" ]]
@@ -371,6 +376,33 @@ test_a_sudo_refused_mid_run_stops_the_step_and_a_rerun_continues() {
     _run ''
     assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
     assert_contains "$(cat "$W/log/calls")" "adopt --from"
+}
+
+test_on_a_terminal_the_run_ends_with_the_logins_and_the_token() {
+    command -v script >/dev/null || return 0
+    _world
+    printf '%b' "$NORMAL" > "$W/answers"
+    local out
+    out="$(PATH="$W/bin:$PATH" HOME="$W/home" EDITOR=true VELO_LOGIN_WAIT=1 RISX_ROOT="$W/risx/setup_platform" \
+           script -q -c "bash $W/intact/scripts/migrate/risx_to_intact.sh --backup-dir $W/backup < $W/answers" /dev/null </dev/null 2>&1 | tr -d '\r')"
+    local last2; last2="$(grep -v '^\s*$' <<<"$out" | tail -2)"
+    assert_eq "$(head -1 <<<"$last2")" "  Dashboard setup: https://10.9.8.7/setup.html" "$(tail -8 <<<"$out")"
+    assert_eq "$(tail -1 <<<"$last2")" "  Setup token:     TOK-abc123"
+    assert_contains "$out" "velociraptor | tenroot | PwVelo1"
+    assert_eq "$(grep -c 'TOK-abc123' <<<"$out")" "1" "once, in the last line (not the token row of show-credentials)"
+    assert_not_contains "$(cat "$W"/backup/risx_to_intact-*.log)" "TOK-abc123" "never in the log"
+    assert_not_contains "$(cat "$W"/backup/risx_to_intact-*.log)" "PwVelo1"
+    local x; x="$(mktemp -d)"; tar -xzf "$(ls "$W"/backup/risx_to_intact-*-logs.tar.gz)" -C "$x"
+    assert_not_contains "$(cat "$x"/*)" "TOK-abc123" "never in the bundle"
+    rm -rf "$x"
+}
+
+test_without_a_terminal_it_only_says_where_the_logins_are() {
+    _world
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_contains "$OUT" "Logins and the dashboard setup token: sudo bash $W/intact/scripts/show-credentials.sh"
+    assert_not_contains "$OUT" "TOK-abc123"
 }
 
 test_the_client_count_is_reported() {
