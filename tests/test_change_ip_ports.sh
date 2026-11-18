@@ -111,7 +111,7 @@ test_ports_only_recreates_nginx_only() {
     assert_false stub_called_with docker "restart"
     assert_false stub_called_with docker "exec"
     assert_eq "$(stub_call_count docker)" "2" "docker info + the nginx stack"
-    assert_false test -e "$WORK/modules/nginx/ssl/nginx-cert.crt" "no cert regenerated"
+    assert_false test -e "$WORK/modules/nginx/ssl/nginx-cert.crt"   # no cert regenerated
     assert_contains "$RUN_OUT" "Timesketch:  https://10.0.0.5:6443"
     assert_not_contains "$RUN_OUT" "cut off"
     assert_not_contains "$RUN_OUT" "OLD IP"

@@ -130,7 +130,9 @@ exec > >(tee >(_ts >> "$LOG")) 2>&1
 redact() {
     python3 -c '
 import re, sys
-t = sys.stdin.read()
+# bytes, not strict UTF-8: one stray byte (a Hebrew-layout keystroke in an
+# answer, odd Docker output) crashed this and the bundle lost that log (2026-11-18)
+t = sys.stdin.buffer.read().decode("utf-8", "replace")
 t = re.sub(r"-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----", "[REDACTED PEM]", t)
 # A yes/no or empty value is not a secret: allow_weak_passwords: true was masked.
 t = re.sub(r"(?im)^(\s*[\w.-]*(?:password|passwd|token|secret|api_?key|private_key|nonce)[\w.-]*\s*[:=]\s*)(\S.*)$",
@@ -253,12 +255,22 @@ keep_sudo() {
     SUDO_KEEPALIVE=$!
 }
 log_answer() { printf '[%(%F %T)T] answer: %s\n' -1 "$1" >> "$LOG"; }
+# A Hebrew keyboard layout types ר/ט/ק for r/y/e, and Backspace may erase only
+# one byte of such a 2-byte letter: mssp-demo's pause read 0xD7 + "r", asked
+# again, and the stray byte made grep call the log binary (2026-11-18). So the
+# three letters count as theirs, and anything not printable ASCII is dropped.
+clean_answer() {
+    local a="${1//ר/r}"; a="${a//ט/y}"; a="${a//ק/e}"
+    printf '%s' "$a" | LC_ALL=C tr -cd '\40-\176'
+}
 ask() {  # ask VAR "prompt" — dies on end of input instead of looping forever
     local _a; read -r -p "$2" _a || die "no answer (end of input) — stopped"
+    _a="$(clean_answer "$_a")"
     log_answer "$_a"; printf -v "$1" '%s' "$_a"
 }
 confirm() {  # y/N, with the answer in the log
     local _a; read -r -p "$1 [y/N] " _a || _a=""
+    _a="$(clean_answer "$_a")"
     log_answer "${_a:-<none>}"
     [[ "$_a" == y || "$_a" == Y || "$_a" == yes ]]
 }
@@ -544,6 +556,22 @@ risx_inventory() {
 }
 _crontab() { if [[ "$1" == root ]]; then shift; sudo crontab "$@"; else shift; crontab "$@"; fi; }
 
+# _rm_listed KIND "inspect args" "rm args" ITEM... -- removes each item that
+# still exists; what is still there afterwards goes into the caller's `left`,
+# how many are gone into RM_GONE. Checked first: each stack's compose down
+# already removed most of them, and removing them again put 48 "No such
+# container/network" errors in the log that were no problem (mssp-demo, 2026-11-18).
+# shellcheck disable=SC2086  # $insp and $rm are docker subcommands with options: split on purpose
+_rm_listed() {
+    local kind="$1" insp="$2" rm="$3" x; shift 3
+    RM_GONE=0
+    for x in "$@"; do
+        docker $insp "$x" >/dev/null 2>&1 && { docker $rm "$x" 2>&1 | _ts >> "$LOG"; }
+        if docker $insp "$x" >/dev/null 2>&1; then left+=("$kind $x"); else RM_GONE=$((RM_GONE + 1)); fi
+    done
+    return 0
+}
+
 # risx's installer clone, next to setup_platform. Its install moves the scripts
 # out, so the clone keeps only setup_platform/workdir (mssp-demo, 2026-11-18).
 risx_installer_clone() {
@@ -577,24 +605,32 @@ remove_risx_box() {
     { echo "risx inventory before the removal:"; show_risx_inventory
       printf 'container %s\n' "${INV_CONT[@]}"; printf 'volume %s\n' "${INV_VOL[@]}"
       printf 'network %s\n' "${INV_NET[@]}"; printf 'image %s\n' "${INV_IMG[@]}"; } | _ts >> "$LOG"
-    say "removing risx (details in the log)"
-    local d id v n img
+    # On screen, a line as each part finishes: "details in the log" and then
+    # ~5 silent minutes looked stuck (mssp-demo, 2026-11-18). Docker's own
+    # output goes to the log only.
+    say "removing risx:"
+    local d i=0 left=() line
     # 1. each stack by its own compose file: also what it declares and never started
     for d in "${INV_DIRS[@]}"; do
+        printf '  stack %d/%d %s: ' $((++i)) "${#INV_DIRS[@]}" "$(basename "$d")"
         echo "== docker compose down in $d" | _ts >> "$LOG"
-        (cd "$d" && docker compose down --volumes --remove-orphans --timeout 20) 2>&1 | _ts >> "$LOG" || true
+        if (cd "$d" && docker compose down --volumes --remove-orphans --timeout 20) 2>&1 | _ts >> "$LOG"
+        then echo removed; else echo "docker compose down failed (the log says why)"; fi
     done
     # 2-5. whatever is left of the list, then cron lines and files
-    for id in "${INV_CONT[@]}"; do docker rm -f -v "$id" 2>&1 | _ts >> "$LOG" || true; done
-    for v in "${INV_VOL[@]}"; do docker volume rm -f "$v" 2>&1 | _ts >> "$LOG" || true; done
-    for n in "${INV_NET[@]}"; do docker network rm "$n" 2>&1 | _ts >> "$LOG" || true; done
-    for img in "${INV_IMG[@]}"; do docker image rm -f "$img" 2>&1 | _ts >> "$LOG" || true; done
-    docker builder prune -af 2>&1 | _ts >> "$LOG" || true
-    local who tmp
+    _rm_listed container inspect "rm -f -v" "${INV_CONT[@]}"; line="  containers: $RM_GONE removed"
+    _rm_listed volume "volume inspect" "volume rm -f" "${INV_VOL[@]}"; line+="   volumes: $RM_GONE"
+    _rm_listed network "network inspect" "network rm" "${INV_NET[@]}"; echo "$line   networks: $RM_GONE"
+    _rm_listed image "image inspect" "image rm -f" "${INV_IMG[@]}"; line="  images: $RM_GONE removed (${INV_IMG_GB} GB)"
+    if docker builder prune -af 2>&1 | _ts >> "$LOG"; then echo "$line   build cache: cleared"
+    else echo "$line   build cache: not cleared (the log says why)"; fi
+    local who tmp cron=0 n
     for who in user root; do
-        if _crontab "$who" -l 2>/dev/null | grep -qE 'docker exec misp|setup_platform|risx|^# empty crontab$'; then
+        n="$(_crontab "$who" -l 2>/dev/null | grep -cE 'docker exec misp|setup_platform|risx|^# empty crontab$')"
+        if (( n )); then
             tmp="$(mktemp)"; _crontab "$who" -l 2>/dev/null | grep -vE 'docker exec misp|setup_platform|risx|^# empty crontab$' > "$tmp"
-            _crontab "$who" "$tmp" 2>&1 | _ts >> "$LOG" || warn "could not remove risx's lines from the $who crontab"
+            if _crontab "$who" "$tmp" 2>&1 | _ts >> "$LOG"; then cron=$((cron + n))
+            else warn "could not remove risx's lines from the $who crontab"; fi
             rm -f "$tmp"
         fi
     done
@@ -609,14 +645,12 @@ remove_risx_box() {
     local clone; clone="$(risx_installer_clone)"
     echo "deleting $RISX_ROOT${clone:+ and $clone}" | _ts >> "$LOG"
     sudo rm -rf "$RISX_ROOT" ${clone:+"$clone"} 2>&1 | _ts >> "$LOG" || true
-    mark removed      # from here risx is gone even if the rest is interrupted
-    # Check: everything listed is gone.
-    local left=()
-    for id in "${INV_CONT[@]}"; do docker inspect "$id" >/dev/null 2>&1 && left+=("container $id"); done
-    for v in "${INV_VOL[@]}"; do docker volume inspect "$v" >/dev/null 2>&1 && left+=("volume $v"); done
-    for n in "${INV_NET[@]}"; do docker network inspect "$n" >/dev/null 2>&1 && left+=("network $n"); done
-    for img in "${INV_IMG[@]}"; do docker image inspect "$img" >/dev/null 2>&1 && left+=("image $img"); done
     [[ -e "$RISX_ROOT" ]] && left+=("folder $RISX_ROOT")
+    local gone=""
+    for d in "$RISX_ROOT" ${clone:+"$clone"}; do [[ -e "$d" ]] || gone+="${gone:+, }$(basename "$d")"; done
+    echo "  cron lines: $cron removed   folders deleted: ${gone:-none}"
+    (( ${#RISX_HOME_LEFTOVERS[@]} )) && echo "  ${#RISX_HOME_LEFTOVERS[@]} loose risx files moved into $BACKUP_DIR/risx-leftovers"
+    mark removed      # from here risx is gone even if the rest is interrupted
     if (( ${#left[@]} )); then
         warn "${#left[@]} thing(s) of risx could not be removed (the log lists why):"
         printf '    %s\n' "${left[@]:0:10}"
@@ -701,7 +735,9 @@ PYEOF
 # nothing. A refused password stops here, before anything changed.
 store_passwords() {
     say "the tools' passwords: type one for each, or press Enter to have it generated (all are shown at the end)"
-    sudo env SCRIPT_DIR="$ROOT" CONFIG_FILE="$CFG" LOG_FILE="$LOG" bash -c '
+    # LOG_FILE=/dev/null: its log_* lines also go to stdout, which is already
+    # logged -- with LOG_FILE=$LOG each line was in the log twice (mssp-demo, 2026-11-18).
+    sudo env SCRIPT_DIR="$ROOT" CONFIG_FILE="$CFG" LOG_FILE=/dev/null bash -c '
         for l in common secrets config state_registry; do
             source "$SCRIPT_DIR/lib/$l.sh" >/dev/null || exit 3
         done

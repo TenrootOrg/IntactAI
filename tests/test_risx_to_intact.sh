@@ -450,6 +450,58 @@ test_everything_risx_owns_is_removed_and_nothing_else() {
     assert_contains "$(cat "$W/log/calls")" "ds: clients/C.1234/collections/flow.json"
 }
 
+test_the_removal_shows_its_progress_on_screen() {
+    # mssp-demo, 2026-11-18: "details in the log", then ~5 silent minutes
+    _world
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_not_contains "$OUT" "details in the log"
+    assert_contains "$OUT" "removing risx:"
+    assert_contains "$OUT" "  stack 1/3 elk: removed"
+    assert_contains "$OUT" "  stack 3/3 timesketch: removed"
+    assert_contains "$OUT" "  containers: 3 removed   volumes: 4   networks: 3"
+    assert_contains "$OUT" "  images: 5 removed (2.5 GB)   build cache: cleared"
+    assert_contains "$OUT" "  cron lines: 2 removed   folders deleted: setup_platform, Risx-MSSP"
+    assert_contains "$OUT" "  2 loose risx files moved into $W/backup/risx-leftovers"
+    # Docker's own output stays in the log
+    assert_not_contains "$OUT" "== docker compose down"
+    assert_contains "$(cat "$W"/backup/risx_to_intact-*.log)" "== docker compose down in $W/risx/setup_platform/workdir/elk"
+}
+
+test_what_compose_down_already_removed_is_not_removed_again() {
+    # mssp-demo, 2026-11-18: 48 "No such container/network" lines in the log
+    _world
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_false grep -aqE 'No such|not found' "$W"/backup/risx_to_intact-*.log
+    assert_not_contains "$(cat "$W/log/calls")" "docker rm -f -v c-elk"   # its stack's compose down took it
+    assert_contains "$(cat "$W/log/calls")" "docker rm -f -v c-oneoff"    # in no stack: removed here
+}
+
+test_the_password_step_logs_each_line_once() {
+    # mssp-demo, 2026-11-18: its log_* lines reached the log through stdout AND LOG_FILE
+    _world
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_eq "$(grep -c 'Module passwords stored' "$W"/backup/risx_to_intact-*.log)" "1" "once, not twice"
+}
+
+test_a_hebrew_layout_answer_is_read_as_its_latin_key() {
+    # mssp-demo, 2026-11-18: the pause read 0xD7 + "r" (Backspace erased half a ר)
+    _world
+    _run '\nט\n\xd7r\n'
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    local log; log="$(ls "$W"/backup/risx_to_intact-*.log)"
+    assert_eq "$(grep -ac 'answer:' "$log")" "3" "each accepted the first time"
+    assert_true grep -q '^\[[0-9: -]*\] answer: r$' "$log"
+    assert_true grep -q '^\[[0-9: -]*\] answer: y$' "$log"     # ט is y
+    assert_eq "$(grep -a 'answer:' "$log" | LC_ALL=C tr -d '\40-\176\n' | wc -c)" "0" "answers logged as clean ASCII"
+    _world
+    _run '\ny\nר\n'
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_eq "$(grep -ac 'answer:' "$W"/backup/risx_to_intact-*.log)" "3" "ר is r, accepted the first time"
+}
+
 test_sudo_is_asked_once_at_the_start_and_a_refusal_stops_there() {
     _world
     : > "$W/log/sudo_refuse"
@@ -564,6 +616,19 @@ test_a_risx_velociraptor_newer_than_intacts_stops_before_anything_changes() {
     _run "$NORMAL"
     assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
     assert_not_contains "$OUT" "newer than Intact's"
+}
+
+test_a_stray_byte_in_the_output_does_not_lose_the_log_from_the_bundle() {
+    # redact() read strict UTF-8: one non-UTF-8 byte in the log (a keystroke,
+    # odd Docker or install output) crashed it and the bundle lost that log.
+    _world
+    printf 'printf "install: odd byte \\xff here\\n"\n' >> "$W/intact/install.sh"
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    local x; x="$(mktemp -d)"; tar -xzf "$(ls "$W"/backup/risx_to_intact-*-logs.tar.gz)" -C "$x"
+    assert_true compgen -G "$x/risx_to_intact-*.log"
+    assert_contains "$(cat "$x"/risx_to_intact-*.log)" "odd byte"
+    rm -rf "$x"
 }
 
 test_the_client_count_is_reported() {

@@ -254,9 +254,9 @@ test_velociraptor_failures_put_the_old_password_back() {
     assert_eq "$CREDS_APPLY_PUT_BACK" "0"
     assert_contains "$CREDS_APPLY_REASON" "its next start applies it"
     assert_eq "$(secret_get velociraptor VELOX_PASSWORD)" "Old1Velo"
-    assert_true grep -qx tenroot:New1Velociraptor "$T/velo_db" "(the datastore still has the new one now)"
+    assert_true grep -qx tenroot:New1Velociraptor "$T/velo_db"   # the datastore still has the new one now
     rm -f "$T/compose_rc"; _creds_recreate velociraptor velociraptor
-    assert_true grep -qx tenroot:Old1Velo "$T/velo_live" "the next start applied the stored one"
+    assert_true grep -qx tenroot:Old1Velo "$T/velo_live"   # the next start applied the stored one
     assert_true grep -qx api:Api1Random "$T/velo_live"
 }
 

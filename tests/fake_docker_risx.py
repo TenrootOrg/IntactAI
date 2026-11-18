@@ -31,6 +31,11 @@ def log(line):
             f.write(line + "\n")
 
 
+def gone(msg):
+    print(f"Error response from daemon: {msg}", file=sys.stderr)
+    return 1
+
+
 def label_filter(args):
     for i, a in enumerate(args):
         if a == "--filter" and args[i + 1].startswith("label=com.docker.compose.project="):
@@ -55,6 +60,9 @@ def main(a):
             return 0
         return 0 if a[1] in cont else 1
     if a[0] == "rm":
+        # what Docker answers for one already gone (even with -f)
+        if a[-1] not in cont:
+            return gone(f"No such container: {a[-1]}")
         s["containers"] = [c for c in s["containers"] if c["id"] != a[-1]]
         save(s)
         return 0
@@ -86,6 +94,8 @@ def main(a):
         if a[1] == "inspect":
             return 0 if a[2] in names else 1
         if a[1] == "rm":
+            if a[-1] not in names:
+                return gone(f"network {a[-1]} not found")
             s["networks"] = [n for n in s["networks"] if n["name"] != a[-1]]
             save(s)
             return 0
@@ -105,6 +115,8 @@ def main(a):
                 return 0
             return 0 if a[2] in imgs else 1
         if a[1] == "rm":
+            if a[-1] not in imgs:
+                return gone(f"No such image: {a[-1]}")
             s["images"] = [i for i in s["images"] if i["id"] != a[-1]]
             save(s)
             return 0
