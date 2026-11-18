@@ -120,10 +120,22 @@ in `config.yaml` and run the script -- it adopts it. Upgrades never apply
 `config.yaml` passwords on their own.
 
 **Intact owns these passwords.** The Velociraptor entrypoint re-applies the
-stored GUI and `api` passwords whenever the stored value differs from the
-one it last applied, so a password changed by hand in the Velociraptor UI is
-overwritten by the stored one at a later restart. Change them with
-`apply-passwords.sh`, not in the tools' own UIs.
+stored GUI and `api` passwords only when the stored value changes (it keeps a
+hash of the last one it applied). A password changed by hand in the
+Velociraptor UI therefore survives restarts and no longer matches the store.
+Change them with `apply-passwords.sh`, not in the tools' own UIs.
+
+**The backend's way into Velociraptor.** Everything Intact does in
+Velociraptor goes through the user `api` and its certificate,
+`api.config.yaml`. `sudo bash scripts/velociraptor-api-check.sh` checks it:
+the container is up, the certificate is for `api` and signed by the server's
+current CA, `api` exists with `administrator` and `api`, its password is the
+stored one, and the backend's own client gets through. Add `--fix` to repair
+what it finds. It re-creates `api` with both roles and the stored password,
+regenerates the certificate, or starts Velociraptor; the repairs restart
+Velociraptor for about 20 s. Run it if anyone deleted `api` or changed its
+roles in the Velociraptor UI: that stops every Velociraptor feature of Intact,
+and a restart alone does not bring `api` back.
 
 **Lab boxes:** `allow_weak_passwords: true` in `config.yaml` lets weak or
 publicly known passwords (e.g. `123123`) through and stops upgrades from
