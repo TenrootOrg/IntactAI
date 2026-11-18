@@ -42,9 +42,6 @@
 #                      Asked at step 2 when not given.
 #   --backup-dir DIR   where the backup lives (default ~/velociraptor_backup)
 #   --package TAR      air-gapped: passed to install.sh --package
-#   --stop-before-install
-#                      stop once risx is removed (step 7), to look at the box
-#                      first; run the script again without it to install Intact
 # Environment: RISX_ROOT (the risx setup_platform dir, if discovery fails),
 #              INTACT_DIR (where to clone Intact, default ~/intact), EDITOR.
 #
@@ -92,6 +89,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --backup-dir) BACKUP_DIR="${2:?--backup-dir needs a directory}"; shift ;;
         --package)    PACKAGE="${2:?--package needs a file}"; shift ;;
+        # not in --help: for testing, stops once risx is removed (step 7) so the
+        # box can be looked at; run again without it to continue from the install
         --stop-before-install) STOP_BEFORE_INSTALL=1 ;;
         --backup)     BACKUP_MODE="${2:?--backup needs config or data}"; shift
                       [[ "$BACKUP_MODE" == config || "$BACKUP_MODE" == data ]] \
