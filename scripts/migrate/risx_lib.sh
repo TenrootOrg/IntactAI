@@ -122,8 +122,15 @@ container; falling back to docker stop"
     done
     docker stop velociraptor >/dev/null 2>&1 || true
 
-    if (( $(sudo stat -c %Y "$snap" 2>/dev/null || echo 0) > before )); then
+    local now; now=$(sudo stat -c %Y "$snap" 2>/dev/null || echo 0)
+    if (( now > before )); then
         say "client list saved (${t}s)"
+    elif (( now > 0 && $(date +%s) - now < 600 )); then
+        # 0.77 saves it every few minutes but not at a stop: on mssp-demo its
+        # list was 17 s old and the warning below said the fleet would be
+        # EMPTY (2026-11-18). A recent one is the list; clients that enrolled
+        # since then reappear when they next connect.
+        say "client list kept (saved by the server $(( $(date +%s) - now ))s before the stop)"
     else
         warn "no client_info snapshot was written. All collections and client \
 keys still migrate, but the fleet list in intact will start EMPTY and fill in \

@@ -45,6 +45,10 @@ EOF
     local wd="$W/risx/setup_platform/workdir"
     mkdir -p "$wd/elk" "$wd/misp" "$wd/timesketch/timesketch" "$W/risx/Risx-MSSP/setup_platform/workdir"
     for d in elk misp timesketch/timesketch; do echo "services: {}" > "$wd/$d/docker-compose.yml"; done
+    echo "TIMESKETCH_VERSION=1" > "$wd/timesketch/timesketch/.env"
+    # risx's unconfigured templates of the same stacks (no .env)
+    mkdir -p "$W/risx/setup_platform/resources/elk" "$W/risx/setup_platform/resources/timesketch"
+    for d in elk timesketch; do echo "services: {}" > "$W/risx/setup_platform/resources/$d/docker-compose.yml"; done
     echo zip > "$W/risx/upgrade-scripts.zip"; echo "api: x" > "$W/risx/hohit_api.config.yaml"
     # Docker on a risx box: two stacks (one running), a one-off `docker run`, and
     # a running container and an image that are not risx's
@@ -461,6 +465,9 @@ test_the_removal_shows_its_progress_on_screen() {
     assert_contains "$OUT" "removing risx:"
     assert_contains "$OUT" "  stack 1/3 elk: removed"
     assert_contains "$OUT" "  stack 3/3 timesketch: removed"
+    # the resources/ templates are the same projects: never downed (mssp-demo:
+    # 24 "stacks" for 12, and the Timesketch template's down failed)
+    assert_not_contains "$(cat "$W/log/calls")" "compose down $W/risx/setup_platform/resources"
     assert_contains "$OUT" "  containers: 3 removed   volumes: 4   networks: 3"
     assert_contains "$OUT" "  images: 5 removed (2.5 GB)   build cache: cleared"
     assert_contains "$OUT" "  cron lines: 2 removed   folders deleted: setup_platform, Risx-MSSP"
@@ -642,6 +649,21 @@ test_a_risx_velociraptor_newer_than_intacts_stops_before_anything_changes() {
     _run "$NORMAL"
     assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
     assert_not_contains "$OUT" "newer than Intact's"
+}
+
+test_a_recent_client_list_counts_when_the_server_saves_none_at_its_stop() {
+    # mssp-demo, 2026-11-18: 0.77.2 stopped cleanly without saving its list;
+    # the one it saved 17 s earlier was there, yet the warning said EMPTY.
+    local d out; d="$(mktemp -d)"; mkdir -p "$d/bin" "$d/velo/client_info"
+    touch -d '-40 seconds' "$d/velo/client_info/snapshot.json"
+    printf '#!/bin/bash\ncase "$1" in ps) [[ -e %q ]] || echo velociraptor ;; exec) echo 42; touch %q ;; esac\nexit 0\n' \
+        "$d/gone" "$d/gone" > "$d/bin/docker"
+    printf '#!/bin/bash\nexec "$@"\n' > "$d/bin/sudo"
+    chmod +x "$d/bin/docker" "$d/bin/sudo"
+    out="$(PATH="$d/bin:$PATH" bash -c 'source "$1/scripts/migrate/risx_lib.sh"; VELO_DATA="$2/velo"; graceful_stop_legacy_velo' _ "$REPO" "$d" 2>&1)"
+    assert_contains "$out" "client list kept (saved by the server"
+    assert_not_contains "$out" "EMPTY"
+    rm -rf "$d"
 }
 
 test_the_version_is_the_running_servers_not_the_configs() {

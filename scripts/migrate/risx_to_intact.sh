@@ -482,12 +482,12 @@ pause_for_copy() {
 risx_inventory() {
     INV_DIRS=() INV_PROJ=() INV_CONT=() INV_VOL=() INV_NET=() INV_IMG=() INV_KEEP=() INV_CRON=() RISX_HOME_LEFTOVERS=()
     INV_IMG_GB=0 INV_BUILD_CACHE=""
-    local -A projs=() dirs=()
-    local id name proj wd status f d v n img vols nets
+    local -A projs=() wds=() best=() score=()
+    local id name proj wd status f d p sc v n img vols nets
     while IFS='|' read -r id name proj wd status; do
         [[ -n "$id" && "$name" != intact_* ]] || continue
         if [[ -n "$proj" && ( "$wd" == "$RISX_ROOT" || "$wd" == "$RISX_ROOT"/* ) ]]; then
-            INV_CONT+=("$id"); projs[$proj]=1
+            INV_CONT+=("$id"); projs[$proj]=1; wds[$wd]=1
         elif [[ -z "$proj" && "$status" != Up* ]]; then
             INV_CONT+=("$id")                             # an exited one-off `docker run`
         else
@@ -495,13 +495,21 @@ risx_inventory() {
         fi
     done < <(docker ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}|{{.Status}}' 2>/dev/null)
     # stacks with no container left still own volumes and networks
+    # One folder per compose project (its folder name, as compose names it):
+    # risx keeps an unconfigured template of each stack in resources/ (no .env)
+    # next to the one it runs in workdir/. Taking both downed every stack twice,
+    # and the template's unset variables broke Timesketch's file -- "compose
+    # down failed" on screen (mssp-demo, 2026-11-18). The folder its containers
+    # ran from wins, then one with a .env.
     if [[ -d "$RISX_ROOT" ]]; then
         while IFS= read -r f; do
-            d="$(dirname "$f")"; [[ -n "${dirs[$d]:-}" ]] && continue
-            dirs[$d]=1; INV_DIRS+=("$d")
-            projs[$(basename "$d" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-')]=1
+            d="$(dirname "$f")"; p="$(basename "$d" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-')"
+            sc=0; [[ -f "$d/.env" ]] && sc=1; [[ -n "${wds[$d]:-}" ]] && sc=2
+            if [[ -z "${best[$p]:-}" ]] || (( sc > ${score[$p]} )); then best[$p]="$d"; score[$p]=$sc; fi
+            projs[$p]=1
         done < <(find "$RISX_ROOT" -maxdepth 5 \( -name docker-compose.yml -o -name docker-compose.yaml \
                     -o -name compose.yml -o -name compose.yaml \) 2>/dev/null | sort)
+        (( ${#best[@]} )) && mapfile -t INV_DIRS < <(printf '%s\n' "${best[@]}" | sort)
     fi
     INV_PROJ=("${!projs[@]}")
     if (( ${#INV_CONT[@]} )); then
