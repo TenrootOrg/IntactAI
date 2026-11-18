@@ -128,6 +128,7 @@ EOF
 echo "docker \$*" >> "$W/log/calls"
 # user add: the value arrives in the exec's environment (\$_P), never its argv
 [[ "\$*" == *"user add"* ]] && echo "\${@: -2:1} \$_P" >> "$W/log/velo_pw"
+[[ "\$*" == "exec velociraptor ./velociraptor version" ]] && { cat "$W/log/live_velo_version" 2>/dev/null; exit 0; }
 [[ "\$1" == exec ]] && echo '[{"client_id": "C.1234", "host": "endpoint-1"}, {"client_id": "C.5678", "host": "endpoint-2"}]'
 [[ "\$1" == ps && "\$*" == *--filter* ]] && echo "Up 2 minutes"
 # the inventory and the removal (step 7): the fake risx box in docker.json
@@ -562,6 +563,9 @@ test_on_a_terminal_the_run_ends_with_the_logins_and_the_token() {
     assert_eq "$(tail -1 <<<"$last2")" "  Setup token:     TOK-abc123"
     assert_contains "$out" "velociraptor | tenroot | PwVelo1"
     assert_eq "$(grep -c 'TOK-abc123' <<<"$out")" "1" "once, in the last line (not the token row of show-credentials)"
+    # the password step talks to the terminal directly (a staircase through the
+    # log pipe under sudo's raw mode, mssp-demo 2026-11-18), and logs once
+    assert_eq "$(grep -c 'Module passwords stored' "$W"/backup/risx_to_intact-*.log)" "1"
     assert_not_contains "$(cat "$W"/backup/risx_to_intact-*.log)" "TOK-abc123" "never in the log"
     assert_not_contains "$(cat "$W"/backup/risx_to_intact-*.log)" "PwVelo1"
     local x; x="$(mktemp -d)"; tar -xzf "$(ls "$W"/backup/risx_to_intact-*-logs.tar.gz)" -C "$x"
@@ -638,6 +642,18 @@ test_a_risx_velociraptor_newer_than_intacts_stops_before_anything_changes() {
     _run "$NORMAL"
     assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
     assert_not_contains "$OUT" "newer than Intact's"
+}
+
+test_the_version_is_the_running_servers_not_the_configs() {
+    # mssp-demo, 2026-11-18: risx upgraded to 0.77.2, its config still said
+    # 0.75.5 (written when it was generated), and step 1 showed 0.75.5.
+    _world
+    sed -i '1i version: {name: velociraptor, version: 0.75.5}' "$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml"
+    printf 'name: velociraptor\nversion: 0.99.1\ncommit: abc\n' > "$W/log/live_velo_version"
+    _run "$NORMAL"
+    assert_contains "$OUT" "Velociraptor   : 0.99.1"
+    assert_ne "$RC" "0"
+    assert_contains "$OUT" "newer than Intact's"
 }
 
 test_a_stray_byte_in_the_output_does_not_lose_the_log_from_the_bundle() {

@@ -324,6 +324,13 @@ print((d.get('version') or {}).get('version') or '')
 PYEOF
 ) || die "could not read $1"
     { read -r ID_FP; read -r ID_URL; read -r ID_HOST; read -r ID_PORT; read -r ID_NONCE; read -r ID_VER; } <<<"$out"
+    # The config's version is the one that generated it; a newer binary never
+    # updates it: risx upgraded to 0.77.2 still said 0.75.5 (mssp-demo,
+    # 2026-11-18). The running server knows -- the config is the fallback.
+    local live
+    live="$(docker exec velociraptor ./velociraptor version 2>/dev/null | sed -n 's/^version: *//p' | head -1)"
+    [[ -n "$live" ]] && ID_VER="$live"
+    return 0
 }
 
 show_identity() {
@@ -738,15 +745,24 @@ PYEOF
 # nothing. A refused password stops here, before anything changed.
 store_passwords() {
     say "the tools' passwords: type one for each, or press Enter to have it generated (all are shown at the end)"
-    # LOG_FILE=/dev/null: its log_* lines also go to stdout, which is already
-    # logged -- with LOG_FILE=$LOG each line was in the log twice (mssp-demo, 2026-11-18).
-    sudo env SCRIPT_DIR="$ROOT" CONFIG_FILE="$CFG" LOG_FILE=/dev/null bash -c '
+    # On a terminal the prompts go straight to it: Ubuntu's sudo (use_pty) sets
+    # the terminal raw while its command runs, and through this script's log
+    # pipe each prompt began where the last one ended (mssp-demo, 2026-11-18).
+    # Its log_* lines then reach the log through LOG_FILE; without a terminal
+    # they go to stdout, which is logged, so LOG_FILE=/dev/null (else twice).
+    if { : > /dev/tty; } 2>/dev/null; then
+        _store_passwords "$LOG" >/dev/tty 2>&1   # answers still from stdin
+    else
+        _store_passwords /dev/null
+    fi || die "the passwords were not stored (see above) — fix config.yaml and run the script again; nothing has changed yet"
+}
+_store_passwords() {   # <LOG_FILE for the installer's log_* lines>
+    sudo env SCRIPT_DIR="$ROOT" CONFIG_FILE="$CFG" LOG_FILE="$1" bash -c '
         for l in common secrets config state_registry; do
             source "$SCRIPT_DIR/lib/$l.sh" >/dev/null || exit 3
         done
         declare -F state_restore_missing >/dev/null && state_restore_missing "$SCRIPT_DIR" >/dev/null 2>&1
-        ensure_module_credentials' \
-        || die "the passwords were not stored (see above) — fix config.yaml and run the script again; nothing has changed yet"
+        ensure_module_credentials'
 }
 
 # What the steps after the removal need, checked while risx still runs: the
