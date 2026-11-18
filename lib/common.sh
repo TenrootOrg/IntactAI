@@ -596,6 +596,12 @@ check_network_connectivity() {
 
 check_initialization_marker() {
     local marker="/etc/intact-initialized"
+    # A caller that already decided (risx_to_intact.sh, its questions all at the
+    # start) sets INTACT_REINIT=1 instead of being asked mid-run.
+    if [[ -f "$marker" && "${INTACT_REINIT:-}" == 1 ]]; then
+        log_info "Intact.AI was initialized here before — re-initializing (INTACT_REINIT=1)"
+        return 0
+    fi
     if [[ -f "$marker" ]]; then
         log_warn "Intact.AI was previously initialized on this system"
         cat "$marker"

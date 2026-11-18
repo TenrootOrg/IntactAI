@@ -142,7 +142,7 @@ test_a_broken_or_stale_api_config_is_regenerated_by_a_restart() {
     _run --fix
     assert_eq "$RC" "0" "$OUT"
     assert_contains "$(cat "$W/calls")" "restart intact_velociraptor"
-    assert_false test -e "$W/useradd" "the user was fine: not touched"
+    assert_false test -e "$W/useradd"   # the user was fine: not touched
     _world; echo staleca > "$W/s/apicfg"
     _run
     assert_contains "$OUT" "signed by another CA"

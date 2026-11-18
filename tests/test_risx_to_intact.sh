@@ -34,22 +34,59 @@ Datastore: {location: ".", filestore_directory: "."}
 YAML
     echo record > "$velo/clients/C.1234/collections/flow.json"
     echo binary > "$velo/clients/linux/velociraptor_client"
-    # risx's own teardown: empties workdir, as the real one does
+    # risx's own teardown is never run any more: if anything calls it, it shows
     cat > "$W/risx/setup_platform/scripts/cleanup.sh" <<EOF
 #!/bin/bash
 echo "cleanup \$*" >> "$W/log/calls"
-rm -rf "$W/risx/setup_platform/workdir/"*
-# --force: takes the leftovers, and says what the real one says about Docker's own networks
-[[ "\$1" == --force ]] && { rm -f "$W/log/left"; echo "Error response from daemon: bridge is a pre-defined network and cannot be removed"; }
 exit 0
 EOF
+    # risx's stacks: compose files (timesketch one folder deeper, as on risx),
+    # its installer clone and loose files next to setup_platform
+    local wd="$W/risx/setup_platform/workdir"
+    mkdir -p "$wd/elk" "$wd/misp" "$wd/timesketch/timesketch" "$W/risx/Risx-MSSP/setup_platform/workdir"
+    for d in elk misp timesketch/timesketch; do echo "services: {}" > "$wd/$d/docker-compose.yml"; done
+    echo zip > "$W/risx/upgrade-scripts.zip"; echo "api: x" > "$W/risx/hohit_api.config.yaml"
+    # Docker on a risx box: two stacks (one running), a one-off `docker run`, and
+    # a running container and an image that are not risx's
+    cat > "$W/log/docker.json" <<JSON
+{"build_cache": "1.9GB", "containers": [
+  {"id": "c-elk", "name": "elasticsearch", "project": "elk", "wd": "$wd/elk", "status": "Exited (0) 1 hour ago",
+   "image": "sha256:img-elk", "vols": ["elk_elasticsearch"], "nets": ["elk_default", "main_network"]},
+  {"id": "c-misp", "name": "misp-db-1", "project": "misp", "wd": "$wd/misp", "status": "Up 2 hours",
+   "image": "sha256:img-misp", "vols": ["misp_mysql_data", "$(printf 'a%.0s' {1..64})"], "nets": ["misp_default"]},
+  {"id": "c-oneoff", "name": "kind_lovelace", "project": "", "wd": "", "status": "Exited (0) 5 months ago",
+   "image": "sha256:img-plaso", "vols": [], "nets": ["bridge"]},
+  {"id": "c-other", "name": "someone-else", "project": "", "wd": "", "status": "Up 3 days",
+   "image": "sha256:img-other", "vols": [], "nets": ["bridge"]}],
+ "volumes": [{"name": "elk_elasticsearch", "project": "elk"}, {"name": "misp_mysql_data", "project": "misp"},
+   {"name": "$(printf 'a%.0s' {1..64})", "project": ""}, {"name": "$(printf 'b%.0s' {1..64})", "project": "", "dangling": true},
+   {"name": "other_data", "project": "", "dangling": true}],
+ "networks": [{"name": "main_network", "project": ""}, {"name": "elk_default", "project": "elk"},
+   {"name": "misp_default", "project": "misp"}],
+ "images": [{"id": "sha256:img-elk", "ref": "elk-elasticsearch:latest", "size": 1073741824},
+   {"id": "sha256:img-misp", "ref": "mariadb:10.11", "size": 536870912},
+   {"id": "sha256:img-misp-old", "ref": "mariadb:10.6", "size": 268435456},
+   {"id": "sha256:img-plaso", "ref": "log2timeline/plaso:latest", "size": 536870912},
+   {"id": "sha256:img-dangling", "ref": "<none>:<none>", "size": 268435456, "dangling": true},
+   {"id": "sha256:img-other", "ref": "alpine:latest", "size": 8000000}]}
+JSON
+    cp "$REPO/tests/fake_docker_risx.py" "$W/bin/fake_docker.py"
+    # crontab: the user's and root's (sudo exports FAKE_ROOT), MISP's job in root's
+    cat > "$W/bin/crontab" <<EOF
+#!/bin/bash
+f="$W/log/crontab_user"; [[ -n "\${FAKE_ROOT:-}" ]] && f="$W/log/crontab_root"
+[[ "\$1" == -l ]] && { [[ -e "\$f" ]] && cat "\$f" || { echo "no crontab" >&2; exit 1; }; exit 0; }
+cp "\$1" "\$f"
+EOF
+    printf '# empty crontab\n*/5 * * * * docker exec misp-misp-core-1 /var/www/MISP/app/Console/cake Server fetchFeed 1 all\n0 3 * * * /usr/bin/backup.sh\n' > "$W/log/crontab_root"
     # the Intact checkout: the real scripts under test, the real config.yaml
     cp "$REPO/scripts/migrate/risx_to_intact.sh" "$REPO/scripts/migrate/risx_lib.sh" \
        "$REPO/scripts/migrate/transform_config.py" "$W/intact/scripts/migrate/"
     cp "$REPO/config.yaml" "$W/intact/config.yaml"
     # what the install leaves: lib/secrets.sh and the Velociraptor store
     mkdir -p "$W/intact/lib" "$W/intact/modules/velociraptor/secrets"
-    cp "$REPO/lib/secrets.sh" "$W/intact/lib/"
+    # the installer's own password step runs at step 3: its real libraries
+    cp "$REPO/lib/secrets.sh" "$REPO/lib/common.sh" "$REPO/lib/config.sh" "$REPO/lib/state_registry.sh" "$W/intact/lib/"
     printf 'VELOX_USER=tenroot\nVELOX_ROLE=administrator\nVELOX_USER_2=api\n' > "$W/intact/modules/velociraptor/.env"
     printf 'VELOX_PASSWORD=GuiStored1Abc\nVELOX_PASSWORD_2=ApiStored2Xyz\n' > "$W/intact/modules/velociraptor/secrets/creds.env"
     # what show-credentials.sh prints, and the token the install left
@@ -58,7 +95,7 @@ printf 'module | user | password\nvelociraptor | tenroot | PwVelo1\nDashboard se
 EOF
     mkdir -p "$W/intact/data/state/backend" && echo TOK-abc123 > "$W/intact/data/state/backend/setup_token"
     cat > "$W/intact/install.sh" <<EOF
-echo "install \$*" >> "$W/log/calls"
+echo "install \$* reinit=\${INTACT_REINIT:-}" >> "$W/log/calls"
 [[ -z "\${INSTALL_FAIL:-}" ]]
 EOF
     cat > "$W/intact/scripts/adopt_velociraptor_identity.sh" <<EOF
@@ -77,9 +114,12 @@ EOF
 [[ "\$1" == reboot ]] && { echo "reboot" >> "$W/log/calls"; exit 0; }
 if [[ "\$1" == -v || "\$1" == -n ]]; then
     [[ -e "$W/log/sudo_refuse" ]] && { echo "sudo: refused" >&2; exit 1; }
+    # NOPASSWD rule + sudo group: -n works, -v still wants a password
+    [[ "\$1" == -v && -e "$W/log/sudo_v_needs_password" ]] && { echo "sudo: a password is required" >&2; exit 1; }
     [[ "\$1" == -n ]] && shift
     [[ "\$1" == -v || "\$1" == true ]] && exit 0
 fi
+export FAKE_ROOT=1
 exec "\$@"
 EOF
     cat > "$W/bin/docker" <<EOF
@@ -88,9 +128,12 @@ echo "docker \$*" >> "$W/log/calls"
 # user add: the value arrives in the exec's environment (\$_P), never its argv
 [[ "\$*" == *"user add"* ]] && echo "\${@: -2:1} \$_P" >> "$W/log/velo_pw"
 [[ "\$1" == exec ]] && echo '[{"client_id": "C.1234", "host": "endpoint-1"}, {"client_id": "C.5678", "host": "endpoint-2"}]'
-[[ "\$*" == *--filter* ]] && echo "Up 2 minutes"
-# containers cleanup.sh left behind (the test creates \$W/log/left)
-[[ "\$*" == "ps -a --format"* && -e "$W/log/left" ]] && cat "$W/log/left"
+[[ "\$1" == ps && "\$*" == *--filter* ]] && echo "Up 2 minutes"
+# the inventory and the removal (step 7): the fake risx box in docker.json
+case "\$*" in
+  "ps -a --format {{.ID}}|"*|inspect*|rm\ *|volume\ *|network\ *|images*|image\ *|compose\ *|system\ df*|builder\ *)
+    FAKE_DOCKER_STATE="$W/log/docker.json" FAKE_DOCKER_LOG="$W/log/calls" exec python3 "$W/bin/fake_docker.py" "\$@" ;;
+esac
 exit 0
 EOF
     # The GUI login check after the recreate (never the real 127.0.0.1:8889):
@@ -127,13 +170,15 @@ test_a_normal_run_asks_three_times_and_does_every_step_in_order() {
     _run "$NORMAL"
     assert_eq "$RC" "0" "the whole run must succeed: $(tail -5 <<<"$OUT")"
     local calls; calls="$(cat "$W/log/calls")"
-    assert_contains "$calls" "cleanup " "risx removed with its own cleanup.sh"
+    assert_contains "$calls" "compose down $W/risx/setup_platform/workdir/elk" "risx removed, stack by stack"
+    assert_not_contains "$calls" "cleanup" "never risx's own cleanup.sh"
+    assert_false test -e "$W/risx/setup_platform"
     assert_contains "$calls" "install " "install.sh ran"
     assert_contains "$calls" "adopt --from $W/backup -y --datastore $W/backup/datastore" "adopted with the moved history"
     assert_true grep -qx backup_mode=config "$(_state)"
     assert_not_contains "$calls" "reboot" "no reboot"
     local c i a
-    c=$(grep -n '^cleanup' "$W/log/calls" | cut -d: -f1); i=$(grep -n '^install' "$W/log/calls" | cut -d: -f1)
+    c=$(grep -n 'compose down' "$W/log/calls" | head -1 | cut -d: -f1); i=$(grep -n '^install' "$W/log/calls" | cut -d: -f1)
     a=$(grep -n '^adopt' "$W/log/calls" | cut -d: -f1)
     assert_true test "$c" -lt "$i"; assert_true test "$i" -lt "$a"
     assert_eq "$(sed -n 's/^domain: //p' "$W/intact/config.yaml")" "10.9.8.7" "domain pre-set to what clients dial"
@@ -190,7 +235,8 @@ test_a_login_refused_after_the_recreate_stops_before_verified() {
 
 test_a_missing_store_stops_before_verified() {
     _world
-    rm -f "$W/intact/modules/velociraptor/secrets/creds.env"
+    # stored at step 3; lost afterwards (here: during the install)
+    printf 'rm -f %q\n' "$W/intact/modules/velociraptor/secrets/creds.env" >> "$W/intact/install.sh"
     _run "$NORMAL"
     assert_ne "$RC" "0"
     assert_contains "$OUT" "passwords Intact stored"
@@ -233,8 +279,8 @@ test_data_mode_moves_the_datastore_instead_of_archiving_it() {
     _run '2\ny\nr\n'
     assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
     assert_true test -f "$W/backup/datastore/clients/C.1234/collections/flow.json"
-    assert_false compgen -G "$W/backup/velociraptor-full-*.tar.gz" "no archive any more"
-    assert_contains "$OUT" "same disk, instant"
+    assert_false compgen -G "$W/backup/velociraptor-full-*.tar.gz"   # no archive any more
+    assert_contains "$OUT" "same disk: instant"
     assert_contains "$(cat "$W/log/calls")" "ds: clients/C.1234/collections/flow.json" "history handed to the adopt step"
     assert_eq "$(stat -c %a "$W/backup/datastore")" "700" "the datastore holds the CA key"
     assert_eq "$(stat -c %U "$W/backup/datastore/clients/C.1234/collections/flow.json")" "$(id -un)" "yours, so scp can read it"
@@ -271,24 +317,25 @@ test_the_pause_shows_one_scp_line_and_waits_for_r() {
     _run '\ny\nc\nx\n'                       # anything but r keeps waiting; then end of input
     assert_ne "$RC" "0"
     assert_not_contains "$OUT" "PowerShell:"
-    assert_eq "$(grep -c '^    scp .*config.yaml' <<<"$OUT")" "1" "one command for every shell"
+    assert_eq "$(grep -c '^ *scp .*config.yaml' <<<"$OUT")" "1" "one command for every shell"
     assert_contains "$OUT" "scp \"$(id -un)@"
-    assert_contains "$OUT" "sudo mv $W/backup/datastore $W/risx/setup_platform/workdir/velociraptor/velociraptor" "how to put risx back"
-    assert_contains "$OUT" "NEXT: risx-mssp is REMOVED"
+    assert_contains "$(cat "$W"/backup/risx_to_intact-*.log)" "sudo mv $W/backup/datastore $W/risx/setup_platform/workdir/velociraptor/velociraptor" "how to put risx back: in the log"
+    assert_contains "$OUT" "COPY THE BACKUP TO YOUR LAPTOP NOW"
+    assert_contains "$OUT" "Next, risx is removed:"
     assert_eq "$(stat -c %a "$W/backup/server.config.yaml")" "600" "the config copy is a credential"
-    assert_false grep -q '^cleanup' "$W/log/calls"
+    assert_false grep -q 'compose down' "$W/log/calls"
 }
 
 test_a_rerun_after_stopping_at_the_pause_still_removes_risx() {
     # data mode moved risx's server.config.yaml away with the datastore: a
-    # re-run must still find risx, and must still run its cleanup.sh
+    # re-run must still find risx, and must still remove it
     _world
     _run '\ny\n'                             # backed up (moved), stopped at the pause
     assert_false test -e "$W/risx/setup_platform/workdir/velociraptor/velociraptor"
     _run 'r\n'
     assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
     assert_not_contains "$OUT" "no longer on this box"
-    assert_eq "$(grep -c '^cleanup' "$W/log/calls")" "1" "risx removed by its own cleanup.sh"
+    assert_eq "$(grep -cx "compose down $W/risx/setup_platform/workdir/elk" "$W/log/calls")" "1" "risx removed once"
     assert_contains "$(cat "$W/log/calls")" "--datastore $W/backup/datastore"
 }
 
@@ -328,8 +375,8 @@ test_a_missing_piece_of_the_checkout_stops_before_anything_changes() {
     _run "$NORMAL"
     assert_ne "$RC" "0"
     assert_contains "$OUT" "has no scripts/adopt_velociraptor_identity.sh"
-    assert_false grep -q '^cleanup' "$W/log/calls"
-    assert_false grep -q 'docker update' "$W/log/calls" "risx's Velociraptor is not even stopped"
+    assert_false grep -q 'compose down' "$W/log/calls"
+    assert_false grep -q 'docker update' "$W/log/calls"   # risx's Velociraptor is not even stopped
     assert_true test -f "$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml"
 }
 
@@ -338,18 +385,22 @@ test_disk_space_is_checked_before_anything_changes() {
     FAKE_FREE_GB=0 _run "$NORMAL"
     assert_ne "$RC" "0"
     assert_contains "$OUT" "not enough space under"
-    assert_false grep -q '^cleanup' "$W/log/calls"
+    assert_false grep -q 'compose down' "$W/log/calls"
     _world
-    FAKE_FREE_GB=50 _run '\ny\nn\n'          # below the README's 100 GB: asked, and refused
+    FAKE_FREE_GB=20 _run "$NORMAL"           # under the history + 30 GB: stops
     assert_ne "$RC" "0"
-    assert_contains "$OUT" "Intact wants 100 GB free"
-    assert_contains "$OUT" "stopped before anything changed"
+    assert_contains "$OUT" "need at least 30 GB more"
     assert_true test -f "$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml"
+    _world
+    FAKE_FREE_GB=50 _run "$NORMAL"           # under the README's 100 GB: a warning, no question
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_contains "$OUT" "Intact wants 100 GB free"
+    assert_eq "$(grep -c 'answer:' "$W"/backup/risx_to_intact-*.log)" "3"
 }
 
 test_a_configuration_only_backup_from_the_previous_version_still_moves_the_history() {
     # 391e84af's "configuration only" left the datastore in risx. A re-run of
-    # such a migration must move it before cleanup.sh deletes it.
+    # such a migration must move it before step 7 deletes it.
     _world
     mkdir -p "$W/backup"
     cp "$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml" "$W/backup/"
@@ -359,17 +410,44 @@ test_a_configuration_only_backup_from_the_previous_version_still_moves_the_histo
     assert_contains "$(cat "$W/log/calls")" "ds: clients/C.1234/collections/flow.json"
 }
 
-test_leftover_containers_are_described_and_force_stays_quiet() {
+test_everything_risx_owns_is_removed_and_nothing_else() {
+    # Read from Docker, not from risx's cleanup.sh (never run any more).
     _world
-    echo "misp-db-1  (mysql:8, Exited (0) 2 hours ago)" > "$W/log/left"
-    _run '\ny\nr\ny\n'                       # the normal three, then y to --force
+    _run "$NORMAL"
     assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
-    assert_contains "$OUT" "still present after cleanup.sh"
-    assert_contains "$OUT" "misp-db-1  (mysql:8, Exited (0) 2 hours ago)" "what it is, not just a name"
-    assert_contains "$OUT" "removed the rest"
-    assert_contains "$(cat "$W/log/calls")" "cleanup --force"
-    assert_not_contains "$OUT" "pre-defined network" "cleanup.sh's own noise stays in the log"
-    assert_contains "$(cat "$W"/backup/risx_to_intact-*.log)" "pre-defined network"
+    # named at the pause, before the r -- nothing asks about it later
+    local named press; named="$(grep -n 'Next, risx is removed: 3 stacks, 3 containers, 4 volumes, 3 networks' <<<"$OUT" | head -1 | cut -d: -f1)"
+    press="$(grep -n '=== 7. Remove' <<<"$OUT" | cut -d: -f1)"
+    assert_true test -n "$named"; assert_true test "$named" -lt "$press"
+    assert_contains "$OUT" "5 images (2.5 GB), build cache 1.9GB"
+    assert_contains "$OUT" "Kept: 2 loose risx files (moved into the backup), 2 thing(s) not risx's."
+    local log; log="$(cat "$W"/backup/risx_to_intact-*.log)"   # the full list
+    assert_contains "$log" "3 compose stack(s): elk, misp, timesketch"
+    assert_contains "$(cat "$W/log/calls")" "builder prune"
+    assert_contains "$log" "container someone-else (Up 3 days)"   # a running container nobody can tie to risx
+    assert_contains "$log" "image alpine:latest"
+    local st; st="$(cat "$W/log/docker.json")"
+    for gone in c-elk c-misp c-oneoff elk_elasticsearch misp_mysql_data main_network elk_default misp_default \
+                sha256:img-elk sha256:img-misp sha256:img-misp-old sha256:img-plaso sha256:img-dangling \
+                "$(printf 'b%.0s' {1..64})"; do
+        assert_not_contains "$st" "\"$gone\""
+    done
+    assert_contains "$st" '"c-other"'; assert_contains "$st" '"other_data"'; assert_contains "$st" '"sha256:img-other"'
+    # each stack by its own compose file, timesketch's one folder deeper too
+    assert_contains "$(cat "$W/log/calls")" "compose down $W/risx/setup_platform/workdir/timesketch/timesketch"
+    assert_not_contains "$(cat "$W/log/calls")" "cleanup"
+    # MISP's cron job gone, the rest of root's crontab kept
+    assert_not_contains "$(cat "$W/log/crontab_root")" "docker exec misp"
+    assert_not_contains "$(cat "$W/log/crontab_root")" "# empty crontab"
+    assert_contains "$(cat "$W/log/crontab_root")" "/usr/bin/backup.sh"
+    # folders deleted; loose files moved into the backup, not deleted
+    assert_false test -e "$W/risx/setup_platform"
+    assert_false test -e "$W/risx/Risx-MSSP"
+    assert_true test -f "$W/backup/risx-leftovers/upgrade-scripts.zip"
+    assert_true test -f "$W/backup/risx-leftovers/hohit_api.config.yaml"
+    assert_contains "$OUT" "risx removed: 3 stack(s), 3 container(s), 4 volume(s), 3 network(s), 5 image(s) (2.5 GB freed)"
+    # and the history still reached Intact
+    assert_contains "$(cat "$W/log/calls")" "ds: clients/C.1234/collections/flow.json"
 }
 
 test_sudo_is_asked_once_at_the_start_and_a_refusal_stops_there() {
@@ -378,7 +456,17 @@ test_sudo_is_asked_once_at_the_start_and_a_refusal_stops_there() {
     _run "$NORMAL"
     assert_ne "$RC" "0"
     assert_contains "$OUT" "this script needs sudo (it is asked once, here)"
-    assert_false grep -qx find "$(_state)" "nothing started"
+    assert_false grep -qx find "$(_state)"   # nothing started
+}
+
+test_passwordless_sudo_is_not_asked_even_if_validating_would_ask() {
+    # mssp-demo, 2026-11-18: NOPASSWD for the user, who is also in the sudo
+    # group -- `sudo -n true` works, `sudo -v` asks, and the run died at once.
+    _world
+    : > "$W/log/sudo_v_needs_password"
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_not_contains "$OUT" "this script needs sudo"
 }
 
 test_a_sudo_refused_mid_run_stops_the_step_and_a_rerun_continues() {
@@ -390,7 +478,7 @@ test_a_sudo_refused_mid_run_stops_the_step_and_a_rerun_continues() {
     assert_ne "$RC" "0"
     assert_contains "$OUT" "sudo was refused — run the script again; it continues from this step"
     assert_true grep -qx installed "$(_state)"
-    assert_false grep -qx adopted "$(_state)" "the adopt never ran half-way"
+    assert_false grep -qx adopted "$(_state)"   # the adopt never ran half-way
     assert_not_contains "$(cat "$W/log/calls")" "adopt --from"
     rm -f "$W/log/sudo_refuse"; sed -i '$d' "$W/intact/install.sh"
     _run ''
@@ -425,6 +513,44 @@ test_without_a_terminal_it_only_says_where_the_logins_are() {
     assert_not_contains "$OUT" "TOK-abc123"
 }
 
+test_every_question_is_asked_before_risx_is_touched() {
+    _world
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    local log; log="$(ls "$W"/backup/risx_to_intact-*.log)"
+    # the passwords are stored at step 3, before the backup and the removal
+    local pw bk; pw="$(grep -n "the tools' passwords" "$log" | cut -d: -f1)"; bk="$(grep -n '=== 5\. Back up' "$log" | cut -d: -f1)"
+    assert_true test -n "$pw"; assert_true test "$pw" -lt "$bk"
+    assert_true test -s "$W/intact/modules/elk/secrets/creds.env"   # stored for install.sh to find
+    assert_false grep -qE "^\s+password: *[^' ]" "$W/intact/config.yaml"   # config.yaml blanked again
+    assert_not_contains "$(cat "$W/log/calls")" "cleanup" "never risx's cleanup.sh, nor --force"
+    assert_contains "$(cat "$W/log/calls")" "reinit=1" "install.sh's Re-initialize? is answered for it"
+}
+
+test_an_old_velociraptor_is_a_warning_not_a_stop() {
+    _world
+    sed -i '1i version: {name: velociraptor, version: 0.6.4}' "$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml"
+    _run "$NORMAL"
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_contains "$OUT" "older than the tested 0.6.9"
+    assert_eq "$(grep -c 'answer:' "$W"/backup/risx_to_intact-*.log)" "3" "no extra question"
+}
+
+test_stop_before_install_leaves_the_box_to_look_at_then_continues() {
+    _world
+    _run "$NORMAL" --stop-before-install
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_contains "$OUT" "stopped before the install (--stop-before-install)"
+    assert_true grep -qx removed "$(_state)"
+    assert_false grep -q '^install' "$W/log/calls"
+    assert_false test -e "$W/risx/setup_platform"
+    _run ''                                   # again, without it: the install and the rest
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_contains "$(cat "$W/log/calls")" "install "
+    assert_true grep -qx verified "$(_state)"
+    assert_eq "$(grep -cx "compose down $W/risx/setup_platform/workdir/elk" "$W/log/calls")" "1"
+}
+
 test_the_client_count_is_reported() {
     _world
     _run "$NORMAL"
@@ -452,7 +578,7 @@ test_a_rerun_after_risx_is_gone_continues() {
     assert_false grep -qx installed "$(_state)"
     _run ''                                   # nothing left to ask
     assert_eq "$RC" "0" "the re-run must finish: $(tail -5 <<<"$OUT")"
-    assert_eq "$(grep -c '^cleanup' "$W/log/calls")" "1" "risx is not removed twice"
+    assert_eq "$(grep -cx "compose down $W/risx/setup_platform/workdir/elk" "$W/log/calls")" "1" "risx is not removed twice"
     assert_contains "$(cat "$W/log/calls")" "install "
 }
 
@@ -476,7 +602,7 @@ test_a_wrong_domain_is_caught_before_install() {
            bash "$W/intact/scripts/migrate/risx_to_intact.sh" --backup-dir "$W/backup" 2>&1)" || RC=$?
     assert_contains "$OUT" "NOT what the clients dial (10.9.8.7)"
     assert_false grep -q '^install' "$W/log/calls"
-    assert_false grep -q '^cleanup' "$W/log/calls" "caught while risx still runs"
+    assert_false grep -q 'compose down' "$W/log/calls"   # caught while risx still runs
     assert_true test -f "$W/risx/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml"
 }
 
@@ -583,7 +709,7 @@ test_the_bundle_has_the_logs_and_the_box_but_no_secret() {
     assert_not_contains "$all" "GuiStored1Abc"
     assert_not_contains "$all" "FAKEKEY"
     assert_not_contains "$all" "FAKENONCE"
-    assert_false test -e "$x/server.config.yaml" "never the fleet's CA config"
+    assert_false test -e "$x/server.config.yaml"   # never the fleet's CA config
     rm -rf "$x"
 }
 

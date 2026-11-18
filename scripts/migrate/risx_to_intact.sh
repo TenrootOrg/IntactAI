@@ -13,16 +13,19 @@
 # (or $INTACT_DIR) and carries on from there. Run it; do not pipe it into bash.
 #
 # Intact always gets BOTH the configuration (the fleet's identity) and the data
-# (hunts, collections, client list). Every question and check comes first,
-# while risx still runs; after the pause it runs to the end by itself:
+# (hunts, collections, client list). Every question comes first, while risx
+# still runs: the sudo password, the backup choice, config.yaml, the tools'
+# passwords, and the one stop before risx is removed. After it, nothing asks:
 #   1 find risx and show the fleet's identity
 #   2 what goes into the backup you copy off the box: 1 config / 2 config + data
-#   3 config.yaml in nano, then: y = use it / e = edit again          <- you
+#   3 config.yaml in nano, then: y = use it / e = edit again; then the tools'
+#     passwords (type one, or Enter to generate)                       <- you
 #   4 check everything the rest needs (the checkout, docker, disk space)
 #   5 back up (graceful stop, server.config.yaml; the datastore is MOVED next
 #     to it — instant on the same disk, no archive)
 #   6 PAUSE: one scp line to copy the backup off; press r to continue  <- you
-#   7 remove risx (its own cleanup.sh)
+#   7 remove risx: everything Docker says is risx's (stacks, one-offs, volumes,
+#     networks, images), its cron lines and folders -- risx's cleanup.sh is not used
 #   8 install.sh   9 adopt the identity, with the old history   10 verify
 # Other questions appear only when something is wrong (the address clients dial
 # does not match, containers are left after the cleanup, ...).
@@ -39,6 +42,9 @@
 #                      Asked at step 2 when not given.
 #   --backup-dir DIR   where the backup lives (default ~/velociraptor_backup)
 #   --package TAR      air-gapped: passed to install.sh --package
+#   --stop-before-install
+#                      stop once risx is removed (step 7), to look at the box
+#                      first; run the script again without it to install Intact
 # Environment: RISX_ROOT (the risx setup_platform dir, if discovery fails),
 #              INTACT_DIR (where to clone Intact, default ~/intact), EDITOR.
 #
@@ -81,10 +87,12 @@ source "$ROOT/lib/secrets.sh" || die "cannot load $ROOT/lib/secrets.sh"   # INTA
 BACKUP_DIR="${BACKUP_DIR:-$HOME/velociraptor_backup}"
 PACKAGE=""
 BACKUP_MODE=""
+STOP_BEFORE_INSTALL=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --backup-dir) BACKUP_DIR="${2:?--backup-dir needs a directory}"; shift ;;
         --package)    PACKAGE="${2:?--package needs a file}"; shift ;;
+        --stop-before-install) STOP_BEFORE_INSTALL=1 ;;
         --backup)     BACKUP_MODE="${2:?--backup needs config or data}"; shift
                       [[ "$BACKUP_MODE" == config || "$BACKUP_MODE" == data ]] \
                           || die "--backup must be config or data, not '$BACKUP_MODE'" ;;
@@ -110,7 +118,12 @@ mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
 ( umask 077; : >> "$STATE" ) || die "cannot write $STATE"
 LOG="$BACKUP_DIR/risx_to_intact-$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M%S).log"
 ( umask 077; : > "$LOG" ) || die "cannot write the log $LOG"
-exec > >(tee -a "$LOG") 2>&1
+# The terminal gets every byte at once (a prompt shows before its answer); the
+# log gets every line with the time it was printed, so a run can be followed
+# and read back from another machine. printf's %(...)T is a bash builtin: no
+# `date` per line through the install's thousands of lines.
+_ts() { local _l; while IFS= read -r _l || [[ -n "$_l" ]]; do printf '[%(%F %T)T] %s\n' -1 "$_l"; done; }
+exec > >(tee >(_ts >> "$LOG")) 2>&1
 
 # Masks what looks like a credential: KEY=value / key: value pairs named like a
 # password, token, secret or key, and whole PEM blocks. A safety net for the
@@ -230,13 +243,17 @@ need_sudo() {
 # Asked once at the start, then kept fresh: the install alone outlasts sudo's
 # 15-minute memory, so step 9 asked again with nobody watching (QA, 2026-11-18).
 keep_sudo() {
+    # Already passwordless (NOPASSWD): nothing to ask. Checked with `-n true`, not
+    # `-v`: validating checks EVERY matching rule, so a NOPASSWD user who is also
+    # in the sudo group is still asked by `sudo -v` (mssp-demo, 2026-11-18).
+    sudo -n true 2>/dev/null && return 0
     sudo -v || die "this script needs sudo (it is asked once, here)"
     # its own output to /dev/null: holding the log pipe, its `sleep` kept the
     # run from ending for up to 50 s after the last line
     ( while kill -0 "$$" 2>/dev/null; do sudo -n -v 2>/dev/null; sleep 50; done ) >/dev/null 2>&1 </dev/null &
     SUDO_KEEPALIVE=$!
 }
-log_answer() { printf '[%s] answer: %s\n' "$(date +%T)" "$1" >> "$LOG"; }
+log_answer() { printf '[%(%F %T)T] answer: %s\n' -1 "$1" >> "$LOG"; }
 ask() {  # ask VAR "prompt" — dies on end of input instead of looping forever
     local _a; read -r -p "$2" _a || die "no answer (end of input) — stopped"
     log_answer "$_a"; printf -v "$1" '%s' "$_a"
@@ -250,7 +267,7 @@ risx_present() {
     local base="${RISX_ROOT:-/home/*/setup_platform}"
     compgen -G "$base/workdir/velociraptor/velociraptor/server.config.yaml" >/dev/null && return 0
     # step 5 moved the datastore out; the rest of risx stays
-    # until its cleanup.sh empties workdir/
+    # until step 7 deletes setup_platform
     [[ -d "$DS" ]] && compgen -G "$base/workdir/velociraptor" >/dev/null
 }
 state_val() { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | tail -1; }
@@ -264,15 +281,15 @@ backup_mode() {
     echo "$m"
 }
 free_kb() { df -Pk "$1" 2>/dev/null | awk 'NR==2{print $4}'; }
+_gb() { awk -v k="${1:-0}" 'BEGIN {printf "%.1f", k/1024/1024}'; }
 # The history's size: risx keeps its client installers under clients/<os>,
 # which are not history and do not come across (a test box: 317 MB in all, 75 MB of history).
 ds_kb() { sudo du -sk --exclude=clients/linux --exclude=clients/mac --exclude=clients/windows "$1" 2>/dev/null | cut -f1; }
 
 ensure_yaml() {
     python3 -c 'import yaml' 2>/dev/null && return 0
-    warn "python3-yaml is missing; it is needed to read the Velociraptor config"
-    confirm "Install it now (sudo apt-get install -y python3-yaml)?" || die "python3-yaml is required"
-    sudo apt-get install -y python3-yaml >/dev/null || die "could not install python3-yaml"
+    say "installing python3-yaml (needed to read the Velociraptor config)"
+    sudo apt-get install -y python3-yaml >/dev/null 2>&1 || die "could not install python3-yaml — run: sudo apt-get install -y python3-yaml"
 }
 
 # identity FILE [sudo] -> sets ID_FP ID_URL ID_HOST ID_PORT ID_NONCE (yes/no) ID_VER
@@ -352,7 +369,7 @@ EOF
     say "backup to copy off the box: $([[ $MODE == data ]] && echo 'configuration + data' || echo 'configuration only')"
 }
 
-# risx's cleanup.sh empties workdir/, so the datastore has to leave it first
+# Step 7 deletes setup_platform, so the datastore has to leave it first
 # (always: Intact gets the history whatever the backup choice).
 # A rename, not tar.gz + unzip: risx is removed next anyway, and on the same
 # disk it is instant and needs no space. Another disk makes mv a plain copy.
@@ -360,11 +377,11 @@ move_datastore() {
     if [[ -d "$DS" ]]; then say "the datastore is already in $DS"; return 0; fi
     local need; need=$(ds_kb "$VELO_DATA")
     if [[ "$(stat -c %d "$VELO_DATA")" == "$(stat -c %d "$BACKUP_DIR")" ]]; then
-        say "moving the datastore ($((need/1024)) MB) to $DS — same disk, instant"
+        say "datastore moved to $DS ($(_gb "$need") GB, same disk: instant)"
     else
         (( $(free_kb "$BACKUP_DIR") > need )) \
             || die "not enough free space in $BACKUP_DIR: the datastore is $((need/1024)) MB, $(( $(free_kb "$BACKUP_DIR")/1024 )) MB free"
-        say "moving the datastore ($((need/1024)) MB) to $DS — another disk, so this is a copy"
+        say "copying the datastore to $DS ($(_gb "$need") GB, another disk: this takes a while)"
     fi
     sudo mv "$VELO_DATA" "$DS" || die "could not move $VELO_DATA to $DS"
     sudo chmod 700 "$DS"
@@ -387,36 +404,39 @@ backup() {
     identity "$BACKUP_DIR/server.config.yaml"
     [[ "$ID_FP" == "$fp_src" ]] || die "the copied server.config.yaml does not match the original"
     move_datastore
-    echo; ls -lh "$BACKUP_DIR"
     mark backup
 }
 
 pause_for_copy() {
-    step copied "6. Copy the backup off this machine (optional), then continue" || return 0
+    step copied "6. Copy the backup off this box (optional)" || return 0
     local ip; ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
     local src; src="$(id -un)@${ip:-<this-box-ip>}:${BACKUP_DIR}"
     local what line
     if [[ "$(backup_mode)" == data ]]; then
-        what="configuration + data"; line="scp -r \"${src}\" ."
+        what="configuration + data, $(_gb "$(state_val dskb)") GB"; line="scp -r \"${src}\" ."
     else
         # the two config files only: the datastore next to them is root's and large
-        what="configuration only"; line="scp \"${src}/*.config.yaml\" ."
+        what="configuration only, a few KB"; line="scp \"${src}/*.config.yaml\" ."
     fi
-    cat <<EOF
-
-  The backup (${what}) is ready in ${BACKUP_DIR}; it holds the fleet's CA key: a credential.
-  To keep a copy off this box, run on your laptop (PowerShell or a Linux/macOS shell):
-
-    ${line}
-
-  NEXT: risx-mssp is REMOVED from this box.
-  (Ctrl+C stops here; risx's Velociraptor is stopped — to start it again:
-EOF
-    echo "   sudo mv ${DS} ${VELO_DATA}"
-    cat <<EOF
-   docker update --restart=unless-stopped velociraptor && docker start velociraptor)
-
-EOF
+    # The one thing to do here: framed and highlighted (QA: lost in the text).
+    local b=$'\e[1;33m' o=$'\e[0m' bar="  ═══════════════════════════════════════════════════════════════════════"
+    printf '\n%s%s\n   COPY THE BACKUP TO YOUR LAPTOP NOW (%s):\n\n     %s\n\n   PowerShell or Linux/macOS. It holds the fleet'"'"'s CA key: keep it safe.\n%s%s\n\n' \
+        "$b" "$bar" "$what" "$line" "$bar" "$o"
+    # Named here, before the r: nothing asks about it later. The full list and
+    # how to start risx again after a Ctrl+C go to the log.
+    risx_inventory
+    { show_risx_inventory
+      echo "To start risx's Velociraptor again after a Ctrl+C at the pause:"
+      echo "  sudo mv ${DS} ${VELO_DATA}"
+      echo "  docker update --restart=unless-stopped velociraptor && docker start velociraptor"; } | _ts >> "$LOG"
+    echo "  Next, risx is removed: ${#INV_PROJ[@]} stacks, ${#INV_CONT[@]} containers, ${#INV_VOL[@]} volumes, ${#INV_NET[@]} networks,"
+    echo "  ${#INV_IMG[@]} images (${INV_IMG_GB} GB)$([[ -n "$INV_BUILD_CACHE" && "$INV_BUILD_CACHE" != 0B ]] && echo ", build cache ${INV_BUILD_CACHE}"), its folders$( (( ${#INV_CRON[@]} )) && echo " and cron lines"). The full list is in the log."
+    local kept=()
+    (( ${#RISX_HOME_LEFTOVERS[@]} )) && kept+=("${#RISX_HOME_LEFTOVERS[@]} loose risx files (moved into the backup)")
+    (( ${#INV_KEEP[@]} )) && kept+=("${#INV_KEEP[@]} thing(s) not risx's")
+    (( ${#kept[@]} )) && echo "  Kept: $(printf '%s\n' "${kept[@]}" | paste -sd, - | sed 's/,/, /g')."
+    echo "  Ctrl+C now keeps risx (how to start it again: in the log)."
+    echo
     local ans
     while true; do
         ask ans "  Press r to continue: "
@@ -425,46 +445,186 @@ EOF
     mark copied
 }
 
+# --- what risx owns -----------------------------------------------------------
+# Read from Docker itself, not from risx's cleanup.sh: that takes down only the
+# apps in its APPS_TO_INSTALL, never removes an image, and its --force removes
+# everything on the host. QA's mssp-demo (2026-11-18) had 12 risx compose
+# stacks (timesketch one folder deeper than cleanup.sh looks), 8 one-off
+# `docker run`s, 63 volumes, 7 networks, 47 images (~40 GB, kept by both
+# modes) and risx's installer clone next to setup_platform.
+#   risx's      every compose project whose folder is under setup_platform, the
+#               stacks whose compose files are there, exited one-off containers,
+#               everything those use (images, volumes, networks), main_network,
+#               untagged images, unused anonymous volumes, risx's cron lines
+#   not risx's  anything else: listed, never removed
+# Fills INV_* (arrays of ids/names), RISX_HOME_LEFTOVERS and INV_IMG_GB.
+risx_inventory() {
+    INV_DIRS=() INV_PROJ=() INV_CONT=() INV_VOL=() INV_NET=() INV_IMG=() INV_KEEP=() INV_CRON=() RISX_HOME_LEFTOVERS=()
+    INV_IMG_GB=0 INV_BUILD_CACHE=""
+    local -A projs=() dirs=()
+    local id name proj wd status f d v n img vols nets
+    while IFS='|' read -r id name proj wd status; do
+        [[ -n "$id" && "$name" != intact_* ]] || continue
+        if [[ -n "$proj" && ( "$wd" == "$RISX_ROOT" || "$wd" == "$RISX_ROOT"/* ) ]]; then
+            INV_CONT+=("$id"); projs[$proj]=1
+        elif [[ -z "$proj" && "$status" != Up* ]]; then
+            INV_CONT+=("$id")                             # an exited one-off `docker run`
+        else
+            INV_KEEP+=("container $name ($status${proj:+, compose project $proj in $wd})")
+        fi
+    done < <(docker ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}|{{.Status}}' 2>/dev/null)
+    # stacks with no container left still own volumes and networks
+    if [[ -d "$RISX_ROOT" ]]; then
+        while IFS= read -r f; do
+            d="$(dirname "$f")"; [[ -n "${dirs[$d]:-}" ]] && continue
+            dirs[$d]=1; INV_DIRS+=("$d")
+            projs[$(basename "$d" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-')]=1
+        done < <(find "$RISX_ROOT" -maxdepth 5 \( -name docker-compose.yml -o -name docker-compose.yaml \
+                    -o -name compose.yml -o -name compose.yaml \) 2>/dev/null | sort)
+    fi
+    INV_PROJ=("${!projs[@]}")
+    if (( ${#INV_CONT[@]} )); then
+        while IFS='|' read -r img vols nets; do
+            [[ -n "$img" ]] && INV_IMG+=("$img")
+            for v in ${vols//,/ }; do INV_VOL+=("$v"); done
+            for n in ${nets//,/ }; do case "$n" in bridge|host|none) ;; *) INV_NET+=("$n") ;; esac; done
+        done < <(docker inspect -f '{{.Image}}|{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}},{{end}}{{end}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}},{{end}}' "${INV_CONT[@]}" 2>/dev/null)
+    fi
+    local p
+    for p in "${INV_PROJ[@]}"; do
+        while IFS= read -r v; do [[ -n "$v" ]] && INV_VOL+=("$v"); done \
+            < <(docker volume ls -q --filter "label=com.docker.compose.project=$p" 2>/dev/null)
+        while IFS= read -r n; do [[ -n "$n" ]] && INV_NET+=("$n"); done \
+            < <(docker network ls --format '{{.Name}}' --filter "label=com.docker.compose.project=$p" 2>/dev/null)
+    done
+    docker network inspect main_network >/dev/null 2>&1 && INV_NET+=(main_network)
+    while IFS= read -r v; do [[ "$v" =~ ^[0-9a-f]{64}$ ]] && INV_VOL+=("$v"); done \
+        < <(docker volume ls -q --filter dangling=true 2>/dev/null)
+    while IFS= read -r img; do [[ -n "$img" ]] && INV_IMG+=("$img"); done \
+        < <(docker images -q --no-trunc --filter dangling=true 2>/dev/null)
+    # older versions of those images (same name, another tag) that nothing runs
+    # any more: risx's upgrades left them -- mssp-demo had three Timesketch ones
+    if (( ${#INV_IMG[@]} )); then
+        local -A repos=(); local ref
+        while read -r ref; do [[ -n "$ref" ]] && repos[${ref%:*}]=1; done \
+            < <(docker image inspect -f '{{range .RepoTags}}{{println .}}{{end}}' "${INV_IMG[@]}" 2>/dev/null)
+        while IFS='|' read -r img ref; do
+            [[ "$ref" != "<none>:<none>" && -n "${repos[${ref%:*}]:-}" ]] && INV_IMG+=("$img")
+        done < <(docker images --no-trunc --format '{{.ID}}|{{.Repository}}:{{.Tag}}' 2>/dev/null)
+    fi
+    mapfile -t INV_CONT < <(printf '%s\n' "${INV_CONT[@]}" | grep . | sort -u)
+    mapfile -t INV_VOL  < <(printf '%s\n' "${INV_VOL[@]}"  | grep . | sort -u)
+    mapfile -t INV_NET  < <(printf '%s\n' "${INV_NET[@]}"  | grep . | sort -u)
+    mapfile -t INV_IMG  < <(printf '%s\n' "${INV_IMG[@]}"  | grep . | sort -u)
+    if (( ${#INV_IMG[@]} )); then
+        INV_IMG_GB="$(docker image inspect -f '{{.Size}}' "${INV_IMG[@]}" 2>/dev/null \
+                      | awk '{s+=$1} END {printf "%.1f", s/1024/1024/1024}')"
+    fi
+    # images nothing of risx uses: named, kept
+    local -A risx_img=(); for img in "${INV_IMG[@]}"; do risx_img[$img]=1; done
+    while IFS='|' read -r img name; do
+        [[ -n "$img" && -z "${risx_img[$img]:-}" ]] && INV_KEEP+=("image $name")
+    done < <(docker images --no-trunc --format '{{.ID}}|{{.Repository}}:{{.Tag}}' 2>/dev/null)
+    # risx builds some images itself (velociraptor-tenroot, risx-mssp-*, elk-*):
+    # their build cache stays behind (mssp-demo: 107 entries, 1.9 GB)
+    INV_BUILD_CACHE="$(docker system df --format '{{.Type}}|{{.Size}}' 2>/dev/null | sed -n 's/^Build Cache|//p')"
+    # MISP's installer adds a `docker exec misp-...` job to the crontab (and,
+    # when the crontab was empty, a "# empty crontab" line)
+    local who
+    for who in user root; do
+        while IFS= read -r f; do [[ -n "$f" ]] && INV_CRON+=("$who: $f"); done \
+            < <(_crontab "$who" -l 2>/dev/null | grep -E 'docker exec misp|setup_platform|risx|^# empty crontab$' || true)
+    done
+    # risx's own files next to setup_platform: moved into the backup, never deleted
+    local h; h="$(dirname "$RISX_ROOT")"
+    for f in upgrade-scripts upgrade-scripts.zip dfiq .timesketchrc .timesketch.token; do
+        [[ -e "$h/$f" ]] && RISX_HOME_LEFTOVERS+=("$h/$f")
+    done
+    for f in "$h"/*api.config.yaml; do [[ -f "$f" ]] && RISX_HOME_LEFTOVERS+=("$f"); done
+    return 0
+}
+_crontab() { if [[ "$1" == root ]]; then shift; sudo crontab "$@"; else shift; crontab "$@"; fi; }
+
+# risx's installer clone, next to setup_platform. Its install moves the scripts
+# out, so the clone keeps only setup_platform/workdir (mssp-demo, 2026-11-18).
+risx_installer_clone() {
+    local c; c="$(dirname "$RISX_ROOT")/Risx-MSSP"
+    [[ -d "$c/setup_platform" ]] && echo "$c"
+}
+
+# One line per kind, for the pause and the log.
+show_risx_inventory() {
+    local stacks; stacks="$(printf '%s\n' "${INV_PROJ[@]}" | grep . | sort | paste -sd, - | sed 's/,/, /g')"
+    echo "    ${#INV_PROJ[@]} compose stack(s): ${stacks:-none}"
+    echo "    ${#INV_CONT[@]} container(s), ${#INV_VOL[@]} volume(s), ${#INV_NET[@]} network(s), ${#INV_IMG[@]} image(s) (${INV_IMG_GB} GB)$([[ -n "$INV_BUILD_CACHE" && "$INV_BUILD_CACHE" != 0B ]] && echo ", the build cache ($INV_BUILD_CACHE)")"
+    echo "    the folders $RISX_ROOT$(c="$(risx_installer_clone)"; [[ -n "$c" ]] && echo " and $c")"
+    if (( ${#INV_CRON[@]} )); then echo "    ${#INV_CRON[@]} cron line(s) of risx's:"; printf '      %s\n' "${INV_CRON[@]}"; fi
+    if (( ${#RISX_HOME_LEFTOVERS[@]} )); then
+        echo "  Moved into $BACKUP_DIR/risx-leftovers (not deleted): $(printf '%s\n' "${RISX_HOME_LEFTOVERS[@]##*/}" | paste -sd, - | sed 's/,/, /g')"
+    fi
+    if (( ${#INV_KEEP[@]} )); then
+        echo "  Not risx's, so left alone:"; printf '    %s\n' "${INV_KEEP[@]}"
+    fi
+}
+
 remove_risx_box() {
     step removed "7. Remove risx-mssp from this machine" || return 0
-    local cleanup="$RISX_ROOT/scripts/cleanup.sh"
-    [[ -f "$cleanup" ]] || die "no $cleanup — remove risx by hand, then re-run"
     [[ -s "$BACKUP_DIR/server.config.yaml" ]] || die "the backup is incomplete — refusing to remove risx"
     # A backup made by an older version of this script ("configuration only")
-    # left the datastore in risx: move it now, before cleanup.sh deletes it.
+    # left the datastore in risx: move it now, before the removal deletes it.
     [[ -d "$DS" ]] || move_datastore
     [[ -d "$DS" ]] || die "the datastore is not in $DS — refusing to remove risx"
-    # Its ~40 lines (a bare path after every app) go to the log; the screen gets
-    # the list of what it removed. `username` set and stdin closed: cleanup.sh
-    # asks for one (read -p) when risx's .env has none, and must never wait
-    # unseen. risx builds its paths from /home/$username/setup_platform.
-    say "running risx's own cleanup.sh (its output goes to the log)"
-    local out rc=0
-    out="$(cd "$RISX_ROOT/scripts" && username="$(basename "$(dirname "$RISX_ROOT")")" bash cleanup.sh </dev/null 2>&1)" || rc=$?
-    printf '%s\n' "$out" >> "$LOG"
-    local gone; gone="$(sed -n 's/^Deleting the \(.*\) app files.*/\1/p' <<<"$out" | grep -vx '.env' | paste -sd, - | sed 's/,/, /g')"
-    say "removed: ${gone:-nothing listed}"
-    if (( rc != 0 )); then
-        warn "cleanup.sh stopped with exit $rc; its last lines:"; tail -8 <<<"$out" | sed 's/^/    /'
-    fi
-    mark removed      # from here risx is gone even if the rest is interrupted
-    # cleanup.sh only takes down the apps in its APPS_TO_INSTALL: QA's box kept
-    # MISP (installed, not listed), elk-setup and a few one-off `docker run`s.
-    local left; left="$(docker ps -a --format '{{.Names}}  ({{.Image}}, {{.Status}})' | grep -v '^intact_' || true)"
-    if [[ -n "$left" ]]; then
-        warn "still present after cleanup.sh:"; echo "$left" | sed 's/^/    /'
-        echo "  cleanup.sh --force removes EVERY container, network and volume on this host,"
-        echo "  not only risx's. Right on a dedicated box, a disaster on a shared one."
-        if confirm "Run cleanup.sh --force?"; then
-            # its output (container ids, "bridge is a pre-defined network") goes to the log
-            rc=0
-            out="$(cd "$RISX_ROOT/scripts" && username="$(basename "$(dirname "$RISX_ROOT")")" bash cleanup.sh --force </dev/null 2>&1)" || rc=$?
-            printf '%s\n' "$out" >> "$LOG"
-            left="$(docker ps -a --format '{{.Names}}' | grep -v '^intact_' || true)"
-            if [[ -z "$left" ]]; then say "removed the rest"
-            else warn "still present after cleanup.sh --force (exit $rc): $(paste -sd' ' <<<"$left")"; fi
+    risx_inventory
+    { echo "risx inventory before the removal:"; show_risx_inventory
+      printf 'container %s\n' "${INV_CONT[@]}"; printf 'volume %s\n' "${INV_VOL[@]}"
+      printf 'network %s\n' "${INV_NET[@]}"; printf 'image %s\n' "${INV_IMG[@]}"; } | _ts >> "$LOG"
+    say "removing risx (details in the log)"
+    local d id v n img
+    # 1. each stack by its own compose file: also what it declares and never started
+    for d in "${INV_DIRS[@]}"; do
+        echo "== docker compose down in $d" | _ts >> "$LOG"
+        (cd "$d" && docker compose down --volumes --remove-orphans --timeout 20) 2>&1 | _ts >> "$LOG" || true
+    done
+    # 2-5. whatever is left of the list, then cron lines and files
+    for id in "${INV_CONT[@]}"; do docker rm -f -v "$id" 2>&1 | _ts >> "$LOG" || true; done
+    for v in "${INV_VOL[@]}"; do docker volume rm -f "$v" 2>&1 | _ts >> "$LOG" || true; done
+    for n in "${INV_NET[@]}"; do docker network rm "$n" 2>&1 | _ts >> "$LOG" || true; done
+    for img in "${INV_IMG[@]}"; do docker image rm -f "$img" 2>&1 | _ts >> "$LOG" || true; done
+    docker builder prune -af 2>&1 | _ts >> "$LOG" || true
+    local who tmp
+    for who in user root; do
+        if _crontab "$who" -l 2>/dev/null | grep -qE 'docker exec misp|setup_platform|risx|^# empty crontab$'; then
+            tmp="$(mktemp)"; _crontab "$who" -l 2>/dev/null | grep -vE 'docker exec misp|setup_platform|risx|^# empty crontab$' > "$tmp"
+            _crontab "$who" "$tmp" 2>&1 | _ts >> "$LOG" || warn "could not remove risx's lines from the $who crontab"
+            rm -f "$tmp"
         fi
+    done
+    if (( ${#RISX_HOME_LEFTOVERS[@]} )); then
+        mkdir -p "$BACKUP_DIR/risx-leftovers" && chmod 700 "$BACKUP_DIR/risx-leftovers"
+        for d in "${RISX_HOME_LEFTOVERS[@]}"; do
+            echo "moving $d into $BACKUP_DIR/risx-leftovers/" | _ts >> "$LOG"
+            sudo mv "$d" "$BACKUP_DIR/risx-leftovers/" 2>&1 | _ts >> "$LOG" || true
+        done
+        sudo chown -R "$(id -un):$(id -gn)" "$BACKUP_DIR/risx-leftovers" 2>/dev/null
     fi
+    local clone; clone="$(risx_installer_clone)"
+    echo "deleting $RISX_ROOT${clone:+ and $clone}" | _ts >> "$LOG"
+    sudo rm -rf "$RISX_ROOT" ${clone:+"$clone"} 2>&1 | _ts >> "$LOG" || true
+    mark removed      # from here risx is gone even if the rest is interrupted
+    # Check: everything listed is gone.
+    local left=()
+    for id in "${INV_CONT[@]}"; do docker inspect "$id" >/dev/null 2>&1 && left+=("container $id"); done
+    for v in "${INV_VOL[@]}"; do docker volume inspect "$v" >/dev/null 2>&1 && left+=("volume $v"); done
+    for n in "${INV_NET[@]}"; do docker network inspect "$n" >/dev/null 2>&1 && left+=("network $n"); done
+    for img in "${INV_IMG[@]}"; do docker image inspect "$img" >/dev/null 2>&1 && left+=("image $img"); done
+    [[ -e "$RISX_ROOT" ]] && left+=("folder $RISX_ROOT")
+    if (( ${#left[@]} )); then
+        warn "${#left[@]} thing(s) of risx could not be removed (the log lists why):"
+        printf '    %s\n' "${left[@]:0:10}"
+    else
+        say "risx removed: ${#INV_PROJ[@]} stack(s), ${#INV_CONT[@]} container(s), ${#INV_VOL[@]} volume(s), ${#INV_NET[@]} network(s), ${#INV_IMG[@]} image(s) (${INV_IMG_GB} GB freed), its folders$( (( ${#INV_CRON[@]} )) && echo " and cron lines")"
+    fi
+    if (( ${#RISX_HOME_LEFTOVERS[@]} )); then say "moved into $BACKUP_DIR/risx-leftovers: $(printf '%s\n' "${RISX_HOME_LEFTOVERS[@]##*/}" | paste -sd, - | sed 's/,/, /g')"; fi
 }
 
 edit_config() {
@@ -530,7 +690,25 @@ PYEOF
         fi
         break
     done
+    store_passwords
     mark config
+}
+
+# The install's password questions, asked here with the others rather than
+# minutes into the unattended part. It is the installer's own step: each
+# enabled tool whose password is empty in config.yaml is asked (type one, or
+# Enter to generate), everything is stored under modules/<m>/secrets and
+# config.yaml is blanked -- so install.sh later finds them stored and asks
+# nothing. A refused password stops here, before anything changed.
+store_passwords() {
+    say "the tools' passwords: type one for each, or press Enter to have it generated (all are shown at the end)"
+    sudo env SCRIPT_DIR="$ROOT" CONFIG_FILE="$CFG" LOG_FILE="$LOG" bash -c '
+        for l in common secrets config state_registry; do
+            source "$SCRIPT_DIR/lib/$l.sh" >/dev/null || exit 3
+        done
+        declare -F state_restore_missing >/dev/null && state_restore_missing "$SCRIPT_DIR" >/dev/null 2>&1
+        ensure_module_credentials' \
+        || die "the passwords were not stored (see above) — fix config.yaml and run the script again; nothing has changed yet"
 }
 
 # What the steps after the removal need, checked while risx still runs: the
@@ -538,43 +716,41 @@ PYEOF
 # risx (QA, 2026-11-17). Runs again on a re-run until risx is removed.
 check_ready() {
     done_step removed && return 0
-    echo; say "=== 4. Check that everything the rest needs is here === ($(date '+%F %T'))"
+    echo; say "=== 4. Checks === ($(date '+%F %T'))"
     local f
     for f in install.sh lib/secrets.sh scripts/adopt_velociraptor_identity.sh scripts/migrate/transform_config.py; do
         [[ -f "$ROOT/$f" ]] || die "this Intact checkout ($ROOT) has no $f — use a complete release, then re-run"
     done
     [[ -z "$PACKAGE" || -r "$PACKAGE" ]] || die "cannot read --package $PACKAGE"
-    echo "    Intact checkout  : $ROOT (complete)"
     # Lab-verified client window (docs/RISX_MIGRATION.md): 0.6.9 and newer.
     if [[ -n "$ID_VER" && "$(printf '%s\n' 0.6.9 "$ID_VER" | sort -V | head -1)" != 0.6.9 ]]; then
-        warn "risx runs Velociraptor $ID_VER, older than the tested 0.6.9: its clients may not reconnect"
-        confirm "Continue anyway (see the stepping-stone path in docs/RISX_MIGRATION.md)?" || die "stopped before anything changed"
+        warn "risx runs Velociraptor $ID_VER, older than the tested 0.6.9: its clients may not reconnect (docs/RISX_MIGRATION.md, stepping-stone path)"
     fi
     local src="$VELO_DATA" kb root gb
     [[ -d "$DS" ]] && src="$DS"
     kb=$(ds_kb "$src"); kb="${kb:-0}"
     root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/var/lib/docker}"
     gb="$(df -B1G --output=avail "$root" 2>/dev/null | tail -1 | tr -d ' ')"
-    echo "    risx's datastore : $((kb/1024)) MB (moves into Intact)"
-    echo "    free for Docker  : ${gb:-?} GB under $root"
+    echo "    checkout complete, risx's datastore $(_gb "$kb") GB, ${gb:-?} GB free for Docker"
     if [[ -n "$gb" ]]; then
-        (( gb * 1024 * 1024 > kb )) \
-            || die "not enough space under $root for the history ($((kb/1024)) MB, ${gb} GB free) — free some, then re-run"
+        # Stop only below the history + 30 GB (the images alone are about 8 GB
+        # packed, more unpacked); below the README's 100 GB it is a warning.
+        (( gb * 1024 * 1024 >= kb + 30 * 1024 * 1024 )) \
+            || die "not enough space under $root: the history ($((kb/1024)) MB) and Intact need at least 30 GB more, ${gb} GB free — free some, then re-run"
         if (( gb * 1024 * 1024 < kb + 100 * 1024 * 1024 )); then
-            warn "Intact wants 100 GB free on top of the history (README); this box has ${gb} GB"
-            confirm "Continue anyway?" || die "stopped before anything changed"
+            warn "Intact wants 100 GB free on top of the history (README); this box has ${gb} GB — going on"
         fi
     fi
 }
 
 install_intact() {
     step installed "8. Install Intact.AI" || return 0
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx intact_velociraptor \
-            && ! confirm "Intact is already running on this box. Re-run install.sh anyway?"; then
-        say "keeping the running install"; mark installed; return 0
-    fi
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -qx intact_velociraptor \
+        && say "Intact is already running here — install.sh runs again (it can be repeated)"
     say "running install.sh${PACKAGE:+ --package $PACKAGE} (this takes a while)"
-    (cd "$ROOT" && sudo bash install.sh ${PACKAGE:+--package "$PACKAGE"}) \
+    # INTACT_REINIT=1: install.sh's "Re-initialize?" is answered here, not asked
+    # half an hour after every other question.
+    (cd "$ROOT" && sudo env INTACT_REINIT=1 bash install.sh ${PACKAGE:+--package "$PACKAGE"}) \
         || die "install.sh failed — fix the cause and re-run this script; it continues from the install"
     mark installed
 }
@@ -737,19 +913,19 @@ verify() {
     - ${BACKUP_DIR}/server.config.yaml is a plain copy of the fleet's CA key: delete it
       (shred -u) once you are satisfied$([[ -d "$DS" ]] && printf '; %s is the old datastore\n      (also holds the CA): keep it safe until you no longer need the history' "$DS")
 EOF
-    # cleanup.sh empties workdir/ but leaves risx's scripts and resources
+    # step 7 deletes setup_platform; one left by an older version of this script
     local risx="${RISX_ROOT:-$(state_val risx_root)}"
     if [[ -n "$risx" && -d "$risx" ]]; then
-        echo "    - $risx now holds only risx's scripts: delete it (sudo rm -rf $risx)"
+        echo "    - $risx is risx's leftover: delete it (sudo rm -rf $risx)"
     fi
 }
 
 # --- main --------------------------------------------------------------------
 
-ensure_yaml
 if done_step verified; then say "this migration is already complete (see $STATE)"; exit 0; fi
 docker ps >/dev/null 2>&1 || die "this user cannot run docker — add it to the docker group and log in again"
 keep_sudo
+ensure_yaml
 # risx already removed (finished, or cut off mid-removal): work from the backup.
 if done_step backup && ! risx_present && ! done_step removed; then
     warn "risx-mssp is no longer on this box — continuing from the backup"; mark removed
@@ -760,4 +936,9 @@ identity "$BACKUP_DIR/server.config.yaml"
 # config.yaml is normally done before the removal; a state from an older
 # version of this script reaches it only here.
 done_step config || edit_config
+if (( STOP_BEFORE_INSTALL )) && ! done_step installed; then
+    say "stopped before the install (--stop-before-install): risx is removed and the backup is in $BACKUP_DIR"
+    say "  run the script again without it to install Intact; it continues from step 8"
+    exit 0
+fi
 install_intact; adopt; verify

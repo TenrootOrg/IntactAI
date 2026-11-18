@@ -84,8 +84,7 @@ graceful_stop_legacy_velo() {
     docker ps --format '{{.Names}}' | grep -qx velociraptor || {
         say "legacy velociraptor container is not running"; return 0; }
 
-    say "stopping legacy velociraptor gracefully (flushing the client_info \
-snapshot so the fleet list survives the migration)"
+    say "stopping risx's Velociraptor (it saves its client list first)"
     # A snapshot from an EARLIER stop must not count as this one's flush.
     # sudo: client_info/ is root's. Read as the user, every stat failed and a
     # snapshot that WAS written was reported missing (QA, 2026-11-17).
@@ -124,8 +123,7 @@ container; falling back to docker stop"
     docker stop velociraptor >/dev/null 2>&1 || true
 
     if (( $(sudo stat -c %Y "$snap" 2>/dev/null || echo 0) > before )); then
-        say "client_info snapshot flushed (${t}s) — the fleet list will \
-appear in intact immediately"
+        say "client list saved (${t}s)"
     else
         warn "no client_info snapshot was written. All collections and client \
 keys still migrate, but the fleet list in intact will start EMPTY and fill in \

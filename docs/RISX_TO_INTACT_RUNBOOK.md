@@ -21,26 +21,27 @@ bash risx_to_intact.sh                 # or: bash ~/intact/scripts/migrate/risx_
 ```
 
 Intact always gets **both** the configuration (the fleet's identity) and the
-data (hunts, collections, the client list). A normal run asks you **three
-times**, all of them while risx still runs; after the pause it runs to the end
-by itself:
+data (hunts, collections, the client list). **Every question comes at the
+start**, while risx still runs: the sudo password (asked once, kept for the
+whole run), the backup choice, `config.yaml`, the tools' passwords, and the
+one stop before risx is removed. After that it runs to the end by itself:
 
 | Step | What it does | You |
 |---|---|---|
+| — Start | Asks for the sudo password once and keeps it for the whole run; installs `python3-yaml` if it is missing | sudo password |
 | 1 Find | Locates risx; prints the CA fingerprint, the address clients dial, the nonce check and the Velociraptor version (stops by itself if any is missing) | — |
 | 2 Backup choice | What the backup you copy off the box holds: **1** configuration only (`server.config.yaml` + `client.config.yaml`, a few KB: the copy takes seconds) or **2** configuration + data (also the datastore, as big as the history). Intact gets the data either way | **1** / **2** (Enter = 1) |
-| 3 Config | Sets `domain` (and `agent_port`) to what clients dial, opens `nano config.yaml`, shows a summary | **y** use it / **e** edit again |
-| 4 Check | The Intact checkout is complete, the Velociraptor version is in the tested window (0.6.9+), and Docker has room for the history plus the 100 GB Intact wants. Anything missing stops here, before anything changed | only if short on space or on an old version |
+| 3 Config | Sets `domain` (and `agent_port`) to what clients dial, opens `nano config.yaml`, shows a summary; then asks each enabled tool's password whose `config.yaml` value is empty (type one, or Enter to generate) and stores them | **y** use it / **e** edit again; the passwords |
+| 4 Check | The Intact checkout is complete and Docker has room. **Stops** only below the history + 30 GB free; below the 100 GB Intact wants, or on a Velociraptor older than the tested 0.6.9, it **warns** and goes on | — |
 | 5 Back up | Stops risx's Velociraptor gracefully (so the fleet list is saved), copies its two config files into `~/velociraptor_backup`, and **moves** the datastore next to them as `datastore/` — instant on the same disk, nothing is zipped or unzipped | — |
-| 6 Pause | Prints one `scp` line (PowerShell and Linux/macOS alike): the two config files with **1**, the whole folder with **2**; and how to put risx back. The next step removes risx | press **r** |
-| 7 Remove risx | risx's own `cleanup.sh` (asks about `--force` only if containers are left) | — |
-| 8 Install | `sudo bash install.sh` — downloads only the modules you enabled | — |
+| 6 Pause | Prints one `scp` line (PowerShell and Linux/macOS alike): the two config files with **1**, the whole folder with **2**; how to put risx back; and exactly what step 7 removes (stacks, containers, volumes, networks, images with their size, folders, cron lines) and what it leaves alone | press **r** |
+| 7 Remove risx | Everything Docker shows is risx's: every compose stack under `setup_platform` (taken down by its own compose file), the exited one-off containers, their volumes and networks, `main_network`, the images they use plus older versions of those and untagged ones, and risx's cron lines. Deletes `setup_platform` and the installer clone `~/Risx-MSSP`; moves loose risx files (`upgrade-scripts*`, `dfiq`, `.timesketchrc`, `.timesketch.token`, `*api.config.yaml`) into `~/velociraptor_backup/risx-leftovers`. Anything not tied to risx is listed and left alone. risx's own `cleanup.sh` is not used: it never removes images, and its `--force` removes everything on the host. The list is shown at the pause, before **r** | — |
+| 8 Install | `sudo bash install.sh` — downloads only the modules you enabled; finds the passwords stored, asks nothing; re-runs by itself if Intact is already there | — |
 | 9 Adopt | `scripts/adopt_velociraptor_identity.sh`; copies `datastore/` once into Intact's datastore volume (a `velociraptor-full-*.tar.gz` left by an older version of the script is unpacked into `datastore/` once and reused) | — |
-| 10 Verify | The CA in use matches the backup; the Velociraptor users get the passwords Intact stored; prints how many clients the server knows | — |
+| 10 Verify | The CA in use matches the backup; the Velociraptor users get the passwords Intact stored; prints how many clients the server knows; ends with the logins and the dashboard setup token | — |
 
-Other questions appear only when something is wrong: the domain or port does not
-match what clients dial, `python3-yaml` is missing, or containers survive the
-cleanup. No reboot is needed.
+The only other question: at step 3, "Are you SURE?" when `domain` or the port
+is not what the clients dial. No reboot is needed.
 
 Every finished step is recorded, so after a failure or Ctrl+C, run the script
 again and it continues from the next step. Everything printed, and every answer,

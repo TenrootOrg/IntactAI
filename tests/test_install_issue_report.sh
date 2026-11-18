@@ -67,7 +67,7 @@ test_a_clean_run_says_so() {
 test_the_timesketch_wait_is_five_minutes_and_quiet() {
     local f="$REPO/lib/modules/timesketch.sh"
     assert_true grep -q 'local ts_max_wait=300' "$f"
-    assert_true grep -q 'ts_wait % 30 == 0' "$f" "one progress line every 30 s, not every 5"
+    assert_true grep -q 'ts_wait % 30 == 0' "$f"   # one progress line every 30 s, not every 5
 }
 
 run_all_tests
