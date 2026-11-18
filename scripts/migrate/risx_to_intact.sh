@@ -175,6 +175,7 @@ bundle_logs() {
 }
 on_exit() {
     local rc=$?
+    [[ -n "${SUDO_KEEPALIVE:-}" ]] && kill "$SUDO_KEEPALIVE" 2>/dev/null
     # plain, not a second WARN: the ERROR above already said what went wrong
     if (( rc != 0 )); then echo "  stopped at $(date '+%F %T') (exit $rc)"; fi
     echo; bundle_logs || echo "  (could not pack the logs; send $LOG)"
@@ -189,7 +190,24 @@ mark()      { echo "$1" >> "$STATE"; }
 # Each step runs once; on a re-run a finished step is skipped with a note.
 step() {
     if done_step "$1"; then say "step '$1' already done — skipping"; return 1; fi
-    echo; say "=== $2 === ($(date '+%F %T'))"; return 0
+    echo; say "=== $2 === ($(date '+%F %T'))"
+    need_sudo
+    return 0
+}
+# A refused sudo must stop the run, not leave a step half done: QA mistyped it
+# three times in step 9 and the step went on with an empty CA (2026-11-18).
+need_sudo() {
+    sudo -n true 2>/dev/null && return 0
+    sudo -v || die "sudo was refused — run the script again; it continues from this step"
+}
+# Asked once at the start, then kept fresh: the install alone outlasts sudo's
+# 15-minute memory, so step 9 asked again with nobody watching (QA, 2026-11-18).
+keep_sudo() {
+    sudo -v || die "this script needs sudo (it is asked once, here)"
+    # its own output to /dev/null: holding the log pipe, its `sleep` kept the
+    # run from ending for up to 50 s after the last line
+    ( while kill -0 "$$" 2>/dev/null; do sudo -n -v 2>/dev/null; sleep 50; done ) >/dev/null 2>&1 </dev/null &
+    SUDO_KEEPALIVE=$!
 }
 log_answer() { printf '[%s] answer: %s\n' "$(date +%T)" "$1" >> "$LOG"; }
 ask() {  # ask VAR "prompt" — dies on end of input instead of looping forever
@@ -551,7 +569,7 @@ history_source() {
 adopt() {
     step adopted "9. Adopt the fleet's Velociraptor identity, with its history" || return 0
     echo "  the fleet's CA     : $ID_FP"
-    echo "  CA on this box now : $(live_fp || true)"
+    echo "  CA on this box now : $(live_fp || echo unreadable)"
     local ds=()
     if history_source; then
         # One copy, into the Velociraptor datastore volume (adopt's rsync).
@@ -699,6 +717,7 @@ EOF
 ensure_yaml
 if done_step verified; then say "this migration is already complete (see $STATE)"; exit 0; fi
 docker ps >/dev/null 2>&1 || die "this user cannot run docker — add it to the docker group and log in again"
+keep_sudo
 # risx already removed (finished, or cut off mid-removal): work from the backup.
 if done_step backup && ! risx_present && ! done_step removed; then
     warn "risx-mssp is no longer on this box — continuing from the backup"; mark removed

@@ -65,7 +65,18 @@ echo "adopt \$*" >> "$W/log/calls"
 d="\$(dirname "\$0")/../data/velociraptor"; mkdir -p "\$d"
 cp "\$2/server.config.yaml" "\$d/server.config.yaml"
 EOF
-    printf '#!/bin/bash\n[[ "$1" == reboot ]] && { echo "reboot" >> %q; exit 0; }\nexec "$@"\n' "$W/log/calls" > "$W/bin/sudo"
+    # sudo: runs the command as you; -v / -n answer like a cached sudo unless
+    # $W/log/sudo_refuse exists (a mistyped password, an expired ticket).
+    cat > "$W/bin/sudo" <<EOF
+#!/bin/bash
+[[ "\$1" == reboot ]] && { echo "reboot" >> "$W/log/calls"; exit 0; }
+if [[ "\$1" == -v || "\$1" == -n ]]; then
+    [[ -e "$W/log/sudo_refuse" ]] && { echo "sudo: refused" >&2; exit 1; }
+    [[ "\$1" == -n ]] && shift
+    [[ "\$1" == -v || "\$1" == true ]] && exit 0
+fi
+exec "\$@"
+EOF
     cat > "$W/bin/docker" <<EOF
 #!/bin/bash
 echo "docker \$*" >> "$W/log/calls"
@@ -334,6 +345,32 @@ test_leftover_containers_are_described_and_force_stays_quiet() {
     assert_contains "$(cat "$W/log/calls")" "cleanup --force"
     assert_not_contains "$OUT" "pre-defined network" "cleanup.sh's own noise stays in the log"
     assert_contains "$(cat "$W"/backup/risx_to_intact-*.log)" "pre-defined network"
+}
+
+test_sudo_is_asked_once_at_the_start_and_a_refusal_stops_there() {
+    _world
+    : > "$W/log/sudo_refuse"
+    _run "$NORMAL"
+    assert_ne "$RC" "0"
+    assert_contains "$OUT" "this script needs sudo (it is asked once, here)"
+    assert_false grep -qx find "$(_state)" "nothing started"
+}
+
+test_a_sudo_refused_mid_run_stops_the_step_and_a_rerun_continues() {
+    # QA, 2026-11-18: sudo expired during the install, three wrong passwords in
+    # step 9, and the step went on with an empty CA.
+    _world
+    printf 'touch %q\n' "$W/log/sudo_refuse" >> "$W/intact/install.sh"   # the install outlasts sudo
+    _run "$NORMAL"
+    assert_ne "$RC" "0"
+    assert_contains "$OUT" "sudo was refused — run the script again; it continues from this step"
+    assert_true grep -qx installed "$(_state)"
+    assert_false grep -qx adopted "$(_state)" "the adopt never ran half-way"
+    assert_not_contains "$(cat "$W/log/calls")" "adopt --from"
+    rm -f "$W/log/sudo_refuse"; sed -i '$d' "$W/intact/install.sh"
+    _run ''
+    assert_eq "$RC" "0" "$(tail -5 <<<"$OUT")"
+    assert_contains "$(cat "$W/log/calls")" "adopt --from"
 }
 
 test_the_client_count_is_reported() {
