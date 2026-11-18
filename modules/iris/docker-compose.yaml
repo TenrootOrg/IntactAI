@@ -13,7 +13,11 @@ services:
     image: rabbitmq:${RABBITMQ_VERSION:?must be set via modules/iris/.env — see versions.iris_rabbitmq in config.yaml}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      # Not before the server has made its .erlang.cookie: run as root on a fresh
+      # volume, rabbitmq-diagnostics creates that file itself (root-owned), the
+      # server can't read it ("eacces"), crashes once and the first `compose up`
+      # fails "unhealthy" (mssp-demo install, 2026-11-18).
+      test: ["CMD-SHELL", "test -f /var/lib/rabbitmq/.erlang.cookie && rabbitmq-diagnostics -q ping"]
       interval: 10s
       timeout: 10s
       retries: 6

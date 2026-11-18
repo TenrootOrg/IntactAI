@@ -46,6 +46,15 @@ test_a_warning_with_attached_logs_is_one_warning() {
     assert_contains "$LOGTXT" "log line 50"
 }
 
+test_a_retry_that_worked_is_one_warning_not_two() {
+    # mssp-demo, 2026-11-18: IRIS's first start failed, the retry worked, and
+    # its "↳ resolved" line was counted too: "2 warning(s)".
+    _report 'log_warn "  IRIS compose up failed; retrying in 15s..." >/dev/null
+             INSTALL_WARNINGS+=("  ↳ resolved: IRIS compose up succeeded on attempt 2")'
+    assert_contains "$OUT" "install completed with 0 error(s), 1 warning(s)"
+    assert_contains "$OUT" "↳ resolved: IRIS compose up succeeded on attempt 2"
+}
+
 test_a_real_error_is_counted_once_with_its_logs() {
     _report 'log_error "  TimeSketch web container failed to start" >/dev/null
              capture_diagnostic_logs "TimeSketch web (container start timeout)" intact_timesketch_web'

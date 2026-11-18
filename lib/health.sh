@@ -463,7 +463,10 @@ recreate_cert_consumers() {
 # formatter — no side effects on flow.
 
 print_final_issues_report() {
-    local n_w=${#INSTALL_WARNINGS[@]}
+    # "↳ resolved: …" lines explain the warning above them, they are not
+    # warnings: one retried IRIS start read "2 warning(s)" (mssp-demo, 2026-11-18).
+    local n_w=0 _w
+    for _w in "${INSTALL_WARNINGS[@]}"; do [[ "$_w" == *"↳ resolved:"* ]] || n_w=$((n_w + 1)); done
     local n_e=${#INSTALL_ERRORS[@]}
     local n_d=${#INSTALL_DIAGNOSTICS[@]}
 
