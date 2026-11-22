@@ -194,7 +194,7 @@ console.log(JSON.stringify([reportHistoryHtml({case_id:'c1', report_history:H}, 
         self.assertNotIn("template report", out[0])
         # ...and at the top of the report itself, read from the report's own tail
         self.assertEqual(out[3:7], ["ai", "offline", "", ""])             # untagged: no badge, no guess
-        self.assertIn("${_reportKind(md)?`<div style=\"margin:0 0 6px\">${_reportKindBadge(_reportKind(md))}</div>`:''}<div class=\"md\">", src)
+        self.assertIn("${_reportModeBadge(md)}${_reportKindBadge(_reportKind(md))}</div>`:''}<div class=\"md\">", src)  # with the mode (test_case_mode)
 
 
 if __name__ == "__main__":

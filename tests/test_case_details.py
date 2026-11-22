@@ -25,14 +25,16 @@ from services.fusion import store  # noqa: E402
 class OldCases(unittest.TestCase):
     def test_a_case_from_an_older_version_reads_as_open_and_unset(self):
         self.assertEqual(store.case_info({"name": "old"}),
-                         {"case_status": "open", "case_owner": "", "case_description": "", "velo_org": "root", "ai_budget_usd": None})
+                         {"case_status": "open", "case_owner": "", "case_description": "", "velo_org": "root", "ai_budget_usd": None,
+                          "case_mode": "ir"})
         # a severity stored on a case from before it was removed is ignored
         self.assertNotIn("case_severity", store.case_info({"case_severity": "high"}))
 
     def test_damaged_values_fall_back_instead_of_failing(self):
         info = store.case_info({"case_status": 7, "case_severity": "huge", "case_owner": ["x"],
                                 "case_description": None})
-        self.assertEqual(info, {"case_status": "open", "case_owner": "", "case_description": "", "velo_org": "root", "ai_budget_usd": None})
+        self.assertEqual(info, {"case_status": "open", "case_owner": "", "case_description": "", "velo_org": "root", "ai_budget_usd": None,
+                          "case_mode": "ir"})
         self.assertEqual(store.case_info({"velo_org": ["x"]})["velo_org"], "root")
         self.assertEqual(store.case_info(None)["case_status"], "open")
 
@@ -239,7 +241,7 @@ const api=(p,o)=>{sent=JSON.parse(o.body); return {then(){return {catch(){}};}};
 """ + fn + "\ncreateWorkspace(); console.log(JSON.stringify(sent));"
         out = subprocess.run(["node", "-e", js], capture_output=True, text=True)
         self.assertEqual(json.loads(out.stdout), {"name": "IR 05", "case_owner": "Dan", "case_description": "phishing",
-                                                  "velo_org": "root"},
+                                                  "velo_org": "root", "case_mode": "ir"},   # no mode picked: IR
                          out.stderr)
         ac = open(os.path.join(_ROOT, "modules/nginx/html/js/active-case.js"), encoding="utf-8").read()
         self.assertNotIn("prompt('New case name", ac)

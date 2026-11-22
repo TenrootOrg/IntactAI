@@ -37,6 +37,7 @@ let chatHist = [], _pendingQ = null, _asking = false;
 let serverHistory = [];
 
 const drawMsgs = () => {};
+const loadAiCost = () => {};   // the header's AI spend: tests/case_ai_cost.js
 const $ = (sel) => (sel === '#q' ? {value: ' ' + QUESTION + ' '} : {disabled:false, textContent:''});
 const api = () => Promise.resolve({messages: serverHistory});
 global.fetch = () => Promise.resolve({

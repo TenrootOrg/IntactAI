@@ -348,7 +348,7 @@ def create_case():
         return jsonify({"error": dup, "duplicate": True}), 409
     # Asked for at creation (the New Case pop-up): owner and an optional
     # description. A new case is always Open; its status is changed by editing it.
-    info = {k: d[k] for k in ("case_owner", "case_description", "velo_org") if d.get(k)}
+    info = {k: d[k] for k in ("case_owner", "case_description", "velo_org", "case_mode") if d.get(k)}
     tw = d.get("time_window") or {}
     rid = store.create_case(
         name, time_window={"start": tw.get("start"), "end": tw.get("end")} if tw else {},
@@ -495,6 +495,7 @@ def get_case(case_id):
                     # tied to the Entity limit with no separate action needed.
                     "max_identities": d.get("max_identities"),
                     "ai_budget_usd": d.get("ai_budget_usd"),   # services/llm_usage.py (also in case_info)
+                    "case_mode": store._mode.of(d),            # IR or Proactive (also in case_info)
                     # LOCKED to the model max: no per-case output cap any more.
                     # Kept in the response for API compatibility (None = model max).
                     "llm_max_output_tokens": None,

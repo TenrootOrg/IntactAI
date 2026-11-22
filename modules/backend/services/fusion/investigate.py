@@ -347,6 +347,9 @@ def investigate(case_id, question, *, run_id=None, max_steps=6, log=None,
         return {"answer": "case not found", "steps": []}
     mask = _mask_for_case(d, store.load_graph(case_id), run_id) if use_mask else None
     system = ((llm_sim._MASK_IDENTITY_LEGEND if mask else "") + INVESTIGATE_SYSTEM)
+    from . import case_mode as _mode
+    if _mode.of(d) == _mode.PROACTIVE:           # a routine check, not an incident
+        system = system + "\n\n" + _mode.PROACTIVE_RULE
     if not enable_pivot:
         system = "\n".join(l for l in system.splitlines() if "pivot(" not in l)
 

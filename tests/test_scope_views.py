@@ -216,7 +216,8 @@ class ScopesAreLensesNotCopies(unittest.TestCase):
         self.assertNotIn("'showing '+", page)
         # a new case with no report must not show the previous case's (QA: "air-gap"
         # opened on "Incident Case Report — asd"): render() sets the case's own report
-        body = page[page.index("function render(info,md,g){"):][:600]
+        _r = page.index("function render(info,md,g){")
+        body = page[_r:page.index("\n}", _r)]               # the whole of render(), not its first 600 chars
         self.assertIn("window._md=md||'';", body)
         self.assertIn("if(asList(info&&info.scopes).length>1) return '';", page)
 

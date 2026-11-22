@@ -352,6 +352,8 @@
         <h2 style="margin-top:0">New Case</h2>
         <label>Name</label><input id="cname" maxlength="100" required/>
         <label>Owner</label><input id="cowner" maxlength="100" placeholder="who leads this case"/>
+        <label>Mode</label><select id="cmode"><option value="ir" selected>IR — incident response</option><option value="proactive">Proactive — routine check</option></select>
+        <div class="cfghint">IR reads everything as possible compromise. Proactive is a routine check of a healthy environment: findings below critical score one level lower, and the AI flags only what is worth checking, with why it may be malicious, why it may be a false positive, and what to check.</div>
         <label>Velociraptor org</label><select id="corg"></select>
         <div class="cfghint">Everything this case does in Velociraptor (clients, hunts, collections, imports) runs in this org. It can be changed later by editing the case.</div>
         <label>Description <span style="color:var(--muted)">(optional)</span></label><textarea id="cdesc" maxlength="2000" style="min-height:60px" placeholder="what this case is about"></textarea>
@@ -413,7 +415,8 @@ function createWorkspace(){
   // Asked here rather than in an edit afterwards: owner and an optional
   // description. A new case is always Open (its status is changed by editing it).
   const v=id=>($('#'+id)||{}).value||'';
-  const body={name, case_owner:v('cowner').trim(), case_description:v('cdesc').trim(), velo_org:v('corg')||'root'};
+  const body={name, case_owner:v('cowner').trim(), case_description:v('cdesc').trim(), velo_org:v('corg')||'root',
+              case_mode:v('cmode')||'ir'};
   api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
    .then(d=>{ if(!d||!d.case_id){fail(d&&d.error?'Not created: '+d.error:'The case could not be created. Please try again.');return;}
      closeNewCase();
@@ -524,6 +527,7 @@ function openNewCase(){
   try{ sessionStorage.removeItem('intact:newCase'); }catch(e){}
   const dlg=$('#ncdlg'); if(!dlg) return;
   for(const id of ['cname','cowner','cdesc']){ const e=$('#'+id); if(e) e.value=''; }
+  const md=$('#cmode'); if(md) md.value='ir';
   const og=$('#corg'); if(og){ og.innerHTML=orgOptionsHtml('root'); orgsReady.then(()=>{ if(og.value==='root') og.innerHTML=orgOptionsHtml('root'); }); }
   const er=$('#ncerr'); if(er) er.textContent='';
   if(!dlg.open){ try{ dlg.showModal(); }catch(e){ dlg.setAttribute('open',''); } }
@@ -884,6 +888,8 @@ function caseMetaHtml(info, link){
   return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:3px 0;font-size:12px">`
     +`<span class="sg-hint" style="border-style:solid;color:${col};border-color:${col}">${esc(st)}</span>`
     +(own?`<span style="color:var(--muted)">owner: ${esc(own)}</span>`:'')
+    +(info.case_mode==='proactive'?`<span class="sg-hint" style="border-style:solid;color:var(--info);border-color:var(--info)" title="Proactive: a routine check — findings below critical score one level lower, the AI flags only what is worth checking">Proactive</span>`
+                                  :`<span class="sg-hint" style="border-style:solid;color:var(--muted);border-color:var(--muted)" title="IR: incident response — everything is read as possible compromise">IR</span>`)
     +`<span style="color:var(--muted)" title="Velociraptor org of this case">org: ${esc(orgName(info.velo_org))}</span>`
     +_aiCostChip(info, link)
     +(desc?`<span style="color:var(--muted);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(desc)}">— ${esc(desc)}</span>`:'')
@@ -893,7 +899,7 @@ function caseMetaHtml(info, link){
 // the form keeps what was typed (_cdDraft) if the list redraws meanwhile.
 let _cdEdit=null, _cdDraft={};
 function cdEdit(id){ _cdEdit=(_cdEdit===id)?null:id; _cdDraft={}; loadCases(); }
-function cdDraft(){ ['cdf-name','cdf-status','cdf-owner','cdf-org','cdf-aibudget','cdf-desc'].forEach(k=>{ const el=document.getElementById(k); if(el) _cdDraft[k]=el.value; }); }
+function cdDraft(){ ['cdf-name','cdf-status','cdf-mode','cdf-owner','cdf-org','cdf-aibudget','cdf-desc'].forEach(k=>{ const el=document.getElementById(k); if(el) _cdDraft[k]=el.value; }); }
 function caseEditForm(c){
   const i=c||{}, builtin=!!(i.is_default||i.is_system), d=_cdDraft;
   const val=(k,v)=>(k in d)?d[k]:v;
@@ -903,6 +909,7 @@ function caseEditForm(c){
       <label>Name</label><input id="cdf-name" value="${esc(val('cdf-name', i.name||''))}" maxlength="100" ${builtin?'disabled style="opacity:.5;cursor:not-allowed" title="The built-in cases cannot be renamed"':''}/>
       ${builtin?`<div style="color:var(--muted);font-size:11px;margin-top:2px">The built-in ${esc(i.name||'Default')} case keeps its name.</div>`:''}
       <label>Status</label><select id="cdf-status">${o('open','Open',st)}${o('contained','Contained',st)}${o('closed','Closed',st)}</select>
+      <label>Mode</label><select id="cdf-mode">${o('ir','IR — incident response',val('cdf-mode', i.case_mode==='proactive'?'proactive':'ir'))}${o('proactive','Proactive — routine check',val('cdf-mode', i.case_mode==='proactive'?'proactive':'ir'))}</select>
       <label>Owner</label><input id="cdf-owner" value="${esc(val('cdf-owner', typeof i.case_owner==='string'?i.case_owner:''))}" maxlength="100" placeholder="who leads this case"/>
       <label>Velociraptor org</label><select id="cdf-org" data-was="${esc(i.velo_org||'root')}">${orgOptionsHtml(val('cdf-org', i.velo_org||'root'))}</select>
       <label>AI budget (USD)</label><input id="cdf-aibudget" type="number" min="0" step="0.5" style="max-width:160px" value="${esc(val('cdf-aibudget', i.ai_budget_usd??''))}" placeholder="no limit" title="When this case's AI calls have cost this much, no new AI call is made for it until the budget is raised"/>
@@ -915,6 +922,7 @@ function saveCaseDetails(id){
   if(!id) return;
   const v=x=>(document.getElementById(x)||{}).value;
   const body={case_status:v('cdf-status'),case_owner:v('cdf-owner'),case_description:v('cdf-desc'),
+              case_mode:v('cdf-mode')||'ir',
               ai_budget_usd:(v('cdf-aibudget')??'')===''?null:v('cdf-aibudget')};   // the backend refuses a non-number
   const nm=document.getElementById('cdf-name'); if(nm && !nm.disabled) body.name=nm.value;
   const og=document.getElementById('cdf-org');
@@ -983,6 +991,9 @@ function renderConfig(info){
     <div class="cfgwrap">
       <div class="cfgcol">
         <h4>Scope</h4>
+        <label>Mode</label>
+        <select id="cf-mode">${opt('ir','IR — incident response',info.case_mode==='proactive'?'proactive':'ir')}${opt('proactive','Proactive — routine check',info.case_mode==='proactive'?'proactive':'ir')}</select>
+        <div class="cfghint">IR reads everything as possible compromise. Proactive is a routine check of a healthy environment: findings below critical score one level lower, and the AI flags only what is worth checking, with why it may be malicious, why it may be a false positive, and what to check. Changing it: press <b>Refusion</b> for the scores and <b>Regenerate report</b> for the text.</div>
         <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="pick date + time…"/>
         <label>Time window — end <span style="color:var(--muted)">(empty = up to now)</span></label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="empty = now / open"/>
         <div class="cfghint">The timeframe you are reading. Change it and press <b>Refusion</b> and it becomes a scope of its own, selected — the case still holds everything it collected, so your other scopes are untouched. Leave it as it is and Refusion just applies your other changes (hosts, severity, modules) to the case.</div>
@@ -1557,6 +1568,11 @@ function _reportKind(md){                            // pure (tested)
   if(/\n\n---\n_Narrative by live LLM/.test(md||'')) return 'ai';
   return '';
 }
+function _reportModeBadge(md){                       // pure (tested): from the report's own title
+  if(/^# Proactive Security Review/.test(md||'')) return `<span class="sg-hint" style="border-style:solid;color:var(--info);border-color:var(--info)" title="Written in Proactive mode: a routine check of a healthy environment">Proactive review</span>`;
+  if(/^# Incident Case Report/.test(md||'')) return `<span class="sg-hint" style="border-style:solid;color:var(--muted);border-color:var(--muted)" title="Written in IR mode: incident response">IR report</span>`;
+  return '';
+}
 function _reportKindBadge(kind){                     // pure (tested)
   if(kind==='ai') return `<span class="sg-hint" style="border-style:solid;color:var(--info);border-color:var(--info)" title="The narrative was written by the AI model; the fact tables are built from the case data">AI report (LLM)</span>`;
   if(kind==='offline') return `<span class="sg-hint" style="border-style:solid;color:var(--muted);border-color:var(--muted)" title="Written without an AI model: built from the case data only">Offline report (no AI)</span>`;
@@ -1620,7 +1636,7 @@ function renderReport(info){
       <div class="expitems" onclick="this.parentElement.open=false">${dl('/report/download/pdf','PDF')}${dl('/report/download/html','HTML')}${dl('/report/download','Markdown')}</div></details>
     <label style="font-size:12px;white-space:nowrap" title="On: the report gets an Evidence section with every item and its pictures (also in the PDF and HTML). The AI is never given the evidence. Regenerate the report after changing it."><input type="checkbox" style="width:auto" ${info.include_evidence?'checked':''} onchange="evToggleInclude('${esc(id)}',this.checked)"/> Include evidence in the report</label>
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div>${reportHistoryHtml(info, viewing)}<div id="zoomcards">${viewing?'':(_zoomHtml.id===id?_zoomHtml.html:'')}</div>${_reportKind(md)?`<div style="margin:0 0 6px">${_reportKindBadge(_reportKind(md))}</div>`:''}<div class="md">${mdToHtml(mdBody)}</div>`;
+  </div>${reportHistoryHtml(info, viewing)}<div id="zoomcards">${viewing?'':(_zoomHtml.id===id?_zoomHtml.html:'')}</div>${(_reportKind(md)||_reportModeBadge(md))?`<div style="margin:0 0 6px;display:flex;gap:6px">${_reportModeBadge(md)}${_reportKindBadge(_reportKind(md))}</div>`:''}<div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
   loadZoomTargets(id);   // macro report -> clickable "Analyze this scope" presets
   // A page reload (or a tab switch back to Analysis) while a generation is
@@ -2113,6 +2129,7 @@ async function _railCfg(){
     time_window:{start:$('#cf-start').value||null,end:$('#cf-end').value||null},
     min_severity:$('#cf-sev').value, report_altitude:$('#cf-alt').value,
     customer_name:$('#cf-cust').value, tlp:$('#cf-tlp').value,
+    case_mode:$('#cf-mode')?.value||'ir',
     master_prompt:$('#cf-mp').value,
     max_entities:parseInt($('#cf-maxent')?.value)||500000,
     // empty = tied to the Entity limit (backend treats null as "no separate ceiling")

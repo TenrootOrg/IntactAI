@@ -335,7 +335,25 @@ def cached(d, name, cfg=None) -> dict:
     """A case's decision_<name> cache, or {} when another provider/model wrote it: a
     switch from Jev to Clef must not show Jev's answers as Clef's."""
     by = (d.get("decision_by") or {}).get(name, DEFAULT_BY)
-    return (d.get(f"decision_{name}") or {}) if by == current_by(cfg) else {}
+    return (d.get(f"decision_{name}") or {}) if by == current_by(cfg) + _mode_tag(d, name) else {}
+
+
+# A Proactive case is asked differently (case_mode.DECISION_NOTE) and needs more
+# certainty for a "malicious" chip: its verdict and person answers are stamped with
+# the mode, so switching mode re-asks instead of showing the other mode's answers.
+_MODE_ASKED = ("suggestions", "notice", "compromise")
+PROACTIVE_TP_MIN_P = 0.90
+
+
+def _mode_tag(d, name) -> str:
+    from . import case_mode as _mode
+    return "|proactive" if name in _MODE_ASKED and _mode.of(d) == _mode.PROACTIVE else ""
+
+
+def _proactive_q(question):
+    """The same question, asked as a Proactive review."""
+    from . import case_mode as _mode
+    return lambda k: {**question(k), "instructions": question(k)["instructions"] + _mode.DECISION_NOTE}
 
 
 def shown(d, name, cfg=None):
@@ -347,15 +365,16 @@ def shown(d, name, cfg=None):
     if cur:
         return cur, ""
     by = (d.get("decision_by") or {}).get(name, DEFAULT_BY)
-    return (d.get(f"decision_{name}") or {}), by.split("/", 1)[-1]
+    return (d.get(f"decision_{name}") or {}), by.split("|", 1)[0].split("/", 1)[-1]
 
 
 def _save(case_id, **caches):
     """Write decision_<name> caches and stamp each with the model that answered."""
     from .store import get_case, _merge_case_details
-    by = dict((get_case(case_id) or {}).get("decision_by") or {})   # fresh: another pass may have stamped
+    d = get_case(case_id) or {}
+    by = dict(d.get("decision_by") or {})   # fresh: another pass may have stamped
     now = current_by()
-    by.update({k: now for k in caches})
+    by.update({k: now + _mode_tag(d, k) for k in caches})
     _merge_case_details(case_id, {**{f"decision_{k}": v for k, v in caches.items()}, "decision_by": by})
 
 
@@ -773,7 +792,7 @@ TP_MIN_P = 0.80
 BENIGN_MAX_P = 0.50
 
 
-def _answer_to_suggestion(ans):
+def _answer_to_suggestion(ans, tp_min=TP_MIN_P):
     if not isinstance(ans, dict) or ans.get("choice") not in VERDICTS:
         return None
     label = ans["choice"]
@@ -781,11 +800,11 @@ def _answer_to_suggestion(ans):
     conf = float(ans.get("confidence") or 0.0)
     if probs:  # no probabilities (a provider that omits them): keep the model's pick
         tp = float(probs.get("true_positive", 0.0))
-        if BENIGN_MAX_P < tp < TP_MIN_P:
+        if BENIGN_MAX_P < tp < tp_min:
             # Recorded, so the finding is not re-asked until it changes, but never shown:
             # suggestion_for hides anything under the confidence floor.
             return {"label": None, "p": tp, "confidence": 0.0}
-        best = "true_positive" if tp >= TP_MIN_P else max(
+        best = "true_positive" if tp >= tp_min else max(
             ("known", "false_positive"), key=lambda k: float(probs.get(k, 0.0)))
         if best != label:
             # The model's confidence was in its own pick, not in this one.
@@ -810,10 +829,11 @@ def suggest_dispositions(case_id, d, g) -> int:
     new = dict(have)
     if todo:
         mask = mask_for(d, g)
+        pro = bool(_mode_tag(d, "suggestions"))
         answers = ask_each(todo, lambda f: masked(finding_state(g, f), mask),
-                           _verdict_question, run_id=case_id)
+                           _proactive_q(_verdict_question) if pro else _verdict_question, run_id=case_id)
         for f, ans in zip(todo, answers):
-            s = _answer_to_suggestion(ans)
+            s = _answer_to_suggestion(ans, PROACTIVE_TP_MIN_P if pro else TP_MIN_P)
             if s:
                 new[f.id] = {"wm": f.watermark(), **s}
         if not any(a is not None for a in answers):
@@ -1308,7 +1328,8 @@ def suggest_compromise(case_id, d) -> int:
         mask = mask_for(d, g_full or todo[0][3])
         answers = ask_each(todo, lambda t: masked(_person_state(t[3], t[0], t[1],
                                                                  analyst_verdicts(d, t[3])), mask),
-                           _compromised_question, run_id=case_id)
+                           _proactive_q(_compromised_question) if _mode_tag(d, "compromise")
+                           else _compromised_question, run_id=case_id)
         for (c, fs, sig, _g), a in zip(todo, answers):
             if isinstance(a, dict) and isinstance(a.get("noul"), (int, float)):
                 new[sig] = round(float(a["noul"]), 3)

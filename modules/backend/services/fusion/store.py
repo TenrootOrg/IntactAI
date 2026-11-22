@@ -20,6 +20,7 @@ from . import report_history as _rh
 
 from .schema import FusionGraph
 from . import correlate, llm_sim, keys, render, budget
+from . import case_mode as _mode
 from .mappers import map_memory, map_agentic, map_timesketch, map_cloud
 from .mappers.agentic import SUPPORTED_ARTIFACTS, _artifact_base
 
@@ -817,6 +818,9 @@ def _settings_sig(d) -> str:
         "modules": sorted(normalize_modules(d.get("fusion_modules"))),
         "included": sorted(d.get("included_run_ids") or []) if d.get("included_run_ids") is not None else None,
         "excluded_hosts": sorted({keys.norm_host(h) for h in (d.get("excluded_hosts") or []) if h}),
+        # Proactive lowers the findings' scores, applied by a Refusion. Only when set:
+        # adding the key for IR would change every existing case's signature.
+        **({"case_mode": _mode.PROACTIVE} if _mode.of(d) == _mode.PROACTIVE else {}),
     })
 
 
@@ -849,7 +853,7 @@ def _scopes_report_behind(case_id) -> None:
 
 
 # Report settings: changing one leaves the written report behind (see _report_behind).
-_REPORT_INPUT_KEYS = ("master_prompt", "masking", "report_altitude", "audience", "language")
+_REPORT_INPUT_KEYS = ("master_prompt", "masking", "report_altitude", "audience", "language", "case_mode")
 
 
 def _graph_filter_signature(d, baseline) -> str:
@@ -973,7 +977,7 @@ def _unfail_stale_idle_workspace(run: dict) -> None:
 # the purge used to strip a named list of data keys, so every feature added after it
 # (evidence, report history, verdicts, host status, decision model) survived a purge on data
 # that no longer existed. A setting missing here is merely reset by a purge.
-PURGE_KEEPS = ("name", "is_default", "is_system", "time_window", "min_severity",
+PURGE_KEEPS = ("name", "is_default", "is_system", "time_window", "min_severity", "case_mode",
                "initial_access_estimate", "audience", "language", "tlp", "customer_name",
                "customer_logo_b64", "report_altitude", "masking", "max_entities",
                "max_identities", "auto_fuse", "auto_report", "fusion_modules", "chat_send_full_context", "report_detail",
@@ -2575,7 +2579,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                            seed=seed_graph, errors=_assembly_errors,
                            excluded_hosts=d.get("excluded_hosts"),
                            identity_decisions=_identity_decisions(d),
-                           progress=_fuse_progress_logger(_plog))
+                           progress=_fuse_progress_logger(_plog), case_mode=_mode.of(d))
     # Optional cross-infra identity correlation: add analyst-confirmed / auto / manual
     # identity edges. Best-effort + fully isolated — never breaks the fuse (below).
     _apply_identity_links(g, d, log=_plog if _record else None)
@@ -2816,7 +2820,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                 case_name=d.get("name", "Case"), run_id=case_id,
                 audience=d.get("audience", "both"), language=d.get("language", "en"),
                 altitude_mode=report_altitude_mode(d),
-                master_prompt=d.get("master_prompt"), mask=mask,
+                master_prompt=_mode.steering(d), mask=mask,
                 dispositions=d.get("dispositions") or None,
                 validations=d.get("timeline_validations") or None,
                 manual_events=d.get("manual_timeline_events") or None,
@@ -2833,6 +2837,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                 prefer_llm=_narrate,
                 max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
                 detail="explicit", max_identities=llm_ident)
+            report = _mode.titled(report, d)
             if _offline:
                 report = _offline_tag(report, _offline)
         except Exception as _e:                               # noqa: BLE001
@@ -4220,7 +4225,9 @@ def case_info(d) -> dict:
             # The Velociraptor org every Velociraptor action in this case runs in.
             "velo_org": (d.get("velo_org") if isinstance(d.get("velo_org"), str) else "") or "root",
             # The case's AI budget in USD (services/llm_usage.check_budget); None = no limit.
-            "ai_budget_usd": _ai_budget(d.get("ai_budget_usd"))[1]}
+            "ai_budget_usd": _ai_budget(d.get("ai_budget_usd"))[1],
+            # IR (default) or Proactive -- see case_mode.py
+            "case_mode": _mode.of(d)}
 
 
 def _ai_budget(v):
@@ -4299,6 +4306,8 @@ def update_case_info(case_id, fields) -> dict:
         if raw not in ("", "root") and not org:
             return {"error": "not a valid Velociraptor org id"}
         patch["velo_org"] = org            # '' = root
+    if "case_mode" in fields:              # IR or Proactive (case_mode.py); a Refusion applies the scores
+        patch["case_mode"] = _mode.clean(fields.get("case_mode"))
     if "ai_budget_usd" in fields:          # Case Management's edit form
         ok, budget = _ai_budget(fields.get("ai_budget_usd"))
         if not ok:
@@ -4310,6 +4319,8 @@ def update_case_info(case_id, fields) -> dict:
     _case_org_forget(case_id)
     if "include_evidence" in patch and patch["include_evidence"] != (d.get("include_evidence") is True):
         _report_behind(case_id)            # the report's evidence section follows the switch
+    if "case_mode" in patch and patch["case_mode"] != _mode.of(d):
+        _report_behind(case_id)            # written in the other mode; the Refusion note comes from _settings_sig
     log_case_event(case_id, "Case details saved", "info",
                    ", ".join(f"{k.replace('case_', '')}: {str(v)[:40] or '—'}" for k, v in patch.items()))
     return {"case_id": case_id, **case_info({**d, **patch}), "name": patch.get("name", d.get("name"))}
@@ -5063,7 +5074,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
             initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
             run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
             altitude_mode=report_altitude_mode(d),
-            master_prompt=d.get("master_prompt"), mask=mask,
+            master_prompt=_mode.steering(d), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
             manual_events=d.get("manual_timeline_events") or None,
@@ -5072,6 +5083,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
             prefer_llm=bool(use_llm and not offline), max_entities=llm_ent, budget_chars=llm_chars,
             max_output_tokens=llm_out, detail="explicit", max_identities=llm_ident,
             should_continue=(lambda: _generation_is_current(case_id, gen_id)))
+        report = _mode.titled(report, d)
         if offline:
             report = _offline_tag(report, offline)
         if will_narrate:
@@ -5270,7 +5282,7 @@ _CONFIG_LABELS = {
     "fusion_modules": "Fusion modules", "masking": "Masking",
     "excluded_hosts": "Excluded hosts", "included_run_ids": "Included runs",
     "audience": "Report audience", "language": "Report language", "tlp": "TLP",
-    "report_altitude": "Report type",
+    "report_altitude": "Report type", "case_mode": "Mode",
     "customer_name": "Customer name", "master_prompt": "Master prompt",
     "customer_logo_b64": "Customer logo", "report_detail": "Report detail",
     "auto_report": "Auto-regenerate report when new data lands",
@@ -5383,6 +5395,8 @@ def set_analysis_config(case_id, cfg) -> dict:
             patch["max_identities"] = max(0, int(v)) if v not in (None, "") else None
         except (TypeError, ValueError):
             pass
+    if "case_mode" in cfg:                 # IR or Proactive (case_mode.py)
+        patch["case_mode"] = _mode.clean(cfg["case_mode"])
     if "ai_budget_usd" in cfg:
         # The case's AI budget in USD (services/llm_usage.check_budget); empty or
         # 0 = no limit. Also edited in Case Management (update_case_info).
@@ -6726,7 +6740,7 @@ def chat_case(case_id, question) -> str:
                            require_llm=True,    # no deterministic fallback: surface real errors
                            mask=mask, max_identities=_llm_identity_budget(d),
                            excluded_hosts=d.get("excluded_hosts") or None,
-                           master_prompt=d.get("master_prompt") or None,
+                           master_prompt=_mode.steering(d),   # Proactive's rule + the Steering
                            manual_events=d.get("manual_timeline_events") or None,
                            reported=_reported(case_id),
                            checklist=d.get("disposition_checklist") or None,

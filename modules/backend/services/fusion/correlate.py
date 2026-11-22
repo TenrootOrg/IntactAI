@@ -124,7 +124,7 @@ def _guarded(errs: list, name: str, fn, *args, **kwargs):
 def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None,
              min_severity="informational", dispositions=None, seed=None,
              errors=None, excluded_hosts=None, identity_decisions=None,
-             progress=None) -> FusionGraph:
+             progress=None, case_mode=None) -> FusionGraph:
     """Build the case graph from `contributions`.
 
     `seed` is an existing graph to add to instead of starting empty — the
@@ -321,6 +321,8 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_stamp_finding_watermarks", lambda: _stamp_finding_watermarks(g))              # occurrence watermark — before dispositions
     _guarded(_errs, "_findings_floor", lambda: _findings_floor(g, min_severity, dispositions, _below))  # BEFORE dispositions demote to informational
     _guarded(_errs, "_apply_dispositions", lambda: _apply_dispositions(g, dispositions))      # operator triage — before severity rollup
+    if case_mode == "proactive":       # after the floor (nothing is hidden), before host risk
+        _guarded(_errs, "_proactive_step_down", lambda: _proactive_step_down(g))
     _guarded(_errs, "_rollup_asset_severity", lambda: _rollup_asset_severity(g))
     _guarded(_errs, "_score_assets", lambda: _score_assets(g))
     _guarded(_errs, "date_state_in_window",
@@ -528,6 +530,23 @@ def _apply_dispositions(g: FusionGraph, dispositions) -> None:
                 f.confidence = "high"
                 f.summary += f" [operator-confirmed malicious{(' — ' + reason) if reason else ''}]"
     _apply_part_dispositions(g, dispositions)
+
+
+def _proactive_step_down(g: FusionGraph) -> int:
+    """A Proactive case (case_mode.py) rates every finding below critical one level
+    lower: a routine check of a healthy environment flags only what stands out.
+    Runs AFTER the severity floor, so a lowered finding stays listed, and before the
+    host scores, so host risk follows. Critical is never lowered; a row an analyst
+    already judged is left alone. Each lowered row says so in its summary."""
+    n = 0
+    for f in g.findings:
+        r = sev.rank(f.severity)
+        if f.kind == "dispositioned" or r <= 0 or r >= sev.rank("critical"):
+            continue
+        was, f.severity = f.severity, sev.LEVELS[r - 1]
+        f.summary = (f.summary or "") + f" [Proactive review: lowered from {was}]"
+        n += 1
+    return n
 
 
 def _apply_part_dispositions(g: FusionGraph, dispositions) -> None:
