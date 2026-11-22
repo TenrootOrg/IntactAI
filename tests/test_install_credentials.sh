@@ -79,10 +79,10 @@ test_nothing_set_generates_a_good_password_for_every_module() {
 }
 
 test_config_value_is_taken_raw_and_stored() {
-    # 0x... would be an int under safe_load; it must arrive as typed.
-    _setup "$(_all_blank | sed "/^  timesketch:/,/password/ s/password: ''/password: 0x1F2eAbCdEf99/")"
+    # 0x... (underscores too) would be an int under safe_load; it must arrive as typed.
+    _setup "$(_all_blank | sed "/^  timesketch:/,/password/ s/password: ''/password: 0x1F2e_AbCd_Ef99/")"
     assert_true ensure_module_credentials
-    assert_eq "$(cred_get timesketch)" "0x1F2eAbCdEf99" "stored exactly as typed"
+    assert_eq "$(cred_get timesketch)" "0x1F2e_AbCd_Ef99" "stored exactly as typed"
 }
 
 test_weak_config_value_stops_and_changes_nothing() {
@@ -116,8 +116,8 @@ test_prompt_typed_twice_rejects_weak_then_accepts() {
     _cred_have_tty() { return 0; }
     # iris prompt: weak, then good twice; every other enabled module: Enter.
     # Order of prompts follows INTACT_CRED_MODULES (volweb is disabled).
-    printf '\n\n\nshort\nGood1Password33\nGood1Password33\n\n' | ensure_module_credentials >/dev/null 2>&1
-    assert_eq "$(cred_get iris)" "Good1Password33" "typed value stored after a refusal"
+    printf '\n\n\nshort\nGood1Password33!\nGood1Password33!\n\n' | ensure_module_credentials >/dev/null 2>&1
+    assert_eq "$(cred_get iris)" "Good1Password33!" "typed value stored after a refusal"
     assert_true secret_check "$(cred_get portainer)"
     assert_true secret_check "$(cred_get elk)"
 }
@@ -125,9 +125,9 @@ test_prompt_typed_twice_rejects_weak_then_accepts() {
 test_prompt_mismatch_asks_again() {
     _setup "$(_all_blank)"
     _cred_have_tty() { return 0; }
-    printf 'Good1Password33\nGood1Password34\nGood1Password35\nGood1Password35\n\n\n\n\n' \
+    printf 'Good1Password33!\nGood1Password34!\nGood1Password35!\nGood1Password35!\n\n\n\n\n' \
         | ensure_module_credentials >/dev/null 2>&1
-    assert_eq "$(cred_get elk)" "Good1Password35" "second, matching pair wins"
+    assert_eq "$(cred_get elk)" "Good1Password35!" "second, matching pair wins"
 }
 
 test_elasticsearch_with_data_keeps_the_old_password() {
@@ -194,7 +194,7 @@ test_velociraptor_with_data_and_nothing_known_still_stops() {
 # generate_elk_secrets & co. call it for one module: the other modules' lines
 # (maybe typed for scripts/apply-passwords.sh) must survive, and no EXIT trap.
 test_single_module_call_blanks_only_its_own_line() {
-    _setup "$(_all_blank | sed -e "/^  elk:/,/password/ s/password: ''/password: 'Elk1Password999'/" \
+    _setup "$(_all_blank | sed -e "/^  elk:/,/password/ s/password: ''/password: 'Elk1Password999!'/" \
                              -e "/^  timesketch:/,/password/ s/password: ''/password: 'Ts1Password9999'/")"
     (
         unset _CRED_EXIT_ARMED
@@ -202,7 +202,7 @@ test_single_module_call_blanks_only_its_own_line() {
         [[ -z "${_CRED_EXIT_ARMED:-}" ]] || exit 2
     )
     assert_eq "$?" "0" "succeeds without arming the EXIT trap"
-    assert_eq "$(cred_get elk)" "Elk1Password999" "elk stored"
+    assert_eq "$(cred_get elk)" "Elk1Password999!" "elk stored"
     assert_eq "$(_config_password_raw elk password)" "" "elk line blanked"
     assert_eq "$(_config_password_raw timesketch password)" "Ts1Password9999" "timesketch line untouched"
     assert_false cred_get timesketch

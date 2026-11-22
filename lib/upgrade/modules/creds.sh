@@ -117,7 +117,7 @@ _u_creds_migrate() {
         _u_creds_get "$m" "$k" >/dev/null 2>&1 && continue
         v="$(_u_creds_old "$m" "$k")"
         if _u_creds_tool_new "$m"; then
-            if [[ -z "$v" ]] || ! secret_check "$v" >/dev/null; then v="$(secret_generate)"; new=generated; else new=stored; fi
+            if [[ -z "$v" ]] || ! secret_check "$v" existing >/dev/null; then v="$(secret_generate)"; new=generated; else new=stored; fi
         elif [[ "$m:$k" == elk:KIBANA_PASSWORD && -n "$v" ]] && secret_is_known_default "$v" && ! secret_weak_allowed; then
             # Nobody types kibana_system's password, so a public one is simply
             # replaced: the elk setup container sets it from KIBANA_PASSWORD on

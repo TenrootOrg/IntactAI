@@ -363,7 +363,7 @@ test_a_portainer_placeholder_is_never_sent_or_rotated() {
     echo intact_portainer > "$T/running"
     _creds_rotate_portainer
     assert_not_contains "$(cat "$T/calls")" "curl" "Portainer is never asked to log in with a placeholder"
-    assert_false creds_apply portainer New1Portainer2x
+    assert_false creds_apply portainer New1Portainer2x!
     assert_contains "$CREDS_APPLY_REASON" "not known"
 }
 
@@ -397,11 +397,11 @@ test_iris_adopts_the_config_value_it_actually_runs_with() {
     _world
     printf '%s\n' iris_iris_db_data > "$T/volumes"
     printf '%s\n' intact_iris_app intact_iris_db > "$T/running"
-    _cred_put iris 123123; printf Cfg1Applied > "$T/iris_pw"
-    sed -i "0,/password: '123123'/! {0,/password: '123123'/ s//password: 'Cfg1Applied'/}" "$CONFIG_FILE"
-    assert_eq "$(_cfgval iris)" "Cfg1Applied" "fixture"
+    _cred_put iris 123123; printf Cfg1Applied! > "$T/iris_pw"
+    sed -i "0,/password: '123123'/! {0,/password: '123123'/ s//password: 'Cfg1Applied!'/}" "$CONFIG_FILE"
+    assert_eq "$(_cfgval iris)" "Cfg1Applied!" "fixture"
     _u_creds_migrate iris
-    assert_eq "$(cred_get iris)" "Cfg1Applied" "enforce_iris_admin_password made config.yaml the live one"
+    assert_eq "$(cred_get iris)" "Cfg1Applied!" "enforce_iris_admin_password made config.yaml the live one"
 }
 
 test_timesketch_published_secret_key_is_replaced_and_web_restarted() {

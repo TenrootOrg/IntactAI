@@ -85,6 +85,7 @@ routes = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(routes)
 
 GOOD = "Str0ng-Pass.word9"
+NO_SYMBOL = "Abcdefghijk1"   # strong before 2026-11-22; new passwords now need a symbol
 
 
 NGINX = "172.18.0.9"       # REQUEST.remote_addr by default: the stub resolver says nginx
@@ -324,6 +325,16 @@ class MustChange(Base):
         body, _ = call(routes.auth_login, {"username": "admin", "password": "short-but-old"})
         self.assertTrue(body["must_change"])
 
+    def test_old_password_without_a_symbol_is_not_flagged(self):
+        # 2026-11-22: a NEW password needs a symbol; one set before that keeps
+        # working without being sent to change-password.
+        auth.write_first_login(False)
+        auth.set_credential("admin", NO_SYMBOL)
+        body, _ = call(routes.auth_login, {"username": "admin", "password": NO_SYMBOL})
+        self.assertFalse(body["must_change"])
+        self.assertEqual(auth.password_problem(NO_SYMBOL),
+                         "it needs a symbol (such as ! @ # % ^ & * + = ? ~)")
+
     def test_strong_password_session_is_not_gated(self):
         self.claim()
         body, _ = call(routes.auth_login, {"username": "admin", "password": GOOD})
@@ -410,7 +421,9 @@ class PasswordRule(Base):
     def test_matches_lib_secrets_sh(self):
         samples = ["", "123123", "changeme", "Ch4nge-Me!Intact2026", "Short1Aa", "Str0ng-Pass.word9",
                    "alllowercase123", "ALLUPPERCASE123", "NoDigitsHereAtAll", "-Leading1Dash12",
-                   ".Leading1Dotxx", "Has Space1Abcd", "Dollar$1Abcdefg", "Abcdefghijk1", "Abcdefghij1"]
+                   ".Leading1Dotxx", "Has Space1Abcd", "Dollar$1Abcdefg", "Abcdefghijk1", "Abcdefghij1",
+                   "Abcdefghij1!", "Abcdefgh1!@#%^&*()[]{}|;:,.<>/?~=+-_", "Back\\slash1Abc!",
+                   "Back`tick1Abcd!", 'Dq"uote1Abcde!', "Sq'uote1Abcde!", "Héllo1Abcdefg!", "!Leading1Abcde"]
         script = 'source lib/secrets.sh; for v in "$@"; do secret_check "$v" >/dev/null && echo 1 || echo 0; done'
         out = subprocess.run(["bash", "-c", script, "_"] + samples, cwd=ROOT,
                              capture_output=True, text=True, timeout=30).stdout.split()

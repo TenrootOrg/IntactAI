@@ -69,9 +69,14 @@ and the old shipped ones (`123123`, `Ch4nge-Me!Intact2026`,
 `1234qwer!@#$`, `changeme`) are refused wherever a password is set.
 
 **The rule** (one that every bundled tool accepts at first start): 12+
-characters with an uppercase letter, a lowercase letter and a digit;
-only `A-Z a-z 0-9 - _ .`, not starting with `- _ .`; not a known
-default. The tools' own minimums are lower (Elasticsearch 6+; IRIS 12+
+characters with an uppercase letter, a lowercase letter, a digit and a
+symbol (such as `! @ # % ^ & * + = ? ~`); no spaces, quotes (`' " ``),
+`\` or `$`; starting with a letter or digit; not a known default.
+Left out on purpose: `$` (compose expands it inside the `.env` files the
+passwords live in), quotes and `\` (JSON, shell, the quoted `config.yaml`
+fields). Only a password being SET needs a symbol: one already in use (a
+dashboard login, an upgrade carrying a tool's password over) is not
+refused for lacking one. Generated passwords use the symbols `+ = ^ ~`. The tools' own minimums are lower (Elasticsearch 6+; IRIS 12+
 with upper/lower/digit; Portainer 12+, or its admin is never created;
 Timesketch, Velociraptor and VolWeb none). Code: `lib/secrets.sh`.
 

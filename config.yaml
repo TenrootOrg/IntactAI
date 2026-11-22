@@ -103,8 +103,10 @@ options:
   github_token: ''
 
 # Module passwords. Intact's one rule: 12+ characters with an uppercase letter,
-# a lowercase letter and a digit; only A-Z a-z 0-9 - _ . (not starting with
-# - _ .), and never a publicly known default. Every bundled tool accepts it.
+# a lowercase letter, a digit and a symbol (such as ! @ # % ^ & * + = ? ~); no
+# spaces, quotes (' " `), \ or $; starting with a letter or digit; never a
+# publicly known default. Every bundled tool accepts it. Keep the value inside
+# the single quotes: YAML reads : # & * ! [ { differently without them.
 # Leave empty: the installer asks (or generates one when there is no terminal),
 # stores it privately in modules/<module>/secrets/, and empties this line again.
 # This file is in a public repo, so a value left here is no secret.

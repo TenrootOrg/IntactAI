@@ -51,9 +51,9 @@ test_empty_gives_a_stored_password_that_passes_the_rule() {
 }
 
 test_a_good_config_value_is_used_and_blanked() {
-    _config "'Port1ainerPass9'"
+    _config "'Port1ainerPass9!'"
     assert_true generate_portainer_secrets
-    assert_eq "$(cat "$(_pw_file)")" "Port1ainerPass9" "operator's value seeds Portainer"
+    assert_eq "$(cat "$(_pw_file)")" "Port1ainerPass9!" "operator's value seeds Portainer"
     assert_eq "$(_config_password_raw portainer password)" "" "and leaves config.yaml"
 }
 

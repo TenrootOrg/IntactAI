@@ -25,7 +25,7 @@ test_generate_meets_the_rule_every_time() {
 }
 
 test_check_accepts_a_good_password() {
-    assert_true secret_check "Str0ng-Pass.word_9"
+    assert_true secret_check "Str0ng-Pass.word_9!"
 }
 
 test_check_refuses_with_a_reason_and_never_echoes_the_value() {
@@ -38,6 +38,34 @@ test_check_refuses_with_a_reason_and_never_echoes_the_value() {
         [[ -n "$v" && "$out" == *"$v"* ]] && _fail "secret_check echoed the value: $out"
     done
     assert_eq "$(secret_check 123123)" "it is a publicly known default" "names the reason"
+}
+
+test_a_new_password_needs_a_symbol_an_existing_one_does_not() {
+    # 2026-11-22: symbols are allowed and, for a password being SET, required --
+    # every bundled tool takes them. A value already in use (upgrade carry-over)
+    # is not refused for lacking one, or every box would get new passwords.
+    assert_eq "$(secret_check "Abcdefghijk1")" "it needs a symbol (such as ! @ # % ^ & * + = ? ~)"
+    assert_true secret_check "Abcdefghijk1" existing
+    assert_true secret_check "Abcdefghij1!"
+}
+
+test_every_symbol_but_the_unsafe_ones_is_taken() {
+    assert_true secret_check 'Abcdefgh1!@#%^&*()[]{}|;:,.<>/?~=+-_'
+    local v
+    for v in 'Back\slash1Abc!' 'Back`tick1Abcd!' 'Dq"uote1Abcde!' "Sq'uote1Abcde!" 'Dollar$1Abcde!' \
+             'Has Space1Abc!' 'Héllo1Abcdefg!' '!Leading1Abcde' '#Leading1Abcde'; do
+        assert_false secret_check "$v"
+        assert_false secret_check "$v" existing
+    done
+}
+
+test_generated_passwords_hold_one_of_the_inert_symbols() {
+    local i v bad=0
+    for i in $(seq 1 30); do
+        v="$(secret_generate)"
+        [[ "$v" == *[+=^~]* && "$v" != *[!A-Za-z0-9+=^~]* ]] || bad=$((bad + 1))
+    done
+    assert_eq "$bad" "0"
 }
 
 test_lab_switch_lets_weak_passwords_through_only_when_on() {

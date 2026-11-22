@@ -106,7 +106,11 @@ case "$1" in
             *intact_volweb_backend*"shell -c"*)
                 [[ "$_VW_PW" == "$(cat "$T/vw_pw" 2>/dev/null)" ]] && echo PW-OK || echo PW-NO ;;
             *intact_volweb_backend*shell*)
-                p="$(sed -n "s/^u.set_password('\(.*\)')$/\1/p")"
+                # the install seed passes it as -e _VW_PW (2026-11-22); older
+                # code put it into the Python source
+                body="$(cat)"
+                p="$(sed -n "s/^u.set_password('\(.*\)')$/\1/p" <<<"$body")"
+                [[ "$body" == *"os.environ['_VW_PW']"* ]] && p="$_VW_PW"
                 r="$(cat "$T/vw_rc" 2>/dev/null || echo 0)"; (( r )) && exit "$r"
                 printf '%s' "$p" > "$T/vw_pw"; echo "UPDATED admin" ;;
         esac ;;

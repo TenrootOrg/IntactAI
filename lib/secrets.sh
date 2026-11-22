@@ -26,20 +26,25 @@
 INTACT_KNOWN_DEFAULT_PASSWORDS=('123123' 'Ch4nge-Me!Intact2026' '1234qwer!@#$' 'changeme')
 
 # One rule that every bundled tool accepts at first start: Elasticsearch >= 6,
-# IRIS >= 12 with upper/lower/digit (its default policy needs no symbol),
-# Portainer >= 12, Timesketch/Velociraptor none, VolWeb seeds via set_password.
-# Characters are limited because the value travels through .env, YAML, shell
-# and URLs; no leading - . _ because `velociraptor user add <user> <pw>` would
-# read a leading '-' as a flag.
-INTACT_PASSWORD_RULE='12+ characters with an uppercase letter, a lowercase letter and a digit; only A-Z a-z 0-9 - _ . (not starting with - _ .)'
+# IRIS >= 12 with upper/lower/digit, Portainer >= 12, Timesketch/Velociraptor
+# none, VolWeb seeds via set_password. Every one of them takes symbols, so a NEW
+# password must hold one (2026-11-22). Left out: space, the quotes ' " ` and
+# \ -- they break JSON, shell and the quoted config.yaml fields -- and $, which
+# compose expands inside the .env files the passwords live in. It starts with a
+# letter or digit: `velociraptor user add <user> <pw>` reads a leading '-' as a
+# flag.
+INTACT_PASSWORD_RULE="12+ characters with an uppercase letter, a lowercase letter, a digit and a symbol (such as ! @ # % ^ & * + = ? ~); no spaces, quotes (' \" \`), \\ or \$; starting with a letter or digit"
 
-# secret_generate [length] -- random, from the kernel CSPRNG, with at least one
-# uppercase letter, lowercase letter and digit (IRIS's policy).
+# secret_generate [length] -- random, from the kernel CSPRNG, meeting
+# INTACT_PASSWORD_RULE: an uppercase letter, a lowercase letter, a digit and a
+# symbol. Its symbols are the inert ones -- nothing in .env, JSON, YAML, a curl
+# config, a shell glob or a printf format treats + = ^ ~ specially.
 secret_generate() {
     local n="${1:-24}" v
     while :; do
-        v="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c "$n")"
-        if [[ ${#v} -eq $n && "$v" =~ [A-Z] && "$v" =~ [a-z] && "$v" =~ [0-9] ]]; then
+        v="$(LC_ALL=C tr -dc 'A-Za-z0-9+=^~' </dev/urandom 2>/dev/null | head -c "$n")"
+        if [[ ${#v} -eq $n && "$v" =~ ^[A-Za-z0-9] && "$v" =~ [A-Z] && "$v" =~ [a-z] && "$v" =~ [0-9] \
+              && "$v" == *[+=^~]* ]]; then
             printf '%s' "$v"
             return 0
         fi
@@ -60,27 +65,38 @@ secret_weak_allowed() {
     grep -qE '^allow_weak_passwords:[[:space:]]*(true|True|TRUE)[[:space:]]*(#.*)?$' "$CONFIG_FILE"
 }
 
-# secret_check <value> -- 0 when the value meets INTACT_PASSWORD_RULE; otherwise
-# 1, with the reason on stdout (never the value itself).
+# _secret_chars_ok <value> -- printable ASCII, starting with a letter or digit,
+# none of: space ' " ` \ $ (why: INTACT_PASSWORD_RULE above).
+_secret_chars_ok() {
+    local LC_ALL=C v="$1"
+    [[ "$v" =~ ^[A-Za-z0-9] ]] || return 1
+    [[ "$v" == *[![:graph:]]* ]] && return 1      # space, control, non-ASCII
+    [[ "$v" == *[\$\'\"\`\\]* ]] && return 1
+    return 0
+}
+
+# secret_check <value> [existing] -- 0 when the value meets INTACT_PASSWORD_RULE;
+# otherwise 1, with the reason on stdout (never the value itself).
+# `existing`: a value already in use (upgrade carry-over) is not refused for
+# lacking a symbol -- only new passwords need one, or every box would get new
+# tool passwords on its next upgrade.
 secret_check() {
-    local v="$1" d
+    local v="$1" mode="${2:-new}" d
     if [[ -z "$v" ]]; then echo "it is empty"; return 1; fi
-    if secret_weak_allowed; then
-        # Lab box: only what would break .env/YAML/shell/URL handling is refused.
-        if ! [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-            echo "it may only use A-Z a-z 0-9 - _ . and must not start with - _ ."; return 1
-        fi
-        return 0
+    if ! _secret_chars_ok "$v"; then
+        echo "it may not hold spaces, quotes (' \" \`), \\ or \$, and must start with a letter or digit"; return 1
     fi
+    # Lab box: only what would break .env/YAML/shell handling is refused.
+    secret_weak_allowed && return 0
     for d in "${INTACT_KNOWN_DEFAULT_PASSWORDS[@]}"; do
         if [[ "$v" == "$d" ]]; then echo "it is a publicly known default"; return 1; fi
     done
     if (( ${#v} < 12 )); then echo "it is shorter than 12 characters"; return 1; fi
-    if ! [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-        echo "it may only use A-Z a-z 0-9 - _ . and must not start with - _ ."; return 1
-    fi
     if ! [[ "$v" =~ [A-Z] && "$v" =~ [a-z] && "$v" =~ [0-9] ]]; then
         echo "it needs an uppercase letter, a lowercase letter and a digit"; return 1
+    fi
+    if [[ "$mode" != existing && "$v" != *[!A-Za-z0-9]* ]]; then
+        echo "it needs a symbol (such as ! @ # % ^ & * + = ? ~)"; return 1
     fi
     return 0
 }

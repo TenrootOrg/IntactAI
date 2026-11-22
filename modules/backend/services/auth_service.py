@@ -581,9 +581,14 @@ def consume_setup_token() -> bool:
 # endpoint. Applied only when a password is SET -- never at login, so a box
 # whose operator set a short password before this rule keeps signing in.
 KNOWN_DEFAULT_PASSWORDS = frozenset({"123123", "Ch4nge-Me!Intact2026", "1234qwer!@#$", "changeme"})
-PASSWORD_RULE = ("12+ characters with an uppercase letter, a lowercase letter and "
-                 "a digit; only A-Z a-z 0-9 - _ . (not starting with - _ .)")
-_PASSWORD_CHARS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+PASSWORD_RULE = ("12+ characters with an uppercase letter, a lowercase letter, a digit "
+                 "and a symbol (such as ! @ # % ^ & * + = ? ~); no spaces, quotes "
+                 "(' \" `), \\ or $; starting with a letter or digit")
+# Printable ASCII without space ' " ` \ $ (why: lib/secrets.sh above
+# INTACT_PASSWORD_RULE), starting with a letter or digit.
+_PASSWORD_CHARS = re.compile(r"[A-Za-z0-9][!#%&()*+,\-./:;<=>?@\[\]^_{|}~A-Za-z0-9]*")
+_PASSWORD_CHARS_PROBLEM = ("it may not hold spaces, quotes (' \" `), \\ or $, "
+                           "and must start with a letter or digit")
 
 
 def weak_passwords_allowed() -> bool:
@@ -611,8 +616,13 @@ def weak_passwords_allowed() -> bool:
             and re.search(r"^allow_weak_passwords:[ \t]*(true|True|TRUE)[ \t]*(#.*)?$", text, re.M) is not None)
 
 
-def password_problem(password: str) -> Optional[str]:
-    """None when `password` meets the rule, else the reason (never the value)."""
+def password_problem(password: str, existing: bool = False) -> Optional[str]:
+    """None when `password` meets the rule, else the reason (never the value).
+
+    `existing`: one already in use (a login) is not refused for lacking a
+    symbol -- only a password being SET needs one (2026-11-22), or every
+    dashboard user would be sent to change-password at the next sign-in.
+    """
     if not password:
         return "it is empty"
     if weak_passwords_allowed():
@@ -623,10 +633,12 @@ def password_problem(password: str) -> Optional[str]:
     if len(password) < 12:
         return "it is shorter than 12 characters"
     if not _PASSWORD_CHARS.fullmatch(password):
-        return "it may only use A-Z a-z 0-9 - _ . and must not start with - _ ."
+        return _PASSWORD_CHARS_PROBLEM
     if not (re.search(r"[A-Z]", password) and re.search(r"[a-z]", password)
             and re.search(r"[0-9]", password)):
         return "it needs an uppercase letter, a lowercase letter and a digit"
+    if not existing and re.fullmatch(r"[A-Za-z0-9]+", password):
+        return "it needs a symbol (such as ! @ # % ^ & * + = ? ~)"
     return None
 
 
@@ -637,7 +649,7 @@ def needs_change(password: str) -> bool:
     session to change-password. Never on a lab box."""
     if weak_passwords_allowed():
         return False
-    return password in KNOWN_DEFAULT_PASSWORDS or password_problem(password) is not None
+    return password in KNOWN_DEFAULT_PASSWORDS or password_problem(password, existing=True) is not None
 
 
 def must_change(session) -> bool:

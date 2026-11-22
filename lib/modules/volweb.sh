@@ -179,13 +179,16 @@ seed_volweb_admin() {
     tenroot_pass=$(get_volweb_admin_password)
 
     log_info "  Seeding VolWeb admin user (${tenroot_user})..."
-    docker exec --user app -w /home/app/web -i intact_volweb_backend python3 manage.py shell <<EOF 2>&1 | tail -3
+    # The password goes in through the exec's environment, not into the Python
+    # source: a symbol that is special inside a string literal cannot break it.
+    _VW_PW="$tenroot_pass" docker exec -e _VW_PW --user app -w /home/app/web -i intact_volweb_backend python3 manage.py shell <<EOF 2>&1 | tail -3
 from django.contrib.auth import get_user_model
 U = get_user_model()
 u, created = U.objects.get_or_create(username='${tenroot_user}', defaults={'is_superuser': True, 'is_staff': True})
 u.is_superuser = True
 u.is_staff = True
-u.set_password('${tenroot_pass}')
+import os
+u.set_password(os.environ['_VW_PW'])
 u.save()
 print('CREATED' if created else 'UPDATED', 'admin', u.username)
 EOF
