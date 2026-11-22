@@ -13,6 +13,7 @@ document.addEventListener('alpine:init', () => {
         // dashboard hides the Total card entirely (see x-show in
         // index.html).
         installedCount: 0,
+        staticInstalledCount: 0,  // the "Static Modules" section shows when > 0
         onlineClientCount: 0,
         clientsByOrg: "",       // "root 1/2 · intact-test 1/1" when there is more than one org
 
@@ -60,12 +61,17 @@ document.addEventListener('alpine:init', () => {
         },
 
         updateStats() {
-            const vals = Object.values(this.statuses);
+            // The static modules (run on demand, no console) have their own
+            // dashboard section and are not "services" in its counts.
+            const STATIC = ['aws_sigma', 'o365rc', 'plaso', 'presidio'];
+            const entries = Object.entries(this.statuses);
+            const vals = entries.filter(([id]) => !STATIC.includes(id)).map(([, s]) => s);
             this.onlineCount = vals.filter(s => s === 'online').length;
             // "installed" = container exists, regardless of running state.
             // This counts modules deployed via install.sh seed AND
             // modules added later via online/offline upgrade apply.
             this.installedCount = vals.filter(s => s !== 'not_installed').length;
+            this.staticInstalledCount = entries.filter(([id, s]) => STATIC.includes(id) && s !== 'not_installed').length;
         },
 
         // Is this module present on the host at all?

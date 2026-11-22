@@ -223,55 +223,105 @@
                             Open VolWeb
                         </button>
                     </div>
+                </div>
 
-                    <!-- AWS CloudTrail (aws_sigma) — native SIGMA-based
-                         detection over CloudTrail. Same on-demand pattern as
-                         DFIR-O365RC: no persistent container, no web UI, driven
-                         from Automation > Cloud > AWS. It reports its status
-                         like every other module, so without a card here it was
-                         counted in "Total/Online Services" while being the one
-                         service with nothing to show — the tile said 7 and the
-                         grid rendered 6. -->
-                    <div x-show="$store.services.statuses['aws_sigma'] !== 'not_installed'"
-                         class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
-                        <div class="flex justify-between items-start mb-4">
-                            <div class="flex items-center gap-3">
-                                <div class="rounded-lg" style="background:#f3f4f6;padding:8px;line-height:0">
-                                    <img src="img/modules/cloudtrail.png" alt="AWS CloudTrail" style="width:32px;height:32px;object-fit:contain">
+                <!-- Static modules: the engines the platform runs on demand (AWS
+                     SIGMA rules, DFIR-O365RC, Plaso, Presidio). No web console and
+                     nothing running between jobs, so they sit apart from the
+                     services above and are not in their Total/Online counts. -->
+                <div x-show="$store.services.staticInstalledCount > 0" class="mt-10">
+                    <h3 class="text-2xl font-bold mb-2 text-white">Static Modules</h3>
+                    <p class="text-sm text-gray-400 mb-4">Run by the platform when needed — no web console.</p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <!-- AWS CloudTrail (aws_sigma) — native SIGMA-based
+                             detection over CloudTrail. Same on-demand pattern as
+                             DFIR-O365RC: no persistent container, no web UI, driven
+                             from Automation > Cloud > AWS. -->
+                        <div x-show="$store.services.statuses['aws_sigma'] !== 'not_installed'"
+                             class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <div class="flex justify-between items-start mb-4">
+                                <div class="flex items-center gap-3">
+                                    <div class="rounded-lg" style="background:#f3f4f6;padding:8px;line-height:0">
+                                        <img src="img/modules/cloudtrail.png" alt="AWS CloudTrail" style="width:32px;height:32px;object-fit:contain">
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-semibold">AWS CloudTrail</h3>
+                                        <p class="text-sm text-gray-400">Native SIGMA Detection</p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <h3 class="text-lg font-semibold">AWS CloudTrail</h3>
-                                    <p class="text-sm text-gray-400">Native SIGMA Detection</p>
-                                </div>
+                                <div :class="$store.services.getStatusClass('aws_sigma')"></div>
                             </div>
-                            <div :class="$store.services.getStatusClass('aws_sigma')"></div>
+                            <button disabled class="w-full bg-gray-700 text-gray-400 py-2.5 rounded-lg font-medium cursor-not-allowed">
+                                No console
+                            </button>
                         </div>
-                        <button disabled class="w-full bg-gray-700 text-gray-400 py-2.5 rounded-lg font-medium cursor-not-allowed">
-                            No console
-                        </button>
-                    </div>
 
-                    <!-- DFIR-O365RC — Microsoft 365 Unified Audit Log
-                         collection. On-demand pattern:
-                         no persistent container, no web UI. Operator
-                         drives scans from Automation > Cloud > Microsoft 365. -->
-                    <div x-show="$store.services.statuses['o365rc'] !== 'not_installed'"
-                         class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
-                        <div class="flex justify-between items-start mb-4">
-                            <div class="flex items-center gap-3">
-                                <div class="rounded-lg" style="background:#f3f4f6;padding:8px;line-height:0">
-                                    <img src="img/modules/o365rc.png" alt="DFIR-O365RC" style="width:32px;height:32px;object-fit:contain">
+                        <!-- DFIR-O365RC — Microsoft 365 Unified Audit Log
+                             collection. On-demand pattern:
+                             no persistent container, no web UI. Operator
+                             drives scans from Automation > Cloud > Microsoft 365. -->
+                        <div x-show="$store.services.statuses['o365rc'] !== 'not_installed'"
+                             class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <div class="flex justify-between items-start mb-4">
+                                <div class="flex items-center gap-3">
+                                    <div class="rounded-lg" style="background:#f3f4f6;padding:8px;line-height:0">
+                                        <img src="img/modules/o365rc.png" alt="DFIR-O365RC" style="width:32px;height:32px;object-fit:contain">
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-semibold">DFIR-O365RC</h3>
+                                        <p class="text-sm text-gray-400">Microsoft 365 Audit Log Collection</p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <h3 class="text-lg font-semibold">DFIR-O365RC</h3>
-                                    <p class="text-sm text-gray-400">Microsoft 365 Audit Log Collection</p>
-                                </div>
+                                <div :class="$store.services.getStatusClass('o365rc')"></div>
                             </div>
-                            <div :class="$store.services.getStatusClass('o365rc')"></div>
+                            <button disabled class="w-full bg-gray-700 text-gray-400 py-2.5 rounded-lg font-medium cursor-not-allowed">
+                                No console
+                            </button>
                         </div>
-                        <button disabled class="w-full bg-gray-700 text-gray-400 py-2.5 rounded-lg font-medium cursor-not-allowed">
-                            No console
-                        </button>
+
+                        <!-- Plaso (log2timeline) -- the backend runs it to parse evidence into timelines. No web UI and nothing
+                             running between jobs: green when its image is on the box. -->
+                        <div x-show="$store.services.statuses['plaso'] !== 'not_installed'"
+                             class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <div class="flex justify-between items-start mb-4">
+                                <div class="flex items-center gap-3">
+                                    <div class="rounded-lg" style="background:#f3f4f6;padding:8px;line-height:0">
+                                        <svg viewBox="0 0 24 24" style="width:32px;height:32px" fill="none" stroke="#374151" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-label="Plaso (log2timeline)"><path d="M4 6h16M4 12h10M4 18h13"/><circle cx="19" cy="12" r="2"/></svg>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-semibold">Plaso (log2timeline)</h3>
+                                        <p class="text-sm text-gray-400">Timeline Parsing for Timesketch</p>
+                                    </div>
+                                </div>
+                                <div :class="$store.services.getStatusClass('plaso')"
+                                     :title="$store.services.statuses['plaso'] === 'stopped' ? 'enabled, but its image is not on this box' : 'image on this box'"></div>
+                            </div>
+                            <button disabled class="w-full bg-gray-700 text-gray-400 py-2.5 rounded-lg font-medium cursor-not-allowed">
+                                No console
+                            </button>
+                        </div>
+
+                        <!-- Presidio -- the backend starts it when Case Analysis masks personal data. No web UI and nothing
+                             running between jobs: green when its image is on the box. -->
+                        <div x-show="$store.services.statuses['presidio'] !== 'not_installed'"
+                             class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <div class="flex justify-between items-start mb-4">
+                                <div class="flex items-center gap-3">
+                                    <div class="rounded-lg" style="background:#f3f4f6;padding:8px;line-height:0">
+                                        <svg viewBox="0 0 24 24" style="width:32px;height:32px" fill="none" stroke="#374151" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-label="Presidio"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-semibold">Presidio</h3>
+                                        <p class="text-sm text-gray-400">PII Detection for Case Analysis masking</p>
+                                    </div>
+                                </div>
+                                <div :class="$store.services.getStatusClass('presidio')"
+                                     :title="$store.services.statuses['presidio'] === 'stopped' ? 'enabled, but its image is not on this box' : 'image on this box'"></div>
+                            </div>
+                            <button disabled class="w-full bg-gray-700 text-gray-400 py-2.5 rounded-lg font-medium cursor-not-allowed">
+                                No console
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>

@@ -339,6 +339,23 @@ def get_container_status():
             for module in ON_DEMAND_MODULES:
                 results.setdefault(module, 'not_installed')
 
+        # Image-only engines the backend starts itself: nothing runs between
+        # jobs, so "online" means the image is on the box. Without a card the
+        # dashboard showed nowhere that Presidio was installed (2026-11-22).
+        # Enabled but no image -> 'stopped': the card stays, the dot is grey.
+        for module, flag in (('plaso', 'plaso'), ('presidio', None)):
+            try:
+                import config                                 # noqa: PLC0415
+                if flag and not config.is_module_enabled(flag):
+                    results[module] = 'not_installed'
+                    continue
+                image = getattr(config, f'get_{module}_image')()
+                have = subprocess.run(['docker', 'image', 'inspect', image],
+                                      capture_output=True, timeout=10).returncode == 0
+                results[module] = 'online' if have else 'stopped'
+            except Exception:                                 # noqa: BLE001
+                results.setdefault(module, 'not_installed')
+
     except Exception as e:
         return jsonify({"error": f"Failed to query Docker: {str(e)}"}), 500
 
