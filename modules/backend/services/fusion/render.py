@@ -491,7 +491,15 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
                     "finding_count": rf, "critical_count": rc, "cross_host": 0,
                     "mitre": [], "hosts": [], "host_labels": rh,
                     "window": {"start": lo, "end": hi}, "span_hours": 0.0,
-                    "top_titles": [], "rollup": True, "rollup_windows": len(rest)})
+                    "top_titles": [], "rollup": True, "rollup_windows": len(rest),
+                    # Each window it sums, oldest first, so the card can list them
+                    # and zoom into any one: a bare total left the analyst nothing
+                    # to do with it (2026-11-22). Not in the model payload
+                    # (timeframes_for_payload reads analysable() only).
+                    "windows": [{"window": z["window"], "host_labels": z.get("host_labels") or [],
+                                 "finding_count": z["finding_count"], "severity": z["severity"],
+                                 "critical_count": z.get("critical_count", 0)}
+                                for z in rest[:MAX_ROLLUP_WINDOWS_LISTED]]})
     # Numbered AFTER ranking and truncation: "Timeframe 3" means the same window on
     # the card, in the table and in the narrative, or the analyst zooms into the
     # wrong one.
@@ -913,6 +921,8 @@ _TF_HEADING = _tf_re.compile(
 
 
 MAX_EXTRA_CRITICAL_WINDOWS = 4
+# The further-windows card lists at most this many of the windows it sums.
+MAX_ROLLUP_WINDOWS_LISTED = 200
 
 _PHASE_WINDOW = __import__("re").compile(
     r"(?m)^### (?:Phase|Timeframe) (\d+)\s*[—–-]\s*([^\n]+)\n(?:[^\n]*\n){0,3}?"

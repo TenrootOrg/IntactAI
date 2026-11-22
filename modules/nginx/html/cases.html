@@ -292,6 +292,14 @@
   .zt-meta{font-size:11px;color:var(--muted)}
   .zt-win{font-size:10px;color:var(--muted);font-family:var(--mono,monospace);margin:4px 0 8px}
   .zt-go{cursor:pointer;font-size:12px}
+  /* The further-windows card: full width, and its windows listed on demand. */
+  .zoomcard.zt-rollup{flex-basis:100%}
+  .zt-rest summary{cursor:pointer;font-size:12px;color:var(--ac,#58a6ff);margin-top:8px}
+  .zt-restlist{max-height:260px;overflow-y:auto;margin-top:6px}
+  .zt-restrow{display:flex;align-items:center;gap:10px;padding:4px 0;border-top:1px solid var(--bd)}
+  .zt-restrow .zt-win{margin:0;min-width:210px}
+  .zt-restrow .zt-meta{flex:1}
+  .zt-restrow .chip{margin:0;font-size:10px}
   .tlmeta{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
   .tlmeta .l2{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
   .sg-hint{font-size:10px;color:var(--med,#d29922);border:1px dashed var(--bd);border-radius:4px;padding:0 5px}
@@ -1642,12 +1650,12 @@ function loadZoomTargets(id){
     const html = !_zoomTargets.length ? '' : `<div class="zoomwrap">
       <div class="zoomhdr">🔎 Broad scope — zoom into a suspicious window to get the focused analysis</div>
       <div class="zoomrow">`+ _zoomTargets.map((t,i)=>`
-        <div class="zoomcard sev-${esc(t.severity||'')}">
-          <div class="zt-title">${t.name ? esc('Phase '+t.n+' — '+t.name) : esc(t.title)}</div>
+        <div class="zoomcard sev-${esc(t.severity||'')}${t.rollup?' zt-rollup':''}">
+          <div class="zt-title">${t.rollup ? esc(t.rollup_windows+' smaller window(s) — '+t.finding_count+' detection(s)') : t.name ? esc('Phase '+t.n+' — '+t.name) : esc(t.title)}</div>
           <div class="zt-meta">${(t.host_labels||[]).length} host(s) · ${t.finding_count} detection(s)${t.row_count&&t.row_count!==t.finding_count?` (${t.row_count} rows)`:''}${t.cross_host?` · ${t.cross_host} cross-host`:''}${(t.mitre&&t.mitre.length)?` · ${esc(t.mitre.slice(0,3).join(', '))}`:''}</div>
           <div class="zt-win">${esc((t.window||{}).start||'')} → ${esc((t.window||{}).end||'')}</div>
           ${_ztDecision(t)}
-          ${t.rollup ? '<div class="zt-meta" style="margin-top:6px">Accounting row — the windows not analysed individually. Not a scope.</div>' : `<button class="dlbtn zt-go" onclick="applyZoom('${esc(id)}',${i})">Analyze this scope →</button>`}
+          ${t.rollup ? _ztRest(id, t, i) : `<button class="dlbtn zt-go" onclick="applyZoom('${esc(id)}',${i})">Analyze this scope →</button>`}
         </div>`).join('')+`</div></div>`;
     _zoomHtml={id, html};
     if(el.innerHTML!==html) el.innerHTML=html;
@@ -1655,8 +1663,30 @@ function loadZoomTargets(id){
 }
 // A phase card creates a SCOPE and selects it — instant, nothing is fused — and
 // then generates that scope's report, which is what the button promises.
+// The windows ranked below the phases, summed in one card. It used to read
+// "Accounting row ... Not a scope" with nothing to click (2026-11-22): it now
+// says what they are and lists them, each one zoomable like a phase.
+function _ztRest(id,t,i){
+  const ws=t.windows||[];
+  const note=`<div class="zt-meta" style="margin-top:6px">Ranked below the phases above, so they are not in them — their detections are still in the Timeline.${ws.length?' Open the list to analyze any one of them.':''}</div>`;
+  if(!ws.length) return note;
+  return note+`<details class="zt-rest"><summary>Show the ${ws.length} window(s)</summary><div class="zt-restlist">`
+    +ws.map((w,j)=>`<div class="zt-restrow">
+        <span class="chip c-${esc(w.severity||'')}">${esc(w.severity||'')}</span>
+        <span class="zt-win">${esc(_scopeDates(w.window))}</span>
+        <span class="zt-meta">${(w.host_labels||[]).length} host(s) · ${w.finding_count} detection(s)</span>
+        <button class="dlbtn zt-go" onclick="applyZoomRest('${esc(id)}',${i},${j})">Analyze →</button></div>`).join('')
+    +((t.rollup_windows||0)>ws.length?`<div class="zt-meta" style="padding-top:4px">…and ${t.rollup_windows-ws.length} more (the oldest ${ws.length} are listed)</div>`:'')
+    +`</div></details>`;
+}
+function applyZoomRest(id,i,j){
+  const w=((_zoomTargets[i]||{}).windows||[])[j];
+  return w ? _zoomInto(id,w) : undefined;
+}
 async function applyZoom(id,i){
-  const t=_zoomTargets[i]; if(!t) return;
+  const t=_zoomTargets[i]; return t ? _zoomInto(id,t) : undefined;
+}
+async function _zoomInto(id,t){
   const label=_scopeDates(t.window);     // the timeframe is the name
   try{
     await api('/api/cases/'+id+'/zoom',{method:'POST',headers:{'Content-Type':'application/json'},

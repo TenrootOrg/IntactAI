@@ -6352,7 +6352,14 @@ def _cards_inside_scope(cards, win) -> list:
     for c in cards:
         w = c.get("window") or {}
         s, e = keys.to_utc_dt(w.get("start")), keys.to_utc_dt(w.get("end"))
-        if c.get("rollup") or s is None or e is None:
+        if c.get("rollup"):
+            # its listed windows narrow the scope like any card (inside a scope a
+            # window from outside it must not be offered)
+            if c.get("windows"):
+                c = dict(c, windows=_cards_inside_scope(c["windows"], win))
+            out.append(c)
+            continue
+        if s is None or e is None:
             out.append(c)
             continue
         if max(s, ws) > min(e, we) or (s <= ws and e >= we):

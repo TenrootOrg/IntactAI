@@ -232,6 +232,26 @@ class ScopesOfferedMustBeWorthOpening(unittest.TestCase):
         fs += [_find("t1", day=90), _find("t2", day=140), _find("t3", day=190)]
         return _graph(3, fs)
 
+    def test_the_further_windows_row_lists_each_window_it_sums(self):
+        # 2026-11-22: the rollup was a bare total ("Accounting row ... Not a
+        # scope") with nothing to do; it now carries each window, oldest first,
+        # so the card can list them and zoom into any one.
+        fs = []
+        for d in range(12):                          # twelve separate bursts, a week apart
+            fs += _burst(f"b{d}_", d * 7, 3, hosts=(f"host{d:03d}",))
+        zt = render.zoom_targets(_graph(12, fs), n=3)
+        roll = [z for z in zt if z.get("rollup")]
+        self.assertEqual(len(roll), 1)
+        r = roll[0]
+        self.assertEqual(len(r["windows"]), r["rollup_windows"])
+        self.assertEqual(sum(w["finding_count"] for w in r["windows"]), r["finding_count"])
+        starts = [w["window"]["start"] for w in r["windows"]]
+        self.assertEqual(starts, sorted(starts), "oldest first")
+        self.assertEqual(set(r["windows"][0]), {"window", "host_labels", "finding_count",
+                                                "severity", "critical_count"})
+        self.assertNotIn("rollup", json.dumps(render.timeframes_for_payload(zt)),
+                         "the model payload is unchanged")
+
     def test_trivial_windows_are_not_offered_as_scopes(self):
         zt = render.zoom_targets(self._mixed())
         offered = render.analysable(zt)

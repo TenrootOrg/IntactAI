@@ -38,6 +38,17 @@ class CardsInsideScope(unittest.TestCase):
     def test_only_the_rollup_left_means_no_panel(self):
         self.assertEqual(store._cards_inside_scope([card("a", "b", rollup=True)], SCOPE), [])
 
+    def test_the_further_windows_listed_in_the_rollup_are_narrowed_too(self):
+        # 2026-11-22: the rollup card lists its windows, each with "Analyze";
+        # inside a scope only the ones inside it may be offered.
+        roll = card("2025-01-01T00:00:00", "2025-12-31T00:00:00", rollup=True, windows=[
+            card("2025-09-21T11:20:00", "2025-09-21T11:25:00"),     # inside: kept
+            card("2025-03-01T00:00:00", "2025-03-01T01:00:00")])    # outside: dropped
+        inside = card("2025-09-21T11:30:00", "2025-09-21T12:00:00", title="in")
+        out = store._cards_inside_scope([inside, roll], SCOPE)
+        self.assertEqual([w["window"]["start"] for w in out[1]["windows"]], ["2025-09-21T11:20:00"])
+        self.assertEqual(len(roll["windows"]), 2)                       # the input is not mutated
+
     def test_no_scope_selected_changes_nothing(self):
         cards = [card("2025-05-27T11:16:56", "2025-05-27T11:17:10")]
         self.assertIs(store._cards_inside_scope(cards, None), cards)
