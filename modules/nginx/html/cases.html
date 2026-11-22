@@ -119,6 +119,12 @@
      rendered elements a blank line -- the gaping answer of 2026-10-21. */
   .msg.a p{margin:4px 0} .msg.a h1,.msg.a h2,.msg.a h3,.msg.a h4{margin:12px 0 4px} .msg.a ul{margin:4px 0;padding-left:22px}
   .chatbar{display:flex;gap:8px;margin-top:8px}
+  /* Chat autocomplete: the rest of a host/user name drawn in grey over the
+     input, in the input's own font and padding (copied at render). */
+  .qwrap{position:relative;flex:1;min-width:0}
+  #qghost{position:absolute;inset:0;pointer-events:none;overflow:hidden;white-space:pre;
+          display:flex;align-items:center;color:transparent;background:transparent;border-color:transparent}
+  #qghost .sug{color:var(--muted)}
   .empty{color:var(--muted);text-align:center;margin-top:60px}
   /* Analysis view opens the active case straight away: never flash "pick a case"
      while a heavy case loads. init() shows it only when there is no active case. */
@@ -2839,10 +2845,11 @@ function renderChat(id){
   $('#tabc').innerHTML=`<div id="chatwrap">
     <div class="chathead"><button class="ghost chatfs" onclick="clearChat('${id}')" title="Clear the conversation">Clear</button><button class="ghost chatfs" id="chatfsbtn" onclick="toggleChatFull()" title="Full screen (Esc to exit)">⛶ Full screen</button></div>
     <div class="chat"><div class="msgs" id="msgs"></div>
-    <div class="chatbar"><input id="q" placeholder="ask anything about this case — risk, attack path, a host/account/IP, what to do next…"/>
+    <div class="chatbar"><div class="qwrap"><input id="q" autocomplete="off" placeholder="ask anything about this case — risk, attack path, a host/account/IP, what to do next…"/><div id="qghost" aria-hidden="true"></div></div>
     <button id="askbtn" onclick="ask('${id}')">Ask</button>
     ${SHOW_INVESTIGATE ? `<button id="invbtn" class="ghost" onclick="investigateAsk('${id}')" title="Agentic deep-dive: the model looks up the RAW evidence to answer, grounding every claim (slower — a few model calls)">🔬 Investigate</button>` : ''}</div></div></div>`;
   $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask(id);});
+  _acInit(id);
   // load the persisted conversation so it survives a page refresh
   $('#msgs').innerHTML='<i style="color:var(--muted)">loading…</i>';
   // A slow GET for the previous case must not land on the one now open.
@@ -2927,6 +2934,87 @@ function reattachPendingTurn(){
   if(!_asking || !_pendingQ || _chatCase!==_askCase) return;
   chatHist.push({role:'user',content:_pendingQ});
   chatHist.push({role:'assistant',content:'_thinking…_',pending:true});
+}
+
+// --- Chat autocomplete --------------------------------------------------------
+// While typing, the rest of a matching endpoint or user name of THIS case shows
+// in grey after the cursor; Tab or → (at the end of the line) takes it, Esc
+// hides it, Enter sends what was typed. Names come from the same two calls the
+// Hosts and Identities views use; nothing is sent anywhere while typing.
+let _acCase=null, _acNames=[], _acSug='', _acHidden=null, _acAt=0;
+
+// The candidate names, in priority order: the case's visible hosts, then each
+// identity's name, its other names and its account labels. Pure (tested).
+function _acTerms(hosts, ids){
+  const seen=new Set(), out=[];
+  const add=v=>{ const s=String(v==null?'':v).trim();
+    if(s.length<2 || /\s/.test(s)) return;            // one word: completes the word typed
+    const k=s.toLowerCase(); if(!seen.has(k)){ seen.add(k); out.push(s); } };
+  ((hosts&&hosts.hosts)||[]).forEach(h=>{ if(!h.hidden && !h.excluded) add(h.host); });
+  ((ids&&ids.identities)||[]).forEach(i=>{ add(i.name); (i.names||[]).forEach(add);
+    (i.accounts||[]).forEach(a=>add(a.label)); });
+  return out;
+}
+
+// The text to append for what has been typed so far, '' for none. The word at
+// the end is matched as a prefix, ignoring case; after a DOMAIN\ prefix only
+// the part after the backslash is (CORP\ali -> alice). Pure (tested).
+function _acMatch(names, typed){
+  const m=/[^\s,;:()"'<>]+$/.exec(typed||''); if(!m) return '';
+  const word=m[0], parts=[word];
+  if(word.includes('\\')) parts.push(word.slice(word.lastIndexOf('\\')+1));
+  for(const frag of parts){
+    if(frag.length<2) continue;
+    const f=frag.toLowerCase();
+    if(names.some(n=>n.toLowerCase()===f)) return '';  // a whole name is typed: done
+    for(const n of names){ const nl=n.toLowerCase();
+      if(nl.length>f.length && nl.startsWith(f)) return n.slice(frag.length); }
+  }
+  return '';
+}
+
+function _acInit(id){
+  const q=$('#q'), g=$('#qghost'); if(!q||!g) return;
+  // the ghost must line up with the input's own text, whatever the theme sets
+  const cs=getComputedStyle(q);
+  ['fontFamily','fontSize','fontWeight','fontStyle','letterSpacing','paddingTop','paddingRight','paddingBottom',
+   'paddingLeft','borderTopWidth','borderRightWidth','borderBottomWidth','borderLeftWidth','borderStyle','textIndent']
+    .forEach(k=>{ g.style[k]=cs[k]; });
+  g.style.boxSizing=cs.boxSizing;
+  _acSug=''; _acHidden=null;
+  if(_acCase!==id){ _acCase=id; _acNames=[]; }
+  _acLoad(id);
+  q.addEventListener('keydown',e=>{
+    if(!_acSug || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+    if(e.key==='Tab' || e.key==='ArrowRight'){
+      e.preventDefault();
+      q.value+=_acSug; q.setSelectionRange(q.value.length, q.value.length);
+      _acDraw();
+    } else if(e.key==='Escape'){
+      e.stopPropagation();                               // not the full-screen Esc
+      _acHidden=q.value; _acDraw();
+    }
+  });
+  ['input','keyup','click','focus','scroll'].forEach(ev=>q.addEventListener(ev,_acDraw));
+  // names caught after the chat opened (a new run, an import) come in on the
+  // next focus, at most once a minute
+  q.addEventListener('focus',()=>{ if(Date.now()-_acAt>60000) _acLoad(id); });
+  q.addEventListener('blur',()=>{ _acSug=''; g.innerHTML=''; });
+}
+
+// The names of THIS case, from what its runs and imports have caught so far.
+function _acLoad(id){
+  _acAt=Date.now();
+  Promise.all([api('/api/cases/'+id+'/hosts').catch(_=>({})), api('/api/cases/'+id+'/identities').catch(_=>({}))])
+    .then(([h,d])=>{ if(_acCase===id) _acNames=_acTerms(h,d); });
+}
+
+function _acDraw(){
+  const q=$('#q'), g=$('#qghost'); if(!q||!g) return;
+  const atEnd=q.selectionStart===q.value.length && q.selectionEnd===q.value.length;
+  _acSug=(document.activeElement===q && atEnd && q.value!==_acHidden) ? _acMatch(_acNames, q.value) : '';
+  g.innerHTML=_acSug ? '<span>'+esc(q.value)+'<span class="sug">'+esc(_acSug)+'</span></span>' : '';
+  g.scrollLeft=q.scrollLeft;
 }
 
 function ask(id){

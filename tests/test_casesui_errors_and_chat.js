@@ -55,6 +55,7 @@ const clearInterval = () => {};
 // chat
 let chatHist = [], _pendingQ = null, _asking = false, _askCase = null, _chatCase = null;
 const SHOW_INVESTIGATE = false;
+const _acInit = () => {};   // the chat autocomplete: tests/case_chat_autocomplete.js
 
 for (const f of ['doRefusion', 'regenReport', 'stopReportGenPoll', 'pollReportGen',
                  'renderChat', 'reattachPendingTurn', 'ask', 'drawMsgs'])
