@@ -245,8 +245,9 @@ _u_creds_flush() {
     return $rc
 }
 
-# _u_creds_after <module> -- after a module's u_end succeeded: rotate, clear the
-# old copies, refresh the marker, and show a module installed in this run.
+# _u_creds_after <module> -- after a module's u_end succeeded: replace the public
+# values nobody types (logins are only warned about), clear the old copies,
+# refresh the marker, and show a module installed in this run.
 # Never fails: the module is already applied.
 _u_creds_after() {
     local m="$1" k u line

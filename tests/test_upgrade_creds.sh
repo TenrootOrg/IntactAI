@@ -235,23 +235,25 @@ _velo_box() {   # a running Velociraptor whose users still have the public value
     printf '%s\n' tenroot:123123 api:123123 | tee "$T/velo_db" > "$T/velo_live"
 }
 
-test_velociraptor_rotates_only_known_defaults_and_never_removes_api() {
+test_velociraptor_keeps_the_gui_default_and_replaces_only_api() {
+    # 2026-11-22: a login is never changed by an upgrade, only warned about.
+    # `api` is nobody's login (an admin one with a published password
+    # otherwise), so it is still replaced.
     _world; _velo_box
     _creds_rotate_velociraptor
-    local gui api calls; gui="$(secret_get velociraptor VELOX_PASSWORD)"; api="$(secret_get velociraptor VELOX_PASSWORD_2)"
+    local api calls; api="$(secret_get velociraptor VELOX_PASSWORD_2)"
     calls="$(cat "$T/calls")"
-    assert_true secret_check "$gui"; assert_true secret_check "$api"
-    assert_contains "$calls" '--role "$2" _ tenroot administrator'
+    assert_eq "$(secret_get velociraptor VELOX_PASSWORD)" "123123" "the GUI login is kept"
+    assert_true grep -qx "tenroot:123123" "$T/velo_live"
+    assert_true secret_check "$api"
     assert_contains "$calls" '--role "$2" _ api api,administrator' "api keeps its identity's roles"
-    assert_not_contains "$(cat "$T/calls" "$T/argv")" "$gui" "the value is in the exec's env, not its argv"
-    assert_not_contains "$(cat "$T/calls" "$T/argv")" "$api"
-    assert_true grep -qx "tenroot:${gui}" "$T/velo_live"; assert_true grep -qx "api:${api}" "$T/velo_live"
+    assert_not_contains "$calls" '_ tenroot administrator'
+    assert_not_contains "$(cat "$T/calls" "$T/argv")" "$api" "the value is in the exec's env, not its argv"
+    assert_true grep -qx "api:${api}" "$T/velo_live"
     assert_not_contains "$calls" "delete" "api (the backend's API cert identity) is never removed"
-    assert_not_contains "$calls" "user_delete"
-    assert_eq "${#CREDS_ROTATED_SHOW[@]}" "1" "only the GUI user is shown, never api"
-    assert_eq "${CREDS_ROTATED_SHOW[0]}" "Velociraptor|tenroot|${gui}"
-    assert_eq "${CREDS_ROTATED[*]}" "velociraptor"
-    : > "$T/calls"; CREDS_ROTATED_SHOW=()
+    assert_eq "${#CREDS_ROTATED_SHOW[@]}" "0" "nothing for the operator to look up"
+    assert_eq "${CREDS_ROTATED[*]:-}" ""
+    : > "$T/calls"
     _creds_rotate_velociraptor
     assert_eq "$(grep -v 'inspect' "$T/calls")" "" "a value that is no longer public is left alone"
 }
@@ -265,11 +267,11 @@ test_a_velociraptor_change_recreates_the_server_before_it_verifies() {
         "recreated (env_file re-read), not docker restart"
     assert_not_contains "$calls" "docker restart intact_velociraptor"
     local add rec login
-    add="$(grep -n "user add.* _ tenroot " "$T/calls" | cut -d: -f1)"
+    add="$(grep -n "user add.* _ api " "$T/calls" | cut -d: -f1)"
     rec="$(grep -n 'force-recreate' "$T/calls" | head -1 | cut -d: -f1)"
     login="$(grep -n 'curl GET .*:8889' "$T/calls" | tail -1 | cut -d: -f1)"
     assert_true test "$add" -lt "$rec"; assert_true test "$rec" -lt "$login"
-    assert_true grep -qx "tenroot:$(secret_get velociraptor VELOX_PASSWORD)" "$T/velo_live"
+    assert_true grep -qx "api:$(secret_get velociraptor VELOX_PASSWORD_2)" "$T/velo_live"
 }
 
 test_a_velociraptor_change_that_does_not_log_in_is_put_back() {
@@ -288,17 +290,16 @@ test_a_velociraptor_change_that_does_not_log_in_is_put_back() {
     assert_true grep -qx "api:123123" "$T/velo_live"
 }
 
-# Like Portainer and IRIS: a stored public value that no longer logs in was
-# changed in the Velociraptor UI. Not rotated over the operator's head.
+# A GUI password changed in the Velociraptor UI stands, and so does a default:
+# the GUI login is never touched by an upgrade.
 test_a_velociraptor_user_changed_in_its_ui_is_not_rotated() {
     _world; _velo_box
     printf '%s\n' tenroot:Mine1FromTheUi api:123123 | tee "$T/velo_db" > "$T/velo_live"
     # the entrypoint applied the stored value at an earlier start (its stamp)
     printf '%s' 123123 | sha256sum | cut -d' ' -f1 > "$SCRIPT_DIR/data/velociraptor/.gui_pw.sha256"
-    local out; out="$(_creds_rotate_velociraptor 2>&1)"
-    assert_contains "$out" "'tenroot' no longer logs in with its stored (public) password"
+    _creds_rotate_velociraptor >/dev/null 2>&1
     assert_true grep -qx tenroot:Mine1FromTheUi "$T/velo_live" "the operator's password stands"
-    assert_ne "$(secret_get velociraptor VELOX_PASSWORD_2)" "123123" "api is still rotated"
+    assert_ne "$(secret_get velociraptor VELOX_PASSWORD_2)" "123123" "api is still replaced"
 }
 
 test_a_failed_velociraptor_rotation_keeps_the_old_value() {
@@ -328,27 +329,20 @@ test_the_lab_switch_rotates_nothing() {
     assert_false test -e "$SCRIPT_DIR/data/state/default-passwords.json"
 }
 
-test_portainer_rotates_through_its_api_and_verifies() {
+test_a_portainer_default_is_kept_and_listed() {
+    # 2026-11-22: kept as it is, listed in the dashboard's warning
     _world
     echo intact_portainer > "$T/running"
     _cred_put portainer 'Ch4nge-Me!Intact2026'; echo 'Ch4nge-Me!Intact2026' > "$T/pt_pw"
-    _creds_rotate_portainer
-    local new; new="$(cred_get portainer)"
-    assert_true secret_check "$new"
-    assert_eq "$(cat "$T/pt_pw")" "$new" "the tool and the file hold the same new password"
-    assert_contains "$(cat "$T/calls")" "curl PUT https://127.0.0.1:9443/api/users/3/passwd"
-    assert_eq "${CREDS_ROTATED_SHOW[0]}" "Portainer|admin|${new}"
-}
-
-test_a_refused_portainer_change_keeps_the_old_password() {
-    _world
-    echo intact_portainer > "$T/running"
-    _cred_put portainer 'Ch4nge-Me!Intact2026'; echo 'Ch4nge-Me!Intact2026' > "$T/pt_pw"
-    : > "$T/pt_refuse"
-    _creds_rotate_portainer 2>/dev/null
+    creds_rotate_known_defaults >/dev/null 2>&1
     assert_eq "$(cred_get portainer)" 'Ch4nge-Me!Intact2026'
     assert_eq "$(cat "$T/pt_pw")" 'Ch4nge-Me!Intact2026'
-    assert_eq "${#CREDS_ROTATED_SHOW[@]}" "0"
+    assert_not_contains "$(cat "$T/calls")" "/passwd" "never asked to change it"
+    assert_eq "$(_marker)" "portainer|"
+    # changed in Portainer's own UI: the stored default no longer logs in
+    echo 'Their1Own!' > "$T/pt_pw"
+    creds_mark_defaults 2>/dev/null
+    assert_false test -e "$SCRIPT_DIR/data/state/default-passwords.json"
 }
 
 test_a_portainer_placeholder_is_never_sent_or_rotated() {
@@ -361,36 +355,24 @@ test_a_portainer_placeholder_is_never_sent_or_rotated() {
     assert_eq "$(stat -c %a "$(_cred_file portainer)")" "600"
     assert_true test -e "$SCRIPT_DIR/modules/portainer/secrets/admin_password.placeholder"
     echo intact_portainer > "$T/running"
-    _creds_rotate_portainer
+    creds_mark_defaults 2>/dev/null
     assert_not_contains "$(cat "$T/calls")" "curl" "Portainer is never asked to log in with a placeholder"
     assert_false creds_apply portainer New1Portainer2x!
     assert_contains "$CREDS_APPLY_REASON" "not known"
 }
 
-test_iris_rotates_only_when_the_default_still_logs_in() {
+test_an_iris_default_is_kept_and_listed_only_while_it_still_logs_in() {
     _world
     printf '%s\n' intact_iris_app intact_iris_db > "$T/running"
     _cred_put iris 123123; printf 123123 > "$T/iris_pw"
-    enforce_iris_admin_password() { cred_get iris > "$T/iris_pw"; }
-    _creds_rotate_iris
-    local new; new="$(cred_get iris)"
-    assert_ne "$new" "123123"; assert_eq "$(cat "$T/iris_pw")" "$new" "applied and verified"
-    assert_eq "${CREDS_ROTATED_SHOW[0]}" "IRIS|administrator|${new}"
-    # enforce that does not take: the file goes back
-    _world
-    printf '%s\n' intact_iris_app intact_iris_db > "$T/running"
-    _cred_put iris 123123; printf 123123 > "$T/iris_pw"
-    enforce_iris_admin_password() { return 0; }
-    _creds_rotate_iris 2>/dev/null
-    assert_eq "$(cred_get iris)" "123123" "an unapplied change is put back"
-    # the operator already changed it in IRIS: nothing to do
-    _world
-    printf '%s\n' intact_iris_app intact_iris_db > "$T/running"
-    _cred_put iris 123123; printf Their1Own > "$T/iris_pw"
-    _creds_rotate_iris
-    assert_eq "$(cred_get iris)" "123123"
-    assert_eq "$(cat "$T/iris_pw")" "Their1Own"
-    unset -f enforce_iris_admin_password
+    creds_rotate_known_defaults >/dev/null 2>&1
+    assert_eq "$(cred_get iris)" "123123" "kept as it is"
+    assert_eq "$(cat "$T/iris_pw")" "123123"
+    assert_eq "$(_marker)" "iris|"
+    # the operator already changed it in IRIS: not reported
+    printf Their1Own! > "$T/iris_pw"
+    creds_mark_defaults 2>/dev/null
+    assert_false test -e "$SCRIPT_DIR/data/state/default-passwords.json"
 }
 
 test_iris_adopts_the_config_value_it_actually_runs_with() {
@@ -434,9 +416,9 @@ test_the_marker_lists_machine_used_defaults_and_shrinks() {
     secret_set elk ELASTIC_PASSWORD 123123; secret_set elk KIBANA_PASSWORD Kib1Random
     secret_set timesketch TIMESKETCH_PASSWORD changeme
     _cred_put volweb 123123
-    secret_set velociraptor VELOX_PASSWORD 123123   # human-only: rotated, never marked
+    secret_set velociraptor VELOX_PASSWORD 123123   # not running: judged by the stored value
     creds_mark_defaults 2>/dev/null
-    assert_eq "$(_marker)" "elk,timesketch,volweb|"
+    assert_eq "$(_marker)" "elk,timesketch,volweb,velociraptor|"
     assert_eq "$(stat -c %a "$f")" "600" "the backend reads it as root"
     local since; since="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["since"])' "$f")"
     assert_true grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$' <<<"$since"
@@ -444,21 +426,24 @@ test_the_marker_lists_machine_used_defaults_and_shrinks() {
     secret_set elk ELASTIC_PASSWORD Changed1ByHand
     creds_mark_defaults 2>/dev/null
     assert_eq "$(_marker) $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["since"])' "$f")" \
-        "timesketch,volweb| ${since}" "elk dropped once it is no longer public; since kept"
+        "timesketch,volweb,velociraptor| ${since}" "elk dropped once it is no longer public; since kept"
     secret_set timesketch TIMESKETCH_PASSWORD Changed1ByHand; _cred_put volweb Changed1ByHand
+    secret_set velociraptor VELOX_PASSWORD Changed1ByHand
     creds_mark_defaults
     assert_false test -e "$f"
 }
 
-test_the_marker_lists_what_a_rotation_changed_until_cleared() {
-    _world; _velo_box
-    creds_rotate_known_defaults velociraptor >/dev/null
+test_the_marker_keeps_what_an_older_release_rotated_until_cleared() {
+    # A box upgraded from a release that still replaced logins keeps that
+    # note until the admin has looked the passwords up; nothing adds to it now.
+    _world
     local f="$SCRIPT_DIR/data/state/default-passwords.json"
-    assert_eq "$(_marker)" "|velociraptor" "rotated, so the operator has a password they have not seen"
-    assert_eq "$(stat -c %a "$f")" "600"
-    CREDS_ROTATED=()
+    mkdir -p "${f%/*}"; printf '{"modules": [], "rotated": ["iris"], "since": "2026-11-01T00:00:00Z"}' > "$f"
     creds_mark_defaults
-    assert_eq "$(_marker)" "|velociraptor" "kept across runs until the admin has seen it"
+    assert_eq "$(_marker)" "|iris"
+    _velo_box
+    creds_rotate_known_defaults velociraptor >/dev/null 2>&1
+    assert_eq "$(_marker)" "velociraptor|iris" "the GUI default is listed, not replaced"
 }
 
 test_kibana_system_gets_a_new_value_when_the_old_one_is_public() {

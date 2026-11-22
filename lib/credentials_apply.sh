@@ -519,73 +519,60 @@ creds_apply() {
 }
 
 # ---------------------------------------------------------------------------
-# Rotation of human-only logins still on a public value. Each only against a
-# running tool; a failure leaves the old value everywhere (creds_apply).
+# Public defaults. A LOGIN someone types (the six tools' own) is never changed
+# by an install or upgrade any more -- it stays, and the dashboard and the run
+# warn until the operator sets a new one with scripts/apply-passwords.sh. Until
+# 2026-11-22 the Velociraptor, IRIS and Portainer logins were replaced with a
+# generated value instead, while ELK, Timesketch and VolWeb (the backend logs in
+# with them) only warned: two banners, and nobody knew what had happened to
+# which password. Only values nobody types are still replaced: Velociraptor's
+# `api` user (an admin login with a published password otherwise) and
+# Timesketch's SECRET_KEY, below.
 # ---------------------------------------------------------------------------
-_creds_rotated() { CREDS_ROTATED+=("$1"); [[ -n "${2:-}" ]] && CREDS_ROTATED_SHOW+=("$2"); return 0; }
-
 _creds_rotate_velociraptor() {
     _creds_running intact_velociraptor || return 0
-    local rows=() who key u old new show=""
-    for who in GUI api; do
-        IFS='|' read -r key u _ <<<"$(_creds_velo_row "$who")"
-        old="$(secret_get velociraptor "$key" 2>/dev/null)" || continue
-        secret_is_known_default "$old" || continue
-        # Like Portainer and IRIS: a stored value that no longer logs in was
-        # changed in the Velociraptor UI by someone who knows the new one.
-        if ! _creds_velo_login "$u" "$old"; then
-            log_warn "  velociraptor: '${u}' no longer logs in with its stored (public) password -- changed in the Velociraptor UI? Not rotated.$([[ "$who" == GUI ]] && printf ' Intact owns this password: set it with sudo scripts/apply-passwords.sh')"
-            continue
-        fi
-        new="$(secret_generate)"
-        rows+=("$(_creds_velo_row "$who")|${new}")
-        [[ "$who" == GUI ]] && show="Velociraptor|${u}|${new}"
-    done
-    (( ${#rows[@]} )) || return 0
-    if ! _creds_velo_apply "${rows[@]}"; then
-        log_warn "  velociraptor: could not replace the public password (${CREDS_APPLY_REASON}); it keeps the old one"
+    local key u old new
+    IFS='|' read -r key u _ <<<"$(_creds_velo_row api)"
+    old="$(secret_get velociraptor "$key" 2>/dev/null)" || return 0
+    secret_is_known_default "$old" || return 0
+    _creds_velo_login "$u" "$old" || return 0      # changed in the Velociraptor UI
+    new="$(secret_generate)"
+    if ! _creds_velo_apply "$(_creds_velo_row api)|${new}"; then
+        log_warn "  velociraptor: could not replace the public '${u}' password (${CREDS_APPLY_REASON}); it keeps the old one"
         return 1
     fi
-    log_success "  velociraptor: no user has the public default password any more"
-    # `api` alone is nobody's login: nothing new for the operator to see.
-    [[ -n "$show" ]] && _creds_rotated velociraptor "$show"
-    return 0
+    log_success "  velociraptor: '${u}' no longer has the public default password"
 }
 
-_creds_rotate_portainer() {
-    local old; old="$(_creds_portainer_known 2>/dev/null)" || return 0
-    secret_is_known_default "$old" || return 0
-    _creds_running intact_portainer || return 0
-    local user; user="$(_cred_user portainer)"
-    if ! _creds_portainer_login "$user" "$old" >/dev/null; then
-        log_info "  portainer: '${user}' no longer logs in with the shipped default; nothing to rotate"
-        return 0
-    fi
-    local new; new="$(secret_generate)"
-    if ! _creds_apply_portainer "$new"; then
-        log_warn "  portainer: ${CREDS_APPLY_REASON}; '${user}' keeps the old password"
-        return 1
-    fi
-    log_success "  portainer: '${user}' no longer has the public default password"
-    _creds_rotated portainer "Portainer|${user}|${new}"
-}
-
-_creds_rotate_iris() {
-    local old; old="$(cred_get iris 2>/dev/null)" || return 0
-    secret_is_known_default "$old" || return 0
-    { _creds_running intact_iris_app && _creds_running intact_iris_db; } || return 0
-    declare -F enforce_iris_admin_password >/dev/null || return 0
-    if ! _creds_iris_matches "$old"; then
-        log_info "  iris: the administrator no longer uses the shipped default; nothing to rotate"
-        return 0
-    fi
-    local new; new="$(secret_generate)"
-    if ! _creds_apply_iris "$new"; then
-        log_warn "  iris: could not apply a new administrator password (${CREDS_APPLY_REASON}); it keeps the old one"
-        return 1
-    fi
-    log_success "  iris: the administrator no longer has the public default password"
-    _creds_rotated iris "IRIS|$(_cred_user iris)|${new}"
+# _creds_still_default <module> -- 0 when that tool's login is a public default
+# that still works. Velociraptor, IRIS and Portainer are asked live (a stored
+# default someone already changed in the tool's own UI is not reported); a tool
+# that is not running is judged by the stored value.
+_creds_still_default() {
+    local m="$1" v key u
+    case "$m" in
+        elk)
+            for v in "$(secret_get elk ELASTIC_PASSWORD 2>/dev/null)" "$(secret_get elk KIBANA_PASSWORD 2>/dev/null)"; do
+                secret_is_known_default "$v" && return 0
+            done
+            return 1 ;;
+        timesketch) secret_is_known_default "$(secret_get timesketch TIMESKETCH_PASSWORD 2>/dev/null)" ;;
+        volweb)     secret_is_known_default "$(cred_get volweb 2>/dev/null)" ;;
+        velociraptor)
+            IFS='|' read -r key u _ <<<"$(_creds_velo_row GUI)"
+            v="$(secret_get velociraptor "$key" 2>/dev/null)" && secret_is_known_default "$v" || return 1
+            _creds_running intact_velociraptor || return 0
+            _creds_velo_login "$u" "$v" ;;
+        iris)
+            v="$(cred_get iris 2>/dev/null)" && secret_is_known_default "$v" || return 1
+            { _creds_running intact_iris_app && _creds_running intact_iris_db; } || return 0
+            _creds_iris_matches "$v" ;;
+        portainer)
+            v="$(_creds_portainer_known 2>/dev/null)" && secret_is_known_default "$v" || return 1
+            _creds_running intact_portainer || return 0
+            _creds_portainer_login "$(_cred_user portainer)" "$v" >/dev/null ;;
+        *) return 1 ;;
+    esac
 }
 
 # Timesketch's SECRET_KEY as published in this repo (.gitleaks.toml stopword),
@@ -627,12 +614,12 @@ _creds_rotate_timesketch() {
     log_success "  timesketch: SECRET_KEY replaced (it was the value published in the repo)"
 }
 
-# creds_rotate_known_defaults [module...] -- default: every human-only one.
-# Values rotated are in CREDS_ROTATED_SHOW for the caller to show (install.sh
-# reads them back from the stores through credential_lines). 1 if any failed.
+# creds_rotate_known_defaults [module...] -- replaces the public values nobody
+# types (Velociraptor's `api`, Timesketch's SECRET_KEY), then refreshes the
+# marker that warns about every LOGIN still on one. 1 if a replacement failed.
 creds_rotate_known_defaults() {
     local mods=("$@") m rc=0
-    (( ${#mods[@]} )) || mods=(velociraptor portainer iris timesketch)
+    (( ${#mods[@]} )) || mods=(velociraptor timesketch)
     for m in "${mods[@]}"; do
         declare -F "_creds_rotate_${m}" >/dev/null || continue
         if secret_weak_allowed; then
@@ -646,20 +633,18 @@ creds_rotate_known_defaults() {
 }
 
 # data/state/default-passwords.json, 0600 (the backend reads it as root):
-#   {"modules": [machine-used logins still on a public value -- the backend
-#                logs in with them, so they wait for scripts/apply-passwords.sh],
-#    "rotated": [modules whose password a rotation changed and the operator
-#                has not seen yet -- kept from earlier runs, plus this one's],
+#   {"modules": [tools whose login is still a public value -- kept as it is,
+#                waiting for scripts/apply-passwords.sh],
+#    "rotated": [modules whose login an OLDER release replaced and the operator
+#                has not seen yet -- carried over until show-credentials],
 #    "since":   "<iso>"}
 # Deleted when both lists are empty. A lab box lists no "modules".
 creds_mark_defaults() {
-    local f="${SCRIPT_DIR}/data/state/default-passwords.json" mods=() v
+    local f="${SCRIPT_DIR}/data/state/default-passwords.json" mods=() m
     if ! secret_weak_allowed; then
-        for v in "$(secret_get elk ELASTIC_PASSWORD 2>/dev/null)" "$(secret_get elk KIBANA_PASSWORD 2>/dev/null)"; do
-            secret_is_known_default "$v" && { mods+=(elk); break; }
+        for m in elk timesketch volweb velociraptor iris portainer; do
+            _creds_still_default "$m" && mods+=("$m")
         done
-        secret_is_known_default "$(secret_get timesketch TIMESKETCH_PASSWORD 2>/dev/null)" && mods+=(timesketch)
-        secret_is_known_default "$(cred_get volweb 2>/dev/null)" && mods+=(volweb)
     fi
     ( umask 077; mkdir -p "${f%/*}" ) || return 0
     python3 - "$f" "${mods[*]}" "${CREDS_ROTATED[*]}" <<'PY' || log_warn "  could not write ${f}"
@@ -685,6 +670,6 @@ with os.fdopen(fd, "w") as fh:
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
-    (( ${#mods[@]} )) && log_warn "  public default password still in use (the backend logs in with it): ${mods[*]} — change it with sudo scripts/apply-passwords.sh"
+    (( ${#mods[@]} )) && log_warn "  public default password still in use, kept as it is: ${mods[*]} — change it with sudo scripts/apply-passwords.sh"
     return 0
 }

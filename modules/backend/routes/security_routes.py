@@ -1,12 +1,11 @@
 """Dashboard banner: which modules still run on a publicly known password, and
 which had a password changed for them that the operator has not seen yet.
 
-An upgraded old box keeps the passwords that machines log in with (Elasticsearch
-`elastic`, the Timesketch user, VolWeb admin) even when they are a public
-default -- changing them under a running tool locks the backend out of the
-evidence; the operator changes them with scripts/apply-passwords.sh. Human-only
-defaults ARE rotated by the upgrade, and the operator needs to know to look them
-up. lib/credentials_apply.sh records both in data/state/default-passwords.json,
+An install or upgrade keeps every tool login as it is, even a public default,
+and lists it here until the operator changes it with scripts/apply-passwords.sh
+(2026-11-22). "rotated" is what an OLDER release replaced on its own and the
+operator has not looked up yet. lib/credentials_apply.sh records both in
+data/state/default-passwords.json,
 {"modules": [...], "rotated": [...], "since": "<iso>"}; this only reports it.
 A missing file means none.
 
