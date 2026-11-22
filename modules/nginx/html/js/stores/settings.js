@@ -590,6 +590,18 @@ document.addEventListener('alpine:init', () => {
                     else failed.push(name);
                 } catch (e) { failed.push(name); }
             }
+            // Ollama Cloud keeps no catalog: its list is asked live from ollama.com
+            // whenever the model picker opens (llm_catalogs/ollama.py). Asked here
+            // too when it is the selected provider, so the button says it works --
+            // it used to name every provider but this one.
+            if (this.config.agentic?.online_llm?.provider === 'ollama-cloud') {
+                try {
+                    const r = await fetch('/api/config/ollama-cloud/models?limit=1');
+                    const d = await r.json().catch(() => ({}));
+                    if (d && !d.error && d.total) ok.push('Ollama Cloud ' + d.total + ' (live)');
+                    else failed.push('Ollama Cloud');
+                } catch (e) { failed.push('Ollama Cloud'); }
+            }
             // Then TEST the big vendors' OpenRouter models in the background (one
             // 1-token call each): the picker marks and orders them once it is done.
             // Never blocks the update or fails it -- it is a separate job.

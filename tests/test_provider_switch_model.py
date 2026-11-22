@@ -72,5 +72,45 @@ class SettingsSwitch(unittest.TestCase):
                          ["", "glm-5.3", "~anthropic/claude-sonnet-latest", "~anthropic/claude-sonnet-latest"])
 
 
+_CATALOG = r"""
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[1], 'utf8');
+const i = src.indexOf('async updateCatalog() {');
+let d = 0, j = src.indexOf('{', i);
+for (; j < src.length; j++) { if (src[j] === '{') d++; else if (src[j] === '}' && --d === 0) break; }
+const body = src.slice(src.indexOf('{', i) + 1, j);
+const run = async (provider, ollama) => {
+  global.fetch = async (url) => ({ status: 200, json: async () =>
+    url.includes('ollama-cloud') ? ollama : url.includes('openrouter') ? { success: true, model_count: 300 } : {} });
+  global.window = { dispatchEvent() {} }; global.CustomEvent = function () {};
+  let msg = null;
+  const st = { config: { agentic: { online_llm: { provider } } }, showMessage: (m, k) => { msg = [k, m]; },
+               _refreshCaseAnalysis() {} };
+  await (new Function('return async function(){' + body + '}')()).call(st);
+  return msg;
+};
+(async () => {
+  console.log(JSON.stringify([
+    await run('ollama-cloud', { models: [{ id: 'glm-5.3' }], total: 25 }),
+    await run('ollama-cloud', { models: [], total: 0, error: 'Select Ollama Cloud and save its API key' }),
+    await run('openrouter', { total: 25 }),
+  ]));
+})();
+"""
+
+
+class UpdateCatalog(unittest.TestCase):
+    @unittest.skipIf(shutil.which("node") is None, "node is not installed")
+    def test_it_reports_ollama_clouds_live_list_when_selected(self):
+        js = os.path.join(_ROOT, "modules/nginx/html/js/stores/settings.js")
+        r = subprocess.run(["node", "-e", _CATALOG, js], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        live, nokey, other = json.loads(r.stdout)
+        self.assertIn("Ollama Cloud 25 (live)", live[1])
+        self.assertIn("skipped:", nokey[1])
+        self.assertIn("Ollama Cloud", nokey[1].split("skipped:")[1])
+        self.assertNotIn("Ollama Cloud", other[1], "not asked when another provider is selected")
+
+
 if __name__ == "__main__":
     unittest.main()
