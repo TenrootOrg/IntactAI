@@ -56,6 +56,7 @@ const clearInterval = () => {};
 let chatHist = [], _pendingQ = null, _asking = false, _askCase = null, _chatCase = null;
 const SHOW_INVESTIGATE = false;
 const _acInit = () => {};   // the chat autocomplete: tests/case_chat_autocomplete.js
+const loadAiCost = () => {};   // the header's AI spend: tests/case_ai_cost.js
 
 for (const f of ['doRefusion', 'regenReport', 'stopReportGenPoll', 'pollReportGen',
                  'renderChat', 'reattachPendingTurn', 'ask', 'drawMsgs'])

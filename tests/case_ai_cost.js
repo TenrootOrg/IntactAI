@@ -12,11 +12,11 @@ eval(['_usd', '_aiBudgetLine', '_aiCostHtml', '_aiCostChip'].map(grab).join('\n'
 assert.strictEqual(_usd(1.5), '$1.50');
 assert.strictEqual(_usd(0.0042), '$0.0042', 'a tiny call still shows a price');
 
-// header warning: nothing below 80%, amber from 80, red at 100
+// header warning line: only once used up (below that, the header's AI spend bar says it)
 const d = (cost, budget) => ({ cost_usd: cost, budget_usd: budget, used_pct: budget ? 100 * cost / budget : null });
 assert.strictEqual(_aiBudgetLine(d(7, 10)), '');
 assert.strictEqual(_aiBudgetLine(d(7, null)), '', 'no budget, no warning');
-assert(/\$8\.00 of \$10\.00 used \(80%\)/.test(_aiBudgetLine(d(8, 10))));
+assert.strictEqual(_aiBudgetLine(d(9.5, 10)), '', 'the amber line is gone: the bar shows 80%+');
 assert(/used up: \$10\.50 of \$10\.00.*No new AI calls/.test(_aiBudgetLine(d(10.5, 10))));
 
 // configuration block
@@ -43,4 +43,12 @@ assert.strictEqual(chip(1, 5), '· AI spend $1.00 / $5.00');
 assert(/width:20%;background:var\(--ok\)/.test(_aiCostChip({ ai_cost_usd: 1, ai_budget_usd: 5 })), 'bar 20%, green');
 assert(/var\(--high\)/.test(_aiCostChip({ ai_cost_usd: 4, ai_budget_usd: 5 })), 'amber from 80%');
 assert(/width:100%;background:var\(--crit\)/.test(_aiCostChip({ ai_cost_usd: 7, ai_budget_usd: 5 })), 'red, bar capped');
+
+// the Analysis header: the same item, a click opens the breakdown in Configuration
+assert(/onclick="setTab\('config'\)"/.test(_aiCostChip({ ai_cost_usd: 1 }, true)) && /Click for the breakdown/.test(_aiCostChip({ ai_cost_usd: 1 }, true)));
+assert(!/onclick/.test(_aiCostChip({ ai_cost_usd: 1 })), 'not a link on the Case Management card');
+// it is refreshed after a chat answer and while a report is being written
+assert(/done\(content\);\s*loadAiCost\(id\);/.test(html), 'after a chat answer');
+assert(/if\(info\.report_generating && curInfo && curInfo\.case_id===id\) loadAiCost\(id\);/.test(html), 'while a report is written');
+assert(/<div id="case-meta">\$\{caseMetaHtml\(info,true\)\}<\/div>/.test(html), 'the header passes link=true');
 console.log('ok');

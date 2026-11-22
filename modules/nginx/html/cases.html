@@ -693,6 +693,8 @@ function costBadge(ce){
     <span style="color:var(--muted)">${_usd(before)}</span> → <b style="color:var(--warn,#d29922)">${_usd(after)}</b> /report${sim} <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
 }
 function render(info,md,g){
+  // keep the header's AI spend through a redraw (loadAiCost refreshes it): no flicker
+  if(curInfo && curInfo.case_id===info.case_id && typeof info.ai_cost_usd!=='number') info.ai_cost_usd=curInfo.ai_cost_usd;
   curInfo=info; curGraph=g;
   // THIS case's report, even when it has none yet. drawTab keeps the last report it
   // was given unless a new one is non-empty (so a tab switch can redraw it), and a
@@ -712,7 +714,7 @@ function render(info,md,g){
     <div class="outwrap">
       <div class="row" style="justify-content:space-between">
         <div><h1 id="case-name" style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
-          <div id="case-meta">${caseMetaHtml(info)}</div>
+          <div id="case-meta">${caseMetaHtml(info,true)}</div>
           <div id="case-since" style="color:var(--muted);font-size:12px">${scopeSinceHtml(info, tw)}</div>
           <div id="aibudget-warn"></div></div>
       </div>
@@ -861,16 +863,18 @@ function orgOptionsHtml(cur){
   if(!L.some(o=>o.id===cur)) L.push({id:cur,name:cur+' (not in Velociraptor now)'});
   return L.map(o=>`<option value="${esc(o.id)}" ${o.id===cur?'selected':''}>${esc(_orgOpts.some(x=>x.id===o.id)?orgLabel(o.id):o.name)}</option>`).join('');
 }
-// The case list carries each case's AI cost (ai_cost_usd); the Analysis header
-// does not, and shows its own budget warning (_aiBudgetLine).
-function _aiCostChip(info){
+// Each case's AI spend: on its Case Management card (the list carries ai_cost_usd)
+// and in the Analysis header (loadAiCost fills it in), where a click opens the
+// breakdown in Configuration.
+function _aiCostChip(info, link){
   if(typeof info.ai_cost_usd!=='number') return '';
   const b=info.ai_budget_usd, pct=b?100*info.ai_cost_usd/b:0;
   const col=pct>=100?'var(--crit)':pct>=80?'var(--high)':'var(--ok)';
   const bar=b?`<span style="display:inline-block;width:56px;height:4px;border-radius:2px;background:var(--bd);overflow:hidden;vertical-align:middle;margin-left:6px"><span style="display:block;height:100%;width:${Math.min(100,pct).toFixed(0)}%;background:${col}"></span></span>`:'';
-  return `<span style="color:var(--muted)" title="${b?`AI spend of this case: ${Math.round(pct)}% of its budget`:'AI spend of this case (no budget set)'}">· AI spend <span style="color:${pct>=80?col:'var(--tx)'}">${_usd(info.ai_cost_usd)}</span>${b?` / ${_usd(b)}`:''}${bar}</span>`;
+  const tip=(b?`AI spend of this case: ${Math.round(pct)}% of its budget`:'AI spend of this case (no budget set)')+(link?'. Click for the breakdown.':'');
+  return `<span style="color:var(--muted)${link?';cursor:pointer':''}" title="${tip}"${link?` onclick="setTab('config')"`:''}>· AI spend <span style="color:${pct>=80?col:'var(--tx)'}">${_usd(info.ai_cost_usd)}</span>${b?` / ${_usd(b)}`:''}${bar}</span>`;
 }
-function caseMetaHtml(info){
+function caseMetaHtml(info, link){
   info=info||{};
   const key=String(info.case_status||'').toLowerCase(), st=CASE_STATUS_LABEL[key]||'Open';
   // Open green, Closed red (QA 2026-11-08: both were the same amber); Contained keeps amber.
@@ -881,7 +885,7 @@ function caseMetaHtml(info){
     +`<span class="sg-hint" style="border-style:solid;color:${col};border-color:${col}">${esc(st)}</span>`
     +(own?`<span style="color:var(--muted)">owner: ${esc(own)}</span>`:'')
     +`<span style="color:var(--muted)" title="Velociraptor org of this case">org: ${esc(orgName(info.velo_org))}</span>`
-    +_aiCostChip(info)
+    +_aiCostChip(info, link)
     +(desc?`<span style="color:var(--muted);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(desc)}">— ${esc(desc)}</span>`:'')
     +`</div>`;
 }
@@ -937,7 +941,7 @@ function _aiBudgetLine(d){                           // pure (tested)
   if(!d || !d.budget_usd) return '';
   const pct=Math.round(d.used_pct||0), cls=pct>=100?'var(--crit)':'var(--high)';
   if(pct>=100) return `<div style="color:${cls};font-size:12px;margin-top:2px">AI budget used up: ${_usd(d.cost_usd)} of ${_usd(d.budget_usd)}. No new AI calls in this case until it is raised in Configuration.</div>`;
-  if(pct>=80) return `<div style="color:${cls};font-size:12px;margin-top:2px">AI budget: ${_usd(d.cost_usd)} of ${_usd(d.budget_usd)} used (${pct}%).</div>`;
+  // below 100% the header's AI spend (bar amber from 80%) says it already
   return '';
 }
 function _aiCostHtml(d){                             // pure (tested)
@@ -954,6 +958,10 @@ function loadAiCost(id){
   api('/api/cases/'+id+'/ai_cost').then(d=>{
     if(!d || d.error || d.case_id!==id) return;
     const w=$('#aibudget-warn'); if(w) w.innerHTML=_aiBudgetLine(d);
+    if(curInfo && curInfo.case_id===id){
+      curInfo.ai_cost_usd=d.cost_usd; curInfo.ai_budget_usd=d.budget_usd;
+      const m=$('#case-meta'); if(m) m.innerHTML=caseMetaHtml(curInfo,true);
+    }
     const c=$('#cf-aicost'); if(c) c.innerHTML=_aiCostHtml(d);
   }).catch(()=>{});
 }
@@ -1885,6 +1893,7 @@ function pollReportGen(id){
           curInfo.llm_status=info.llm_status; curInfo._fresh=true;
         }
       }
+      if(info.report_generating && curInfo && curInfo.case_id===id) loadAiCost(id);   // spend climbs as it writes
       if(!info.report_generating){
         // Nothing is generating. Keep watching anyway, and refresh the moment
         // the case changes underneath us — that is the whole point of the poll
@@ -3140,6 +3149,7 @@ function ask(id){
   // exchange on screen, which read as the chat rewriting the question.
   const doneSynced=(content)=>{
     done(content);
+    loadAiCost(id);                        // the answer's cost, in the header
     api('/api/cases/'+id+'/chat').then(d=>{
       const ms=(d&&d.messages)||[], lastQ=[...ms].reverse().find(m=>m.role==='user');
       if(_chatCase===id && lastQ && lastQ.content===q){
