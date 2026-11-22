@@ -361,6 +361,8 @@ def create_case():
 @case_bp.route("/api/cases", methods=["GET"])
 def list_cases():
     from services import workflow_service as ws
+    from services import llm_usage
+    spent = llm_usage.costs_by_case()
     runs = ws.get_all_automation_runs() if hasattr(ws, "get_all_automation_runs") else []
     cases = []
     for r in runs:
@@ -382,7 +384,8 @@ def list_cases():
                       "status": r.get("status"), "is_default": is_default,
                       "is_system": is_system, "builtin": is_default or is_system,
                       "members": len(members) or len(det.get("member_run_ids") or []),
-                      "created_at": r.get("created_at"), **store.case_info(det)})
+                      "created_at": r.get("created_at"), "ai_cost_usd": spent.get(cid, 0.0),
+                      **store.case_info(det)})
     # Default first, then System, then newest-first among the rest (stable passes)
     cases.sort(key=lambda c: c.get("created_at") or "", reverse=True)
     cases.sort(key=lambda c: (not c["is_default"], not c["is_system"]))
@@ -487,7 +490,7 @@ def get_case(case_id):
                     # never let identities escape the same context-safe budget. None =
                     # tied to the Entity limit with no separate action needed.
                     "max_identities": d.get("max_identities"),
-                    "ai_budget_usd": d.get("ai_budget_usd"),   # services/llm_usage.py
+                    "ai_budget_usd": d.get("ai_budget_usd"),   # services/llm_usage.py (also in case_info)
                     # LOCKED to the model max: no per-case output cap any more.
                     # Kept in the response for API compatibility (None = model max).
                     "llm_max_output_tokens": None,
@@ -1230,13 +1233,13 @@ def decide_checklist(case_id, item_id):
 @case_bp.route("/api/cases/<case_id>/ai_cost", methods=["GET"])
 def ai_cost(case_id):
     """What this case's AI calls cost (the ledger, services/llm_usage.py) and its
-    AI budget: its own, or Settings' default, or none."""
+    AI budget (its own; none = no limit)."""
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     from services import llm_usage
     out = llm_usage.case_summary(case_id)
-    budget, src = llm_usage.case_budget(case_id)
-    out.update(case_id=case_id, budget_usd=budget, budget_source=src,
+    budget = llm_usage.case_budget(case_id)
+    out.update(case_id=case_id, budget_usd=budget,
                used_pct=(round(100.0 * out["cost_usd"] / budget, 1) if budget else None))
     return jsonify(out)
 

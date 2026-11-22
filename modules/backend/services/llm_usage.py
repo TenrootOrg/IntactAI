@@ -110,28 +110,23 @@ def _budget_value(v):
         return None
 
 
-def default_budget():
-    """Settings -> Agentic: the AI budget a case gets when it has none of its own."""
+def costs_by_case() -> dict:
+    """{case_id: USD spent}, every case in one query (the Case Management list)."""
     try:
-        from services.memory.pipeline import _llm_config_from_runtime
-        return _budget_value(((_llm_config_from_runtime() or {}).get("agentic") or {})
-                             .get("case_ai_budget_default_usd"))
+        return {cid: round(float(u or 0.0), 6) for cid, u in get_connection().execute(
+            "SELECT case_id, SUM(cost_usd) FROM llm_usage WHERE case_id IS NOT NULL GROUP BY case_id")}
     except Exception:                                   # noqa: BLE001
-        return None
+        return {}
 
 
 def case_budget(case_id):
-    """(budget in USD or None for no limit, 'case' | 'default' | None)."""
-    own = None
+    """The case's own AI budget in USD, or None for no limit. There is no
+    platform-wide default: each case is budgeted on its own (2026-11-22)."""
     try:
         from services.fusion import store
-        own = _budget_value(((store.get_case(case_id) or {}).get("ai_budget_usd")))
+        return _budget_value((store.get_case(case_id) or {}).get("ai_budget_usd"))
     except Exception:                                   # noqa: BLE001
-        pass
-    if own is not None:
-        return own, "case"
-    d = default_budget()
-    return (d, "default") if d is not None else (None, None)
+        return None
 
 
 def check_budget(run_id):
@@ -142,7 +137,7 @@ def check_budget(run_id):
     cid = case_of(run_id)
     if not cid:
         return
-    budget, _src = case_budget(cid)
+    budget = case_budget(cid)
     if budget is None:
         return
     spent = case_spent(cid)

@@ -25,14 +25,14 @@ from services.fusion import store  # noqa: E402
 class OldCases(unittest.TestCase):
     def test_a_case_from_an_older_version_reads_as_open_and_unset(self):
         self.assertEqual(store.case_info({"name": "old"}),
-                         {"case_status": "open", "case_owner": "", "case_description": "", "velo_org": "root"})
+                         {"case_status": "open", "case_owner": "", "case_description": "", "velo_org": "root", "ai_budget_usd": None})
         # a severity stored on a case from before it was removed is ignored
         self.assertNotIn("case_severity", store.case_info({"case_severity": "high"}))
 
     def test_damaged_values_fall_back_instead_of_failing(self):
         info = store.case_info({"case_status": 7, "case_severity": "huge", "case_owner": ["x"],
                                 "case_description": None})
-        self.assertEqual(info, {"case_status": "open", "case_owner": "", "case_description": "", "velo_org": "root"})
+        self.assertEqual(info, {"case_status": "open", "case_owner": "", "case_description": "", "velo_org": "root", "ai_budget_usd": None})
         self.assertEqual(store.case_info({"velo_org": ["x"]})["velo_org"], "root")
         self.assertEqual(store.case_info(None)["case_status"], "open")
 
@@ -85,6 +85,17 @@ class Save(unittest.TestCase):
         self.assertIn("error", res)
         self.assertIsNone(patch)
 
+    def test_the_ai_budget_is_saved_from_case_management(self):
+        _, patch, _ = self.run_it({"ai_budget_usd": "12.345"})
+        self.assertEqual(patch, {"ai_budget_usd": 12.35})
+        for empty in (None, "", 0, "0"):
+            _, patch, _ = self.run_it({"ai_budget_usd": empty})
+            self.assertEqual(patch, {"ai_budget_usd": None}, empty)      # = no limit
+        res, patch, _ = self.run_it({"ai_budget_usd": "five"})
+        self.assertIn("error", res)
+        self.assertIsNone(patch)
+        self.assertEqual(store.case_info({"ai_budget_usd": 5})["ai_budget_usd"], 5.0)
+
     def test_the_request_hook_lookup_is_cached_per_case(self):
         store._CASE_ORG.clear()
         with mock.patch.object(store, "get_case", return_value={"velo_org": "OFM5G"}) as g:
@@ -109,8 +120,11 @@ class Page(unittest.TestCase):
             src = fh.read()
         parts = [re.search(r"const CASE_STATUS_LABEL=\{.*?\};", src).group(0),
                  re.search(r"let _cdEdit=null, _cdDraft=\{\};", src).group(0),
-                 re.search(r"function orgLabel\([^\n]*", src).group(0)] + \
-                [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0) for n in ("orgOptionsHtml", "caseMetaHtml", "caseEditForm")]
+                 re.search(r"function orgLabel\([^\n]*", src).group(0),
+                 re.search(r"function orgName\([^\n]*", src).group(0),
+                 re.search(r"function _usd\([^\n]*", src).group(0)] + \
+                [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0)
+                 for n in ("orgOptionsHtml", "_aiCostChip", "caseMetaHtml", "caseEditForm")]
         js = "const esc=s=>String(s);\nlet _orgOpts=[{id:'root',name:'root'},{id:'OFM5G',name:'Acme'}];\n" + "\n".join(parts) + """
 console.log(JSON.stringify([
   caseMetaHtml({name:'old case'}),
@@ -122,7 +136,9 @@ console.log(JSON.stringify([
   (()=>{ _cdDraft={'cdf-owner':'typed before a redraw'}; return caseEditForm({case_id:'c2', name:'qa', case_owner:'saved'}); })(),
   (()=>{ _cdDraft={}; return caseEditForm({case_id:'c3', name:'acme', velo_org:'OFM5G'}); })(),
   caseMetaHtml({velo_org:'OFM5G'}),
-  caseEditForm({case_id:'c4', name:'gone', velo_org:'DELETED'})]));"""
+  caseEditForm({case_id:'c4', name:'gone', velo_org:'DELETED'}),
+  caseMetaHtml({ai_cost_usd:0.43, ai_budget_usd:5}),
+  caseEditForm({case_id:'c5', name:'b', ai_budget_usd:5})]));"""
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
@@ -152,8 +168,12 @@ console.log(JSON.stringify([
         self.assertIn("org: root", out[0])                              # an old case: root
         self.assertIn('id="cdf-org" data-was="OFM5G"', out[7])          # the case's org, editable
         self.assertIn('<option value="OFM5G" selected>Acme (OFM5G)</option>', out[7])
-        self.assertIn("org: Acme (OFM5G)", out[8])
+        self.assertIn("org: Acme<", out[8])                             # by name (8d051425)
         self.assertIn('value="DELETED" selected>DELETED (not in Velociraptor now)', out[9])  # kept, said
+        self.assertIn("AI: $0.430 / $5.00", out[10])                    # the list card: cost and budget
+        self.assertNotIn("AI:", out[0])                                 # the Analysis header: none
+        self.assertIn('id="cdf-aibudget" type="number" min="0" step="0.5" value="5"', out[11])
+        self.assertIn('id="cdf-aibudget" type="number" min="0" step="0.5" value=""', out[5])  # empty = no limit
 
 
 

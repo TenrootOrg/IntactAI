@@ -14,7 +14,6 @@ document.addEventListener('alpine:init', () => {
                 online_llm: { provider: 'openrouter', api_key: '', model: '~anthropic/claude-haiku-latest' },
                 ollama_context_size: 65536,
                 ollama_timeout: 600,
-                case_ai_budget_default_usd: null,   // services/llm_usage.py; null = no limit
                 // The decision model — must match DEFAULTS in services/fusion/decision_model.py
                 decision_model: { enabled: false, mode: '', provider: 'openrouter', model: 'jev-latest', url: '', context_tokens: 0, min_confidence: 0.2, api_key: '', uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true, injection: true, chat_confidence: true, scopes: true, compromise: true, report: true } }
             },
@@ -107,7 +106,6 @@ document.addEventListener('alpine:init', () => {
                         online_llm: { ...this.config.agentic.online_llm, ...data.agentic?.online_llm },
                         ollama_context_size: data.agentic?.ollama_context_size || 65536,
                         ollama_timeout: data.agentic?.ollama_timeout || 600,
-                        case_ai_budget_default_usd: data.agentic?.case_ai_budget_default_usd ?? null,
                         // Listed here or Save drops it: saveAgentic() PUTs this whole block.
                         decision_model: { ...this.config.agentic.decision_model, ...data.agentic?.decision_model,
                                uses: { ...this.config.agentic.decision_model.uses, ...data.agentic?.decision_model?.uses } }

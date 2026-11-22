@@ -92,23 +92,29 @@ class Budget(unittest.TestCase):
     def setUp(self):
         _clear()
 
-    def test_own_budget_then_settings_default_then_none(self):
-        for own, default, want in ((5, 20, (5.0, "case")), (None, 20, (20.0, "default")),
-                                   (None, None, (None, None)), (0, None, (None, None))):
-            with mock.patch("services.fusion.store.get_case", return_value={"ai_budget_usd": own}), \
-                 mock.patch.object(llm_usage, "default_budget", return_value=default):
-                self.assertEqual(llm_usage.case_budget("case_1"), want, (own, default))
+    def test_the_budget_is_the_cases_own_and_nothing_else(self):
+        for own, want in ((5, 5.0), ("7.5", 7.5), (None, None), (0, None), ("x", None)):
+            with mock.patch("services.fusion.store.get_case", return_value={"ai_budget_usd": own}):
+                self.assertEqual(llm_usage.case_budget("case_1"), want, own)
+        self.assertFalse(hasattr(llm_usage, "default_budget"), "no platform-wide default (2026-11-22)")
+
+    def test_costs_by_case_in_one_query(self):
+        llm_usage.record("case_1", provider="x", model="y", cost_usd=0.25)
+        llm_usage.record("case_1", provider="x", model="y", cost_usd=0.5)
+        llm_usage.record("case_2", provider="x", model="y", cost_usd=2.0)
+        llm_usage.record("run-orphan", provider="x", model="y", cost_usd=9.0)
+        self.assertEqual(llm_usage.costs_by_case(), {"case_1": 0.75, "case_2": 2.0})
 
     def test_a_used_up_budget_refuses_and_a_case_without_one_passes(self):
         llm_usage.record("case_1", provider="x", model="y", cost_usd=2.0)
-        with mock.patch.object(llm_usage, "case_budget", return_value=(2.0, "case")):
+        with mock.patch.object(llm_usage, "case_budget", return_value=2.0):
             with self.assertRaises(llm_usage.AIBudgetExceeded) as cm:
                 llm_usage.check_budget("case_1")
             self.assertEqual(cm.exception.reason, "case_budget")
             self.assertIn("$2.00", str(cm.exception))
-        with mock.patch.object(llm_usage, "case_budget", return_value=(5.0, "case")):
+        with mock.patch.object(llm_usage, "case_budget", return_value=5.0):
             llm_usage.check_budget("case_1")                 # 2 of 5: passes
-        with mock.patch.object(llm_usage, "case_budget", return_value=(None, None)):
+        with mock.patch.object(llm_usage, "case_budget", return_value=None):
             llm_usage.check_budget("case_1")                 # no budget: passes
         llm_usage.check_budget("run-not-in-a-case")          # no case: passes
 

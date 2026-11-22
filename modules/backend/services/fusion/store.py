@@ -4178,7 +4178,20 @@ def case_info(d) -> dict:
             "case_owner": d.get("case_owner") if isinstance(d.get("case_owner"), str) else "",
             "case_description": d.get("case_description") if isinstance(d.get("case_description"), str) else "",
             # The Velociraptor org every Velociraptor action in this case runs in.
-            "velo_org": (d.get("velo_org") if isinstance(d.get("velo_org"), str) else "") or "root"}
+            "velo_org": (d.get("velo_org") if isinstance(d.get("velo_org"), str) else "") or "root",
+            # The case's AI budget in USD (services/llm_usage.check_budget); None = no limit.
+            "ai_budget_usd": _ai_budget(d.get("ai_budget_usd"))[1]}
+
+
+def _ai_budget(v):
+    """(ok, budget): empty or 0 = no limit (None); not a number = not ok."""
+    if v in (None, ""):
+        return True, None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return False, None
+    return (f == f), (round(f, 2) if f > 0 and f != float("inf") else None)
 
 
 # case_id -> its org ('' = root), for the request hook (app.py), which runs on every
@@ -4246,6 +4259,11 @@ def update_case_info(case_id, fields) -> dict:
         if raw not in ("", "root") and not org:
             return {"error": "not a valid Velociraptor org id"}
         patch["velo_org"] = org            # '' = root
+    if "ai_budget_usd" in fields:          # Case Management's edit form
+        ok, budget = _ai_budget(fields.get("ai_budget_usd"))
+        if not ok:
+            return {"error": "the AI budget must be a number of US dollars (empty = no limit)"}
+        patch["ai_budget_usd"] = budget
     if not patch:
         return {"error": "nothing to save"}
     _merge_case_details(case_id, patch)
@@ -5318,13 +5336,10 @@ def set_analysis_config(case_id, cfg) -> dict:
             pass
     if "ai_budget_usd" in cfg:
         # The case's AI budget in USD (services/llm_usage.check_budget); empty or
-        # 0 = none of its own (Settings' default applies, if any).
-        try:
-            v = cfg["ai_budget_usd"]
-            f = float(v) if v not in (None, "") else 0.0
-            patch["ai_budget_usd"] = round(f, 2) if f > 0 else None
-        except (TypeError, ValueError):
-            pass
+        # 0 = no limit. Also edited in Case Management (update_case_info).
+        ok, budget = _ai_budget(cfg["ai_budget_usd"])
+        if ok:
+            patch["ai_budget_usd"] = budget
     # LOCKED platform-wide (operator can't change; UI shows them fixed/disabled):
     #   - chat ALWAYS sends full context — host-resolution mode makes chat robotic.
     #   - the report is ALWAYS explicit (real cmdline / path / hash per finding).
