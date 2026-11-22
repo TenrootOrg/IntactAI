@@ -2854,6 +2854,7 @@ def _llm_unavailable_reason():
 
 def _classify_llm_error(exc) -> str:
     """Map a transport exception to a reason code (auth vs connection vs timeout …)."""
+    import re                     # local: tests/test_llm_status.py runs this function on its own
     # A failure that ALREADY knows what it is keeps that answer. The subscription CLI
     # classifies its own output (it is the only layer that sees the vendor's exact
     # wording) and raises with `.reason`; re-deriving the code here from the message
@@ -2927,7 +2928,9 @@ def _classify_llm_error(exc) -> str:
     if any(t in s for t in ("not a valid model", "model_not_found", "model not found",
                             "no such model", "unknown model", "invalid model",
                             "model does not exist", "is not supported when using",
-                            "model is not supported")):
+                            "model is not supported")) or re.search(r"model ['\"]?\S+['\"]? not found", s):
+        # Ollama names the model in between: 'model "~google/gemini-flash-latest"
+        # not found' (HTTP 404) -- a model left over from OpenRouter read as a bad key.
         return "model_unsupported"
     if any(t in s for t in ("401", "403", "unauthor", "user not found", "invalid api",
                             "authentication", "invalid_api_key", "no api key", "api key")):

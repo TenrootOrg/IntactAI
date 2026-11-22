@@ -2313,11 +2313,11 @@ document.addEventListener('alpine:init', () => {
                 const list = data.models || [];
                 let picked = preferredId ? list.find(m => m.id === preferredId) : null;
                 if (!picked) picked = list[0];
-                if (picked) {
-                    this.config.agentic.online_llm.model = picked.id;
-                    // (max_response_tokens removed — Case Analysis per-case Output token cap
-                    //  defaults to the model's max output.)
-                }
+                // No list (Ollama Cloud before its key is saved answers an empty one):
+                // clear rather than keep the previous provider's model. An OpenRouter
+                // id kept for Ollama Cloud looked chosen and failed every call with
+                // "model not found" (2026-11-22).
+                this.config.agentic.online_llm.model = picked ? picked.id : (preferredId || '');
             } catch (e) {
                 // Network/parse failure → fall back to a sensible
                 // hardcoded default so the field isn't left stale from
