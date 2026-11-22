@@ -2871,6 +2871,12 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         report_dirty = False             # report freshly generated → up to date
         if _report_failed:               # nothing new was written: still behind
             report_members, report_dirty = d.get("report_run_ids"), True
+        _kept = None if _report_failed else _keep_ai_report(d.get("report_md"), report)
+        if _kept:                        # the AI report stays, and is now behind
+            report, _report_is_new = d.get("report_md"), False
+            _report_cfg_id, _report_written_at = d.get("report_config_id"), d.get("report_written_at")
+            report_members, report_dirty = d.get("report_run_ids"), True
+            _mark_ai_report_kept(case_id, _gen_scope, _kept)
     # customer-confirmation checklist — generate once (preserve operator decisions on
     # re-fuse). GENERATED here, but WRITTEN after the bulk patch below via
     # _mutate_list_field — see the note there for why it may not ride along in the patch.
@@ -3030,6 +3036,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   # True when this fuse left the report frozen (triage/
                                   # disposition re-fuse) → UI shows "report not up to date".
                                   "report_dirty": report_dirty}
+    if _report_is_new:
+        _details["report_ai_kept"] = None    # a new report: the "AI report kept" note is done
     # The detected-activity span: what a case with an auto (unchosen) window
     # DISPLAYS, so a one-minute attack is shown as a one-minute window, not the
     # ten-year default bound. Recomputed every fuse from the findings themselves,
@@ -4153,6 +4161,38 @@ def _narration_outcome(report):
     return False, (m.group(1).strip() if m else "the model did not return a narrative")
 
 
+def _keep_ai_report(current_md, new_md):
+    """Why an offline report must NOT replace the AI report a timeframe has, or None.
+
+    2026-11-22: a report written with the AI, the key removed, Regenerate -- and
+    the offline report took the AI one's place on screen (it survived only in the
+    history). An AI report is the better report of the same evidence; one that
+    cannot be rewritten with the AI right now stays. An offline report still
+    replaces another offline one, and is still the first report of a case."""
+    if "_Narrative by live LLM" not in (current_md or ""):
+        return None
+    narrated, why = _narration_outcome(new_md)
+    return None if narrated else (why or "the AI model was not used")
+
+
+def _scope_report_md(d, scope_id):
+    """The report a timeframe shows now: the live row's when it is the one being
+    read, else its scope entry's."""
+    d = d or {}
+    if _active_scope_id(d) == scope_id:
+        return d.get("report_md")
+    return next((x.get("report_md") for x in _scopes(d) if x.get("id") == scope_id), None)
+
+
+def _mark_ai_report_kept(case_id, scope_id, reason):
+    """Say it where the operator reads the report (report_ai_kept) and in the Log."""
+    log_case_event(case_id, "Report · AI report kept", "warning",
+                   f"{reason} — the AI report was kept; no offline report was written "
+                   f"over it. Fix that, then click Regenerate report")
+    _merge_case_details(case_id, {"report_ai_kept": {"at": _now_iso(), "scope": scope_id,
+                                                     "reason": reason}})
+
+
 def _model_label(model):
     """What the log names. A subscription with the Model field blank uses the
     plan's default, which is not "no model" (it used to log exactly that)."""
@@ -5123,6 +5163,15 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
                        f"after it was stopped. Nothing was saved.")
         return {"report_md": d.get("report_md"), "audience": d.get("audience", "both"),
                 "discarded": True}
+    _now_d = get_case(case_id) or d
+    _cur = _scope_report_md(_now_d, _gen_scope)
+    _kept = _keep_ai_report(_cur, report)
+    if _kept:
+        _mark_ai_report_kept(case_id, _gen_scope, _kept)
+        return {"report_md": _cur, "audience": d.get("audience", "both"),
+                "kept_ai_report": True, "reason": _kept}
+    if (_now_d.get("report_ai_kept") or {}).get("scope") == _gen_scope:
+        _narrative_patch["report_ai_kept"] = None        # a new report: the note is done
     try:
         _on_screen = write_report_for_scope(case_id, _gen_scope, _narrative_patch)
         try:

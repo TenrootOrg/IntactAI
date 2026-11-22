@@ -1160,6 +1160,12 @@ function reportStatusHtml(info){
 // tokens).
 function behindNote(info){
   if(!info) return '';
+  // The last run could not use the AI, and the AI report was kept rather than
+  // replaced by an offline one (store._keep_ai_report). Said first: it is why the
+  // report on screen did not change.
+  const kept=info.report_ai_kept;
+  if(kept && kept.scope===info.active_scope && (window._md||'').trim())
+    return `<div class="agnote">The last report run could not use the AI model: ${esc(kept.reason||'')} Your AI report below was kept; no offline report was written over it. Fix that, then click <b>Regenerate report</b>.</div>`;
   if(info.refusion_needed)
     return `<div class="agnote">Some saved settings (time window, severity, hosts or modules) are not applied yet. Go to <b>Configuration</b> and click <b>Refusion</b> to apply them.</div>`;
   // The report was written by an EARLIER version of the analysis: what counts as a
@@ -2001,7 +2007,9 @@ function regenReport(id, force){
      if(r && r.status==='offline'){
        // Already written, synchronously. Nothing is generating; just show it.
        if(!backgroundRefresh(id, null)) pollReportGen(id);
-       toast('No AI model is reachable. The report was generated offline from the case evidence.');
+       toast(r.kept_ai_report
+         ? 'No AI model is reachable, so your AI report was kept. The note above the report says why.'
+         : 'No AI model is reachable. The report was generated offline from the case evidence.');
        return;
      }
      if(r && r.busy){ toast('A report is already being generated. It will appear here when it is ready.'); }
@@ -2197,7 +2205,8 @@ async function doRescanLLM(id){
   if(r && r.busy){ toast('This case is already being re-fused. Please try again shortly.'); return; }
   const g = await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});
   toast(g && g.status==='offline'
-    ? 'Rescan complete. No AI model is reachable, so the report was generated offline.'
+    ? (g.kept_ai_report ? 'Rescan complete. No AI model is reachable, so your AI report was kept.'
+                        : 'Rescan complete. No AI model is reachable, so the report was generated offline.')
     : 'Rescan complete. The report is being regenerated.');
   tab='report'; openCase(id);
 }

@@ -147,6 +147,8 @@ def _audit_detail(action, is_err, resp):
             if resp.status_code == 202:
                 return "report generation started"
             if _safe_json(resp).get("status") == "offline":
+                if _safe_json(resp).get("kept_ai_report"):
+                    return "AI report kept — no AI model is reachable, and an offline report is not written over it"
                 return "report written offline — no AI model is reachable from this appliance"
             return "report regenerated"
         if a == "rescan":
@@ -481,6 +483,8 @@ def get_case(case_id):
                     # windows only — a scope's report and chat never ride here.
                     "scopes": store.scopes_for_payload(d, store.scope_host_counts(case_id, d)),
                     "active_scope": store._active_scope_id(d),
+                    # an offline result that was NOT written over the AI report (store._keep_ai_report)
+                    "report_ai_kept": d.get("report_ai_kept"),
                     # entity-cap textbox + module picker (velociraptor default;
                     # memory optional; timesketch/cve/cloud disabled for now)
                     # Single entity knob: sizes the stored graph AND the LLM payload.
