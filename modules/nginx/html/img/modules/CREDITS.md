@@ -15,3 +15,5 @@ card opens.
 | volweb.svg | VolWeb | github.com/k1nd0ne/VolWeb `frontend/public/volico.svg` | GPL-3.0 |
 | cloudtrail.png | AWS CloudTrail | AWS Architecture Icons via github.com/awslabs/aws-icons-for-plantuml `dist/ManagementGovernance/CloudTrail.png` | CC BY-ND 2.0, © Amazon Web Services |
 | o365rc.png | DFIR-O365RC (ANSSI) | github.com/ANSSI-FR/DFIR-O365RC `logo.png` | GPL-3.0 |
+| plaso.jpg | Plaso (log2timeline) | github.com/log2timeline/plaso `config/logo.jpg` | Apache-2.0 |
+| presidio.svg | Presidio (Microsoft) | github.com/microsoft/presidio `docs/api-docs/logo.svg` | MIT |
