@@ -156,12 +156,16 @@ class Page(unittest.TestCase):
             self.assertIn("patchReportStatus(curInfo)", c)
             self.assertNotIn("drawTab", c)
         js = ("const esc=s=>String(s); const window={};\n" + re.search(r"const _rpLab=.*?;\n", src).group(0)
-              + re.search(r"function reportHistoryHtml\(.*?\n\}", src, re.S).group(0) + """
+              + "\n".join(re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0)
+                           for n in ("_reportKind", "_reportKindBadge", "reportHistoryHtml")) + """
 const H=[{id:'0123456789ab',label:'Report',at:'2026-09-30T10:12:00',kind:'ai',scope_label:'2016-09-24 → 2026-09-24'},
-         {id:'0123456789cd',label:'Final',at:'2026-09-28T08:00:00',kind:'ai'}];
+         {id:'0123456789cd',label:'Final',at:'2026-09-28T08:00:00',kind:'template'}];
 console.log(JSON.stringify([reportHistoryHtml({case_id:'c1', report_history:H}, null),
   reportHistoryHtml({case_id:'c1', report_history:H}, {id:'0123456789ab', label:'Report', at:'2026-09-30T10:12:00'}),
-  reportHistoryHtml({case_id:'c1', report_history:H}, {id:'0123456789cd', label:'Final', at:'2026-09-28T08:00:00'})]));""")
+  reportHistoryHtml({case_id:'c1', report_history:H}, {id:'0123456789cd', label:'Final', at:'2026-09-28T08:00:00'}),
+  _reportKind('# R\\n\\nbody\\n\\n---\\n_Narrative by live LLM; fact tables deterministic._\\n'),
+  _reportKind('# R\\n\\nbody\\n\\n---\\n_Deterministic report — The appliance cannot reach the AI provider._\\n'),
+  _reportKind('# R\\n\\nbody from before the tags\\n'), _reportKindBadge('')]));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
@@ -182,6 +186,15 @@ console.log(JSON.stringify([reportHistoryHtml({case_id:'c1', report_history:H}, 
         self.assertIn("● Viewing", out[1])
         self.assertIn(">View</button>", out[1])
         self.assertIn("Viewing the <b>Final</b> report of 2026-09-28 08:00 UTC — not the current one", out[2])
+        # AI or offline, said on every row (2026-11-22: "template report" in grey was missed)
+        rows = out[0].split('class="erow"')[1:]
+        self.assertIn(">AI report (LLM)</span>", rows[0])
+        self.assertIn("current", rows[0])
+        self.assertIn(">Offline report (no AI)</span>", rows[1])
+        self.assertNotIn("template report", out[0])
+        # ...and at the top of the report itself, read from the report's own tail
+        self.assertEqual(out[3:7], ["ai", "offline", "", ""])             # untagged: no badge, no guess
+        self.assertIn("${_reportKind(md)?`<div style=\"margin:0 0 6px\">${_reportKindBadge(_reportKind(md))}</div>`:''}<div class=\"md\">", src)
 
 
 if __name__ == "__main__":

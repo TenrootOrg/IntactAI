@@ -1543,6 +1543,19 @@ function evAttachFiles(fid, files){
 // The current report is always the newest. Reports kept while stages / types
 // existed (Flash, Technical customers, ...) show that label.
 const _rpLab=x=>(x&&x.label&&x.label!=='Report')?x.label:'';
+// How a report was written, said plainly at its top and on its history row. Only
+// the report's OWN tail knows (the same tag reportAirGap reads); a report from
+// before the tags has neither and gets no badge rather than a guess.
+function _reportKind(md){                            // pure (tested)
+  if(/\n\n---\n_Deterministic report — /.test(md||'')) return 'offline';
+  if(/\n\n---\n_Narrative by live LLM/.test(md||'')) return 'ai';
+  return '';
+}
+function _reportKindBadge(kind){                     // pure (tested)
+  if(kind==='ai') return `<span class="sg-hint" style="border-style:solid;color:var(--info);border-color:var(--info)" title="The narrative was written by the AI model; the fact tables are built from the case data">AI report (LLM)</span>`;
+  if(kind==='offline') return `<span class="sg-hint" style="border-style:solid;color:var(--muted);border-color:var(--muted)" title="Written without an AI model: built from the case data only">Offline report (no AI)</span>`;
+  return '';
+}
 function reportHistoryHtml(info, viewing){
   const H=Array.isArray(info&&info.report_history)?info.report_history.filter(x=>x&&x.id):[];
   const cid=esc(info.case_id), open=!!window._rpHistOpen;
@@ -1550,7 +1563,7 @@ function reportHistoryHtml(info, viewing){
   const rows=H.map((x,i)=>`<div class="erow" style="gap:10px;align-items:center;font-size:12px">
       ${_rpLab(x)?`<span class="sg-hint" style="border-style:solid">${esc(_rpLab(x))}</span>`:''}
       <span>${esc(String(x.at||'').replace('T',' ').slice(0,16))} UTC</span>
-      <span style="color:var(--muted)">${x.kind==='ai'?'AI report':'template report'}${i===0?' · current':''}</span>
+      ${_reportKindBadge(x.kind==='ai'?'ai':'offline')}${i===0?'<span style="color:var(--muted)">current</span>':''}
       <span style="margin-left:auto;display:flex;gap:10px">${viewing&&viewing.id===x.id?'<b style="color:var(--acc)">● Viewing</b>':`<button class="dlbtn" style="padding:3px 12px;font-size:12px;border-color:var(--acc);color:var(--acc)" onclick="rpView('${cid}','${esc(x.id)}')">View</button>`}
         <details class="expmenu expright"><summary class="dlbtn" style="padding:3px 12px" title="Download this kept report">⬇ Export</summary>
           <div class="expitems" onclick="this.parentElement.open=false">${dl(x,'pdf','PDF')}${dl(x,'html','HTML')}${dl(x,'md','Markdown')}</div></details>
@@ -1601,7 +1614,7 @@ function renderReport(info){
       <div class="expitems" onclick="this.parentElement.open=false">${dl('/report/download/pdf','PDF')}${dl('/report/download/html','HTML')}${dl('/report/download','Markdown')}</div></details>
     <label style="font-size:12px;white-space:nowrap" title="On: the report gets an Evidence section with every item and its pictures (also in the PDF and HTML). The AI is never given the evidence. Regenerate the report after changing it."><input type="checkbox" style="width:auto" ${info.include_evidence?'checked':''} onchange="evToggleInclude('${esc(id)}',this.checked)"/> Include evidence in the report</label>
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div>${reportHistoryHtml(info, viewing)}<div id="zoomcards">${viewing?'':(_zoomHtml.id===id?_zoomHtml.html:'')}</div><div class="md">${mdToHtml(mdBody)}</div>`;
+  </div>${reportHistoryHtml(info, viewing)}<div id="zoomcards">${viewing?'':(_zoomHtml.id===id?_zoomHtml.html:'')}</div>${_reportKind(md)?`<div style="margin:0 0 6px">${_reportKindBadge(_reportKind(md))}</div>`:''}<div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
   loadZoomTargets(id);   // macro report -> clickable "Analyze this scope" presets
   // A page reload (or a tab switch back to Analysis) while a generation is
@@ -3088,7 +3101,7 @@ function _acInit(id){
   ['input','keyup','click','focus','scroll'].forEach(ev=>q.addEventListener(ev,_acDraw));
   // names caught after the chat opened (a new run, an import) come in on the
   // next focus, at most once a minute
-  q.addEventListener('focus',()=>{ if(Date.now()-_acAt>60000) _acLoad(id); });
+  q.addEventListener('focus',()=>{ if(Date.now()-_acAt>60000) _acLoad(id); });   // local-clock-ok: refetch the names at most once a minute
   q.addEventListener('blur',()=>{ _acSug=''; g.innerHTML=''; });
 }
 

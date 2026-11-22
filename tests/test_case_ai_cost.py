@@ -1,9 +1,10 @@
 """Case Analysis: what a case's AI calls cost, and its AI-budget warning.
 
 Drives the REAL _usd/_aiBudgetLine/_aiCostHtml from cases.html
-(tests/case_ai_cost.js): the header warns from 80% of the budget and says plainly
-when it is used up; the Configuration block shows the total, how much of it is
-estimated, the budget and where it comes from, and the split by source and model.
+(tests/case_ai_cost.js): the header and the Case Management card show the spend
+and its bar, the header says plainly when the budget is used up; the Configuration
+block shows the total, how much of it is estimated, the budget, and the split by
+source and model.
 """
 import os
 import shutil
