@@ -36,9 +36,11 @@ assert(/No budget set\./.test(_aiCostHtml({ calls: 1, cost_usd: 0.1, estimated_u
 
 // Case Management: each case's cost on its card (the list carries ai_cost_usd)
 assert.strictEqual(_aiCostChip({}), '', 'the Analysis header has no list cost: no chip');
-assert(/AI: \$0\.430 \(no limit\)/.test(_aiCostChip({ ai_cost_usd: 0.43 })));
-assert(/AI: \$0\.00 \(no limit\)/.test(_aiCostChip({ ai_cost_usd: 0 })) || /AI: \$0\.0000/.test(_aiCostChip({ ai_cost_usd: 0 })));
-assert(/var\(--muted\).*AI: \$1\.00 \/ \$5\.00/.test(_aiCostChip({ ai_cost_usd: 1, ai_budget_usd: 5 })));
+const chip = (c, b) => _aiCostChip({ ai_cost_usd: c, ai_budget_usd: b }).replace(/<[^>]+>/g, '');
+assert.strictEqual(chip(0.43), '· AI spend $0.430', 'no budget: the spend alone');
+assert.strictEqual(chip(0), '· AI spend $0.00', 'zero reads as $0.00, not $0.0000');
+assert.strictEqual(chip(1, 5), '· AI spend $1.00 / $5.00');
+assert(/width:20%;background:var\(--ok\)/.test(_aiCostChip({ ai_cost_usd: 1, ai_budget_usd: 5 })), 'bar 20%, green');
 assert(/var\(--high\)/.test(_aiCostChip({ ai_cost_usd: 4, ai_budget_usd: 5 })), 'amber from 80%');
-assert(/var\(--crit\)/.test(_aiCostChip({ ai_cost_usd: 5, ai_budget_usd: 5 })), 'red when used up');
+assert(/width:100%;background:var\(--crit\)/.test(_aiCostChip({ ai_cost_usd: 7, ai_budget_usd: 5 })), 'red, bar capped');
 console.log('ok');

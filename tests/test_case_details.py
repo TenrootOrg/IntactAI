@@ -138,7 +138,7 @@ console.log(JSON.stringify([
   caseMetaHtml({velo_org:'OFM5G'}),
   caseEditForm({case_id:'c4', name:'gone', velo_org:'DELETED'}),
   caseMetaHtml({ai_cost_usd:0.43, ai_budget_usd:5}),
-  caseEditForm({case_id:'c5', name:'b', ai_budget_usd:5})]));"""
+  caseEditForm({case_id:'c5', name:'b', ai_budget_usd:5, ai_cost_usd:1.24})]));"""
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
@@ -170,10 +170,13 @@ console.log(JSON.stringify([
         self.assertIn('<option value="OFM5G" selected>Acme (OFM5G)</option>', out[7])
         self.assertIn("org: Acme<", out[8])                             # by name (8d051425)
         self.assertIn('value="DELETED" selected>DELETED (not in Velociraptor now)', out[9])  # kept, said
-        self.assertIn("AI: $0.430 / $5.00", out[10])                    # the list card: cost and budget
-        self.assertNotIn("AI:", out[0])                                 # the Analysis header: none
-        self.assertIn('id="cdf-aibudget" type="number" min="0" step="0.5" value="5"', out[11])
-        self.assertIn('id="cdf-aibudget" type="number" min="0" step="0.5" value=""', out[5])  # empty = no limit
+        self.assertIn("AI spend", out[10])                              # the list card: cost and budget
+        self.assertIn("$0.430</span> / $5.00", out[10])
+        self.assertNotIn("AI spend", out[0])                            # the Analysis header: none
+        self.assertIn('id="cdf-aibudget" type="number" min="0" step="0.5" style="max-width:160px" value="5"', out[11])
+        self.assertIn("Spent so far: $1.24.", out[11])
+        self.assertIn('style="max-width:160px" value=""', out[5])      # empty = no limit
+        self.assertNotIn("Spent so far", out[5])
 
 
 

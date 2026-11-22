@@ -674,7 +674,7 @@ function tokenBadge(ab){
 // Estimated USD cost of one Rescan (LLM), priced live from the configured model.
 // Shows BOTH sides of the fusion ontology — raw (before) → distilled (after) — the
 // dollar twin of the token-cut badge. In simulated mode it's the projected cost if live.
-function _usd(v){ v=v||0; return '$'+(v>=1?v.toFixed(2):(v>=0.01?v.toFixed(3):v.toFixed(4))); }
+function _usd(v){ v=v||0; if(!v) return '$0.00'; return '$'+(v>=1?v.toFixed(2):(v>=0.01?v.toFixed(3):v.toFixed(4))); }
 function costBadge(ce){
   if(!ce) return '';
   // Subscription providers (Codex CLI) are not metered per token — a dollar
@@ -866,8 +866,9 @@ function orgOptionsHtml(cur){
 function _aiCostChip(info){
   if(typeof info.ai_cost_usd!=='number') return '';
   const b=info.ai_budget_usd, pct=b?100*info.ai_cost_usd/b:0;
-  const col=pct>=100?'var(--crit)':pct>=80?'var(--high)':'var(--muted)';
-  return `<span style="color:${col}" title="What this case's AI calls cost so far, and its AI budget">AI: ${_usd(info.ai_cost_usd)}${b?` / ${_usd(b)}`:' (no limit)'}</span>`;
+  const col=pct>=100?'var(--crit)':pct>=80?'var(--high)':'var(--ok)';
+  const bar=b?`<span style="display:inline-block;width:56px;height:4px;border-radius:2px;background:var(--bd);overflow:hidden;vertical-align:middle;margin-left:6px"><span style="display:block;height:100%;width:${Math.min(100,pct).toFixed(0)}%;background:${col}"></span></span>`:'';
+  return `<span style="color:var(--muted)" title="${b?`AI spend of this case: ${Math.round(pct)}% of its budget`:'AI spend of this case (no budget set)'}">· AI spend <span style="color:${pct>=80?col:'var(--tx)'}">${_usd(info.ai_cost_usd)}</span>${b?` / ${_usd(b)}`:''}${bar}</span>`;
 }
 function caseMetaHtml(info){
   info=info||{};
@@ -900,7 +901,8 @@ function caseEditForm(c){
       <label>Status</label><select id="cdf-status">${o('open','Open',st)}${o('contained','Contained',st)}${o('closed','Closed',st)}</select>
       <label>Owner</label><input id="cdf-owner" value="${esc(val('cdf-owner', typeof i.case_owner==='string'?i.case_owner:''))}" maxlength="100" placeholder="who leads this case"/>
       <label>Velociraptor org</label><select id="cdf-org" data-was="${esc(i.velo_org||'root')}">${orgOptionsHtml(val('cdf-org', i.velo_org||'root'))}</select>
-      <label>AI budget (USD) <span style="color:var(--muted)">(empty = no limit)</span></label><input id="cdf-aibudget" type="number" min="0" step="0.5" value="${esc(val('cdf-aibudget', i.ai_budget_usd??''))}" placeholder="no limit" title="When this case's AI calls have cost this much, no new AI call is made for it until the budget is raised"/>
+      <label>AI budget (USD)</label><input id="cdf-aibudget" type="number" min="0" step="0.5" style="max-width:160px" value="${esc(val('cdf-aibudget', i.ai_budget_usd??''))}" placeholder="no limit" title="When this case's AI calls have cost this much, no new AI call is made for it until the budget is raised"/>
+      <div class="cfghint">Empty = no limit.${typeof i.ai_cost_usd==='number'?` Spent so far: ${_usd(i.ai_cost_usd)}.`:''}</div>
       <label>Description <span style="color:var(--muted)">(optional)</span></label><textarea id="cdf-desc" maxlength="2000" style="min-height:48px" placeholder="what this case is about">${esc(val('cdf-desc', typeof i.case_description==='string'?i.case_description:''))}</textarea>
       <div class="row" style="gap:6px;margin-top:6px"><button onclick="saveCaseDetails('${esc(i.case_id||'')}')">Save</button><button class="ghost" onclick="cdEdit('${esc(i.case_id||'')}')">Cancel</button></div>
     </div>`;
