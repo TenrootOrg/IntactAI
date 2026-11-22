@@ -475,6 +475,15 @@ def _call(state, questions, *, run_id=None, cfg=None):
     row = PROVIDERS[p]
     if unavailable(cfg):                     # failed moments ago: skip, offline, no call
         return None, False
+    if run_id:
+        # The case's AI budget holds for this model too: used up, no call (the
+        # caller treats it like any unanswered call). services/llm_usage.py.
+        try:
+            from services import llm_usage
+            llm_usage.check_budget(run_id)
+        except Exception as e:               # noqa: BLE001 -- AIBudgetExceeded, or the check failing
+            if type(e).__name__ == "AIBudgetExceeded":
+                return None, False
 
     def _trip(why):
         if not unavailable(cfg):
@@ -554,11 +563,21 @@ def _call(state, questions, *, run_id=None, cfg=None):
         _warn("decision model: %s read only %s tokens of the request -- split and asked again", model, cut)
         return None, True
     if run_id:
+        cost = _cost(body, model)
+        try:
+            from services import llm_usage
+            llm_usage.record(run_id, provider=p, model=body.get("model") or model,
+                             input_tokens=u.get("input_tokens") or 0,
+                             output_tokens=u.get("output_tokens") or 0, cost_usd=cost,
+                             cost_kind="exact" if (body.get("usage") or {}).get("cost") is not None
+                             else "estimated", source="decision model")
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from services.workflow_service import record_llm_metrics
             record_llm_metrics(run_id, calls=1, input_tokens=u.get("input_tokens") or 0,
                                output_tokens=u.get("output_tokens") or 0,
-                               cost_usd=_cost(body, model), model=body.get("model") or model)
+                               cost_usd=cost, model=body.get("model") or model)
         except Exception:  # noqa: BLE001
             pass
     answers = _openai_answers(body) if row["wire"] == "openai" else body.get("answers")

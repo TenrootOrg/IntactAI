@@ -487,6 +487,7 @@ def get_case(case_id):
                     # never let identities escape the same context-safe budget. None =
                     # tied to the Entity limit with no separate action needed.
                     "max_identities": d.get("max_identities"),
+                    "ai_budget_usd": d.get("ai_budget_usd"),   # services/llm_usage.py
                     # LOCKED to the model max: no per-case output cap any more.
                     # Kept in the response for API compatibility (None = model max).
                     "llm_max_output_tokens": None,
@@ -1226,6 +1227,20 @@ def decide_checklist(case_id, item_id):
 
 
 # ---- Identities: cross-infrastructure identity correlation ----
+@case_bp.route("/api/cases/<case_id>/ai_cost", methods=["GET"])
+def ai_cost(case_id):
+    """What this case's AI calls cost (the ledger, services/llm_usage.py) and its
+    AI budget: its own, or Settings' default, or none."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    from services import llm_usage
+    out = llm_usage.case_summary(case_id)
+    budget, src = llm_usage.case_budget(case_id)
+    out.update(case_id=case_id, budget_usd=budget, budget_source=src,
+               used_pct=(round(100.0 * out["cost_usd"] / budget, 1) if budget else None))
+    return jsonify(out)
+
+
 @case_bp.route("/api/cases/<case_id>/identities", methods=["GET"])
 def identities(case_id):
     """Candidate + confirmed identity links for the Identities tab (best-effort)."""

@@ -703,6 +703,7 @@ function render(info,md,g){
   // that is — a fuse started anywhere reaches the view with no reload. Cheap,
   // and a no-op when it is already watching this case.
   pollReportGen(info.case_id);
+  loadAiCost(info.case_id);                // the header's AI-budget warning (fills in async)
   $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
   const mk=info.masking||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
@@ -712,7 +713,8 @@ function render(info,md,g){
       <div class="row" style="justify-content:space-between">
         <div><h1 id="case-name" style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
           <div id="case-meta">${caseMetaHtml(info)}</div>
-          <div id="case-since" style="color:var(--muted);font-size:12px">${scopeSinceHtml(info, tw)}</div></div>
+          <div id="case-since" style="color:var(--muted);font-size:12px">${scopeSinceHtml(info, tw)}</div>
+          <div id="aibudget-warn"></div></div>
       </div>
       <div id="statbar" style="margin:6px 0 14px">${statSpans(g)}</div>
       <div id="scopebar">${scopeBarHtml(info)}</div>
@@ -913,6 +915,36 @@ function saveCaseDetails(id){
      toast('Case details saved.');
    }).catch(e=>toast('Not saved: '+e));
 }
+// --- AI cost and budget (services/llm_usage.py) ------------------------------
+// The case's AI calls are recorded one by one; this shows what they cost, split
+// by what they were for and by model, and warns in the header from 80% of the
+// case's AI budget. Exact where the provider said what it charged (OpenRouter),
+// estimated (tokens x price list) otherwise.
+function _aiBudgetLine(d){                           // pure (tested)
+  if(!d || !d.budget_usd) return '';
+  const pct=Math.round(d.used_pct||0), cls=pct>=100?'var(--crit)':'var(--high)';
+  if(pct>=100) return `<div style="color:${cls};font-size:12px;margin-top:2px">AI budget used up: ${_usd(d.cost_usd)} of ${_usd(d.budget_usd)}. No new AI calls in this case until it is raised in Configuration.</div>`;
+  if(pct>=80) return `<div style="color:${cls};font-size:12px;margin-top:2px">AI budget: ${_usd(d.cost_usd)} of ${_usd(d.budget_usd)} used (${pct}%).</div>`;
+  return '';
+}
+function _aiCostHtml(d){                             // pure (tested)
+  if(!d || !d.calls) return `AI cost: no AI calls recorded for this case yet.${d&&d.budget_usd?` Budget ${_usd(d.budget_usd)} (${d.budget_source==='default'?"Settings' default":'this case'}).`:''}`;
+  const est=d.estimated_usd>0?` · ${_usd(d.estimated_usd)} of it estimated`:'';
+  const since=d.since?` since ${esc(String(d.since).slice(0,10))}`:'';
+  const bud=d.budget_usd?` Budget ${_usd(d.budget_usd)} (${d.budget_source==='default'?"Settings' default":'this case'}) — ${Math.round(d.used_pct||0)}% used.`:' No budget set.';
+  const rows=(list)=>(list||[]).map(r=>`<div style="display:flex;justify-content:space-between;gap:10px"><span>${esc(r.name)} <span style="color:var(--muted)">· ${r.calls} call(s)</span></span><span>${_usd(r.cost_usd)}</span></div>`).join('');
+  return `AI cost: <b>${_usd(d.cost_usd)}</b> across ${d.calls} call(s)${since}${est}.${bud}`
+    +`<details style="margin-top:4px"><summary style="cursor:pointer">By source and model</summary>`
+    +`<div style="margin-top:4px"><b>Source</b>${rows(d.by_source)}<b style="display:block;margin-top:4px">Model</b>${rows(d.by_model)}</div></details>`;
+}
+function loadAiCost(id){
+  api('/api/cases/'+id+'/ai_cost').then(d=>{
+    if(!d || d.error || d.case_id!==id) return;
+    const w=$('#aibudget-warn'); if(w) w.innerHTML=_aiBudgetLine(d);
+    const c=$('#cf-aicost'); if(c) c.innerHTML=_aiCostHtml(d);
+  }).catch(()=>{});
+}
+
 function renderConfig(info){
   const alt=info.report_altitude||'auto', mk=info.masking||{};
   // The window in the rail is the TIMEFRAME BEING READ — the selected scope's, or
@@ -941,6 +973,9 @@ function renderConfig(info){
         <input id="cf-maxident" type="number" min="0" max="1000000" step="10" value="${info.max_identities??''}" placeholder="all (up to 500)" title="Max identity rows (people, clustered across hosts) included in the LLM payload for the report &amp; chat. Identities are sent regardless of anomaly score, so a real person is never invisible to the model just because no finding is attached to their account. Independent of the Entity limit above (identities cost ~27 tokens each, far cheaper than an entity row). Empty = up to 500 people, which covers any realistic engagement — recommended. If the payload still overflows the model context, the lowest-risk people are dropped first. Set it lower only to send fewer people (e.g. privacy)."/>
         ${(info.cost_estimate&&info.cost_estimate.model)?`<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">Model <b style="color:var(--tx,#e6edf3)">${esc(info.cost_estimate.model)}</b> — full context in, up to <b style="color:var(--tx,#e6edf3)">${(info.cost_estimate.model_max_output_tokens||0).toLocaleString()}</b> tokens out</div>`:`<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">no model set — configure Settings ▸ Agentic</div>`}
         <div class="cfgstats" style="margin:6px 0 3px">${tokenBadge(info.token_ab)}${costBadge(info.cost_estimate)}</div>
+        <label style="margin-top:8px">AI budget <span style="color:var(--muted)">(USD, this case)</span></label>
+        <input id="cf-aibudget" type="number" min="0" step="0.5" value="${info.ai_budget_usd??''}" placeholder="Settings' default, or no limit" title="When the AI calls of this case have cost this much, it stops calling the AI model (reports, chat, the decision model) until you raise it. Empty = the default from Settings ▸ Agentic, if one is set; otherwise no limit."/>
+        <div id="cf-aicost" class="cfghint">AI cost: loading…</div>
         <label style="margin-top:8px">Modules <span style="color:var(--muted)">— what fuses</span></label>
         <div class="modwarn">⚠ Enabling more modules can raise cost sharply — some artifacts (e.g. full hunts) produce huge output.</div>
         <div id="cf-modules">
@@ -989,6 +1024,7 @@ function renderConfig(info){
       <div id="cf-refusion-pending" style="color:var(--med);font-size:12px;margin-top:6px;display:${info.refusion_needed?'':'none'}">Saved settings are not applied yet. Click Refusion to apply them.</div>
     </div>`;
   loadHosts(info.case_id);
+  loadAiCost(info.case_id);
   // Any edit marks the rail dirty, so no background redraw can discard it.
   const _tc=$('#tabc');
   if(_tc){ _tc.addEventListener('input',_cfgTouched); _tc.addEventListener('change',_cfgTouched); }
@@ -2038,6 +2074,8 @@ async function _railCfg(){
     max_entities:parseInt($('#cf-maxent')?.value)||500000,
     // empty = tied to the Entity limit (backend treats null as "no separate ceiling")
     max_identities:($('#cf-maxident')?.value ?? '')===''?null:(parseInt($('#cf-maxident').value)||0),
+    // empty = none of its own (Settings' default applies); the backend drops 0 too
+    ai_budget_usd:($('#cf-aibudget')?.value ?? '')===''?null:(parseFloat($('#cf-aibudget').value)||0),
     llm_max_output_tokens:null,    // LOCKED to model max (backend enforces regardless)
     llm_use_full_context:true,     // LOCKED on (backend enforces regardless)
     chat_send_full_context:true,   // LOCKED on (backend enforces regardless)

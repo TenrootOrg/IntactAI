@@ -376,7 +376,7 @@ def investigate(case_id, question, *, run_id=None, max_steps=6, log=None,
         returns a clean operator message instead of an unhandled 500, matching the
         report/chat paths (A3). Returns (raw, err)."""
         try:
-            return llm_sim._real_llm(system, "\n\n".join(convo), run_id=run_id), None
+            return llm_sim._real_llm(system, "\n\n".join(convo), run_id=run_id, purpose="investigate"), None
         except Exception as e:  # noqa: BLE001
             return None, llm_sim.LLMUnavailable(llm_sim._classify_llm_error(e))
 

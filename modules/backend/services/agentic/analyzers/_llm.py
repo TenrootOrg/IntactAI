@@ -3,6 +3,7 @@
 Agentic Analyzers - LLM analysis functions for forensic data
 """
 
+import contextvars
 import json
 import re
 import requests
@@ -161,6 +162,12 @@ OPENAI_COMPATIBLE_BASE_URLS = {
 # completion_tokens), including the offline OpenAI-compatible endpoint.
 _OPENAI_SHAPED = set(OPENAI_COMPATIBLE_BASE_URLS) | {'openai-compatible'}
 
+# What a model call was for ("report", "chat", ...), for the AI-call ledger
+# (services/llm_usage.py). Set by call_llm for the call it makes; the recorder
+# below runs in that same thread.
+_LLM_PURPOSE = contextvars.ContextVar("llm_purpose", default=None)
+_LOCAL_PROVIDERS = {'ollama', 'openai-compatible'}       # self-hosted: no charge
+
 
 def _wrap_decode_errors(provider_name, fn):
     """Turn a proxy's HTML error page into a readable message.
@@ -239,6 +246,10 @@ def _call_openai_compatible(provider, prompt, system_prompt, api_key, model,
     # it was meant to fix. extra_body is the documented way through.
     if reasoning_effort:
         body["extra_body"] = {"reasoning": {"effort": reasoning_effort}}
+    if provider == 'openrouter':
+        # OpenRouter's own charge for THIS call, in the answer's usage.cost: the
+        # case's cost is then exact rather than tokens x a price list.
+        body["extra_body"] = {**(body.get("extra_body") or {}), "usage": {"include": True}}
 
     # temperature is sent, but is NOT allowed to be the reason a model fails.
     #
@@ -255,7 +266,11 @@ def _call_openai_compatible(provider, prompt, system_prompt, api_key, model,
         if with_temperature:
             kw["temperature"] = 0.1
         if not with_reasoning:
-            kw.pop("extra_body", None)
+            eb = {k: v for k, v in (kw.get("extra_body") or {}).items() if k != "reasoning"}
+            if eb:
+                kw["extra_body"] = eb
+            else:
+                kw.pop("extra_body", None)
         return client.chat.completions.create(**kw)
 
     try:
@@ -327,6 +342,7 @@ def _record_llm_usage(run_id, provider, model, response):
         return
     in_tokens = 0
     out_tokens = 0
+    exact = None
     try:
         if provider == 'claude':
             usage = getattr(response, 'usage', None)
@@ -338,6 +354,13 @@ def _record_llm_usage(run_id, provider, model, response):
             if usage is not None:
                 in_tokens = int(getattr(usage, 'prompt_tokens', 0) or 0)
                 out_tokens = int(getattr(usage, 'completion_tokens', 0) or 0)
+                # OpenRouter's own charge for the call (asked for in
+                # _call_openai_compatible); an SDK field it does not declare.
+                c = getattr(usage, 'cost', None)
+                if c is None:
+                    c = (getattr(usage, 'model_extra', None) or {}).get('cost')
+                if c is not None:
+                    exact = float(c)
         elif provider == 'gemini':
             usage = getattr(response, 'usage_metadata', None)
             if usage is not None:
@@ -356,7 +379,21 @@ def _record_llm_usage(run_id, provider, model, response):
         print(f"[ANALYZER] usage extraction failed ({provider}): {ex}", flush=True)
         return
 
-    cost = _estimate_llm_cost(model or '', in_tokens, out_tokens)
+    if exact is not None:
+        cost, kind = exact, 'exact'
+    elif provider in _LOCAL_PROVIDERS:
+        cost, kind = 0.0, 'local'
+    elif isinstance(response, dict) and 'in_tokens' in response:
+        cost, kind = 0.0, 'subscription'                 # a vendor CLI login: no per-call price
+    else:
+        cost, kind = _estimate_llm_cost(model or '', in_tokens, out_tokens), 'estimated'
+    try:
+        from services import llm_usage
+        llm_usage.record(run_id, provider=provider, model=model, input_tokens=in_tokens,
+                         output_tokens=out_tokens, cost_usd=cost, cost_kind=kind,
+                         source=_LLM_PURPOSE.get())
+    except Exception as ex:                              # noqa: BLE001
+        print(f"[ANALYZER] llm_usage.record failed: {ex}", flush=True)
     try:
         from services.workflow_service import record_llm_metrics
         record_llm_metrics(
@@ -632,7 +669,24 @@ def subscription_provider_ready(provider) -> bool:
 
 
 def call_llm(prompt, system_prompt, config, run_id=None, model_override=None,
-             reasoning_effort=None):
+             reasoning_effort=None, purpose=None):
+    """Call the configured LLM provider -- after the case's AI budget allows it
+    (services/llm_usage.check_budget raises AIBudgetExceeded when it is used
+    up). `purpose` ("report", "chat", ...) labels the call in the AI-call ledger.
+    """
+    if run_id:
+        from services import llm_usage
+        llm_usage.check_budget(run_id)
+    token = _LLM_PURPOSE.set(purpose)
+    try:
+        return _call_llm(prompt, system_prompt, config, run_id=run_id,
+                         model_override=model_override, reasoning_effort=reasoning_effort)
+    finally:
+        _LLM_PURPOSE.reset(token)
+
+
+def _call_llm(prompt, system_prompt, config, run_id=None, model_override=None,
+              reasoning_effort=None):
     """Call the configured LLM provider.
 
     `run_id` is optional; when provided, per-call token usage is accumulated

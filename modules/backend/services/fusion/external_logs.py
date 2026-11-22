@@ -1745,7 +1745,7 @@ def _model(case_id, run_id, log):
         return None
     d = store.get_case(case_id) or {}
     mask = investigate._mask_for_case(d, store.load_graph(case_id), run_id)
-    return (lambda s, u: llm_sim._real_llm(s, u, run_id=run_id), mask,
+    return (lambda s, u: llm_sim._real_llm(s, u, run_id=run_id, purpose="external logs"), mask,
             (lambda o: investigate._revert_obj(o, mask)) if mask is not None else None)
 
 

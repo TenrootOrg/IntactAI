@@ -310,7 +310,8 @@ def _call_llm_for_memory(
     """
     from services.agentic.analyzers import call_llm  # local import — avoid boot ordering
 
-    resp = call_llm(user_message, system_prompt, llm_config, run_id=run_id)
+    resp = call_llm(user_message, system_prompt, llm_config, run_id=run_id,
+                    purpose="memory analysis")
     # The agentic helper returns provider-shaped responses; the caller
     # in agentic_routes.py extracts ``.content[0].text`` for Anthropic
     # SDK and ``choices[0].message.content`` for the OpenAI/OpenRouter

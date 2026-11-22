@@ -196,6 +196,24 @@ def create_tables():
             msg TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_workflow_logs_run ON workflow_logs(run_id, id);
+
+        -- One row per AI model call (services/llm_usage.py): what it cost and
+        -- which case it was for. cost_kind: exact (the provider's own charge),
+        -- estimated (tokens x price list), subscription, local.
+        CREATE TABLE IF NOT EXISTS llm_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            case_id TEXT,
+            run_id TEXT,
+            source TEXT,
+            provider TEXT,
+            model TEXT,
+            input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0,
+            cost_kind TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_llm_usage_case ON llm_usage(case_id);
     """)
     conn.commit()
 

@@ -240,7 +240,7 @@ def _llm_available() -> bool:
 
 
 def _real_llm(system_prompt: str, user_message: str, *, run_id=None,
-              max_output_tokens=None, reasoning_effort=None) -> str:
+              max_output_tokens=None, reasoning_effort=None, purpose=None) -> str:
     """Production path. The distilled graph is KB-sized, so this is cheap. Token
     counts land on the run's llm_metrics automatically via call_llm's recorder.
     `max_output_tokens` (the case 'Output token cap') overrides the global
@@ -263,7 +263,7 @@ def _real_llm(system_prompt: str, user_message: str, *, run_id=None,
         ag["max_response_tokens"] = int(max_output_tokens)
         cfg["agentic"] = ag
     return call_llm(user_message, system_prompt, cfg, run_id=run_id,
-                    reasoning_effort=reasoning_effort)
+                    reasoning_effort=reasoning_effort, purpose=purpose)
 
 
 import re as _re
@@ -2163,7 +2163,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         while True:
             try:
                 out = _with_deadline(
-                    lambda: _real_llm(sys_p, body, run_id=run_id,
+                    lambda: _real_llm(sys_p, body, run_id=run_id, purpose="report",
                                       max_output_tokens=max_output_tokens,
                                       reasoning_effort="low"),
                     _phase_deadline(), f"phase{z['n']}")
@@ -2423,7 +2423,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
 
             try:
                 narrative = _with_deadline(
-                    lambda: _real_llm(system, payload_str, run_id=run_id,
+                    lambda: _real_llm(system, payload_str, run_id=run_id, purpose="report",
                                       max_output_tokens=max_output_tokens,
                                       reasoning_effort="low"),
                     _phase_deadline(), "synthesis")
@@ -2658,7 +2658,7 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
             _log_mask_audit(run_id, mask, payload_str)
             payload_str = _apply_mask(payload_str, mask)
             system = _MASK_IDENTITY_LEGEND + system
-        raw = _real_llm(system, payload_str, run_id=run_id)
+        raw = _real_llm(system, payload_str, run_id=run_id, purpose="checklist")
         # An EMPTY reply is a failed call, not "the model found nothing to confirm":
         # it parsed to {} and was logged as a successful, empty checklist.
         if not (raw or "").strip():
@@ -2749,6 +2749,10 @@ _LLM_ERR_MESSAGES = {
     "no_credit": ("The AI provider account is out of credit. The API key itself is fine.",
                   "Add credit with the provider, or switch provider in Settings ▸ Agentic, "
                   "then try again."),
+    # services/llm_usage.AIBudgetExceeded: refused BEFORE any call, so nothing
+    # was spent on it and the provider is not at fault.
+    "case_budget": ("This case reached its AI budget, so no AI model was called.",
+                    "Raise the case's AI budget in Configuration, then try again."),
     "model_not_routable": ("The provider will not run this model for your account, usually "
                            "because of its privacy settings. The API key itself is fine.",
                            "Choose a different model in Settings ▸ Agentic, or relax the "
@@ -2987,11 +2991,11 @@ def _chat_fetch_loop(case_id, system, user, ans, *, mask=None, run_id=None, max_
         _case_event(run_id, f"Chat · fetched {fetched[-1]}", "info", json.dumps(args, default=str)[:200])
         convo += (f"\n\nassistant: {ans.strip()}\n\nRESULT of {call['tool']}: {res_txt}\n\n"
                   "Fetch again if you still need something, or answer the question now.")
-        ans = _real_llm(system, convo, run_id=run_id, max_output_tokens=max_output_tokens)
+        ans = _real_llm(system, convo, run_id=run_id, max_output_tokens=max_output_tokens, purpose="chat")
     if _chat_tool_call(ans):                  # still fetching after the budget: answer now
         ans = _real_llm(system, convo + "\n\nNo more fetches are available — answer the "
                         "question now, in markdown, from what you have.",
-                        run_id=run_id, max_output_tokens=max_output_tokens)
+                        run_id=run_id, max_output_tokens=max_output_tokens, purpose="chat")
         if _chat_tool_call(ans):
             ans = ("I looked up " + ", ".join(fetched) + " but could not finish an answer — "
                    "please ask again, more narrowly.")
@@ -3001,7 +3005,7 @@ def _chat_fetch_loop(case_id, system, user, ans, *, mask=None, run_id=None, max_
         # say what happened rather than an empty bubble.
         ans = _real_llm(system, convo + "\n\nYour last reply was empty. Answer the question "
                         "now, in markdown, from what you have.", run_id=run_id,
-                        max_output_tokens=max_output_tokens)
+                        max_output_tokens=max_output_tokens, purpose="chat")
         if not (ans or "").strip() or _chat_tool_call(ans):
             ans = ("I looked up " + ", ".join(fetched) + " but the model returned no answer — "
                    "please ask again.")
@@ -3132,7 +3136,7 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                 if master_prompt:                     # the Steering, typed by the operator
                     system = system.replace(master_prompt.strip(), _mask_human(master_prompt.strip(), mask))
                 system = _MASK_IDENTITY_LEGEND + system
-            ans = _real_llm(system, user, run_id=run_id, max_output_tokens=max_output_tokens)
+            ans = _real_llm(system, user, run_id=run_id, max_output_tokens=max_output_tokens, purpose="chat")
             if not (ans or "").strip():
                 # A reasoning model that spent its allowance thinking: the chat showed an
                 # empty bubble (fault-injection pass, 2026-10-20). Say so, as the report does.

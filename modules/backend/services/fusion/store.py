@@ -978,7 +978,7 @@ PURGE_KEEPS = ("name", "is_default", "is_system", "time_window", "min_severity",
                "customer_logo_b64", "report_altitude", "masking", "max_entities",
                "max_identities", "auto_fuse", "auto_report", "fusion_modules", "chat_send_full_context", "report_detail",
                "llm_use_full_context", "llm_max_output_tokens", "include_evidence",
-               "case_status", "case_owner", "case_description")
+               "case_status", "case_owner", "case_description", "ai_budget_usd")
 
 
 def purged_details(d) -> dict:
@@ -4497,7 +4497,8 @@ def synthesize_master_prompt(case_id) -> str:
     transcript = json.dumps(msgs, indent=2, default=str)
     user = (f"Chat transcript:\n```json\n{transcript[:80000]}\n```\n\n"
             "Write the briefing as described — flowing prose, no bullets/headings.")
-    master = call_llm(user, _CASE_SYNTH_SYSTEM, _llm_config_from_runtime(), run_id=case_id)
+    master = call_llm(user, _CASE_SYNTH_SYSTEM, _llm_config_from_runtime(), run_id=case_id,
+                      purpose="master prompt")
     master = (master or "").strip()
     if not master:
         raise RuntimeError("synthesis returned empty")
@@ -5313,6 +5314,15 @@ def set_analysis_config(case_id, cfg) -> dict:
         try:
             v = cfg["max_identities"]
             patch["max_identities"] = max(0, int(v)) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            pass
+    if "ai_budget_usd" in cfg:
+        # The case's AI budget in USD (services/llm_usage.check_budget); empty or
+        # 0 = none of its own (Settings' default applies, if any).
+        try:
+            v = cfg["ai_budget_usd"]
+            f = float(v) if v not in (None, "") else 0.0
+            patch["ai_budget_usd"] = round(f, 2) if f > 0 else None
         except (TypeError, ValueError):
             pass
     # LOCKED platform-wide (operator can't change; UI shows them fixed/disabled):
