@@ -103,9 +103,10 @@ def prewarm_index(say=None) -> None:
 
 
 # What the library holds, for the Symbol tables page (2026-10-05: "mention the
-# version or date of the table on this machine"). A pack's DATE is the newest
-# table inside it -- the zip's own record, not when it reached this box (the
-# Volatility pack is 2019 whichever day it was installed). Read-only.
+# version or date of the table on this machine"). A pack's DATE is its last update
+# in the zip's own record, not when it reached this box. Folder entries count: the
+# Volatility pack's tables are all from 2019-01-16, but it was updated 2019-10-16,
+# which only its folders record. Read-only.
 _LIBRARY = r'''
 import json, os, sys, zipfile, datetime as dt
 lib = sys.argv[1]
@@ -123,7 +124,8 @@ for root, _dirs, files in os.walk(lib):
                 with zipfile.ZipFile(p) as z:
                     infos = [i for i in z.infolist() if i.filename.startswith("windows/")
                              and i.filename.endswith((".json.xz", ".json"))]
-                newest = max((i.date_time for i in infos), default=None)
+                newest = max((i.date_time for i in z.infolist() if i.filename.startswith("windows/")),
+                             default=None) if infos else None
             except (zipfile.BadZipFile, OSError):
                 infos, newest = [], None
             packs.append({"name": f, "size": st.st_size, "added": iso(st.st_mtime), "tables": len(infos),

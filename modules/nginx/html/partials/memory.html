@@ -327,8 +327,8 @@
                         </div>
 
                         <!-- What THIS appliance has (2026-10-05: "mention the version or date of
-                             the table on this machine"). A pack's date is the newest table inside
-                             it, from the zip itself — not the day it reached this box. -->
+                             the table on this machine"). A pack's date is its last update, from
+                             the zip itself — not the day it reached this box. -->
                         <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
                             <div class="flex items-center justify-between mb-2">
                                 <label class="block text-sm font-medium text-gray-300">On this appliance</label>
@@ -341,14 +341,14 @@
                                     <template x-for="p in $store.memory.symLib.packs" :key="p.name">
                                         <div><b x-text="p.name"></b> —
                                             <span x-text="p.tables.toLocaleString() + ' Windows tables'"></span> ·
-                                            <span>newest table dated <b class="text-gray-100" x-text="$store.memory.symDate(p.dated)"></b></span> ·
+                                            <span>pack last updated <b class="text-gray-100" x-text="$store.memory.symDate(p.dated)"></b></span> ·
                                             <span x-text="Math.round(p.size / 1048576) + ' MB'"></span> ·
                                             <span class="text-gray-400" x-text="'on this appliance since ' + $store.memory.symDate(p.added)"></span></div>
                                     </template>
                                     <div x-show="!$store.memory.symLib.packs.length" class="text-gray-400">No symbol pack installed.</div>
                                     <div><b x-text="$store.memory.symLib.kernels"></b> per-kernel table(s)
                                         <span class="text-gray-400" x-show="$store.memory.symLib.newest_kernel"
-                                              x-text="'— newest added ' + $store.memory.symDate(($store.memory.symLib.newest_kernel || {}).added)"></span>
+                                              x-text="'— last added to this appliance ' + $store.memory.symDate(($store.memory.symLib.newest_kernel || {}).added)"></span>
                                         <span class="text-gray-500">(one per Windows build: downloaded from Microsoft by an analysis, or uploaded here)</span></div>
                                     <div>Symbol index: <b :class="$store.memory.symIndexState() === 'ready' ? 'text-green-400' : 'text-yellow-400'"
                                                           x-text="$store.memory.symIndexLabel()"></b></div>

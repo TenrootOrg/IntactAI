@@ -232,8 +232,8 @@ const shown = (win, el) => {
     await sleep(200);
     const txt = (doc.querySelector('[x-show="memoryTab === \'symbols\'"]') || doc.body).textContent;
     check(/On this appliance/.test(txt), 'the "On this appliance" card is shown');
-    check(store.symLib.packs.every(p => p.dated) && (!store.symLib.packs.length || /newest table dated/.test(txt)),
-          `each pack shows the date of its newest table (${store.symLib.packs.map(p => p.name + ' ' + p.dated).join(', ') || 'no pack'})`);
+    check(store.symLib.packs.every(p => p.dated) && (!store.symLib.packs.length || /pack last updated/.test(txt)),
+          `each pack shows the date of its last update (${store.symLib.packs.map(p => p.name + ' ' + p.dated).join(', ') || 'no pack'})`);
     check(/per-kernel table/.test(txt), 'the per-kernel count is shown');
     check(/Symbol index:/.test(txt) && store.symIndexState() !== 'unknown', `the index state is shown (${store.symIndexLabel()})`);
   }

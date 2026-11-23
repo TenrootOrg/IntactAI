@@ -37,11 +37,12 @@ class WhatTheApplianceHas(unittest.TestCase):
     """2026-10-05: "in this page you have to mention the version or date of the
     table in this machine". The real library script, run on a temp library."""
 
-    def test_a_pack_is_dated_by_its_newest_table_and_kernels_are_counted(self):
+    def test_a_pack_is_dated_by_its_last_update_and_kernels_are_counted(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         with zipfile.ZipFile(os.path.join(d, "windows.zip"), "w") as z:
-            for name, when in (("windows/ntkrnlmp.pdb/A-1.json.xz", (2018, 5, 1, 0, 0, 0)),
+            for name, when in (("windows/ntkrnlmp.pdb/", (2019, 10, 16, 0, 0, 0)),     # the real pack's shape
+                               ("windows/ntkrnlmp.pdb/A-1.json.xz", (2018, 5, 1, 0, 0, 0)),
                                ("windows/ntkrnlmp.pdb/B-1.json.xz", (2019, 1, 16, 0, 0, 0)),
                                ("README.txt", (2020, 1, 1, 0, 0, 0))):      # not a table: no say in the date
                 z.writestr(zipfile.ZipInfo(name, when), b"x")
@@ -62,7 +63,7 @@ class WhatTheApplianceHas(unittest.TestCase):
                                   if a[0][:2] == ["docker", "exec"] else real_run(*a, **k)):
             out = symbols.library()
         self.assertEqual([(p["name"], p["tables"], p["dated"]) for p in out["packs"]],
-                         [("windows.zip", 2, "2019-01-16")])
+                         [("windows.zip", 2, "2019-10-16")])
         self.assertEqual(out["kernels"], 2)
         self.assertEqual({v["state"] for v in out["index"].values()}, {"ready"})
 
