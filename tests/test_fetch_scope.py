@@ -211,7 +211,9 @@ class TestSimulatedDetectionsAreAdmittedAndUsable(unittest.TestCase):
                                      failure mode. A rigged plant proved only the
                                      plumbing; real signal-to-noise was unmeasured.
         LolRMM             1 row  -> weak LOW node; dual-use, noisy, and the
-                                     mapper drops its RMM context.
+                                     mapper dropped its RMM context. Admitted later
+                                     for the proactive blueprint, with its own branch
+                                     that keeps that context and says "present".
     """
 
     def setUp(self):
@@ -227,10 +229,9 @@ class TestSimulatedDetectionsAreAdmittedAndUsable(unittest.TestCase):
         self.assertNotIn('flags=["detection"]', branch(self.src, 'elif "mft" in an and "detection" in an'))
 
     def test_the_rejected_artifacts_are_not_admitted(self):
-        """YaraProcessWin (undated + noisy, the YaraFile failure mode) and LolRMM
-        (weak, dual-use) both fired in the simulation but stay out of fusion."""
+        """YaraProcessWin (undated + noisy, the YaraFile failure mode) fired in the
+        simulation but stays out of fusion."""
         self.assertNotIn("detectraptor.windows.detection.yaraprocesswin", self.src)
-        self.assertNotIn("detectraptor.windows.detection.lolrmm", self.src)
 
     def test_iseautosave_takes_its_timestamp_from_fileinfo(self):
         """The date is nested in FileInfo.Mtime; first_ts()'s top-level spec

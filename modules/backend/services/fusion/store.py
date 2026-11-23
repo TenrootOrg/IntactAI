@@ -1553,7 +1553,7 @@ def _relabel_source(ents, rels, frm, to):
         fix(getattr(r, "sources", None))
 
 
-def _velo_hunt_contribution(rid, det, log=None):
+def _velo_hunt_contribution(rid, det, log=None, collected_at=None):
     """A live Velociraptor HUNT (velociraptor_hunt run). The run stores its hunt_id;
     pull the hunt's rows across every reporting client, persist them once (so the
     token A/B + later views are stable + fast), map via the shared mapper, and label
@@ -1570,7 +1570,8 @@ def _velo_hunt_contribution(rid, det, log=None):
         return [], []
 
     def _map(rows):
-        ents, rels = map_agentic(_filter_supported(rows), run_id=rid, hostnames=det.get("hostnames") or {})
+        ents, rels = map_agentic(_filter_supported(rows), run_id=rid, hostnames=det.get("hostnames") or {},
+                                 collected_at=collected_at)
         _relabel_source(ents, rels, "agentic", "velociraptor")
         return ents, rels
     # Pull live so an in-flight hunt shows its current partial data and each rescan
@@ -1940,7 +1941,8 @@ def _contribution_for_run_in_org(run, log=None, refetch=False):
 
             def _map(rows):
                 ents, rels = map_agentic(_filter_supported(rows), run_id=rid,
-                                         hostnames=det.get("hostnames") or {})
+                                         hostnames=det.get("hostnames") or {},
+                                         collected_at=run.get("created_at"))
                 # Coverage is by DATA SOURCE, and a collection is Velociraptor data
                 # whether or not the agent post-analyzed it — exactly like a hunt,
                 # upload, import or adopt (all already relabelled). Relabel both here
@@ -1963,7 +1965,7 @@ def _contribution_for_run_in_org(run, log=None, refetch=False):
             # locator, pulls live with only_artifacts=SUPPORTED_ARTIFACTS, and
             # relabels the source 'velociraptor' (no agent ran). The artifact
             # allowlist in the mapper keeps the graph clean.
-            return _velo_hunt_contribution(rid, det, log=log)
+            return _velo_hunt_contribution(rid, det, log=log, collected_at=run.get("created_at"))
         if atype == "timesketch":
             evs = det.get("events") or det.get("timeline_events")
             fetched = False

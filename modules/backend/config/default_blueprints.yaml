@@ -223,6 +223,57 @@ velociraptor:
       - Windows.EventLogs.CondensedAccountUsage
       - Windows.Kerberos.GoldenTicketTriage
 
+  # The agentic set plus low-output proactive checks, each run on a 10-host lab.
+  # EvtxHunter and Registry.NTUser are deliberately absent: they need parameters,
+  # and Hunt, Scheduler and Offline Collector drop a blueprint's artifact_params.
+  # EvtxHunter at its defaults would return every event from every log.
+  - id: agentic_proactive_windows
+    name: "Velociraptor Proactive Agentic Windows (Experimental)"
+    description: "The agentic detection set plus proactive exposure checks: RMM tools, vulnerable drivers, stopped security services, hosts file, WDigest, hidden tasks (27 artifacts)"
+    is_default: true
+    settings:
+      hunt_expiry: 720
+      timeout: 3600
+      cpu_limit: 50
+      flow_max_rows: 10000000
+      flow_max_logs: 1000000
+      flow_max_upload_mb: 51200
+      artifact_params:
+        # The stock list includes wuauserv, a demand-start service that is
+        # normally stopped, so it would raise a false row on healthy hosts.
+        Windows.System.CriticalServices:
+          lookupTable: "ServiceName\nWinDefend\nMpsSvc\nSepMasterService\nSAVAdminService\nSavService\nwscsvc\n"
+    artifacts:
+      # Agentic QuickWins Windows
+      - Windows.Hayabusa.Rules
+      - Windows.Detection.Malfind
+      - DetectRaptor.Windows.Detection.Evtx
+      - DetectRaptor.Windows.Detection.MFT
+      - DetectRaptor.Windows.Detection.BinaryRename
+      - DetectRaptor.Windows.Detection.Applications
+      - DetectRaptor.Windows.Detection.Powershell.PSReadline
+      - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+      - DetectRaptor.Windows.Detection.Amcache
+      - DetectRaptor.Windows.Detection.NamedPipes
+      - DetectRaptor.Windows.Detection.Webhistory
+      - DetectRaptor.Windows.Detection.HijackLibsMFT
+      - DetectRaptor.Windows.Detection.HijackLibsEnv
+      - DetectRaptor.Windows.Detection.LolDriversMalicious
+      - DetectRaptor.Windows.Detection.Bootloaders
+      - Windows.Analysis.SuspiciousWMIConsumers
+      - Custom.Windows.Detection.DefenderExclusions
+      - Windows.Forensics.SAM
+      - Windows.EventLogs.CondensedAccountUsage
+      - Windows.Kerberos.GoldenTicketTriage
+      # Proactive exposure checks
+      - DetectRaptor.Windows.Detection.LolRMM
+      - DetectRaptor.Windows.Detection.LolDriversVulnerable
+      - Windows.System.CriticalServices
+      - Windows.System.HostsFile
+      - Windows.Registry.WDigest
+      - Windows.Registry.TaskCache.HiddenTasks
+      - Windows.System.DomainRole
+
   # --------------------------------------------------------------------------
   # LINUX BLUEPRINT
   # --------------------------------------------------------------------------

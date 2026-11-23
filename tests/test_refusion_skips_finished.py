@@ -135,7 +135,7 @@ class SettledHunts(unittest.TestCase):
         vc._query = h.query
         det = {"hunt_id": "H.ABC"}                       # a fresh run row: host names are not stored on it
 
-        def mapper(rows, run_id, hostnames):
+        def mapper(rows, run_id, hostnames, collected_at=None):
             self.hostnames.append(dict(hostnames))
             return [], []
         with mock.patch.dict(sys.modules, {"services.agentic.collectors": col, "services.velociraptor_clients": vc}), \

@@ -10,6 +10,7 @@ same account/IP seen on multiple assets collapses to one node whose
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import re
 
 from .. import keys
@@ -186,6 +187,39 @@ def _defender_exclusion_sev(ex_type, value) -> str:
                                             "dump", "exfil", "perflogs")) else "low"
 
 
+# HOSTS FILE. Most entries are harmless (internal names, ad-block sinkholes), and one
+# blocklist can hold thousands, so only two shapes surface, each as ONE finding per
+# host with a bounded sample and the true count.
+_HOSTS_SAMPLE = 25
+_HOSTS_SECURITY_NAME = re.compile(r"update|secur|antivirus|defender|threat", re.I)
+_HOSTS_TITLES = {
+    "public": "Hosts file redirects a name to a public IP",
+    "blocked": "Hosts file blocks a security or update domain",
+}
+
+
+def _hosts_entry_kind(name, addr):
+    """'public', 'blocked', or None for an entry that is not worth a finding."""
+    n = str(name or "").strip().lower().rstrip(".")
+    if not n or n == "localhost" or n.endswith(".localhost") or n.startswith("ip6-"):
+        return None
+    try:
+        ip = ipaddress.ip_address(str(addr or "").strip())
+    except ValueError:
+        return None
+    if ip.is_loopback or ip.is_unspecified:
+        return "blocked" if _HOSTS_SECURITY_NAME.search(n) else None
+    return "public" if ip.is_global else None
+
+
+def _state_ts(row, collected_at=None):
+    """When a current-state row was collected. Never the row's own Created or Mtime:
+    a service created in 2024 did not stop in 2024. Collected rows carry no time of
+    their own, so this is normally the run's."""
+    v = row.get("_ts") if isinstance(row, dict) else None
+    return str(v) if v not in (None, "") else keys.norm_ts(collected_at)
+
+
 # Hayabusa / SIGMA level -> anomaly. Kept in lock-step with severity.from_anomaly
 # buckets (>=100 crit, >=20 high, >=10 medium, >=1 low) so the anomaly-derived
 # severity AGREES with the explicit SIGMA level (correlate maxes the two).
@@ -271,7 +305,8 @@ def _artifact_base(name):
 # collection / hunt / offline import happens to contain — no raw Velociraptor
 # data ever enters the graph. Base names, lowercased (sub-sources like
 # "<name>/Parsed" normalize to the base). Currently == the agentic_quick_wins
-# set; add a line here when a new artifact gets a mapper.
+# and agentic_proactive_windows sets; add a line here when a new artifact gets
+# a mapper.
 SUPPORTED_ARTIFACTS = frozenset({
     "windows.hayabusa.rules",
     "windows.detection.malfind",
@@ -328,6 +363,15 @@ SUPPORTED_ARTIFACTS = frozenset({
     "windows.forensics.sam",
     "windows.eventlogs.condensedaccountusage",
     "windows.kerberos.goldentickettriage",
+    # Proactive exposure checks (agentic_proactive_windows). Measured on 10 lab
+    # hosts: about 1.5 rows per host across all seven.
+    "detectraptor.windows.detection.lolrmm",
+    "detectraptor.windows.detection.loldriversvulnerable",
+    "windows.system.criticalservices",
+    "windows.system.hostsfile",
+    "windows.registry.wdigest",
+    "windows.registry.taskcache.hiddentasks",
+    "windows.system.domainrole",
     # --- Linux (agentic_quick_wins_linux) ---
     "linux.sys.pslist",
     "generic.system.pstree",
@@ -538,7 +582,8 @@ def _account_eid(asset, domain, user, local_hosts=()):
     return keys.account_id(asset, None, u), d, u          # local, asset-scoped
 
 
-def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = None) -> tuple[list, list]:
+def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = None,
+                collected_at=None) -> tuple[list, list]:
     """Map Velociraptor AGENTIC-blueprint artifacts into fusion entities/findings.
 
     Only agentic blueprints are fused (see store.py FUSION_MODULES_*). Dispatch is
@@ -559,7 +604,10 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
       autoruns/services/scheduledtask  => persistence events
       hayabusa/sigma                => Windows.Hayabusa.Rules
       mft + detection               => DetectRaptor...Detection.MFT
-      application+detection/lolrmm  => DetectRaptor...Detection.Applications, ...LolRMM
+      application+detection         => DetectRaptor...Detection.Applications
+      lolrmm, criticalservices,     => proactive exposure checks (current state, not
+        hostsfile, wdigest,              activity); domainrole is asset context only
+        hiddentasks, domainrole
       amcache/prefetch/userassist/  => DetectRaptor...Detection.Amcache, exec evidence
         shimcache/appcompat/srum/bam
       loldriver                     => DetectRaptor...Detection.LolDrivers[Malicious]
@@ -592,6 +640,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
     sigma_events: list = []
     # (asset, rule) -> folded sigma occurrences; emitted after the row loop
     sigma_agg: dict = {}
+    hosts_ents: dict = {}   # (asset, kind) -> the one hosts-file entity for that host
 
     for artifact, rows in (collected_data or {}).items():
         an = artifact.lower()
@@ -608,7 +657,9 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     fusion_tick(f"mapping {artifact}", i, _n)
                 if not isinstance(r, dict):
                     continue
-                asset, host = asset_of(r)
+                # A hosts-file row's Hostname is the mapped NAME, not the machine.
+                asset, host = asset_of({k: v for k, v in r.items() if k != "Hostname"}
+                                       if ab == "windows.system.hostsfile" else r)
                 if asset not in assets_seen:
                     assets_seen[asset] = host
                     ents.append(Entity(id=asset, type="asset", label=str(host or asset.split(":")[-1]),
@@ -690,6 +741,109 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                             flags=["sigma", "detection"],
                             title="Windows Defender Real-Time Protection Disabled",
                             level="high", channel="Defender", win_ids=["mpdisabled"]))
+                    continue
+
+                # ---- Proactive exposure checks (agentic_proactive_windows) ------
+                # These report CURRENT STATE, so they are dated at collection and
+                # worded as exposure. Each sits above the substring branches below:
+                # ".../LolRMM/Processes" would be parsed as a process row and
+                # "CriticalServices" as a persistence service.
+                elif ab == "detectraptor.windows.detection.lolrmm":
+                    tool = str(F.get(r, "Name", default="") or "").strip()
+                    if tool:
+                        _ev = r.get("Event") if isinstance(r.get("Event"), dict) else {}
+                        _src = str(r.get("Source") or "").lower()
+                        _how = ("rmm_running" if "pslist" in _src
+                                else "rmm_dns" if "dns" in _src else "rmm_installed")
+                        _t = f"Remote access tool present: {tool}"
+                        # The command line is not kept: RMM agents can carry keys in it.
+                        ents.append(_ent(
+                            keys.event_key(asset, f"rmm:{tool.lower()}"), "event",
+                            f"{_t} on {host or asset.split(':')[-1]}", asset, run_id, loc,
+                            anomaly=_level_anomaly("medium"), first=_state_ts(r, collected_at),
+                            flags=["detection", "rmm_tool"], title=_t, level="medium",
+                            artifact=artifact, rmm_tool=tool,
+                            path=_ev.get("Exe") or _ev.get("InstallLocation"),
+                            version=_ev.get("DisplayVersion"), **{_how: True}))
+                    continue
+
+                elif ab == "windows.system.criticalservices":
+                    svc = str(F.get(r, "Name", default="") or "").strip()
+                    # wuauserv is on the stock list but is demand-start: stopped is normal.
+                    if svc and svc.lower() != "wuauserv":
+                        _disp = F.get(r, "DisplayName", default=None) or svc
+                        _t = f"Security service not running: {_disp}"
+                        ents.append(_ent(
+                            keys.event_key(asset, f"svcstopped:{svc.lower()}"), "event",
+                            f"{_t} on {host or asset.split(':')[-1]}", asset, run_id, loc,
+                            anomaly=_level_anomaly("medium"), first=_state_ts(r, collected_at),
+                            flags=["detection"], title=_t, level="medium", artifact=artifact,
+                            service=svc, state=F.get(r, *F.STATE),
+                            details=f"{svc}: {F.get(r, *F.STATE)}"))
+                    continue
+
+                elif ab == "windows.system.hostsfile":
+                    _name = str(F.get(r, "Hostname", default="") or "").strip()
+                    _addr = str(F.get(r, "Resolution", default="") or "").strip()
+                    _kind = _hosts_entry_kind(_name, _addr)
+                    if _kind:
+                        _he = hosts_ents.get((asset, _kind))
+                        if _he is None:
+                            _t = _HOSTS_TITLES[_kind]
+                            _he = _ent(keys.event_key(asset, f"hostsfile:{_kind}"), "event",
+                                       f"{_t} on {host or asset.split(':')[-1]}", asset, run_id,
+                                       loc, anomaly=_level_anomaly("medium"), first=_state_ts(r, collected_at),
+                                       flags=["detection", "hosts_file"], title=_t,
+                                       level="medium", artifact=artifact, entry_count=0)
+                            _he.attrs["entries"] = []
+                            hosts_ents[(asset, _kind)] = _he
+                            ents.append(_he)
+                        _he.attrs["entry_count"] += 1
+                        if len(_he.attrs["entries"]) < _HOSTS_SAMPLE:
+                            _he.attrs["entries"].append(f"{_name} -> {_addr}")
+                        _more = _he.attrs["entry_count"] - len(_he.attrs["entries"])
+                        _he.attrs["details"] = "; ".join(_he.attrs["entries"]) + (
+                            f" (+{_more:,} more)" if _more else "")
+                    continue
+
+                elif ab == "windows.registry.wdigest":
+                    # Only UseLogonCredential=1 caches cleartext; Negotiate is not the switch.
+                    if str(F.get(r, "KeyName", default="")).lower() == "uselogoncredential" \
+                            and str(F.get(r, "KeyValue", default="")) == "1":
+                        _t = "WDigest cleartext credential caching enabled"
+                        ents.append(_ent(
+                            keys.event_key(asset, "wdigest:uselogoncredential"), "event",
+                            f"{_t} on {host or asset.split(':')[-1]}", asset, run_id, loc,
+                            anomaly=_level_anomaly("high"),
+                            first=keys.norm_ts(F.get(r, "LastModified", default=None)) or _state_ts(r, collected_at),
+                            flags=["detection"], title=_t, level="high", artifact=artifact,
+                            details="UseLogonCredential = 1"))
+                    continue
+
+                elif ab == "windows.registry.taskcache.hiddentasks":
+                    _task = F.get(r, "Path", "TaskID", default=None)
+                    if _task:
+                        _xml = r.get("TaskXML") if isinstance(r.get("TaskXML"), list) else []
+                        _cmds = [" ".join(str(x.get(k) or "") for k in ("Command", "Arguments")).strip()
+                                 for x in _xml[:3] if isinstance(x, dict)]
+                        _t = "Hidden scheduled task (security descriptor removed)"
+                        ents.append(_ent(
+                            keys.event_key(asset, f"hiddentask:{str(_task).lower()}"), "event",
+                            f"{_t}: {str(_task)[:60]} on {host or asset.split(':')[-1]}", asset,
+                            run_id, loc, anomaly=_level_anomaly("high"),
+                            first=keys.norm_ts(F.get(r, "Date", default=None)) or _state_ts(r, collected_at),
+                            flags=["detection", "persistence"], title=_t, level="high",
+                            artifact=artifact, task=str(_task),
+                            details="; ".join(c for c in _cmds if c)[:_EV_DETAILS_CAP] or str(_task)))
+                    continue
+
+                elif ab == "windows.system.domainrole":
+                    # Context for the asset, never a finding.
+                    ents.append(Entity(id=asset, type="asset", label=str(host or asset.split(":")[-1]),
+                                       attrs={"_assets": [asset],
+                                              "domain_role": F.get(r, "DomainRole", default=None),
+                                              "ad_domain": F.get(r, "Domain", default=None)},
+                                       sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, loc)]))
                     continue
 
                 # ---- Linux agentic artifacts (quick_wins_linux) -----------------
@@ -1247,7 +1401,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     ents.append(ev)
 
                 # ---- application inventory detections (RMM / LOLRMM) ----------
-                elif ("application" in an and "detection" in an) or "lolrmm" in an:
+                elif "application" in an and "detection" in an:
                     cat = F.get(r, "Category", default="") or ""
                     name = F.get(r, "DisplayName", "Name", default=artifact)
                     rmm = any(k in str(cat).lower() for k in ("rmm", "remote", "lolrmm"))
