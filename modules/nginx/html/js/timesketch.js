@@ -218,8 +218,6 @@ async function runTimeSketchWorkflow() {
             return;
         }
 
-        alert(`✓ Timesketch pipeline started for ${clientsPayload.length} client(s) under ONE workflow!\n\nSketch: ${sketchName}\nBlueprint: ${blueprintName}\nTriage Target: ${kapeTarget}\n\nKAPE collections run in parallel; Plaso processing runs one at a time (first finished, first processed).\n\nCheck the Workflows tab to monitor progress.`);
-
         switchTab('workflows');
 
     } catch (error) {
