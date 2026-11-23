@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import re
 
 from .. import keys
@@ -212,6 +213,64 @@ def _hosts_entry_kind(name, addr):
     return "public" if ip.is_global else None
 
 
+# THOR (Generic.Scanner.ThorZIP/ThorResultsJson): each row is one line of THOR's JSON
+# log, in format v1, v2 or v3 depending on the THOR version. Only its own Alerts and
+# Warnings become findings, one per host and rule, so a rule matching thousands of
+# files stays one row with a bounded sample. Matched strings are never kept: they are
+# file content and can hold credentials.
+_THOR_LEVELS = {"alert": "high", "warning": "medium"}
+_THOR_SAMPLE = 10
+_THOR_REASON_END = re.compile(r"\s+(?:SUBSCORE|REF|MATCHED|MATCHES|TAGS|RULEDATE|SIGTYPE|SIGCLASS)\b", re.I)
+
+
+def _thor_ts(value):
+    """THOR's RFC 3339 time as UTC. It can carry nanoseconds and a local offset."""
+    try:
+        t = keys.to_utc_dt(re.sub(r"\.\d+", "", str(value or "")))
+        return t.strftime("%Y-%m-%dT%H:%M:%SZ") if t else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _thor_finding(line):
+    """One THOR log line as a finding dict, or None unless it is a scored Alert or
+    Warning. Status lines at those levels carry no score or reason and are dropped."""
+    try:
+        d = json.loads(line) if isinstance(line, str) else line
+    except ValueError:
+        return None
+    if not isinstance(d, dict) or d.get("type") not in (None, "", "THOR assessment"):
+        return None
+    meta = d["meta"] if isinstance(d.get("meta"), dict) else d
+    sev = _THOR_LEVELS.get(str(meta.get("level") or "").lower())
+    if not sev:
+        return None
+    low = {str(k).lower(): v for k, v in d.items()}
+    reasons = low.get("reasons") if isinstance(low.get("reasons"), list) else []
+    first = reasons[0] if reasons and isinstance(reasons[0], dict) else {}
+    sig = first.get("signature") if isinstance(first.get("signature"), dict) else {}
+    rule = (sig.get("rule_name") or first.get("rule_name") or first.get("rulename")
+            or first.get("summary") or first.get("reason") or low.get("reason_1") or "")
+    rule = _THOR_REASON_END.split(str(rule), maxsplit=1)[0].strip()
+    if not rule and low.get("score") in (None, ""):
+        return None
+    subj = low.get("subject") if isinstance(low.get("subject"), dict) else {}
+    image = subj.get("image") if isinstance(subj.get("image"), dict) else {}
+    path = subj.get("path") or image.get("path") or subj.get("name")
+    for k in ("file", "image", "path"):
+        if not path and isinstance(low.get(k), str):
+            path = low[k]
+    hashes = next((h for h in (subj.get("hashes"), image.get("hashes"), low.get("hashes"))
+                   if isinstance(h, dict)), {})
+    try:
+        score = int(low.get("score"))
+    except (TypeError, ValueError):
+        score = None
+    return {"severity": sev, "rule": (rule or f"{meta.get('module') or 'Scanner'} detection")[:70],
+            "path": str(path)[:200] if path else None, "score": score,
+            "sha256": hashes.get("sha256") or low.get("sha256"), "ts": _thor_ts(meta.get("time"))}
+
+
 def _state_ts(row, collected_at=None):
     """When a current-state row was collected. Never the row's own Created or Mtime:
     a service created in 2024 did not stop in 2024. Collected rows carry no time of
@@ -372,6 +431,9 @@ SUPPORTED_ARTIFACTS = frozenset({
     "windows.registry.wdigest",
     "windows.registry.taskcache.hiddentasks",
     "windows.system.domainrole",
+    # Not in any blueprint: Intact neither ships nor runs THOR (its licence forbids
+    # redistribution). This reads the results of a hunt an operator already ran.
+    "generic.scanner.thorzip",
     # --- Linux (agentic_quick_wins_linux) ---
     "linux.sys.pslist",
     "generic.system.pstree",
@@ -608,6 +670,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
       lolrmm, criticalservices,     => proactive exposure checks (current state, not
         hostsfile, wdigest,              activity); domainrole is asset context only
         hiddentasks, domainrole
+      thorzip                       => Generic.Scanner.ThorZIP Alerts and Warnings
       amcache/prefetch/userassist/  => DetectRaptor...Detection.Amcache, exec evidence
         shimcache/appcompat/srum/bam
       loldriver                     => DetectRaptor...Detection.LolDrivers[Malicious]
@@ -641,6 +704,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
     # (asset, rule) -> folded sigma occurrences; emitted after the row loop
     sigma_agg: dict = {}
     hosts_ents: dict = {}   # (asset, kind) -> the one hosts-file entity for that host
+    thor_ents: dict = {}    # (asset, rule) -> the one THOR entity for that host and rule
 
     for artifact, rows in (collected_data or {}).items():
         an = artifact.lower()
@@ -844,6 +908,38 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                               "domain_role": F.get(r, "DomainRole", default=None),
                                               "ad_domain": F.get(r, "Domain", default=None)},
                                        sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, loc)]))
+                    continue
+
+                elif ab == "generic.scanner.thorzip":
+                    _tf = _thor_finding(F.get(r, "Line", default=None)) if "thorresultsjson" in an else None
+                    if _tf:
+                        _te = thor_ents.get((asset, _tf["rule"].lower()))
+                        if _te is None:
+                            _t = f"THOR: {_tf['rule']}"
+                            _te = _ent(keys.event_key(asset, f"thor:{_tf['rule'].lower()}"), "event",
+                                       f"{_t} on {host or asset.split(':')[-1]}", asset, run_id, loc,
+                                       anomaly=_level_anomaly(_tf["severity"]), first=_tf["ts"],
+                                       flags=["detection", "thor"], title=_t, level=_tf["severity"],
+                                       artifact=artifact, occurrences=0)
+                            _te.attrs["entries"] = []
+                            thor_ents[(asset, _tf["rule"].lower())] = _te
+                            ents.append(_te)
+                        if _level_anomaly(_tf["severity"]) > _te.anomaly:
+                            _te.anomaly = _level_anomaly(_tf["severity"])
+                            _te.severity = from_anomaly(_te.anomaly)
+                            _te.attrs["level"] = _tf["severity"]
+                        if _tf["ts"]:
+                            _te.first_seen = min(_te.first_seen or _tf["ts"], _tf["ts"])
+                            _te.last_seen = max(_te.last_seen or _tf["ts"], _tf["ts"])
+                        _te.attrs["occurrences"] += 1
+                        if _tf["path"] and len(_te.attrs["entries"]) < _THOR_SAMPLE:
+                            _bits = [f"score {_tf['score']}"] if _tf["score"] is not None else []
+                            if _tf["sha256"]:
+                                _bits.append(f"sha256 {_tf['sha256']}")
+                            _te.attrs["entries"].append(_tf["path"] + (f" ({', '.join(_bits)})" if _bits else ""))
+                        _more = _te.attrs["occurrences"] - len(_te.attrs["entries"])
+                        _te.attrs["details"] = "; ".join(_te.attrs["entries"]) + (
+                            f" (+{_more:,} more)" if _more and _te.attrs["entries"] else "")
                     continue
 
                 # ---- Linux agentic artifacts (quick_wins_linux) -----------------
