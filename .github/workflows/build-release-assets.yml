@@ -300,6 +300,19 @@ jobs:
           fi
           docker tag intact-backend:ci-packager "intact-backend:${{ needs.resolve.outputs.tag }}"
 
+      # EVERY RELEASE SHIPS THE NEWEST ARTIFACTS: everything Server.Import.Extras,
+      # the Artifact Exchange and DetectRaptor publish, taken here because the
+      # image below bakes this folder. Upstream's bad versions are held back by
+      # name in the run summary (see the script). A source that cannot be fetched
+      # fails the release rather than quietly shipping old artifacts.
+      - name: Refresh Velociraptor artifacts to the newest
+        if: matrix.module == 'velociraptor'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/ci/refresh_artifacts.py --summary "$GITHUB_STEP_SUMMARY"
+
       # Velociraptor's image is BUILT, not pulled, and it bakes artifacts from
       # the checkout. refresh_velociraptor_build_files() returns False and only
       # WARNS when it cannot find them, so a bundle-less image would ship while

@@ -2282,8 +2282,8 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # image tar this package already carries, and the target loads
                 # it in one pass at startup instead of importing each artifact
                 # over the API (the old ~37-min step). Nothing to download or
-                # bundle separately. Refresh that folder with
-                # scripts/regenerate_artifact_bundle.py when upstream changes.
+                # bundle separately. The release workflow brings that folder up
+                # to date first (scripts/ci/refresh_artifacts.py).
 
                 # ── Bundle Velociraptor TOOLS for air-gap ──────────────
                 # Some artifacts reference external tools that

@@ -29,9 +29,8 @@ CUSTOM_ARTIFACTS_DIR = "/app/data/custom_artifacts"
 # Server.Import.ArtifactExchange -> Server.Import.ArtifactBundle (old name
 # kept as an alias). These are no longer RUN at runtime — the artifacts they
 # import are baked into the image and loaded via --definitions — this list is
-# now only the "skipped (baked)" record. scripts/regenerate_artifact_bundle.py
-# is what actually runs them (and picks ArtifactBundle vs ArtifactExchange by
-# what the running server defines) when refreshing the committed bundle.
+# now only the "skipped (baked)" record. Each release fetches what they would
+# import and bakes the newest versions: scripts/ci/refresh_artifacts.py.
 STARTUP_SERVER_ARTIFACTS = [
     "Server.Import.ArtifactBundle",  # was Server.Import.ArtifactExchange (<0.77)
     "Server.Import.DetectRaptor",
