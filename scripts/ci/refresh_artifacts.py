@@ -278,16 +278,24 @@ def _verifiable(raw):
     return _BLOB.sub(lambda m: m.group(1) + short + m.group(3), raw.decode("utf-8", "replace")).encode()
 
 
-def verify(verifier, raw, tmp, definitions):
-    """(passed, first problem)."""
+def verify(verifier, raw, tmp, definitions, own_file=None):
+    """(passed, first problem). `own_file` is this artifact's copy in `definitions`:
+    from 0.77.4 the verifier refuses a file whose name is already loaded ("Unable to
+    override built in artifact"), so it steps aside while its replacement is checked."""
     path = os.path.join(tmp, "candidate.yaml")
     with open(path, "wb") as fh:
         fh.write(_verifiable(raw))
+    aside = own_file + ".off" if own_file and os.path.exists(own_file) else None
     try:
+        if aside:
+            os.rename(own_file, aside)
         r = _velo(verifier, "--definitions", definitions, "artifacts", "verify", "--issues_only",
                   "--max_length=4000000", path)
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, f"verifier did not run: {e}"
+    finally:
+        if aside and os.path.exists(aside):
+            os.rename(aside, own_file)
     text = (r.stdout + r.stderr).strip()
     if r.returncode != 0 or "[ERROR]" in text:
         lines = [l for l in text.splitlines() if "ERROR" in l] or text.splitlines() or [f"exit {r.returncode}"]
@@ -322,8 +330,9 @@ def refresh(bundle, upstream, verifier, builtin, mapped, dry_run=False):
         # calls another new artifact resolves.
         staged = os.path.join(tmp, "staged")
         shutil.copytree(bundle, staged)
+        own = {n: os.path.join(staged, os.path.basename(have[n][0]) if n in have else file_name(n)) for n in todo}
         for name, raw in todo.items():
-            with open(os.path.join(staged, os.path.basename(have[name][0]) if name in have else file_name(name)), "wb") as fh:
+            with open(own[name], "wb") as fh:
                 fh.write(_verifiable(raw))
         for f in os.listdir(staged):             # the loader needs no rule packs either
             p = os.path.join(staged, f)
@@ -332,8 +341,8 @@ def refresh(bundle, upstream, verifier, builtin, mapped, dry_run=False):
             with open(p, "wb") as fh:
                 fh.write(_verifiable(body))
         for name, raw in todo.items():
-            ok, problem = verify(verifier, raw, tmp, staged)
-            if not ok and name in have and not verify(verifier, have[name][1], tmp, staged)[0]:
+            ok, problem = verify(verifier, raw, tmp, staged, own[name])
+            if not ok and name in have and not verify(verifier, have[name][1], tmp, staged, own[name])[0]:
                 ok = True                        # no worse than the copy we already ship
             if not ok:
                 results[name] = ("held", "verifier: " + problem)

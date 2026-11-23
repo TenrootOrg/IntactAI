@@ -125,7 +125,7 @@ class Refresh(unittest.TestCase):
                         "Windows.Bad": up("Windows.Bad", iocs=CSV + "bad,r\n"),
                         "Windows.Fresh": up("Windows.Fresh")}
 
-            def fake_verify(verifier, raw, tmp, definitions):
+            def fake_verify(verifier, raw, tmp, definitions, own_file=None):
                 return (b"bad,r" not in raw), "parse error"
             before = _read(os.path.join(d, "Windows__Bad.yaml"))
             with mock.patch.object(ra, "verify", side_effect=fake_verify):
@@ -136,6 +136,23 @@ class Refresh(unittest.TestCase):
             self.assertIn("new,r", _read(os.path.join(d, "Windows__Up.yaml")))
             self.assertTrue(os.path.exists(os.path.join(d, "Windows__Fresh.yaml")))
             self.assertEqual(_read(os.path.join(d, "Windows__Bad.yaml")), before)
+
+    def test_an_artifact_is_verified_without_its_own_loaded_copy(self):
+        """0.77.4 refuses a file whose name is already in --definitions. Every update
+        then "failed", matched its old copy failing too, and shipped unverified."""
+        with tempfile.TemporaryDirectory() as d:
+            own = os.path.join(d, "Windows__A.yaml")
+            with open(own, "w") as fh:
+                fh.write("name: Windows.A\n")
+            seen = {}
+
+            def fake_velo(verifier, *args, **kw):
+                seen["loaded"] = sorted(f for f in os.listdir(d) if f.endswith(".yaml"))
+                return subprocess.CompletedProcess(args, 0, "", "")
+            with mock.patch.object(ra, "_velo", side_effect=fake_velo):
+                self.assertEqual(ra.verify("/v", b"name: Windows.A\n", d, d, own), (True, ""))
+            self.assertEqual([f for f in seen["loaded"] if f == "Windows__A.yaml"], [])
+            self.assertTrue(os.path.exists(own), "its copy is back afterwards")
 
     def test_a_source_that_cannot_be_fetched_fails_the_build(self):
         with mock.patch.object(sys, "argv", ["x", "--verifier", "/bin/true", "--bundle", "/nonexistent"]), \
