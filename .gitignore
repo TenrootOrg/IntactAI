@@ -311,3 +311,6 @@ data/volweb-symbols/*
 /data-move-status.json
 /data-move.log
 /data.before-move-*/
+
+# Local instructions for AI coding agents on this machine
+AGENTS.override.md
