@@ -188,9 +188,9 @@ versions:
   elk: '9.5.6'
   iris: v2.4.29
   plaso: '20261027'
-  portainer: '2.45.3'
+  portainer: '2.45.4'
   timesketch: '20261014'
-  velociraptor: '0.77.3'
+  velociraptor: '0.77.4'
   # Kept for older releases' packages and upgrade bookkeeping only: a release no
   # longer ships an aws_sigma asset (its rules are in the backend image, see
   # sigma_rules below), so an upgrade skips it as "not in this package".
@@ -298,12 +298,12 @@ versions:
   # floating `nginx:alpine` default — pinned so install/upgrade are reproducible.
   # Independent from timesketch_nginx above (separate container + .env); pin each
   # to the version IT was tested with, not a shared one. Stock nginx alpine tag.
-  nginx:                 '1.31.7-alpine'
+  nginx:                 '1.31.9-alpine'
   # tusd resumable-upload sidecar (intact_tusd in the backend compose). Pinned
   # here so install/upgrade drive one reproducible tag; a bump recreates the
   # container (docker restart alone keeps the old image). Docker Hub:
   # tusproject/tusd.
-  backend_tusd:          'v2.10.1'
+  backend_tusd:          'v2.10.2'
   volweb_postgres:       '14.1'
   # Was floating '7' — pinned to the exact patch (debian variant, matches the
   # currently-deployed redis:7). Reproducible; bump deliberately.
