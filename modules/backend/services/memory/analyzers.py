@@ -309,7 +309,15 @@ def _call_llm_for_memory(
     full agentic dependency graph (grpc, anthropic SDK, etc.) loaded.
     """
     from services.agentic.analyzers import call_llm  # local import — avoid boot ordering
+    from services.fusion import injection
 
+    # Plugin rows and YARA hits come from the suspect machine's memory: process
+    # names and command lines are the attacker's to write. This path called the
+    # model directly and skipped the guard every other evidence path goes through.
+    system_prompt = injection.SYSTEM_NOTE + "\n\n" + (system_prompt or "")
+    user_message, hits = injection.guard(user_message, run_id=run_id)
+    if run_id:
+        injection.take_hits(run_id)            # said in this report's own note, below
     resp = call_llm(user_message, system_prompt, llm_config, run_id=run_id,
                     purpose="memory analysis")
     # The agentic helper returns provider-shaped responses; the caller
@@ -317,7 +325,7 @@ def _call_llm_for_memory(
     # SDK and ``choices[0].message.content`` for the OpenAI/OpenRouter
     # SDK. Centralize the unpacking here so we don't repeat it for
     # each mode.
-    return _extract_markdown_from_llm_response(resp)
+    return _extract_markdown_from_llm_response(resp) + injection.note(hits)
 
 
 def _extract_markdown_from_llm_response(resp: Any) -> str:

@@ -494,6 +494,11 @@ def _call(state, questions, *, run_id=None, cfg=None):
     row = PROVIDERS[p]
     if unavailable(cfg):                     # failed moments ago: skip, offline, no call
         return None, False
+    # Every decision-model question carries evidence the attacker may have written.
+    # Here, the one call they all go through. The question wording is left alone:
+    # the verdict thresholds were measured against it.
+    from . import injection
+    state = injection.clean_obj(state)
     if run_id:
         # The case's AI budget holds for this model too: used up, no call (the
         # caller treats it like any unanswered call). services/llm_usage.py.

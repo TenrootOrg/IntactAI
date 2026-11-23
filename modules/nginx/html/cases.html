@@ -2231,7 +2231,7 @@ function synthFromChat(id){toast('Drafting the master prompt from the chat…');
   fetch('/api/cases/'+id+'/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
     if(!r.ok){toast(d.error||'This needs a chat conversation and a connected AI model.');return;}
-    const el=$('#cf-mp'); if(el)el.value=d.master_prompt||''; toast('Master prompt drafted from the chat. Review it, then click Save.');});
+    const el=$('#cf-mp'); if(el)el.value=d.master_prompt||''; toast('Draft ready. It is not applied until you review it and click Save.');});
 }
 // ---- Unified timeline (findings + manual events; validate with the IT team) ----
 const TL_SEV_RANK={informational:0,info:0,low:1,medium:2,high:3,critical:4};
