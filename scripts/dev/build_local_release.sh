@@ -26,6 +26,14 @@
 #
 # Usage: scripts/dev/build_local_release.sh <tag> [out_dir]
 #
+#   <tag> must be a PUBLISHED release: step 1 downloads its 8 module assets
+#   from GitHub, so a fake or dev tag has nothing to download. It must also
+#   never be the tag the box is running: step 2 bakes intact-backend:<tag>, and
+#   reusing that name for current source replaces the running image under the
+#   same tag. To package under a fake or dev tag, use
+#   scripts/dev/build_local_release_assets.sh, which builds every module from
+#   this checkout and downloads nothing from the release.
+#
 #   Delete the cache to force a re-download of the 8 cached modules:
 #     rm -rf ~/.cache/intact-local-release/<tag>
 set -euo pipefail
@@ -81,8 +89,10 @@ _pin_idx="$CACHE_DIR/.pin-check.index.json"
 tar -xOf "$CACHE_TAR" "$TAG.index.json" > "$_pin_idx" || {
     err "could not read $TAG.index.json from $CACHE_TAR"; exit 1; }
 set +e
+# HEAD's config.yaml, not the working file: that is the one step 2 stages and
+# packages (see the staging note below).
 _pin_drift="$(python3 "$REPO_DIR/scripts/dev/check_cached_pins.py" \
-    "$_pin_idx" "$REPO_DIR/config.yaml" "$CACHED_MODULES" 2>&1)"
+    "$_pin_idx" <(git -C "$REPO_DIR" show HEAD:config.yaml) "$CACHED_MODULES" 2>&1)"
 _pin_rc=$?
 set -e
 rm -f "$_pin_idx"
@@ -121,22 +131,40 @@ OUT_STAGING_CT="/app/data/.local_release_out"
 log "syncing current source ($REPO_DIR) into the backend container's reach"
 rm -rf "$SRC_STAGING_HOST" "$OUT_STAGING_HOST"
 mkdir -p "$SRC_STAGING_HOST" "$OUT_STAGING_HOST"
-rsync -a --exclude='.git' "$REPO_DIR/" "$SRC_STAGING_HOST/"
+# TRACKED files only. This rsynced the whole working tree minus .git, and on a
+# box that is the live install: config.yaml.pre-upgrade-backup (the GitHub
+# token and module passwords), the install/upgrade logs, data/ with the
+# Velociraptor CA, modules/nginx/html/downloads and modules/velociraptor/clients
+# would all have been staged. `git ls-files` cannot pick up an untracked secret
+# path nobody thought to exclude. --ignore-missing-args: a tracked file deleted
+# in the working tree is not an error. The tracked config.yaml and
+# modules/*/.env files hold this box's values (config.yaml its GitHub token),
+# so they are staged as committed, which is what CI builds from: the package
+# carries HEAD's version pins, not the ones this box happens to run.
+git -C "$REPO_DIR" ls-files -z -- ':!config.yaml' ':!modules/*/.env' \
+    | rsync -a --from0 --ignore-missing-args --files-from=- "$REPO_DIR/" "$SRC_STAGING_HOST/"
+while IFS= read -r -d '' _envf; do
+    mkdir -p "$(dirname "$SRC_STAGING_HOST/$_envf")"
+    git -C "$REPO_DIR" show "HEAD:$_envf" > "$SRC_STAGING_HOST/$_envf"
+done < <(git -C "$REPO_DIR" ls-files -z -- config.yaml 'modules/*/.env')
 
 log "rebuilding the intact module asset from current source (this is the slow"
 log "step only the FIRST time -- Docker's layer cache makes reruns fast unless"
 log "requirements*.txt actually changed)"
-# Deliberately no --commit: build_release_package.py resolves the TAG's own
-# git commit and hard-fails if --commit disagrees ("the tag moved mid-build")
-# -- exactly the check that would fire here, since the whole point of this
-# tool is packaging CURRENT source (ahead of whatever commit the real
-# intact-20260806 tag points to), not literally rebuilding that tagged
-# commit. Leaving it unset makes it self-resolve with no mismatch check.
+# --commit is HEAD, so the packager stamps org.intact.commit on the backend
+# image and its stale-image check (package.py, _prepare_backend_images) can
+# fire. Without it the commit was empty, the check was skipped, and an
+# intact-backend:<tag> image left from an older build was reused as-is: the
+# package shipped old code under a fresh build's name. It does not trip the
+# "tag moved mid-build" check: that compares against the tag's commit as git
+# resolves it in the container's working directory (/app), which is not a
+# checkout, so there is nothing to compare against.
 docker exec \
     -e INTACT_PATH="$SRC_STAGING_CT" \
     "$BACKEND_CONTAINER" \
     python3 "$SRC_STAGING_CT/scripts/ci/build_release_package.py" \
         --tag "$TAG" --module intact \
+        --commit "$(git -C "$REPO_DIR" rev-parse HEAD)" \
         --out "$OUT_STAGING_CT" \
         --work-dir "$OUT_STAGING_CT/intact-upgrade-$TAG"
 

@@ -1543,9 +1543,41 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         # config.yaml at all -- a fresh install seeds its own
                         # via lib/config.sh:check_config().
                         'config.yaml', 'qa-config.yaml',
+                        # Untracked operator spoil these names alone cannot match,
+                        # seen in a live box's tree: config.yaml.pre-upgrade-backup
+                        # (the GitHub token and module passwords), install/upgrade
+                        # logs, and the Velociraptor binaries staged into
+                        # modules/nginx/html/downloads and modules/velociraptor/
+                        # clients. The local builders now stage tracked files only;
+                        # this is the backstop for any other caller. No tracked
+                        # path has these names.
+                        'config.yaml.*', '*.log', '*.upgrade-bak-*',
+                        'downloads', 'clients',
                     ),
                 )
                 log("  Full repo copied", "success")
+
+                # data/ is ignored above because it is per-box state, but two
+                # TRACKED paths under it are release content the box reads from
+                # its own data/: tools_inventory.yaml (lib/upgrade/velo_refresh.sh)
+                # and the shipped custom artifacts. The velociraptor branch below
+                # takes custom artifacts from /app/data/custom_artifacts, which CI
+                # does not mount, so neither ever reached an upgraded box. Only
+                # these two, never the rest of data/.
+                _src_data = os.path.join(extracted_root, 'data')
+                _dst_data = f"{package_dir}/source/intact/data"
+                _data_files = [os.path.join(_src_data, 'tools_inventory.yaml')]
+                _ca_dir = os.path.join(_src_data, 'custom_artifacts')
+                if os.path.isdir(_ca_dir):
+                    _data_files += [os.path.join(_ca_dir, f) for f in sorted(os.listdir(_ca_dir))
+                                    if f.endswith(('.yaml', '.yml'))]
+                for _df in _data_files:
+                    if os.path.isfile(_df):
+                        _dd = os.path.join(_dst_data, os.path.relpath(os.path.dirname(_df), _src_data))
+                        os.makedirs(_dd, exist_ok=True)
+                        shutil.copy2(_df, _dd)
+                log(f"  Shipped {sum(os.path.isfile(f) for f in _data_files)} tracked data/ "
+                    f"file(s) (tools_inventory.yaml, custom_artifacts/*.yaml)", "info")
 
 
                 # Mirror the historical `source/backend` and `source/frontend`
@@ -1790,10 +1822,15 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     if fname == required_binary:
                         required_ok = True
 
+                # FAIL, not `continue`: skipping the module still produced an asset
+                # with no Velociraptor image, and the target cannot build one
+                # offline (see the bake below).
                 if not required_ok:
-                    log("  Required linux server binary unavailable — skipping image bake.", "error")
-                    log("  Target machines will fail offline upgrade until the package is re-prepared.", "warning")
-                    continue
+                    return {"success": False,
+                            "error": (f"velociraptor: the required Linux server binary "
+                                      f"{required_binary} could not be fetched, so no image "
+                                      f"can be baked. Refusing to ship a velociraptor asset "
+                                      f"without its image.")}
                 if missing_optional:
                     log(f"  Note: placeholder(s) used for {len(missing_optional)} client binary(ies): {', '.join(missing_optional)}",
                         "warning")
@@ -1913,11 +1950,19 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     "docker compose version",
                     timeout=10, logger=None, run_id=run_id,
                 )
+                #
+                # All three failures below FAIL the module. They used to log
+                # "Target will rebuild locally from the staged binaries (still
+                # offline-safe)", which is false: modules/velociraptor/Dockerfile
+                # runs apt-get, and installs and upgrades run compose with
+                # --no-build --pull never. An image-less asset is undeployable
+                # offline.
                 if not compose_probe.get("success"):
-                    log("  `docker compose` plugin not available in this container — "
-                        "skipping image bake.", "info")
-                    log("  Target will rebuild locally from the staged binaries (still offline-safe).", "info")
-                    continue
+                    return {"success": False,
+                            "error": ("velociraptor: the `docker compose` plugin is not "
+                                      "available here, so the image cannot be baked. The "
+                                      "target cannot build it offline (its Dockerfile runs "
+                                      "apt-get); refusing to ship the asset without it.")}
 
                 build_result = run_command(
                     f"VELOCIRAPTOR_VERSION={clean_version} VELOCIRAPTOR_TAG={velo_tag} "
@@ -1935,16 +1980,21 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     )
                     if save_result.get("cancelled"):
                         return {"success": False, "error": "cancelled", "cancelled": True}
-                    if save_result['success']:
-                        img_size = os.path.getsize(output_path)
-                        log(f"  Image exported ({_format_size(img_size)})", "success")
-                        manifest["contents"]["images"].append(f"velociraptor-{clean_version}.tar")
-                    else:
-                        log(f"  Failed to export image: {save_result.get('error', '')[:120]}", "warning")
-                        log("  Target will rebuild locally from the staged binaries (still offline-safe).", "info")
+                    if not save_result['success']:
+                        return {"success": False,
+                                "error": (f"velociraptor: could not save {image_tag}: "
+                                          f"{save_result.get('error', '')[:160]}. The target "
+                                          f"cannot build it offline; refusing to ship the "
+                                          f"asset without it.")}
+                    img_size = os.path.getsize(output_path)
+                    log(f"  Image exported ({_format_size(img_size)})", "success")
+                    manifest["contents"]["images"].append(f"velociraptor-{clean_version}.tar")
                 else:
-                    log(f"  Failed to build image: {build_result.get('error', '')[:160]}", "warning")
-                    log("  Target will rebuild locally from the staged binaries (still offline-safe).", "info")
+                    return {"success": False,
+                            "error": (f"velociraptor: image build failed: "
+                                      f"{build_result.get('error', '')[:160]}. The target "
+                                      f"cannot build it offline; refusing to ship the asset "
+                                      f"without it.")}
 
                 # Bundle Velociraptor artifact-source files so the apply
                 # side can re-import them post-upgrade even on an
@@ -2432,38 +2482,19 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 manifest["contents"]["images"].extend(saved_names)
                 bundled_for_module = len(saved_names)
 
-                # Bundling-completeness gate. Three outcomes:
-                #
-                # (a) bundled == declared → normal: every image landed,
-                #     register the module's version + let apply run.
-                # (b) 0 < bundled < declared → partial: at least one
-                #     image bundled but not all. Surface the warning
-                #     and register the version (operator opted in by
-                #     selecting the module; let apply try its best
-                #     with what we shipped).
-                # (c) bundled == 0 → total failure for this module
-                #     (typo'd version, registry 404, network glitch).
-                #     Skip the manifest entry so the apply phase
-                #     doesn't run for this module — no contradictory
-                #     "succeeded:N" report and no .env bumped to a
-                #     non-existent version. Operator fixes the typo
-                #     and re-runs without touching the rest of the
-                #     stack.
-                if bundled_for_module == 0 and declared > 0:
-                    log(
-                        f"  MODULE_FAILED_PREPARE: {module} bundled 0/{declared} images — "
-                        f"skipping {module} (apply phase will not run for this module). "
-                        f"Likely a typo'd version or registry 404; verify the version exists upstream.",
-                        "error",
-                    )
-                    # Do NOT add to manifest.versions; apply skips it.
-                    continue
+                # Bundling-completeness gate: every declared image, or the
+                # module FAILS. Skipping a 0/N module (MODULE_FAILED_PREPARE then
+                # `continue`) and only warning on a partial one both still
+                # produced an asset, and installs and upgrades run compose with
+                # --pull never, so a missing image is a container that cannot
+                # start offline. Likely a typo'd version, a registry 404 or a
+                # network glitch: fix it and re-run.
                 if bundled_for_module < declared:
-                    log(
-                        f"  WARNING: {module} bundled {bundled_for_module}/{declared} images — "
-                        "the target may fail to start a container at apply time.",
-                        "warning",
-                    )
+                    return {"success": False,
+                            "error": (f"{module}: bundled {bundled_for_module}/{declared} "
+                                      f"images. Refusing to ship an asset the target cannot "
+                                      f"start offline; check that {module} {version} exists "
+                                      f"upstream and the registry is reachable.")}
 
                 manifest["versions"][module] = version
 

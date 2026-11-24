@@ -14,10 +14,19 @@
 # and target images are already on a test box. Pass --with-images to docker
 # save them in, which additionally exercises the tar-loading path.
 #
+# --with-images knows the image names of portainer, elk, iris, volweb,
+# timesketch and plaso only. Any other module is listed as NOT saved at the
+# end; pre-load those images on the box instead.
+#
+# It builds NO engine asset (<tag>-engine.tar.gz). An offline run of this
+# package therefore needs INTACT_UPGRADE_REEXEC=1 (skips the engine fetch, so
+# the box's own scripts/upgrade.sh drives the run), or a
+# scripts/build_engine_asset.sh output placed beside the package.
+#
 # DEV ONLY. This fabricates a release; never point a real appliance at one.
 set -euo pipefail
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \?//'; exit "${1:-0}"; }
+usage() { sed -n '2,26p' "$0" | sed 's/^# \?//'; exit "${1:-0}"; }
 
 WITH_IMAGES=0
 ARGS=()
@@ -59,13 +68,16 @@ echo "[make-test-package] tag=${TAG}"
 # whatever was last committed and silently drop whatever local change is
 # actually being tested.
 if [[ -d "${REPO}/lib" ]]; then
-    ( cd "$REPO" && git ls-files -z -- install.sh lib scripts modules \
+    # Not modules/*/.env: they are tracked, but on a box they hold its own
+    # values, and packing them would mirror them onto the test target.
+    ( cd "$REPO" && git ls-files -z -- install.sh lib scripts modules ':!modules/*/.env' \
         | tar -cf - --null -T - 2>/dev/null ) \
       | tar -C "${ROOT}/source/intact" -xf - 2>/dev/null || true
     echo "[make-test-package] staged source/intact"
 fi
 
 # Optional: docker save the target images so the tar-loading path runs too.
+NOT_SAVED=()
 if (( WITH_IMAGES )); then
     for pin in "${PINS[@]}"; do
         mod="${pin%%=*}"; ver="${pin#*=}"
@@ -88,6 +100,10 @@ if (( WITH_IMAGES )); then
                 docker save -o "${ROOT}/images/timesketch-${ver}.tar" "us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${ver}" ;;
             plaso)
                 docker save -o "${ROOT}/images/plaso-${ver}.tar" "log2timeline/plaso:${ver}" ;;
+            # presidio, velociraptor, intact (backend/nginx/tusd) and the
+            # <module>_<dep> sidecar pins: no image list here. Saying "saved"
+            # for them was false, and the offline run then failed on a pull.
+            *)  NOT_SAVED+=("${mod}=${ver}"); continue ;;
         esac
         echo "[make-test-package] saved images for ${mod}=${ver}"
     done
@@ -151,3 +167,7 @@ PY
 mkdir -p "$(dirname "$OUT")"
 tar -C "$WORK" -cf "$OUT" "intact-upgrade-${TAG}"
 echo "[make-test-package] wrote ${OUT} ($(du -h "$OUT" | cut -f1))"
+if (( ${#NOT_SAVED[@]} )); then
+    echo "[make-test-package] WARNING: --with-images did NOT save images for: ${NOT_SAVED[*]}" >&2
+    echo "[make-test-package]          pre-load them on the target box" >&2
+fi

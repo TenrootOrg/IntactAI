@@ -564,14 +564,13 @@ def main() -> int:
     # would give CI's asset glob two files to choose between.
     #
     # The extension is taken from what prepare ACTUALLY wrote rather than
-    # hardcoded. _compress_with_progress stopped gzipping (the payload is
-    # docker layers, already compressed at rest: measured 0.55% for a full
-    # deflate pass over 5.4 GB), and this line still said ".tar.gz" -- which
-    # would have published plain tars under a .tar.gz name. Green build,
-    # mislabelled release, and every consumer that trusts the extension rather
-    # than sniffing the magic bytes broken by a file that is not what it says.
-    # Deriving it here means this stays correct whichever way that decision
-    # goes, including if the outer gzip is ever restored.
+    # hardcoded. _compress_with_progress still gzips today (`tar -czf`, then
+    # `gzip -t`), so assets are .tar.gz. Dropping the gzip was planned (the
+    # payload is mostly docker layers: measured 0.55% saved by a full deflate
+    # pass over 5.4 GB), and a hardcoded name would then publish plain tars
+    # under a .tar.gz name -- green build, mislabelled release, and every
+    # consumer that trusts the extension rather than the magic bytes broken.
+    # Deriving it here keeps the name true whichever way that decision goes.
     src = result["package_path"]
     _ext = ".tar.gz" if src.endswith(".tar.gz") else ".tar"
     name = f"{args.tag}-{args.module}{_ext}"

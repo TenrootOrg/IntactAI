@@ -84,10 +84,12 @@ nano config.yaml                                    # IP/domain and passwords
 sudo bash install.sh --package ../intact-20261118-package.tar
 ```
 
-`--package` is repeatable and also takes a directory of per-module assets. If
-Docker is not already installed, carry the release's `intact-20261118-system-bundle.tar`
-too and put it beside the package — it provides the engine and host packages
-offline.
+`--package` is repeatable and also takes a directory of per-module assets. When
+the release publishes an `intact-20261118-system-bundle.tar` (Docker and the host
+packages, for a box without Docker), `prepare_package.sh` already puts it inside
+the package, and `install.sh` finds it after unwrapping — nothing extra to carry.
+Carry it as a separate file, beside the package, only for a legacy single-file
+release, or to run `scripts/update_host_deps.sh --package` after an upgrade.
 
 **Velociraptor tools.** An air-gapped install ships only the tools the default
 blueprints use. Other artifacts' tools (Hayabusa, Sigcheck, Bulk Extractor, …)

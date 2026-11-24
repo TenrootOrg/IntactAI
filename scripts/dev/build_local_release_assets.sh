@@ -175,8 +175,18 @@ log "staging $REPO_DIR -> $STAGE"
 # thing that must reflect the current checkout.
 sudo rm -rf "$STAGE"
 mkdir -p "$STAGE" "$WORK" "$OUT"
-sudo rsync -a --exclude='.git' --exclude='data/' --exclude='backups/' \
-      "$REPO_DIR/" "$STAGE/"
+# TRACKED files only. Excluding .git, data/ and backups/ left every other
+# untracked path in: on a box that is config.yaml.pre-upgrade-backup (the GitHub
+# token and module passwords), the install/upgrade logs,
+# modules/nginx/html/downloads and modules/velociraptor/clients, and the
+# packager's name-based ignore list catches none of them. `git ls-files` cannot
+# miss a new untracked path. --ignore-missing-args: a tracked file deleted in
+# the working tree is not an error. The tracked config.yaml and modules/*/.env
+# files hold this box's values (config.yaml its GitHub token), so they are
+# written from HEAD below, which is what CI builds from: the package carries
+# HEAD's version pins, not the ones this box happens to run.
+git -C "$REPO_DIR" ls-files -z -- ':!config.yaml' ':!modules/*/.env' \
+    | sudo rsync -a --from0 --ignore-missing-args --files-from=- "$REPO_DIR/" "$STAGE/"
 # ...except data/yara-seed, which is a BUILD INPUT rather than runtime state:
 # the packager bundles it so an air-gapped install can seed VolWeb's rule
 # corpus. Excluding all of data/ meant locally built packages shipped without
@@ -195,6 +205,10 @@ if [ -f "$REPO_DIR/data/tools_inventory.yaml" ]; then
     sudo cp "$REPO_DIR/data/tools_inventory.yaml" "$STAGE/data/"
 fi
 sudo chown -R "$(id -u):$(id -g)" "$STAGE"
+while IFS= read -r -d '' _envf; do
+    mkdir -p "$(dirname "$STAGE/$_envf")"
+    git -C "$REPO_DIR" show "HEAD:$_envf" > "$STAGE/$_envf"
+done < <(git -C "$REPO_DIR" ls-files -z -- config.yaml 'modules/*/.env')
 
 # A THIN BUNDLE: --bundle-only with a module list.
 #

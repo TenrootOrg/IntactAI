@@ -13,3 +13,23 @@ data/
 *.upgrade-bak-*
 __pycache__/
 *.pyc
+
+# The rest of a live box's untracked bulk and secrets. None of it is under the
+# Dockerfile's COPY list, but `docker build` still sends the whole context to
+# the daemon, so on a box that meant the GitHub token in
+# config.yaml.pre-upgrade-backup, every module's secrets/ and certs, and the
+# Velociraptor client binaries. Patterns match from the context root, so `*.log`
+# alone would only catch top-level logs.
+.git/
+.pytest_cache/
+**/*.log
+config.yaml.*
+backups/
+client_installers/
+**/secrets
+modules/*/.env
+modules/nginx/ssl/
+modules/nginx/html/downloads/
+modules/velociraptor/clients/
+modules/iris/config/certificates/
+modules/timesketch/config/timesketch*.conf

@@ -27,9 +27,9 @@
 # NO MERGE. This does not extract or merge the module assets -- it wraps the
 # N verified module assets (+ the index) into one outer tar, unchanged.
 #
-# The outer wrap is a PLAIN tar, not tar.gz. Every byte inside it is already
-# compressed (docker image layers are gzip at rest, and CI publishes each
-# module asset compressed), so the outer deflate pass measured 0.55% -- 31 MB
+# The outer wrap is a PLAIN tar, not tar.gz. Every module asset inside it is
+# already a .tar.gz (the packager gzips each one; only the wrapper and the
+# system bundle are plain tars), so the outer deflate pass measured 0.55% -- 31 MB
 # saved on a 5.44 GB package -- in exchange for a full single-threaded pass
 # over all 5.4 GB on the operator's laptop. Readers were made format-agnostic
 # first (tar -xf and tarfile.open(f,'r') both auto-detect), so every package
@@ -656,10 +656,10 @@ export GITHUB_TOKEN
 # download with no progress output at all, which is the exact failure this
 # watcher exists to prevent. find matches nothing without erroring.
 #
-# Both '*.tar.gz' and '*.tar' are counted: CI publishes plain-tar assets now,
-# but every release cut before that is still .tar.gz and must still show
-# progress. A name ends in one or the other, never both, so nothing is
-# double-counted.
+# Both '*.tar.gz' and '*.tar' are counted: CI publishes .tar.gz module assets
+# (the packager still gzips them), and a plain-tar asset must show progress too
+# if that gzip is ever dropped. A name ends in one or the other, never both, so
+# nothing is double-counted.
 (
     set +e
     while :; do
@@ -757,8 +757,8 @@ if [ -n "$BUNDLE_PLAN" ]; then
 fi
 
 # Both suffixes, because CI's split assets follow whatever the whole asset is:
-# a plain-tar release splits into "<asset>.tar.part-NN", a release cut before
-# that change into "<asset>.tar.gz.part-NN". Each glob is tested with -e rather
+# today's .tar.gz assets split into "<asset>.tar.gz.part-NN", and a plain-tar
+# asset would split into "<asset>.tar.part-NN". Each glob is tested with -e rather
 # than relying on it matching, since an unmatched glob is left literal by bash
 # and would otherwise be joined as if it were a filename.
 if find . -maxdepth 1 \( -name '*.tar.gz.part-00' -o -name '*.tar.part-00' \) \
@@ -807,9 +807,10 @@ done <<< "$PLAN"
 # an unmatched glob literal and tar would be handed "intact-20260805-*.tar.gz"
 # as a filename.
 #
-# Both suffixes are matched: CI publishes plain-tar assets, every release cut
-# before that publishes .tar.gz, and prepare_package.sh has to be able to
-# package either. Matching only one of them is the failure this guards against
+# Both suffixes are matched: CI publishes .tar.gz module assets (the packager
+# still gzips them), a plain-tar asset must work too if that gzip is ever
+# dropped, and prepare_package.sh has to be able to package either. Matching
+# only one of them is the failure this guards against
 # -- the globs would hit nothing, NASSETS would be 0, the checksum loop above
 # would have had nothing to check, and the run would write a package containing
 # only the index: correct name, plausible-looking log, no images.
