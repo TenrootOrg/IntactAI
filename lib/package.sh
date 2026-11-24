@@ -293,6 +293,32 @@ for k, (kind, v) in sorted(out.items()):
     return 0
 }
 
+# Bytes an asset takes once extracted. gzip -l reads it from the trailer, which
+# holds the size modulo 4 GiB, so a reading below the compressed size has
+# wrapped. shortcut: 3x the compressed size then (assets unpack to ~2.2x),
+# until the packager records each asset's unpacked size in the index.
+_pkg_unpacked_size() {   # <asset>
+    local c u
+    c=$(stat -c%s -- "$1" 2>/dev/null || echo 0)
+    if [[ "$(head -c2 -- "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" == "1f8b" ]]; then
+        u=$(gzip -l -- "$1" 2>/dev/null | awk 'NR==2{print $2}')
+        [[ "$u" =~ ^[0-9]+$ ]] && (( u >= c )) || u=$(( c * 3 ))
+        echo "$u"
+    else
+        echo "$c"
+    fi
+}
+
+# True when <file> is a copy this install made (an unwrapped or joined asset
+# under one of INTACT_UNWRAP_DIRS), never the operator's own file.
+_pkg_is_scratch() {   # <file>
+    local d
+    for d in ${INTACT_UNWRAP_DIRS[@]+"${INTACT_UNWRAP_DIRS[@]}"}; do
+        [[ -n "$d" && "$1" == "$d"/* ]] && return 0
+    done
+    return 1
+}
+
 load_images_from_package() {
     # Takes ONE OR MORE assets. Per-module assets share a top-level directory
     # name, so extracting them all into one place merges them into the single
@@ -327,11 +353,23 @@ load_images_from_package() {
     work="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" pkg-XXXXXX 2>/dev/null)" \
         || work="$(mktemp -d)"
 
-    local total_size=0 pkg_size
+    local total_size=0 pkg_size need=0 freeable=0 largest=0
     for pkg in "${pkgs[@]}"; do
         pkg_size=$(stat -c%s "$pkg" 2>/dev/null || echo 0)
         total_size=$((total_size + pkg_size))
+        need=$(( need + $(_pkg_unpacked_size "$pkg") ))
+        if _pkg_is_scratch "$pkg"; then
+            freeable=$(( freeable + pkg_size ))
+            (( pkg_size > largest )) && largest=$pkg_size
+        fi
     done
+    # The assets unpack to about twice their size, and the only check before
+    # this one counted the wrapper: a test install on 2026-11-24 fell to 7.5 GB
+    # free mid-extraction. Each scratch copy is deleted once extracted (below),
+    # so the peak is the unpacked total less what is freed before the last
+    # copy -- taken as the largest, to be safe -- plus 1 GiB of headroom.
+    need=$(( need - freeable + largest + 1073741824 ))
+    declare -F _args_require_space >/dev/null && _args_require_space "$work" "$need" "extracting the package"
     log_info "Extracting assets — ${#pkgs[@]} asset(s), $(_human_size "$total_size")"
 
     local ext_i=0 base mod_id display
@@ -354,6 +392,9 @@ load_images_from_package() {
             rm -rf "$work"; return 1
         fi
         log_info "  [${ext_i}/${#pkgs[@]}] ${display} — extracted $(_human_size "$pkg_size") in ${RUN_HEARTBEAT_ELAPSED:-?}s"
+        # A copy this install unwrapped or joined is spent once extracted; the
+        # operator's own file is never touched.
+        _pkg_is_scratch "$pkg" && rm -f -- "$pkg"
     done
     log_success "Extraction complete: ${#pkgs[@]} asset(s), $(_human_size "$total_size")"
 

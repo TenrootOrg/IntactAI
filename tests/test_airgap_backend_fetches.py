@@ -62,6 +62,21 @@ class AirGapped(unittest.TestCase):
         self.assertIn("gh (air-gapped)", r["skipped"])
         self.assertEqual(r["failed"], [])
 
+    def test_a_package_staged_tool_named_by_its_url_counts(self):
+        # lolrmm.csv, autorunsc64.exe, lastactivityview.zip: direct_url entries
+        # with no filename/cache_pattern, staged by the package under the URL's
+        # last segment (2026-11-24: the box said "not downloading" them).
+        cfg = {"event_log_tools": [
+            {"name": "lolrmm", "type": "direct_url",
+             "url": "https://github.com/mgreen27/DetectRaptor/raw/master/csv/lolrmm.csv"},
+        ]}
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(tds.requests, "get", _no_network):
+            open(os.path.join(d, "lolrmm.csv"), "wb").close()
+            r = tds.download_tools_from_config(d, cfg, logger=lambda *a, **k: None)
+        self.assertIn("lolrmm", r["already_exists"])
+        self.assertEqual(r["skipped"], [])
+
     def test_legacy_binary_is_not_fetched(self):
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(lvs, "LEGACY_CACHE_DIR", d), \

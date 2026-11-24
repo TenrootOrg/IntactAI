@@ -199,6 +199,36 @@ test_a_wrapper_carries_its_index_in() {
     rm -rf "${INTACT_UNWRAP_DIRS[@]}"
 }
 
+# ---------------------------------------------- disk peak (2026-11-24)
+test_unpacked_size_reads_gzip_and_falls_back_when_wrapped() {
+    local d; d="$(mktemp -d -p "$SCRIPT_DIR")"
+    head -c 3000000 /dev/zero > "$d/raw"
+    gzip -c "$d/raw" > "$d/a.tar.gz"
+    assert_eq "$(_pkg_unpacked_size "$d/a.tar.gz")" "3000000" "gzip -l's unpacked size"
+    assert_eq "$(_pkg_unpacked_size "$d/raw")" "3000000" "a plain tar is its own size"
+    # A >4 GiB asset wraps the trailer's size: zero it, as if it had.
+    printf '\0\0\0\0' | dd of="$d/a.tar.gz" bs=1 seek=$(( $(stat -c%s "$d/a.tar.gz") - 4 )) conv=notrunc 2>/dev/null
+    assert_eq "$(_pkg_unpacked_size "$d/a.tar.gz")" "$(( $(stat -c%s "$d/a.tar.gz") * 3 ))" "a wrapped reading falls back to 3x"
+}
+
+test_extraction_checks_the_unpacked_size_and_drops_spent_copies() {
+    local w; w="$(mktemp -d -p "$SCRIPT_DIR")"
+    _asset "$w/t1-elk.tar" elk
+    _asset "$w/t1-iris.tar" iris
+    _index "$w/t1.index.json" "$w/t1-elk.tar" "$w/t1-iris.tar"
+    tar -cf "$SCRIPT_DIR/t1-package.tar" -C "$w" t1.index.json t1-elk.tar t1-iris.tar
+    parse_install_args --package "$SCRIPT_DIR/t1-package.tar"
+    local need_seen=""
+    _args_require_space() { need_seen="$2"; }
+    load_images_from_package "${INTACT_PACKAGES[@]}" >/dev/null 2>&1 || true
+    unset -f _args_require_space; source ../lib/args.sh
+    assert_true test -n "$need_seen"
+    assert_true test "$need_seen" -ge 1073741824
+    assert_false test -e "${INTACT_PACKAGES[0]}"   # an unwrapped copy is deleted once extracted
+    assert_true test -f "$SCRIPT_DIR/t1-package.tar"   # the operator's own package is never touched
+    rm -rf "${INTACT_UNWRAP_DIRS[@]}" "$SCRIPT_DIR/t1-package.tar"
+}
+
 # ---------------------------------------------------------------- fix 3
 test_split_assets_in_a_directory_are_joined() {
     local d; d="$(mktemp -d -p "$SCRIPT_DIR")"

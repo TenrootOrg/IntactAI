@@ -606,6 +606,18 @@ def download_tools_from_config(tools_dir: str, config: Dict,
                     results["already_exists"].append(tool_name)
                     continue
 
+                # A direct_url tool with neither `filename` nor `cache_pattern`
+                # is saved under its URL's last segment (download_file). Without
+                # this check only download_file noticed it was there, so an
+                # air-gapped box called the package-staged lolrmm.csv, Autoruns
+                # and LastActivityView "not downloading" (2026-11-24).
+                if tool_type == 'direct_url' and not filename and existing_files:
+                    url_name = os.path.basename(urlparse(tool.get('url', '')).path)
+                    if url_name and url_name in existing_files:
+                        log(f"  Cached: {tool_name} ({url_name})")
+                        results["already_exists"].append(tool_name)
+                        continue
+
                 # For direct_url with cache_pattern, check if any file matches pattern locally
                 cache_pattern = tool.get('cache_pattern', '')
                 if cache_pattern and existing_files:
