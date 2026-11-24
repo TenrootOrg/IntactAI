@@ -131,6 +131,21 @@ OUT_STAGING_CT="/app/data/.local_release_out"
 log "syncing current source ($REPO_DIR) into the backend container's reach"
 rm -rf "$SRC_STAGING_HOST" "$OUT_STAGING_HOST"
 mkdir -p "$SRC_STAGING_HOST" "$OUT_STAGING_HOST"
+# Every tracked file this box has edited or deleted goes in AS COMMITTED, not
+# as it sits on disk: config.yaml (its GitHub token), modules/*/.env, and any
+# other per-box edit -- a local build of 2026-11-24 shipped this box's edited
+# data/custom_artifacts/Custom__Elastic__Flows__Upload.yaml. So a dev package
+# carries no uncommitted change at all: commit what you want in it.
+# git archive keeps each file's committed mode; with no path it would archive
+# the whole tree, hence the guard.
+_stage_committed() {   # <repo> <stage>
+    local -a _paths=()
+    mapfile -d '' -t _paths < <(
+        { git -C "$1" diff -z --name-only --diff-filter=MD HEAD
+          git -C "$1" ls-files -z -- config.yaml 'modules/*/.env'; } | sort -zu)
+    (( ${#_paths[@]} )) || return 0
+    git -C "$1" archive --format=tar HEAD -- "${_paths[@]}" | tar -x -C "$2"
+}
 # TRACKED files only. This rsynced the whole working tree minus .git, and on a
 # box that is the live install: config.yaml.pre-upgrade-backup (the GitHub
 # token and module passwords), the install/upgrade logs, data/ with the
@@ -143,10 +158,7 @@ mkdir -p "$SRC_STAGING_HOST" "$OUT_STAGING_HOST"
 # carries HEAD's version pins, not the ones this box happens to run.
 git -C "$REPO_DIR" ls-files -z -- ':!config.yaml' ':!modules/*/.env' \
     | rsync -a --from0 --ignore-missing-args --files-from=- "$REPO_DIR/" "$SRC_STAGING_HOST/"
-while IFS= read -r -d '' _envf; do
-    mkdir -p "$(dirname "$SRC_STAGING_HOST/$_envf")"
-    git -C "$REPO_DIR" show "HEAD:$_envf" > "$SRC_STAGING_HOST/$_envf"
-done < <(git -C "$REPO_DIR" ls-files -z -- config.yaml 'modules/*/.env')
+_stage_committed "$REPO_DIR" "$SRC_STAGING_HOST"
 
 log "rebuilding the intact module asset from current source (this is the slow"
 log "step only the FIRST time -- Docker's layer cache makes reruns fast unless"

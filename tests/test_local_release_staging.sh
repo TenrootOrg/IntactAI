@@ -41,6 +41,8 @@ echo "ELASTIC_PASSWORD=" > "$REPO/modules/elk/.env"
 echo "tools: []" > "$REPO/data/tools_inventory.yaml"
 echo "keep" > "$REPO/lib/common.sh"
 echo "gone" > "$REPO/lib/deleted.sh"
+mkdir -p "$REPO/data/custom_artifacts"
+echo "url: COMMITTED" > "$REPO/data/custom_artifacts/A.yaml"
 _g() { git -C "$REPO" -c user.email=t@example.invalid -c user.name=t -c core.hooksPath=/dev/null "$@"; }
 _g init -q && _g add -A && _g commit -qm init
 
@@ -48,6 +50,7 @@ _g init -q && _g add -A && _g commit -qm init
 printf 'github:\n  token: "LIVE-TOKEN"\nversions:\n  elk: 9.9.9\n' > "$REPO/config.yaml"
 echo "ELASTIC_PASSWORD=LIVE-PASS" > "$REPO/modules/elk/.env"
 rm "$REPO/lib/deleted.sh"
+echo "url: http://10.0.0.5 BOX-ONLY" > "$REPO/data/custom_artifacts/A.yaml"
 echo "token: LIVE-TOKEN" > "$REPO/config.yaml.pre-upgrade-backup"
 echo "log" > "$REPO/install_20261117.log"
 mkdir -p "$REPO/modules/nginx/html/downloads" "$REPO/modules/velociraptor/clients/linux" \
@@ -62,7 +65,10 @@ _check_stage() {
     local s="$1"
     assert_true  test -f "$s/lib/common.sh"
     assert_true  test -f "$s/data/tools_inventory.yaml"
-    assert_false test -e "$s/lib/deleted.sh"
+    # A tracked file goes in as committed, whatever this box did to it
+    # (2026-11-24: a box-edited custom artifact shipped in a dev package).
+    assert_eq "$(cat "$s/lib/deleted.sh")" "gone" "a tracked file deleted on the box is staged as committed"
+    assert_eq "$(cat "$s/data/custom_artifacts/A.yaml")" "url: COMMITTED" "a box-edited tracked file is staged as committed"
     assert_false test -e "$s/config.yaml.pre-upgrade-backup"
     assert_false test -e "$s/install_20261117.log"
     assert_false test -e "$s/modules/nginx/html/downloads"

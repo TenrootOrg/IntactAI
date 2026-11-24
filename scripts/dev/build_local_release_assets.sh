@@ -175,6 +175,21 @@ log "staging $REPO_DIR -> $STAGE"
 # thing that must reflect the current checkout.
 sudo rm -rf "$STAGE"
 mkdir -p "$STAGE" "$WORK" "$OUT"
+# Every tracked file this box has edited or deleted goes in AS COMMITTED, not
+# as it sits on disk: config.yaml (its GitHub token), modules/*/.env, and any
+# other per-box edit -- a local build of 2026-11-24 shipped this box's edited
+# data/custom_artifacts/Custom__Elastic__Flows__Upload.yaml. So a dev package
+# carries no uncommitted change at all: commit what you want in it.
+# git archive keeps each file's committed mode; with no path it would archive
+# the whole tree, hence the guard.
+_stage_committed() {   # <repo> <stage>
+    local -a _paths=()
+    mapfile -d '' -t _paths < <(
+        { git -C "$1" diff -z --name-only --diff-filter=MD HEAD
+          git -C "$1" ls-files -z -- config.yaml 'modules/*/.env'; } | sort -zu)
+    (( ${#_paths[@]} )) || return 0
+    git -C "$1" archive --format=tar HEAD -- "${_paths[@]}" | tar -x -C "$2"
+}
 # TRACKED files only. Excluding .git, data/ and backups/ left every other
 # untracked path in: on a box that is config.yaml.pre-upgrade-backup (the GitHub
 # token and module passwords), the install/upgrade logs,
@@ -205,10 +220,7 @@ if [ -f "$REPO_DIR/data/tools_inventory.yaml" ]; then
     sudo cp "$REPO_DIR/data/tools_inventory.yaml" "$STAGE/data/"
 fi
 sudo chown -R "$(id -u):$(id -g)" "$STAGE"
-while IFS= read -r -d '' _envf; do
-    mkdir -p "$(dirname "$STAGE/$_envf")"
-    git -C "$REPO_DIR" show "HEAD:$_envf" > "$STAGE/$_envf"
-done < <(git -C "$REPO_DIR" ls-files -z -- config.yaml 'modules/*/.env')
+_stage_committed "$REPO_DIR" "$STAGE"
 
 # A THIN BUNDLE: --bundle-only with a module list.
 #
