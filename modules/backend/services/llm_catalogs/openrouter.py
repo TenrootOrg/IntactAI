@@ -52,6 +52,11 @@ def refresh_catalog(logger: Optional[Callable] = None, **_kwargs) -> Dict:
     runner can call every provider's refresh_catalog uniformly.
     """
     log = logger or (lambda msg, level="info": print(f"[OPENROUTER-CATALOG] [{level}] {msg}", flush=True))
+    # Written into the backend .env by install.sh --package: no route out, so
+    # the fetch would only sit out its timeout. The catalog on disk keeps serving.
+    if os.environ.get("INTACT_AIRGAP") == "1":
+        log("air-gapped: not downloading the OpenRouter model catalog", "warning")
+        return {"success": False, "model_count": 0, "error": "air-gapped: not downloading the OpenRouter model catalog"}
     log(f"Fetching OpenRouter model catalog from {MODELS_URL}...")
     try:
         resp = requests.get(MODELS_URL, timeout=FETCH_TIMEOUT_SEC)

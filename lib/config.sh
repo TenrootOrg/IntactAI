@@ -1316,6 +1316,16 @@ update_env_files() {
         # compose `:-` default, breaking non-default install paths silently.
         # Stamp it into .env so it survives every recreate, on every surface.
         update_env_var "$backend_env" "INTACT_HOST_PATH" "$SCRIPT_DIR"
+        # Air-gapped or not, for the backend's own network fetches (the model
+        # catalog, tool and Velociraptor downloads), which otherwise just time
+        # out. Only install.sh decides it (parse_install_args always sets it):
+        # change_ip.sh re-renders without it and keeps the box's value. The
+        # upgrade's add-only pass is skipped too: upgrade.sh exports
+        # INTACT_AIRGAP=1 for any --package run, and add-only would have
+        # stamped it onto every ONLINE box imported from a package (reviewer,
+        # 2026-11-24), silencing its catalog and tool downloads for good.
+        [[ -n "${INTACT_AIRGAP:-}" && "${UPDATE_ENV_ADD_ONLY:-0}" != 1 ]] \
+            && update_env_var "$backend_env" "INTACT_AIRGAP" "$INTACT_AIRGAP"
         _stamp_host_codex_paths "$backend_env"
         # AWS (CloudTrail SIGMA rule-pack) + Azure (DFIR-O365RC) versions — consumed
         # by the AWS/Azure detection pipelines + the module upgraders.

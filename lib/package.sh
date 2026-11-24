@@ -155,6 +155,144 @@ _pkg_stage_velociraptor_build() {
     fi
 }
 
+# Check each asset against the release index (<tag>.index.json) before a byte
+# of it is extracted. The online path verifies every download
+# (lib/release.sh:download_release_assets); an offline package came off a USB
+# stick and was never checked at all, so a damaged copy surfaced as a tar error
+# twenty minutes in, or as a broken image. The index's sha256 is of the WHOLE
+# asset, taken before CI split it, so a joined .part-NN set is checked too. An
+# asset the index does not name installs with a warning, as online.
+_pkg_verify_against_index() {
+    local index="$1"; shift
+    local -A want=()
+    local n s z
+    while IFS='|' read -r n s z; do
+        [[ -n "$n" ]] && want["$n"]="${s}|${z}"
+    done < <(python3 -c '
+import json, sys
+for e in (json.load(open(sys.argv[1])).get("assets") or {}).values():
+    if isinstance(e, dict) and e.get("asset"):
+        print("%s|%s|%s" % (e["asset"], e.get("sha256") or "", e.get("size") or ""))
+' "$index" 2>/dev/null)
+    if (( ${#want[@]} == 0 )); then
+        log_error "  $(basename "$index") is unreadable or names no assets, so the package cannot be verified."
+        log_error "  Copy the package onto this box again and re-run."
+        return 1
+    fi
+    log_info "Verifying $# asset(s) against $(basename "$index")"
+    local pkg base sha size have got sumf verified=0 unverified=0
+    for pkg in "$@"; do
+        base="$(basename "$pkg")"
+        if [[ -z "${want[$base]:-}" ]]; then
+            log_warn "  ${base}: not in $(basename "$index") — integrity unverified"
+            unverified=$((unverified + 1)); continue
+        fi
+        sha="${want[$base]%%|*}"; size="${want[$base]#*|}"
+        have="$(stat -c%s "$pkg" 2>/dev/null || echo 0)"
+        if [[ -n "$size" && "$have" != "$size" ]]; then
+            log_error "  ${base} is ${have} bytes but the index says ${size} — the copy is truncated or not this release's."
+            log_error "  Copy it onto this box again and re-run."
+            return 1
+        fi
+        if [[ -z "$sha" ]]; then
+            log_warn "  ${base}: the index has no sha256 for it — integrity unverified"
+            unverified=$((unverified + 1)); continue
+        fi
+        sumf="$(mktemp -p "${SCRIPT_DIR}/data/tmp" sha-XXXXXX 2>/dev/null || mktemp)"
+        RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "checksumming ${base}" 1800 \
+            bash -c 'sha256sum "$1" > "$2"' _ "$pkg" "$sumf"
+        got="$(awk '{print $1}' "$sumf" 2>/dev/null)"; rm -f "$sumf"
+        if [[ "$got" != "$sha" ]]; then
+            log_error "  ${base} FAILED its checksum (expected ${sha:0:16}…, got ${got:0:16}…)."
+            log_error "  The copy is damaged: copy it onto this box again and re-run."
+            return 1
+        fi
+        verified=$((verified + 1))
+    done
+    local note=""
+    (( unverified > 0 )) && note=", ${unverified} unverified"
+    log_success "  ${verified} asset(s) checksum-verified${note}"
+    return 0
+}
+
+# An air-gapped tree's config.yaml is whatever was unpacked with it; the images
+# are what the PACKAGE carries. One pin off and compose, under --pull never,
+# stops with "No such image". So the package's manifest wins for every pin it
+# states, as update_env_files already does for versions.backend
+# (INTACT_PKG_BACKEND_TAG) -- which is why `intact` is left to it here.
+# Sidecar pins (manifest transitive_versions, and the tusd / main nginx tags
+# that only the image tar names carry) are corrected only where config.yaml
+# already has the key: their names are derived, and a derived name must not
+# invent one. Values are checked against a plain version shape, because they
+# come off a USB stick and go into config.yaml.
+_pkg_pin_versions_from_manifest() {
+    local work="$1" kind key val cur n=0
+    # The upgrade plan's comparator, read from plan.sh rather than copied so the
+    # two cannot disagree (sourcing all of plan.sh would drag its globals in).
+    declare -F _version_is_older >/dev/null \
+        || eval "$(sed -n '/^_version_is_older() {/,/^}/p' "$(dirname "${BASH_SOURCE[0]}")/upgrade/plan.sh")"
+    while IFS='|' read -r kind key val; do
+        [[ -n "$key" && -n "$val" ]] || continue
+        cur="$(read_config "['versions']['${key}']" 2>/dev/null)"
+        [[ "$cur" == "None" ]] && cur=""
+        [[ "$kind" == side && -z "$cur" ]] && continue
+        [[ "$cur" == "$val" ]] && continue
+        # Never pin a box BACK (reviewer, 2026-11-24): a re-init with an older
+        # package would start Elasticsearch / Postgres / OpenSearch on data a
+        # newer version wrote, which they refuse to open. The box's own images
+        # are still loaded, so keeping its pin keeps it working.
+        if [[ -n "$cur" ]] && _version_is_older "$val" "$cur"; then
+            log_warn "  the package carries ${key} ${val}, older than this box's ${cur} — keeping ${cur}"
+            continue
+        fi
+        log_warn "  config.yaml versions.${key} is '${cur:-unset}' but the package carries ${val} — pinning the package's"
+        _pin_module_version "$key" "$val" && n=$((n + 1))
+    done < <(python3 -c '
+import glob, json, os, re, sys
+work = sys.argv[1]
+val_ok = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+key_ok = re.compile(r"^[a-z0-9_]+$")
+mans = []
+for p in glob.glob(os.path.join(work, "*", "manifests", "*.json")) + glob.glob(os.path.join(work, "*", "manifest.json")):
+    try:
+        mans.append((p, json.load(open(p))))
+    except Exception:
+        pass
+out = {}
+def put(kind, key, val):
+    val = str(val or "").strip()
+    if key != "intact" and key_ok.match(key) and val_ok.match(val) and key not in out:
+        out[key] = (kind, val)
+# A module sidecar is the authority for its own module: the root manifest.json
+# is whichever asset happened to extract last.
+for p, m in mans:
+    if os.path.basename(os.path.dirname(p)) == "manifests":
+        mod = os.path.splitext(os.path.basename(p))[0]
+        put("mod", mod, (m.get("versions") or {}).get(mod))
+for p, m in mans:
+    for k, v in (m.get("versions") or {}).items():
+        put("mod", k, v)
+    c = m.get("contents") or {}
+    # Keyed by env var (POSTGRES_VERSION) or dep name (postgres); the CI
+    # packager has emitted both. config.yaml says <module>_<dep>, backend_tusd.
+    for mod, deps in (c.get("transitive_versions") or {}).items():
+        pre = "backend" if mod in ("backend", "intact") else mod
+        for d, v in (deps or {}).items():
+            d = d.lower()
+            d = d[:-len("_version")] if d.endswith("_version") else d
+            d = d[len(pre) + 1:] if d.startswith(pre + "_") else d
+            put("side", pre + "_" + d, v)
+    for img in c.get("images") or []:
+        for pre, key in (("tusd-", "backend_tusd"), ("intact-nginx-", "nginx")):
+            if img.startswith(pre) and img.endswith(".tar"):
+                put("side", key, img[len(pre):-len(".tar")])
+for k, (kind, v) in sorted(out.items()):
+    print("%s|%s|%s" % (kind, k, v))
+' "$work" 2>/dev/null)
+    (( n > 0 )) && log_info "  ${n} version pin(s) in config.yaml now match the package"
+    return 0
+}
+
 load_images_from_package() {
     # Takes ONE OR MORE assets. Per-module assets share a top-level directory
     # name, so extracting them all into one place merges them into the single
@@ -174,6 +312,10 @@ load_images_from_package() {
     done
     log_info "Installing from ${#pkgs[@]} asset(s): $(basename "${pkgs[0]}")$( (( ${#pkgs[@]} > 1 )) && echo " (+$(( ${#pkgs[@]} - 1 )) more)")"
     mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
+    # Set by parse_install_args when the directory or wrapper carried one.
+    if [[ -n "${INTACT_PACKAGE_INDEX:-}" ]]; then
+        _pkg_verify_against_index "$INTACT_PACKAGE_INDEX" "${pkgs[@]}" || return 1
+    fi
     INTACT_PKG_BACKEND_TAG=""
 
     # Extract onto the appliance's own disk, not /tmp. The assets total several
@@ -448,6 +590,12 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
         log_info "  Package backend image tag: ${INTACT_PKG_BACKEND_TAG}"
     fi
     export INTACT_PKG_BACKEND_TAG
+    # Before the Velociraptor staging below, which checks its binaries against
+    # versions.velociraptor. Air-gapped only: online, the assets were fetched
+    # for this tree's own VERSION.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        _pkg_pin_versions_from_manifest "$work"
+    fi
 
     # Images are not the only thing an air-gapped box cannot fetch. The
     # installer also downloads Velociraptor binaries (current + legacy
@@ -526,15 +674,19 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
         mkdir -p "$_destdir"
         _n=0
         while IFS= read -r _f; do
+            # --preserve=timestamps: the symbol-pack rule below compares dates.
             if [[ ! -e "$_destdir/$(basename "$_f")" ]] \
-                    && cp -n "$_f" "$_destdir/" 2>/dev/null; then
+                    && cp -n --preserve=timestamps "$_f" "$_destdir/" 2>/dev/null; then
                 _n=$((_n + 1))
             elif [[ "$_label" == "VolWeb Volatility symbol" ]] \
                     && ! cmp -s "$_f" "$_destdir/$(basename "$_f")" \
-                    && cp -f "$_f" "$_destdir/" 2>/dev/null; then
+                    && _volweb_pack_is_newer "$(_volweb_pack_date "$_f")" \
+                                             "$(_volweb_pack_date "$_destdir/$(basename "$_f")")" \
+                    && cp -f --preserve=timestamps "$_f" "$_destdir/" 2>/dev/null; then
                 # A symbol pack is replaced by the package's newer one, never
                 # kept beside it: the name says which pack, the content which
-                # edition.
+                # edition. NEWER, not just different: an older package must not
+                # downgrade the pack (lib/modules/volweb.sh:_volweb_pack_date).
                 _n=$((_n + 1))
             fi
         done < <(find "$_srcdir" -maxdepth 1 -type f 2>/dev/null)

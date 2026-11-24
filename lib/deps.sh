@@ -347,8 +347,13 @@ _apt_install_from_bundle() {
     # Belt-and-suspenders against that same leftover: an EXIT trap fires even
     # if this function (or something it calls) exits non-zero or the script
     # is killed mid-install, which a plain cleanup-at-the-end block would not
-    # cover.
-    trap 'rm -f "$_INTACT_BUNDLE_APT_LIST"' EXIT
+    # cover. Chained, not set: a bare `trap ... EXIT` here replaced the one
+    # parse_install_args sets to delete the multi-GB unwrap (lib/args.sh).
+    if [[ -z "${_BUNDLE_LIST_EXIT_ARMED:-}" ]]; then
+        _BUNDLE_LIST_EXIT_ARMED=1
+        _BUNDLE_LIST_PREV_EXIT="$(trap -p EXIT)"
+        trap '_bundle_list_on_exit' EXIT
+    fi
 
     # Same guard install_dependencies()/install_docker_online() already use
     # before touching apt -- missing here meant a freshly-booted VM (exactly
@@ -367,13 +372,25 @@ _apt_install_from_bundle() {
         rm -f "$list_file"
         return 1
     fi
-    if ! apt-get install -y -qq "$@" 2>> "$LOG_FILE"; then
+    # The same source restriction as the update: without it, install resolves
+    # against every list on the box, and a mirror's newer version wins over
+    # the bundle's (and is then not there to download).
+    if ! apt-get install -y -qq -o Dir::Etc::sourcelist="sources.list.d/intact-system-bundle.list" \
+            -o Dir::Etc::sourceparts="-" "$@" 2>> "$LOG_FILE"; then
         log_error "  Failed installing from the bundled dependency repo — see $LOG_FILE"
         rm -f "$list_file"
         return 1
     fi
     rm -f "$list_file"
     return 0
+}
+
+_bundle_list_on_exit() {
+    rm -f "$_INTACT_BUNDLE_APT_LIST"
+    if [[ -n "${_BUNDLE_LIST_PREV_EXIT:-}" ]]; then
+        eval "set -- ${_BUNDLE_LIST_PREV_EXIT#trap -- }"
+        eval "$1"
+    fi
 }
 
 install_docker_from_package() {
@@ -515,6 +532,19 @@ _stage_system_bundle_from_source() {
         _STAGED_BUNDLE_DIR="$src"
         return 0
     fi
+    # CI publishes a .sha256 beside the bundle; a folder copied off the release
+    # page carries it. (A wrapper does not: prepare_package.sh checked it.)
+    if [[ -f "${src}.sha256" ]]; then
+        local want got
+        want="$(awk 'NR==1{print $1}' "${src}.sha256" 2>/dev/null)"
+        got="$(sha256sum "$src" 2>/dev/null | awk '{print $1}')"
+        if [[ "$want" != "$got" ]]; then
+            log_error "  The dependency bundle $(basename "$src") FAILED its checksum (expected ${want:0:16}…, got ${got:0:16}…)."
+            log_error "  The copy is damaged: copy it onto this box again and re-run."
+            return 1
+        fi
+        log_info "  Dependency bundle checksum-verified ($(basename "$src"))"
+    fi
     local extract_dir="${SCRIPT_DIR}/data/tmp/system-bundle-pkg/system-bundle"
     rm -rf "$extract_dir"
     mkdir -p "$extract_dir"
@@ -604,6 +634,8 @@ ensure_core_dependencies() {
         prefer_ipv4_dns
     elif [[ "$INTACT_AIRGAP" == "1" ]]; then
         local _missing=()
+        # curl: every health probe after the deploy uses it.
+        command -v curl >/dev/null 2>&1 || _missing+=("curl")
         command -v docker >/dev/null 2>&1 || _missing+=("docker")
         docker compose version >/dev/null 2>&1 || _missing+=("docker-compose-plugin")
         command -v python3 >/dev/null 2>&1 || _missing+=("python3")
@@ -620,7 +652,7 @@ ensure_core_dependencies() {
             log_error "=============================================="
             exit 1
         fi
-        log_success "Host prerequisites present (docker, compose, python3, yaml, openssl)"
+        log_success "Host prerequisites present (curl, docker, compose, python3, yaml, openssl)"
     else
         install_dependencies
         prefer_ipv4_dns

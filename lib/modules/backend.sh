@@ -180,7 +180,12 @@ except Exception:
     # paths (Anthropic / OpenAI / Gemini) are gated behind the UI and
     # remain unused by default. Bootstrapping them produced "deferred"
     # warnings on every install since no API keys were configured.
-    _bootstrap_one_catalog "OpenRouter" "openrouter"
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        # openrouter.ai is unreachable by design; the fetch would only time out.
+        log_info "    OpenRouter: air-gapped — not downloading the model catalog"
+    else
+        _bootstrap_one_catalog "OpenRouter" "openrouter"
+    fi
 
     track_module_success "Backend API"
 }

@@ -90,6 +90,11 @@ def _ensure_velociraptor_collector_tool(
             os.chmod(dest, 0o755)
             log(f"  velociraptor-collector placed from package "
                 f"({os.path.getsize(dest)} bytes)", "success")
+        elif os.environ.get("INTACT_AIRGAP") == "1":
+            log("  air-gapped: not downloading velociraptor-collector — the release "
+                f"package stages it into {tools_dir}; Hunt collector generation "
+                "fails until it is there.", "warning")
+            return {"success": False, "error": "air-gapped: not downloading velociraptor-collector"}
         else:  # source == "github"
             url = _velociraptor_collector_url(clean_version)
             log(f"  Downloading velociraptor-collector from {url}...", "info")

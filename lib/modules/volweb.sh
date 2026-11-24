@@ -660,6 +660,28 @@ prewarm_volweb_symbol_index() {
     return 0
 }
 
+# When a symbol pack was BUILT, as YYYYMMDDhhmmss.ffffff (fixed width, so the
+# strings compare as dates): a zip's newest member, else the file's mtime
+# (staged with --preserve=timestamps; docker cp keeps it too). Not a zip's own
+# mtime: a copy without it stamps the copy time, and then any pack staged
+# later looks newer than one staged earlier. Python, so the same snippet runs
+# inside intact_volweb_backend for the copy already there.
+_VOLWEB_PACK_DATE_PY='import os, sys, time, zipfile
+p = sys.argv[1]
+try:
+    print("%04d%02d%02d%02d%02d%02d.000000" % max(i.date_time for i in zipfile.ZipFile(p).infolist()))
+except Exception:
+    try:
+        t = os.stat(p).st_mtime
+        print(time.strftime("%Y%m%d%H%M%S", time.gmtime(t)) + ".%06d" % int((t % 1) * 1e6))
+    except OSError:
+        pass'
+_volweb_pack_date() { python3 -c "$_VOLWEB_PACK_DATE_PY" "$1" 2>/dev/null; }
+# <new date> <date of the copy in place>: replace only with a newer pack, so an
+# older package never downgrades it. An undatable copy in place is replaced,
+# which is what happened before this rule existed.
+_volweb_pack_is_newer() { [[ -z "$2" || ( -n "$1" && "$1" > "$2" ) ]]; }
+
 seed_volweb_symbols() {
     local seed_dir="${1:-${SCRIPT_DIR}/data/volweb-symbols}"
     local dest="/home/app/web/media/symbols"
@@ -685,6 +707,12 @@ seed_volweb_symbols() {
             if [[ -n "$have_size" && "$have_size" == "$(stat -c %s "$f")" ]] \
                     && [[ "$(docker exec intact_volweb_backend sha256sum "${dest}/${base}" 2>/dev/null | cut -d' ' -f1)" \
                           == "$(sha256sum "$f" | cut -d' ' -f1)" ]]; then
+                present=$((present + 1))
+                continue
+            fi
+            if [[ -n "$have_size" ]] && ! _volweb_pack_is_newer "$(_volweb_pack_date "$f")" \
+                    "$(docker exec intact_volweb_backend python3 -c "$_VOLWEB_PACK_DATE_PY" "${dest}/${base}" 2>/dev/null | tr -dc '0-9.')"; then
+                log_info "    ${base}: VolWeb already has a copy at least as new — kept"
                 present=$((present + 1))
                 continue
             fi

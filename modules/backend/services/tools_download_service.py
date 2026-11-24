@@ -627,6 +627,14 @@ def download_tools_from_config(tools_dir: str, config: Dict,
                             results["already_exists"].append(tool_name)
                             continue
 
+                # After the cache checks: what the package staged in data/tools
+                # still counts. Anything else needs the internet, which an
+                # air-gapped box (INTACT_AIRGAP in the backend .env) has not got.
+                if os.environ.get("INTACT_AIRGAP") == "1":
+                    log(f"  air-gapped: not downloading {tool_name}", "warning")
+                    results["skipped"].append(f"{tool_name} (air-gapped)")
+                    continue
+
                 if tool_type == 'github_release':
                     repo = tool.get('repo', '')
                     pattern = tool.get('pattern', '')

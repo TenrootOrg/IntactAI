@@ -13,7 +13,10 @@
 #   INTACT_PACKAGES          the individual module-image asset files to load
 #   INTACT_PACKAGE_ARGS      the raw --package arguments, before expansion
 #   INTACT_AIRGAP             1 when --package was given at all
-#   INTACT_UNWRAP_DIRS       scratch dirs to delete once the images are loaded
+#   INTACT_UNWRAP_DIRS       scratch dirs (unwrapped/joined assets) to delete
+#                            once the images are loaded, or on any exit
+#   INTACT_PACKAGE_INDEX     the <tag>.index.json found in a directory or
+#                            wrapper package, or empty
 #   INTACT_SYSTEM_BUNDLE_SRC the located system bundle (Docker/apt deps) --
 #                            a directory or a *-system-bundle.tar file, or
 #                            empty if this release/args carry none. Resolved
@@ -63,6 +66,47 @@ _note_system_bundle_candidate() {
     fi
 }
 
+# Refuse to start a copy into data/tmp that cannot finish. A full disk midway
+# through an 8 GB unwrap is a bare ENOSPC from tar, and the half-written copy
+# is what filled it.
+_args_require_space() {   # <dir> <bytes needed> <what>
+    local dir="$1" need="$2" what="$3" free
+    free="$(df -Pk -- "$dir" 2>/dev/null | awk 'NR==2{print $4}')"
+    [[ "$free" =~ ^[0-9]+$ ]] || return 0      # df could not say: let the copy try
+    free=$(( free * 1024 ))
+    (( free >= need )) && return 0
+    log_error "Not enough free space in ${dir} for ${what}:"
+    log_error "  needs $(_human_size "$need"), $(_human_size "$free") free. Free some space and re-run."
+    exit 1
+}
+
+# gzip magic. `tar -tf` on a .tar.gz decompresses all of it, so probing every
+# multi-GB module asset for the wrapper shape cost a full read of each.
+_args_is_gzip() {
+    [[ "$(head -c2 -- "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" == "1f8b" ]]
+}
+
+# The unwrapped copies and the staged system bundle are scratch, several GB of
+# it, and an install can stop anywhere after parsing (not root, the re-init
+# prompt, a bad config.yaml, a failed load). Remove them on ANY exit, chained
+# with whatever EXIT trap is already set, the way _cred_arm_exit_blank does.
+_args_arm_exit_cleanup() {
+    [[ -n "${_ARGS_EXIT_ARMED:-}" ]] && return 0
+    _ARGS_EXIT_ARMED=1
+    _ARGS_PREV_EXIT="$(trap -p EXIT)"
+    trap '_args_on_exit' EXIT
+}
+_args_on_exit() {
+    if (( ${#INTACT_UNWRAP_DIRS[@]} > 0 )); then
+        rm -rf -- "${INTACT_UNWRAP_DIRS[@]}" 2>/dev/null || true
+    fi
+    [[ -n "${SCRIPT_DIR:-}" ]] && rm -rf -- "${SCRIPT_DIR}/data/tmp/system-bundle-pkg" 2>/dev/null
+    if [[ -n "${_ARGS_PREV_EXIT:-}" ]]; then
+        eval "set -- ${_ARGS_PREV_EXIT#trap -- }"
+        eval "$1"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Air-gap: install from release assets instead of the internet.
 #
@@ -96,6 +140,11 @@ parse_install_args() {
     INTACT_PACKAGES=()
     INTACT_AIRGAP=0
     INTACT_SYSTEM_BUNDLE_SRC=""
+    # The release index (<tag>.index.json) found beside or inside the package:
+    # load_images_from_package verifies every asset against it.
+    INTACT_PACKAGE_INDEX=""
+    INTACT_UNWRAP_DIRS=()
+    _args_arm_exit_cleanup
     # Raw --package arguments, kept alongside INTACT_PACKAGES (which the
     # directory-expansion below overwrites with individual asset files) --
     # some callers still want the arguments as originally typed.
@@ -156,12 +205,48 @@ parse_install_args() {
                              ! -name '*-system-bundle.tar' \
                              ! -name '*-bootstrap.tar' \
                              ! -name '*-engine.tar.gz' | sort)
+                [[ -n "$INTACT_PACKAGE_INDEX" ]] \
+                    || INTACT_PACKAGE_INDEX="$(find "$_p" -maxdepth 1 -name '*.index.json' 2>/dev/null | sort | head -1)"
+                # Split assets. CI cuts any asset over 1900 MiB into
+                # <asset>.part-NN, so a folder copied off the release page holds
+                # pieces, and the globs above see none of them. Join each set
+                # into data/tmp (tracked with the unwrap dirs, so it goes with
+                # them), unless the whole asset already sits beside its parts.
+                # Same join as lib/release.sh and scripts/prepare_package.sh;
+                # the index's sha256 is of the whole, so the join is verified.
+                _join_dir=""
+                while IFS= read -r _f; do
+                    _whole="$(basename -- "${_f%.part-00}")"
+                    [[ -e "${_p}/${_whole}" ]] && continue
+                    if [[ -z "$_join_dir" ]]; then
+                        mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
+                        _join_dir="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" unwrap-XXXXXX 2>/dev/null)" \
+                            || _join_dir="$(mktemp -d)"
+                        INTACT_UNWRAP_DIRS+=("$_join_dir")
+                    fi
+                    _need=0
+                    for _part in "${_f%.part-00}".part-*; do
+                        _need=$(( _need + $(stat -c%s -- "$_part" 2>/dev/null || echo 0) ))
+                    done
+                    _args_require_space "$_join_dir" "$_need" "joining ${_whole}"
+                    log_info "${_whole} is split -- joining its parts"
+                    if ! cat -- "${_f%.part-00}".part-* > "${_join_dir}/${_whole}"; then
+                        log_error "Could not join the parts of ${_whole}"
+                        exit 1
+                    fi
+                    if _is_system_bundle_tar_name "$_whole"; then
+                        _note_system_bundle_candidate "${_join_dir}/${_whole}"
+                    else
+                        _expanded+=("${_join_dir}/${_whole}")
+                    fi
+                done < <(find "$_p" -maxdepth 1 \
+                             \( -name '*.tar.gz.part-00' -o -name '*.tar.part-00' \) | sort)
             else
                 _expanded+=("$_p")
             fi
         done
         INTACT_PACKAGES=("${_expanded[@]}")
-        unset _expanded _p _f
+        unset _expanded _p _f _whole _join_dir _need _part
     fi
 
     # Unwrap a single-file WRAPPER package. scripts/prepare_package.sh (and the
@@ -181,13 +266,18 @@ parse_install_args() {
     # The unwrapped copies are temporary duplicates of bytes the operator already
     # has, so they are tracked in INTACT_UNWRAP_DIRS and deleted once the images
     # are in the docker store -- several GB that would otherwise sit in data/tmp
-    # forever. The operator's own file is never touched.
-    INTACT_UNWRAP_DIRS=()
+    # forever. The operator's own file is never touched. (INTACT_UNWRAP_DIRS is
+    # initialised at the top: the split-asset joins above use it too.)
     if (( ${#INTACT_PACKAGES[@]} > 0 )); then
         _expanded=()
         for _p in "${INTACT_PACKAGES[@]}"; do
             _wrapper_listing=""
-            if [[ -f "$_p" ]]; then
+            # Plain tars only, plus a gzip file NAMED like a wrapper: listing a
+            # .tar.gz decompresses all of it, and every gzip module asset of an
+            # older release was read end to end here just to be rejected. A
+            # wrapper cut before the switch to plain tar is <tag>-package.tar.gz,
+            # so that name is still probed.
+            if [[ -f "$_p" ]] && { ! _args_is_gzip "$_p" || [[ "$_p" == *-package.tar.gz ]]; }; then
                 # -tf, not -tzf: the wrapper is a plain tar now and -tzf would fail
                 # on it outright, leaving the listing empty and the package handed
                 # to load_images_from_package as if it were a single module asset --
@@ -215,8 +305,20 @@ parse_install_args() {
                 _unwrap_dir="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" unwrap-XXXXXX 2>/dev/null)" \
                     || _unwrap_dir="$(mktemp -d)"
                 INTACT_UNWRAP_DIRS+=("$_unwrap_dir")
+                # The wrapper is the members plus a few KB of headers, so its
+                # size is what the unwrap needs.
+                _args_require_space "$_unwrap_dir" "$(stat -c%s -- "$_p" 2>/dev/null || echo 0)" \
+                    "unwrapping $(basename "$_p")"
                 log_info "$(basename "$_p") is a single-file package -- unwrapping its module assets"
-                grep '\.tar\(\.gz\)\?$' <<< "$_wrapper_listing" | tar -xf "$_p" -C "$_unwrap_dir" -T -
+                # The index rides along: load_images_from_package checks every
+                # asset against it before extracting one.
+                if ! grep '\.tar\(\.gz\)\?$\|\.index\.json$' <<< "$_wrapper_listing" \
+                        | tar -xf "$_p" -C "$_unwrap_dir" -T -; then
+                    log_error "Could not unwrap $(basename "$_p") -- the file is damaged or the disk is full"
+                    exit 1
+                fi
+                [[ -n "$INTACT_PACKAGE_INDEX" ]] \
+                    || INTACT_PACKAGE_INDEX="$(find "$_unwrap_dir" -maxdepth 1 -name '*.index.json' 2>/dev/null | sort | head -1)"
                 while IFS= read -r _f; do
                     if _is_system_bundle_tar_name "$_f"; then
                         _note_system_bundle_candidate "$_f"
@@ -240,7 +342,7 @@ parse_install_args() {
         unset _expanded _p _f _wrapper_listing _unwrap_dir
     fi
 
-    export INTACT_AIRGAP
+    export INTACT_AIRGAP INTACT_PACKAGE_INDEX
 }
 
 # The modules an ONLINE install should fetch, space separated -- or nothing when

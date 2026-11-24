@@ -59,6 +59,14 @@ ROOT="$(cd "$HERE/../.." 2>/dev/null && pwd)"
 if [[ ! -f "$ROOT/install.sh" || ! -f "$HERE/risx_lib.sh" ]]; then
     INTACT_DIR="${INTACT_DIR:-$HOME/intact}"
     if [[ ! -f "$INTACT_DIR/scripts/migrate/risx_to_intact.sh" ]]; then
+        # --package means no network: fetching a checkout here would only hang
+        # on api.github.com, and would not be the package's release anyway.
+        for _a in "$@"; do
+            [[ "$_a" == --package* ]] || continue
+            echo "--package is an air-gapped migration: run it from the extracted release tree" >&2
+            echo "  (bash <release-tree>/scripts/migrate/risx_to_intact.sh --package ...), not standalone." >&2
+            exit 1
+        done
         command -v git >/dev/null || { echo "git is required to fetch Intact" >&2; exit 1; }
         tag="${INTACT_RELEASE_TAG:-}"
         if [[ -z "$tag" ]]; then
@@ -122,7 +130,12 @@ LOG="$BACKUP_DIR/risx_to_intact-$(hostname -s 2>/dev/null || hostname)-$(date +%
 # and read back from another machine. printf's %(...)T is a bash builtin: no
 # `date` per line through the install's thousands of lines.
 _ts() { local _l; while IFS= read -r _l || [[ -n "$_l" ]]; do printf '[%(%F %T)T] %s\n' -1 "$_l"; done; }
-exec > >(tee >(_ts >> "$LOG")) 2>&1
+# Two execs, not one with both redirects: tests/test_stderr_not_silenced.sh
+# flags any bare exec that carries a stderr redirect after another one (the
+# shape of the lock line that once sent stderr to /dev/null). Here stderr is
+# MERGED into the logged stream, not silenced; the split behaves the same.
+exec > >(tee >(_ts >> "$LOG"))
+exec 2>&1
 
 # Masks what looks like a credential: KEY=value / key: value pairs named like a
 # password, token, secret or key, and whole PEM blocks. A safety net for the
@@ -302,6 +315,35 @@ ds_kb() { sudo du -sk --exclude=clients/linux --exclude=clients/mac --exclude=cl
 
 ensure_yaml() {
     python3 -c 'import yaml' 2>/dev/null && return 0
+    # Air-gapped: the package's system bundle carries python3-yaml, and the
+    # live mirror is out of reach. Found and installed the way install.sh does
+    # (lib/args.sh, lib/deps.sh); exit 4 = this package has no bundle.
+    if [[ -n "$PACKAGE" ]]; then
+        say "installing python3-yaml from the package's system bundle"
+        local rc=0
+        sudo env SCRIPT_DIR="$ROOT" LOG_FILE=/dev/null PKG="$PACKAGE" bash -c '
+            for l in common deps args; do source "$SCRIPT_DIR/lib/$l.sh" >/dev/null || exit 3; done
+            INTACT_SYSTEM_BUNDLE_SRC=""
+            _note_system_bundle_candidate "$PKG"
+            tmp=""
+            if [[ -z "$INTACT_SYSTEM_BUNDLE_SRC" && -f "$PKG" ]] && ! _args_is_gzip "$PKG"; then
+                # A wrapper (<tag>-package.tar) carries the bundle as a member.
+                mkdir -p "$SCRIPT_DIR/data/tmp" && tmp="$(mktemp -d -p "$SCRIPT_DIR/data/tmp" unwrap-XXXXXX)" || exit 3
+                trap "rm -rf \"$tmp\" \"$SCRIPT_DIR/data/tmp/system-bundle-pkg\"" EXIT
+                tar -xf "$PKG" -C "$tmp" --wildcards "*-system-bundle.tar" 2>/dev/null
+                INTACT_SYSTEM_BUNDLE_SRC="$(find "$tmp" -maxdepth 1 -name "*-system-bundle.tar" | head -1)"
+            fi
+            [[ -n "$INTACT_SYSTEM_BUNDLE_SRC" ]] || exit 4
+            [[ -n "$tmp" ]] || trap "rm -rf \"$SCRIPT_DIR/data/tmp/system-bundle-pkg\"" EXIT
+            _stage_system_bundle_from_source "$INTACT_SYSTEM_BUNDLE_SRC" \
+                && _verify_system_bundle_os_match "$_STAGED_BUNDLE_DIR" \
+                && _apt_install_from_bundle "$_STAGED_BUNDLE_DIR" python3-yaml' || rc=$?
+        case "$rc" in
+            0) return 0 ;;
+            4) warn "the package carries no system bundle — trying the apt mirror" ;;
+            *) die "could not install python3-yaml from the package's system bundle — install it on this box first" ;;
+        esac
+    fi
     say "installing python3-yaml (needed to read the Velociraptor config)"
     sudo apt-get install -y python3-yaml >/dev/null 2>&1 || die "could not install python3-yaml — run: sudo apt-get install -y python3-yaml"
 }

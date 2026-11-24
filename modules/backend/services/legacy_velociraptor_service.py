@@ -141,6 +141,9 @@ def get_legacy_binary(version: Optional[str] = None,
         if os.path.exists(dest) and os.path.getsize(dest) > 1024 * 1024:
             return dest
         url = _github_url(v, platform)
+        if os.environ.get("INTACT_AIRGAP") == "1":
+            raise RuntimeError(f"air-gapped: not downloading {url}. "
+                               f"Use the binary the release package staged (source='offline').")
         # Download to <dest>.part and rename only when complete: writing dest
         # directly left a truncated binary after a network error or a backend
         # restart, and the >1 MB check above then served it as cached and it
