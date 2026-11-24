@@ -27,6 +27,7 @@ from services import (
 )
 from services.velociraptor_service import export_flow_to_zip, cleanup_flow_export
 from services.kape_upload_service import process_kape_upload
+from services.timesketch_service import label_run_sketch
 from services.kape_service import run_kape_timesketch_pipeline
 
 timesketch_bp = Blueprint('timesketch', __name__)
@@ -516,6 +517,7 @@ def start_multi_client_timesketch():
                 "blueprint": blueprint_name,
             }
         )
+        sketch_name = label_run_sketch(run_id) or sketch_name   # the case's sketch
         add_log_to_run(run_id, f"Starting multi-client TimeSketch automation for {len(clients)} clients: {hostnames_str}", "info")
         add_log_to_run(run_id, f"KAPE Target: {kape_target} | Blueprint: {blueprint_name}", "info")
         add_log_to_run(run_id, "Strategy: KAPE collection starts on all clients; finished collections are exported and run through Plaso as Plaso slots free up; Timesketch indexing waits run alongside.", "info")

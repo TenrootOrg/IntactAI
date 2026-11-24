@@ -885,9 +885,19 @@ def update_case(case_id):
     bad_org = _velo_org_error(b)
     if bad_org:
         return jsonify({"error": bad_org}), 400
+    old_name = (store.get_case(case_id) or {}).get("name")
     res = store.update_case_info(case_id, b)
     if res.get("error") == "case not found":
         return jsonify(res), 404
+    new_name = (store.get_case(case_id) or {}).get("name")
+    if not res.get("error") and old_name and new_name and new_name != old_name:
+        # The case's Timesketch sketch carries its name; follow the rename. In the
+        # background: Timesketch may be slow or down, and the save is done.
+        import threading
+        from config import TIMESKETCH_CONFIG
+        from services.timesketch_service import rename_sketch
+        threading.Thread(target=rename_sketch, args=(old_name, new_name, TIMESKETCH_CONFIG),
+                         daemon=True).start()
     return jsonify(res), (400 if res.get("error") else 200)
 
 

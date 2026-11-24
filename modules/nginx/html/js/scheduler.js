@@ -317,7 +317,6 @@ function showNewScheduleModal() {
     fillScheduleCases(null);
 
     // Reset per-type option fields to their defaults
-    document.getElementById('schedule-sketch-name').value = '';
     const setVal = (id, v) => { const el = document.getElementById(id); if (el) { if (el.type === 'checkbox') el.checked = v; else el.value = v; } };
     setVal('schedule-memory-yara', true); setVal('schedule-memory-case', '');
     setVal('schedule-memory-acq-timeout', ''); setVal('schedule-memory-plugin-timeout', ''); setVal('schedule-memory-yara-timeout', '');
@@ -381,11 +380,6 @@ async function editSchedule(jobId) {
             schedulerClientManager.setSelected(clientIds);
         } catch (e) {}
 
-        // Sketch name for timesketch (the blueprint is set above via blueprint-select)
-        if (job.blueprint_type === 'timesketch') {
-            document.getElementById('schedule-sketch-name').value = job.description || '';
-        }
-
         // Restore per-type run options
         let opts = {};
         try { opts = JSON.parse(job.options || '{}') || {}; } catch (e) {}
@@ -431,11 +425,6 @@ async function saveScheduleFromModal() {
     // Get blueprint ID based on type
     let blueprintId;
     blueprintId = document.getElementById('schedule-blueprint-select').value;
-    if (blueprintType === 'timesketch') {
-        // sketch name -> description (as before); the blueprint carries KAPE settings
-        const sketchName = document.getElementById('schedule-sketch-name').value.trim();
-        if (sketchName) description = sketchName;
-    }
 
     // Per-type run options (stored as the job's `options` JSON blob).
     const num = (id) => { const v = parseInt((document.getElementById(id) || {}).value); return isNaN(v) ? null : v; };

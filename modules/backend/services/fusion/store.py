@@ -1984,7 +1984,10 @@ def _contribution_for_run_in_org(run, log=None, refetch=False):
                     if not sid and det.get("sketch_name"):
                         sid = find_sketch_by_name(det["sketch_name"], TIMESKETCH_CONFIG, logger=log)
                     if sid:
-                        evs = fetch_sketch_events(sid, TIMESKETCH_CONFIG, logger=log)
+                        # A case's runs share its sketch: read this run's timelines only
+                        # (runs from before 2026-11-24 recorded none and read it all).
+                        evs = fetch_sketch_events(sid, TIMESKETCH_CONFIG, logger=log,
+                                                  timeline_ids=det.get("timeline_ids"))
                         fetched = True
                 except Exception as _e:
                     if log:

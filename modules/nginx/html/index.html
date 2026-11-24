@@ -574,16 +574,11 @@
                             </div>
                         </div>
 
-                        <!-- Timesketch-specific options (the blueprint above carries the KAPE
-                             target + all collection settings; here only the sketch name). -->
+                        <!-- Timesketch: the blueprint above carries the KAPE target and every
+                             collection setting; the sketch is the schedule's case's. -->
                         <div id="schedule-timesketch-options" class="hidden space-y-4 border-t border-gray-700 pt-4">
                             <div class="text-sm text-gray-400">Timesketch Options</div>
-                            <div>
-                                <label class="block text-sm text-gray-400 mb-1">Sketch Name (for Timesketch)</label>
-                                <input type="text" id="schedule-sketch-name" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2"
-                                    x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
-                                <p class="text-xs text-gray-500 mt-1">Leave empty to auto-generate based on date</p>
-                            </div>
+                            <p class="text-xs text-gray-500">Timelines go into the sketch named after the case this schedule files its runs in.</p>
                         </div>
 
                         <!-- Memory options -->
@@ -691,18 +686,18 @@
     <!-- tus resumable upload protocol (local) -->
     <script src="vendor/tus/tus.min.js"></script>
     <script src="js/upload.js?v=6"></script>
-    <script src="js/timesketch.js?v=10"></script>
+    <script src="js/timesketch.js?v=11"></script>
     <!-- Must load before the stores/partials that call TabReset.arm(). -->
     <script src="js/components/tab-reset.js?v=1"></script>
     <script src="js/memory.js?v=28"></script>
-    <script src="js/scheduler.js?v=13"></script>
+    <script src="js/scheduler.js?v=14"></script>
     <!-- Extracted inline helpers (Phase C): downloads copy/availability,
          active-case bar, AWS/Azure flatpickr pickers. -->
     <script src="js/components/downloads.js?v=1"></script>
     <script src="js/components/workspace-bar.js?v=7"></script>
     <script src="js/components/cloud-datepickers.js?v=8"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=305"></script>
+    <script src="js/bootstrap/partial-loader.js?v=306"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

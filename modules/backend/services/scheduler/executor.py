@@ -429,7 +429,11 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list, options: dict = No
         return
 
     blueprint_id = job_meta.get('blueprint_id', '')
-    sketch_name = job_meta.get('description', '') or f"Scheduled_{datetime.utcnow().strftime('%Y%m%d')}"
+    # One case, one sketch: the schedule's case names it (process_kape_upload
+    # enforces the same). The description is only for a case that is gone.
+    from services.timesketch_service import case_sketch_name
+    sketch_name = (case_sketch_name(_job_case(job_meta)) or job_meta.get('description', '')
+                   or f"Scheduled_{datetime.utcnow().strftime('%Y%m%d')}")
 
     # Load blueprint settings
     blueprint = get_timesketch_blueprint(blueprint_id) if blueprint_id else None

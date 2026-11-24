@@ -32,9 +32,11 @@ from services.workflow_service import (
     register_cancel_event,
     unregister_cancel,
     terminate_subprocess,
+    mutate_run_details,
 )
+from services.llm_usage import case_of
 from services.plaso_service import run_pinfo
-from services.timesketch_service import import_to_timesketch
+from services.timesketch_service import import_to_timesketch, case_sketch_name
 from config import (PLASO_OUTPUT_DIR, get_plaso_image, PLASO_CPUS, PLASO_MEMORY, TIMESKETCH_CONFIG,
                     PLASO_MAX_CONCURRENT)
 
@@ -684,9 +686,12 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
 
         # Import to Timesketch
         add_log_to_run(run_id, "=== Importing to Timesketch ===")
-        sketch_name = settings.get('sketch_name', f'Investigation-{client_name}')
+        # One case, one sketch: every path (page, upload, schedule) lands here, so
+        # the run's case decides. A run with no known case keeps the caller's name.
+        case_sketch = case_sketch_name(case_of(run_id))
+        sketch_name = case_sketch or settings.get('sketch_name', f'Investigation-{client_name}')
         timeline_name = settings.get('timeline_name') or f"{client_name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-        sketch_id = settings.get('sketch_id')
+        sketch_id = None if case_sketch else settings.get('sketch_id')
 
         # Wall-clock cap on the Timesketch indexing wait. Default 3 days;
         # the per-blueprint setting flows in via process_kape_upload's
@@ -707,6 +712,13 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         if result:
             add_log_to_run(run_id, f"Import complete! Sketch ID: {result.get('sketch_id')}", "success")
             add_log_to_run(run_id, f"Timeline ID: {result.get('timeline_id')}", "success")
+            if run_id:
+                # Case Analysis reads only these timelines from the shared sketch.
+                def _record(d, sid=result.get('sketch_id'), tid=result.get('timeline_id')):
+                    d['sketch_id'], d['sketch_name'] = sid, sketch_name
+                    if tid is not None and tid not in d.setdefault('timeline_ids', []):
+                        d['timeline_ids'].append(tid)
+                mutate_run_details(run_id, _record)
             _status("completed", progress=100)
 
             return {

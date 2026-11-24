@@ -112,12 +112,11 @@
                                     </div>
                                 </div>
 
-                                <!-- Sketch name -->
+                                <!-- Sketch: one per case, named by the backend after the run's case -->
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-300 mb-1">Sketch name</label>
-                                    <input type="text" id="sketch-name" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
-                                        x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
-                                    <p class="text-xs text-gray-500 mt-1">If a sketch with this name exists, timelines will be added to it. Otherwise a new sketch is created.</p>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Sketch</label>
+                                    <p class="text-sm text-white"><span class="ts-case-sketch">the active case</span></p>
+                                    <p class="text-xs text-gray-500 mt-1">Every timeline of this case goes into the sketch named after it. It is created by the first import and renamed with the case.</p>
                                 </div>
 
                                 <button onclick="runTimeSketchWorkflow()" class="w-full mt-4 px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors bg-blue-600 hover:bg-blue-700">
@@ -154,12 +153,11 @@
                                     </div>
                                 </div>
 
-                                <!-- Sketch name (Upload mode) -->
+                                <!-- Sketch (Upload mode): the case's, as in automation -->
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-300 mb-1">Sketch name</label>
-                                    <input type="text" id="ts-upload-sketch" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
-                                        x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
-                                    <p class="text-xs text-gray-500 mt-1">Timeline will be named from the hostname in the collection.</p>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Sketch</label>
+                                    <p class="text-sm text-white"><span class="ts-case-sketch">the active case</span></p>
+                                    <p class="text-xs text-gray-500 mt-1">Every timeline of this case goes into the sketch named after it. The timeline is named from the hostname in the collection.</p>
                                 </div>
 
                                 <button id="ts-upload-btn" onclick="uploadKapeToTimesketch()" class="w-full mt-4 px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors bg-blue-600 hover:bg-blue-700">

@@ -6,7 +6,19 @@
 const timesketchClientManager = new ClientManager('timesketch-client-list', 'timesketch-client-checkbox');
 
 // Load timesketch blueprints into dropdown
+// One case, one sketch: the backend files every timeline under the run's case
+// name (process_kape_upload). The page only shows which sketch that is.
+async function showTimesketchCaseSketch() {
+    const els = document.querySelectorAll('.ts-case-sketch');
+    if (!els.length || !window.ActiveCase) return;
+    const cases = await ActiveCase.listCases();
+    const c = cases.find(x => x.case_id === ActiveCase.get()) || cases.find(x => x.is_default);
+    if (c) els.forEach(el => { el.textContent = c.name; });
+}
+window.addEventListener('active-case-changed', showTimesketchCaseSketch);
+
 async function loadTimesketchBlueprintsDropdown() {
+    showTimesketchCaseSketch();
     const select = document.getElementById('timesketch-blueprint-select');
     if (!select) {
         console.error('timesketch-blueprint-select not found');
@@ -177,7 +189,7 @@ async function runTimeSketchWorkflow() {
         return;
     }
 
-    const sketchName = document.getElementById('sketch-name').value.trim() || `Investigation-${new Date().toISOString().split('T')[0]}`;
+    const sketchName = (document.querySelector('.ts-case-sketch')?.textContent || '').trim();   // display only: the backend files it under the run's case
     const kapeTarget = blueprintSettings.kape_target;
     // This run's timeout and CPU: an empty field means the blueprint's value.
     const runValue = (id, fallback) => {
@@ -207,7 +219,7 @@ async function runTimeSketchWorkflow() {
     // This dialog always asks, so it is the confirmMany guard too. It names the
     // count and the first 10 hosts: listing all 1,000 (~15 KB) pushed the
     // settings below off-screen.
-    if (!confirm(`Start triage collection and TimeSketch import for ${clientIds.length} client(s)?\n\nBlueprint: ${blueprintName}\nClients: ${timesketchClientManager.describeSelected()}\nTriage Target: ${kapeTarget}\nPlaso Parser: ${plasoParser}\nCollection Timeout: ${timeoutSeconds}s\nCPU Limit: ${cpuLimit}%\nSketch: ${sketchName}\n\nNote: If sketch already exists, timelines will be added to it.`)) {
+    if (!confirm(`Start triage collection and TimeSketch import for ${clientIds.length} client(s)?\n\nBlueprint: ${blueprintName}\nClients: ${timesketchClientManager.describeSelected()}\nTriage Target: ${kapeTarget}\nPlaso Parser: ${plasoParser}\nCollection Timeout: ${timeoutSeconds}s\nCPU Limit: ${cpuLimit}%\nSketch: ${sketchName} (the case's; created on the first import)`)) {
         return;
     }
 
@@ -392,8 +404,7 @@ function uploadKapeToTimesketch() {
         return;
     }
 
-    const sketchName = document.getElementById('ts-upload-sketch').value.trim()
-        || `Investigation-${new Date().toISOString().split('T')[0]}`;
+    const sketchName = (document.querySelector('.ts-case-sketch')?.textContent || '').trim();   // display only, as above
 
     // Show progress UI
     const progressDiv = document.getElementById('ts-upload-progress');

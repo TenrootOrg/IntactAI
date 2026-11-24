@@ -349,6 +349,64 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
     return (False, "unknown", None)
 
 
+def case_sketch_name(case_id):
+    """The sketch every timeline of a case goes to: the case's own name, so one
+    case is one sketch (import_to_timesketch finds it by name or creates it).
+    None when the case is unknown, and the caller keeps its own name."""
+    if not case_id:
+        return None
+    try:
+        from services.fusion import store
+        return str((store.get_case(case_id) or {}).get("name") or "").strip() or None
+    except Exception:
+        return None
+
+
+def label_run_sketch(run_id):
+    """Show the run's case sketch on the run from its start (the import itself
+    picks it in process_kape_upload). Returns the name, or None."""
+    from services.llm_usage import case_of
+    from services.workflow_service import mutate_run_details
+    name = case_sketch_name(case_of(run_id))
+    if name:
+        mutate_run_details(run_id, lambda d: d.update(sketch_name=name, sketch_id=None))
+    return name
+
+
+def rename_sketch(old_name, new_name, timesketch_config, logger=None):
+    """Follow a case rename: the case's sketch (found by its old name) takes the
+    new one. Best effort: Timesketch down, no such sketch, or a sketch that
+    already has the new name (renaming would make two) all leave it as it is.
+    The client has no rename call; the web UI's own POST /sketches/<id>/ does it."""
+    if not old_name or not new_name or old_name == new_name:
+        return False
+    api = None
+    try:
+        api = _connect_timesketch_api(timesketch_config, logger)
+        if not api:
+            return False
+        with _SKETCH_LOCK:
+            by_name = {}
+            for s in api.list_sketches():
+                by_name.setdefault(s.name, s.id)
+            sid = by_name.get(old_name)
+            if not sid or new_name in by_name:
+                return False
+            r = api.session.post(f"{api.api_root}/sketches/{sid}/", json={"name": new_name})
+        ok = r.status_code < 300
+        print(f"[TIMESKETCH] sketch {sid} '{old_name}' -> '{new_name}': {'renamed' if ok else r.status_code}", flush=True)
+        return ok
+    except Exception as e:
+        print(f"[TIMESKETCH] could not rename sketch '{old_name}': {e}", flush=True)
+        return False
+    finally:
+        if api is not None:
+            try:
+                api.session.close()
+            except Exception:
+                pass
+
+
 def find_sketch_by_name(sketch_name, timesketch_config, logger=None):
     """Find an existing sketch by name
 
@@ -395,7 +453,7 @@ def find_sketch_by_name(sketch_name, timesketch_config, logger=None):
         return None
 
 
-def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, logger=None):
+def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, logger=None, timeline_ids=None):
     """Pull the analyst-relevant events from a sketch — those an analyzer TAGGED
     (SIGMA / threat-intel hits) or an analyst STARRED/commented — so the fusion
     layer can ingest TimeSketch findings.
@@ -425,7 +483,18 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, logger=None
             return []
         sketch = api.get_sketch(sid)
         query = "_exists_:tag OR label:__ts_star OR label:__ts_comment"
-        res = sketch.explore(query_string=query, as_pandas=False, max_entries=limit)
+        # A case's runs share one sketch, so a run reads only its own timelines
+        # (else each run pulls the whole case, under its own first host). Set on
+        # the Search: explore() rewrites any "indices" passed in its query_filter.
+        from timesketch_api_client import search as ts_search
+        search_obj = ts_search.Search(sketch=sketch)
+        search_obj.from_manual(query_string=query, max_entries=limit)
+        if timeline_ids:
+            search_obj.indices = [int(t) for t in timeline_ids]
+            if search_obj.indices == "_all":     # none left in the sketch: the client keeps "_all"
+                log(f"fusion: timelines {list(timeline_ids)} are no longer in sketch {sid}")
+                return []
+        res = search_obj.to_dict()
         objs = res.get("objects") if isinstance(res, dict) else (res or [])
         events = []
         for o in (objs or []):

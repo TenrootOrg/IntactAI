@@ -632,6 +632,9 @@ def handle_tus_hook():
             add_log_to_run(run_id, f"Purpose: {purpose}")
             add_log_to_run(run_id, f"Upload ID: {upload_id}")
             update_run_status(run_id, "running", progress=0)
+            if purpose == 'timesketch':
+                from services.timesketch_service import label_run_sketch
+                label_run_sketch(run_id)   # the case's sketch, as the import will use
 
             # A collection added under Case Analysis -> External data comes this way
             # (no 100 MB cap); it is listed there too, tied to this run.
