@@ -8,6 +8,7 @@ have no expiry -- that is a hunt setting.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -130,8 +131,27 @@ class TimesketchAndMemoryCpu(unittest.TestCase):
         self.assertIn("resetTimesketchRunSettings()", ts)
         self.assertIn('x-model.number="$store.memory.cpuLimit"', mem)
         self.assertIn("$store.memory.blueprintCpu()", mem)
-        self.assertIn("document.getElementById('ts-run-cpu')", _src("modules/nginx/html/js/timesketch.js"))
+        self.assertIn("runValue('ts-run-cpu'", _src("modules/nginx/html/js/timesketch.js"))
         self.assertIn("cpu_limit: cpu,", _src("modules/nginx/html/js/memory.js"))
+
+
+class TimesketchTimeout(unittest.TestCase):
+    """2026-11-24: the Timesketch page sets the collection timeout per run too.
+    Its blueprints ship 100000 s, so the cap is a week, not the 86400 s of a
+    Velociraptor run."""
+
+    def test_the_route_checks_it_and_accepts_the_blueprint_default(self):
+        src = _src("modules/backend/routes/timesketch_routes.py")
+        self.assertIn("not 60 <= timeout_seconds <= 604800", src)
+        shipped = [int(v) for v in re.findall(r"collection_timeout:\s*(\d+)",
+                                              _src("modules/backend/config/default_blueprints.yaml"))]
+        self.assertTrue(shipped and all(60 <= v <= 604800 for v in shipped), shipped)
+
+    def test_the_page_offers_it_and_the_monitor_follows_it(self):
+        js = _src("modules/nginx/html/js/timesketch.js")
+        self.assertIn('id="ts-run-timeout"', _src("modules/nginx/html/partials/timesketch.html"))
+        self.assertIn("runValue('ts-run-timeout'", js)
+        self.assertIn("const monitorTimeout = timeoutSeconds;", js)
 
 
 class SchedulerCpu(unittest.TestCase):

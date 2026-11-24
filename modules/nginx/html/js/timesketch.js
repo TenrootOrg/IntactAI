@@ -85,11 +85,13 @@ function onTimesketchBlueprintChange() {
 }
 
 function resetTimesketchRunSettings() {
-    const el = document.getElementById('ts-run-cpu');
-    const s = getTimesketchBlueprintSettings();
-    if (!el) return;
-    el.value = '';                                   // empty = the blueprint's, shown as the placeholder
-    el.placeholder = 'default ' + ((s && s.cpu_limit) || 50);
+    const s = getTimesketchBlueprintSettings() || {};
+    for (const [id, value] of [['ts-run-timeout', s.collection_timeout || 10000], ['ts-run-cpu', s.cpu_limit || 50]]) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        el.value = '';                               // empty = the blueprint's, shown as the placeholder
+        el.placeholder = 'default ' + value;
+    }
 }
 
 // Get current blueprint settings
@@ -177,15 +179,22 @@ async function runTimeSketchWorkflow() {
 
     const sketchName = document.getElementById('sketch-name').value.trim() || `Investigation-${new Date().toISOString().split('T')[0]}`;
     const kapeTarget = blueprintSettings.kape_target;
-    const timeoutSeconds = blueprintSettings.collection_timeout || 10000;
-    // This run's CPU, pre-filled from the blueprint and editable, as on the Velociraptor page.
-    const cpuRaw = (document.getElementById('ts-run-cpu')?.value ?? '').toString().trim();
-    const cpuLimit = cpuRaw === '' ? (blueprintSettings.cpu_limit || 50) : Number(cpuRaw);
+    // This run's timeout and CPU: an empty field means the blueprint's value.
+    const runValue = (id, fallback) => {
+        const raw = (document.getElementById(id)?.value ?? '').toString().trim();
+        return raw === '' ? fallback : Number(raw);
+    };
+    const timeoutSeconds = runValue('ts-run-timeout', blueprintSettings.collection_timeout || 10000);
+    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 60 || timeoutSeconds > 604800) {
+        alert('Timeout (s) must be a whole number between 60 and 604800 (7 days).');
+        return;
+    }
+    const cpuLimit = runValue('ts-run-cpu', blueprintSettings.cpu_limit || 50);
     if (!Number.isInteger(cpuLimit) || cpuLimit < 1 || cpuLimit > 100) {
         alert('CPU (%) must be a whole number between 1 and 100.');
         return;
     }
-    const monitorTimeout = blueprintSettings.collection_timeout || 10000;
+    const monitorTimeout = timeoutSeconds;   // wait as long as the collection may run
 
     // Plaso settings from blueprint
     const plasoParser = blueprintSettings.plaso_parser;

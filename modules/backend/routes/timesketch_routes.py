@@ -446,7 +446,12 @@ def start_multi_client_timesketch():
 
         # KAPE / blueprint settings (same shape as /api/velociraptor/timesketch)
         kape_target     = data.get('kape_target', '_KapeTriage')
+        # Set per run on the page. The blueprints ship 100000 s, past the 86400 s cap
+        # of a Velociraptor run, so this allows up to a week (a hunt's longest expiry).
         timeout_seconds = data.get('timeout_seconds', 10000)
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int) \
+                or not 60 <= timeout_seconds <= 604800:
+            return jsonify({"error": "timeout_seconds must be a whole number between 60 and 604800"}), 400
         # Set per run on the page (pre-filled from the blueprint) and written into
         # the collection's VQL, so it must be a whole number in range.
         from services.vql_safety import validate_run_settings
