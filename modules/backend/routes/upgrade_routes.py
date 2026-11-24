@@ -226,8 +226,133 @@ def _reject_package_path(package_path):
     return None
 
 
+# One package dry run at a time. Each copies out and verifies the whole package
+# (about 8 GB) under data/tmp, and the Import modal can fire a preview and a
+# preflight together. A file lock, not a threading.Lock: gunicorn may run more
+# than one worker. Its name matches none of upkg_sweep_stale_scratch's patterns.
+_DRY_RUN_LOCK_PATH = f"{WORKDIR}/data/tmp/upgrade-preview.lock"
+# What a bootstrap --package --dry-run leaves in data/tmp when it is killed.
+# Not engine-from-pkg.* / upgrade-handoff-*: the frozen bootstrap writes those
+# BEFORE its engine takes the upgrade lock, so an Apply started during a hung
+# preview could lose its handoff here (reviewer, 2026-11-24). The 48 h sweep
+# (upkg_sweep_stale_scratch) takes a preview's.
+_DRY_RUN_SCRATCH = ("upgrade-pkg-", "upgrade-unwrap-")
+
+
+def _dry_run_scratch():
+    base = os.path.join(WORKDIR, "data", "tmp")
+    try:
+        return {n for n in os.listdir(base) if n.startswith(_DRY_RUN_SCRATCH)}
+    except OSError:
+        return set()
+
+
+def _run_dry_run(cmd, timeout):
+    """run_command for a bootstrap --package --dry-run. Returns None, without
+    running anything, when another one holds the lock.
+
+    A timeout SIGKILLs the run, so nothing of it reaches upkg_cleanup and its
+    multi-GB extraction stayed for the 48h sweep -- and the next preview made
+    another. What appeared during the run is removed here, but only while no
+    upgrade holds the upgrade lock: a live run's scratch has the same names."""
+    os.makedirs(os.path.dirname(_DRY_RUN_LOCK_PATH), exist_ok=True)
+    fd = os.open(_DRY_RUN_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return None
+        before = _dry_run_scratch()
+        result = run_command(cmd, timeout=timeout)
+        # _upgrade_gate() is None: no upgrade holds the lock right now.
+        if str(result.get("error") or "").startswith("Command timed out") and _upgrade_gate() is None:
+            base = os.path.join(WORKDIR, "data", "tmp")
+            for name in _dry_run_scratch() - before:
+                p = os.path.join(base, name)
+                print(f"[UPGRADE] dry run timed out; removing its scratch {p}", flush=True)
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+        return result
+    finally:
+        os.close(fd)
+
+
+def _manifest_from_package(package_path):
+    """The package's merged manifest, read straight from it: <tag>.manifest.json
+    at the top of a prepare_package.sh wrapper (tar stops at the first match,
+    and the manifest is the second member, so this reads a few KB of a
+    multi-GB file), or beside the assets of a directory package. Failing that,
+    the <tag>.index.json the wrapper always starts with. None when it has
+    neither, and the caller then asks the package's engine.
+
+    Only the two frozen top-level names prepare_package.sh writes are read:
+    the versions, the same data the engine plans from. Anything deeper in the
+    layout stays the engine's to interpret."""
+    def _from_index(index):
+        assets = index.get("assets") or {}
+        return {"versions": {m: (e or {}).get("version") for m, e in assets.items()
+                             if (e or {}).get("version")},
+                "contents": {"package_kind": "wrapper",
+                             "release_tag": index.get("release_tag")}}
+
+    def _member(pattern):
+        try:
+            r = subprocess.run(
+                ["tar", "--occurrence=1", "--wildcards", "--no-wildcards-match-slash",
+                 "-xOf", package_path, pattern],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        try:
+            return json.loads(r.stdout) if r.returncode == 0 and r.stdout else None
+        except ValueError:
+            return None
+
+    if os.path.isdir(package_path):
+        import glob
+        for pattern, index in (("*.manifest.json", False), ("manifest.json", False),
+                               ("*.index.json", True)):
+            for f in sorted(glob.glob(os.path.join(package_path, pattern))):
+                try:
+                    with open(f, encoding="utf-8") as fh:
+                        doc = json.load(fh)
+                except (OSError, ValueError):
+                    continue
+                if isinstance(doc, dict):
+                    if index:
+                        return _from_index(doc)
+                    doc["contents"] = {k: v for k, v in (doc.get("contents") or {}).items()
+                                       if k != "sha256"}
+                    return doc
+        return None
+    if not os.path.isfile(package_path):
+        return None
+    doc = _member("*.manifest.json")
+    if isinstance(doc, dict) and doc.get("versions"):
+        # Its per-file sha256 map is most of its 600+ KB, and the modal never
+        # reads it.
+        doc["contents"] = {k: v for k, v in (doc.get("contents") or {}).items() if k != "sha256"}
+        return doc
+    doc = _member("*.index.json")
+    if isinstance(doc, dict) and doc.get("assets"):
+        return _from_index(doc)
+    return None
+
+
 def _read_package_manifest(package_path):
-    """Ask the package's OWN engine what it contains.
+    """What the package contains: its manifest when it carries one
+    (_manifest_from_package), otherwise the package's OWN engine's answer.
+
+    The manifest read is the common case: asking the engine means a full
+    bootstrap --dry-run -- copying out and verifying about 8 GB for a modal --
+    and a timeout stranded that copy. The text below is why the engine is asked
+    at all, and it still applies to anything that is not one of those two
+    frozen file names.
 
     This used to open the tarball here and look for manifest.json. That is this
     backend -- the release being replaced -- deciding how a newer release's
@@ -246,6 +371,9 @@ def _read_package_manifest(package_path):
     convenience; turning it into a gate is how a format change became an
     outage.
     """
+    manifest = _manifest_from_package(package_path)
+    if manifest is not None:
+        return manifest
     if not os.path.isfile(BOOTSTRAP_SH):
         print("[UPGRADE] no bootstrap_upgrade.sh; cannot ask the package's engine",
               flush=True)
@@ -253,9 +381,12 @@ def _read_package_manifest(package_path):
     cmd = (f"bash {shlex.quote(BOOTSTRAP_SH)} "
            f"--package {shlex.quote(package_path)} --dry-run --json")
     try:
-        result = run_command(cmd, timeout=300)
+        result = _run_dry_run(cmd, timeout=300)
     except Exception as e:
         print(f"[UPGRADE] package preview failed: {e}", flush=True)
+        return {}
+    if result is None:
+        print("[UPGRADE] package preview skipped: another dry run is in progress", flush=True)
         return {}
     if not result.get("success"):
         print(f"[UPGRADE] package preview exited non-zero: "
@@ -538,7 +669,8 @@ def get_upgrade_quota():
 # patterns (upgrade-pkg-*, upgrade-unwrap-*, upgrade-dl-*, ...): the sweep runs
 # at the START of the next upgrade, and a name it recognised could see a staged
 # package deleted out from under a run that had not begun extracting yet. It is
-# cleaned up here instead, when the run reaches a terminal state.
+# swept by age here instead (_sweep_stale_stages, 48h, when the next offline
+# upgrade starts).
 _HELPER_STAGE_PREFIX = "import-pkg-"
 
 
@@ -880,11 +1012,15 @@ def start_offline_upgrade():
     if stage_err:
         return jsonify({"success": False, "error": stage_err}), 500
 
+    # Single-token --flag=value forms below. The installed bootstrap is frozen
+    # and takes the first bare word it sees as the release tag; an offline run
+    # has no tag, so `--only a,b` handed it "a,b" as one. It passes any `-*`
+    # token through untouched, and the engine's parser accepts both forms.
     cli_args = []
     for p in host_paths:
         cli_args += ["--package", p]
     if selected_modules:
-        cli_args += ["--only", ",".join(selected_modules)]
+        cli_args.append("--only=" + ",".join(selected_modules))
         # The two lists are DISJOINT, and deliberately so.
         #
         # --only is the run's module set; --reinstall names the ones inside it
@@ -900,9 +1036,9 @@ def start_offline_upgrade():
         # in the launch script, which is not what was asked for and not what
         # happens.
         if reinstall_modules:
-            cli_args += ["--reinstall", ",".join(reinstall_modules)]
+            cli_args.append("--reinstall=" + ",".join(reinstall_modules))
     if expect:
-        cli_args += ["--expect-sha256", expect]
+        cli_args.append("--expect-sha256=" + expect)
     if upload_run_id:
         # Continue the upload's own row rather than opening a second one --
         # same "one row for the whole import" shape the deleted engine used,
@@ -1126,7 +1262,8 @@ def preflight_upgrade_package():
 
     bootstrap_upgrade.sh --package <path> --dry-run does the real work here
     -- the package's own engine is extracted, verified and asked to plan, so
-    this endpoint reuses it rather than a second validator. It takes NO
+    this endpoint reuses it rather than a second validator. Only one package
+    dry run runs at a time (_run_dry_run; a second gets 409). It takes NO
     upgrade lock: it enters through the bootstrap, and the engine skips the
     lock for a hopped --dry-run (scripts/upgrade.sh, "THE FAR SIDE OF THE
     HOP"), so a preflight never 409s an Apply and can run beside a live one.
@@ -1147,9 +1284,13 @@ def preflight_upgrade_package():
     cmd = (f"bash {shlex.quote(BOOTSTRAP_SH)} "
            f"--package {shlex.quote(package_path)} --dry-run")
     if only:
-        cmd += f" --only {shlex.quote(only)}"
+        # One token: the frozen bootstrap would read a separate value as the tag.
+        cmd += f" {shlex.quote('--only=' + only)}"
 
-    result = run_command(cmd, timeout=600)
+    result = _run_dry_run(cmd, timeout=600)
+    if result is None:
+        return jsonify({"ok": False, "log": [],
+                        "error": "A package preview or preflight is already running; try again when it finishes."}), 409
     log_lines = (result.get("stdout") or "").splitlines()
     ok = bool(result.get("success"))
     return jsonify({

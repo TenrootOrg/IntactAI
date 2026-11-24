@@ -106,7 +106,9 @@ parse_upgrade_args() {
             # which is the only remaining caller: lib/upgrade/interrupt.sh and
             # velo_refresh.sh both print it as the way to resume against a
             # package this box has already unpacked, instead of paying for the
-            # extraction twice.
+            # extraction twice. They run the kept tree's own upgrade.sh with
+            # INTACT_UPGRADE_REEXEC=1: through the appliance's upgrade.sh the
+            # run would go to the frozen bootstrap, which reads this as a tag.
             --package-dir)   UPGRADE_PACKAGE_DIR="${2:-}"; shift 2 ;;
             --package-dir=*) UPGRADE_PACKAGE_DIR="${1#*=}"; shift ;;
             --log)       LOG_FILE="${2:-}"; shift 2 ;;

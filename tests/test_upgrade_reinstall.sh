@@ -81,7 +81,8 @@ if grep -q '"--reinstall", ",".join(reinstall)' "$R"; then
 else
     fail "online route forwards the reinstall opt-ins"
 fi
-if grep -q '"--reinstall", ",".join(reinstall_modules)' "$R"; then
+# One token (--reinstall=...): the frozen bootstrap reads a separate value as the tag.
+if grep -q '"--reinstall=" + ",".join(reinstall_modules)' "$R"; then
     ok "import route forwards the reinstall opt-ins"
 else
     fail "import route forwards the reinstall opt-ins"

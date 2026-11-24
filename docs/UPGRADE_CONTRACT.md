@@ -56,8 +56,13 @@ operator / dashboard
   `intact_backend` itself.
 - **Read-only modes.** `--list` and `--plan <tag>` stop before the lock.
   `--dry-run` acquires, verifies and plans, then stops. The dashboard's package
-  preview and preflight run `bootstrap_upgrade.sh --package <p> --dry-run`
-  synchronously.
+  preview reads `<tag>.manifest.json` (else `<tag>.index.json`) straight from
+  the wrapper or directory, and runs `bootstrap_upgrade.sh --package <p>
+  --dry-run` only when neither is there. The preflight always runs the dry
+  run. Both take a file lock (`data/tmp/upgrade-preview.lock`), one at a
+  time, and a timed-out run's scratch is removed while no upgrade holds the
+  upgrade lock. Their flags go as single tokens (`--only=a,b`): the frozen
+  bootstrap reads a separate value as the release tag.
 - **`--prepare`.** `bootstrap_upgrade.sh <tag> --prepare [dir]` execs the
   target's own `scripts/prepare_package.sh` to build an air-gap package.
 
@@ -160,7 +165,10 @@ container's writable layer.
 - **Scratch.** Extraction goes under `data/tmp/upgrade-pkg-*`.
   `upkg_cleanup` runs from the EXIT trap. A failed image load sets the
   keep-for-retry marker (`data/tmp/.upgrade-keep-scratch`), which keeps the
-  tree for `--package-dir`. The marker and the freed-tars tally are per-run
+  tree for `--package-dir`. The resume line it prints runs the kept tree's own
+  `source/intact/scripts/upgrade.sh` with `INTACT_UPGRADE_REEXEC=1`: the
+  appliance's `scripts/upgrade.sh` hands every run to the frozen bootstrap,
+  which does not know `--package-dir`. The marker and the freed-tars tally are per-run
   state, cleared at the start and exit of each locked run (an unlocked
   hopped `--dry-run` leaves them alone).
   `upkg_sweep_stale_scratch` reclaims anything older than 48h.

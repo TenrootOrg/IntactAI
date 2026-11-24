@@ -228,11 +228,22 @@ upkg_verify_archive() {
 # components anywhere in the path, and symlink/hardlink targets that escape.
 # ---------------------------------------------------------------------------
 upkg_check_tar_slip() {
-    local asset="$1" bad=0 member
+    local asset="$1" bad=0 member line perms _own _size _day _hm target
     local name; name="$(basename "$asset")"
 
-    while IFS= read -r member; do
-        [[ -z "$member" ]] && continue
+    # -tv, not -t: only the verbose listing carries link targets, and a member
+    # name that is safe says nothing about where its symlink points. Same single
+    # pass over the archive. --numeric-owner and LC_ALL=C pin the five fields
+    # before the name; -P lists names and targets raw, as tar would otherwise
+    # print them after stripping a leading / or ../ and hide what was there.
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        read -r perms _own _size _day _hm member <<<"$line"
+        target=""
+        case "$perms" in
+            l*) target="${member#* -> }";       member="${member%% -> *}" ;;
+            h*) target="${member#* link to }";  member="${member%% link to *}" ;;
+        esac
         case "$member" in
             /*|\\*|*:\\*)
                 log_error "  tar-slip: absolute path member '${member}'"; bad=1 ;;
@@ -244,14 +255,37 @@ upkg_check_tar_slip() {
         case "$member" in
             *..\\*) log_error "  tar-slip: backslash parent-escape '${member}'"; bad=1 ;;
         esac
+        # A hard link names another member, so it is checked like one; a
+        # symlink resolves from its own directory.
+        if [[ -n "$target" ]]; then
+            case "$perms" in
+                h*) _upkg_path_escapes "$target" ;;
+                *)  [[ "$target" == /* ]] || _upkg_path_escapes "$(dirname "$member")/${target}" ;;
+            esac && { log_error "  tar-slip: link '${member}' points outside the package ('${target}')"; bad=1; }
+        fi
         (( bad )) && break
-    done < <(tar -tf "$asset" 2>/dev/null)
+    done < <(LC_ALL=C tar -tvP --numeric-owner -f "$asset" 2>/dev/null)
 
     if (( bad )); then
         log_error "${name} contains unsafe paths — refusing to extract"
         return 1
     fi
     return 0
+}
+
+# 0 when <path> is absolute or climbs above the directory it is resolved in.
+_upkg_path_escapes() {
+    local -a parts; local c depth=0
+    [[ "$1" == /* ]] && return 0
+    IFS=/ read -ra parts <<<"$1"
+    for c in "${parts[@]}"; do
+        case "$c" in
+            ""|.) ;;
+            ..) depth=$((depth - 1)); (( depth < 0 )) && return 0 ;;
+            *)  depth=$((depth + 1)) ;;
+        esac
+    done
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -859,12 +893,17 @@ upkg_release_unwrap() {
 #   import-pkg-*  a package staged by the dashboard's import flow. The sweep
 #                 runs at the START of the next upgrade, so a name matched
 #                 here could delete a staged package out from under a run that
-#                 has not begun extracting yet. It is reclaimed on terminal
-#                 state instead -- routes/upgrade_routes.py:355.
+#                 has not begun extracting yet. The route sweeps it by age
+#                 instead (48h, _sweep_stale_stages in routes/upgrade_routes.py,
+#                 when the next offline upgrade starts).
 #   upgrade-*     too broad: upgrade-<run_id>.log and upgrade-<run_id>.done.json
 #                 are the dashboard's run records and upgrade.lock is the live
-#                 flock target. Only the three specific upgrade-{pkg,unwrap,dl}-*
-#                 prefixes above are scratch.
+#                 flock target. Only the specific upgrade-{pkg,unwrap,dl}-*
+#                 prefixes above, and upgrade-handoff-*.json, are scratch.
+#
+# engine-from-pkg.<pid>/ and upgrade-handoff-<pid>.json are the frozen
+# bootstrap's: it writes them and then execs, so nothing it runs afterwards
+# knows to remove them, and every Import and dashboard preview left a pair.
 # ---------------------------------------------------------------------------
 upkg_sweep_stale_scratch() {
     local hours="${1:-48}"
@@ -879,6 +918,7 @@ upkg_sweep_stale_scratch() {
                      -o -name 'upgrade-dl-*' -o -name 'intact-rollback-*' \
                      -o -name 'velo-upgrade-*' -o -name 'dl-list-*' \
                      -o -name 'dl-status-*' \
+                     -o -name 'engine-from-pkg.*' -o -name 'upgrade-handoff-*.json' \
                      -o -name 'pkg-*' -o -name 'unwrap-*' -o -name 'load-*' \) 2>/dev/null)
     (( n > 0 )) && log_info "  swept ${n} stale scratch item(s) left from an earlier run (older than ${hours}h)"
     return 0

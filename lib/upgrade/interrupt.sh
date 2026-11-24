@@ -116,7 +116,12 @@ _u_exit_cleanup() {
     if (( _own )) && declare -F u_keep_scratch_requested >/dev/null 2>&1 && u_keep_scratch_requested; then
         log_warn "  an image failed to load — keeping the extracted package for a retry:"
         log_warn "    ${UPKG_DIR:-?}"
-        log_warn "    sudo bash ${SCRIPT_DIR}/scripts/upgrade.sh --package-dir ${UPKG_DIR:-?} --root ${SCRIPT_DIR}"
+        # The kept package's OWN engine, entered past the bootstrap hop: the
+        # appliance's scripts/upgrade.sh hands every run to the frozen
+        # bootstrap, which does not know --package-dir and took the directory
+        # for a release tag. Not ${_CODE_DIR}: a dashboard run's engine lives
+        # inside the helper container and is gone with it.
+        log_warn "    sudo env INTACT_UPGRADE_REEXEC=1 bash ${UPKG_DIR:-?}/source/intact/scripts/upgrade.sh --package-dir ${UPKG_DIR:-?} --root ${SCRIPT_DIR}"
         log_warn "    (swept automatically after 48h)"
     elif declare -F upkg_cleanup >/dev/null 2>&1; then
         upkg_cleanup
