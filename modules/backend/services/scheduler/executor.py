@@ -31,6 +31,14 @@ def _job_case(job_meta):
     return None
 
 
+def _job_cpu(options, default):
+    """The schedule's own CPU (set in the schedule form), else `default`. Checked
+    again here: a row saved by an older build, or edited in the DB, reaches VQL too."""
+    from services.vql_safety import validate_run_settings
+    v, err = validate_run_settings({'cpu_limit': (options or {}).get('cpu_limit')}, allow_expiry=False)
+    return default if err else v.get('cpu_limit', default)
+
+
 def _job_org(job_meta):
     """The Velociraptor org a schedule runs in: its case's org NOW, so editing the
     case's org moves its schedules too. A case gone since -> Default's, like its
@@ -122,7 +130,9 @@ def _run_scheduled_blueprint(job_id: str):
             cancel_event = register_cancel_event(run_id)
 
             def _agentic():
-                run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, cancel_event)
+                _cpu = _job_cpu(options, None)
+                run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, cancel_event,
+                                     run_settings={"cpu_limit": _cpu} if _cpu else None)
                 count_if_completed(job_id, run_id)
 
             thread = threading.Thread(target=_agentic, daemon=True)
@@ -131,7 +141,7 @@ def _run_scheduled_blueprint(job_id: str):
 
         elif blueprint_type == 'timesketch':
             # Timesketch automation - KAPE collection + Plaso + TimeSketch import
-            run_timesketch_pipeline(job_meta, client_ids)
+            run_timesketch_pipeline(job_meta, client_ids, options)
             print(f"[SCHEDULER] Started timesketch pipeline for {len(client_ids)} clients", flush=True)
 
         elif blueprint_type == 'memory':
@@ -203,7 +213,7 @@ def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list, op
     settings = blueprint.get('settings', {})
     expire_minutes = settings.get('hunt_expiry', 120)
     timeout_seconds = settings.get('timeout', 3600)
-    cpu_limit = settings.get('cpu_limit', 50)
+    cpu_limit = _job_cpu(options, settings.get('cpu_limit', 50))
     # Flow-level resource limits — bumped from the historical hardcoded values
     # (1M rows / 100K logs / 1 GiB) to defaults that fit real KAPE-class
     # collections. Existing blueprints that don't carry these keys inherit
@@ -388,7 +398,7 @@ _TIMESKETCH_ACTIVE = {}
 _TIMESKETCH_ACTIVE_LOCK = threading.Lock()
 
 
-def run_timesketch_pipeline(job_meta: dict, client_ids: list):
+def run_timesketch_pipeline(job_meta: dict, client_ids: list, options: dict = None):
     """Execute a scheduled Timesketch run: KAPE -> Plaso -> Timesketch import
     for every client, as ONE workflow run through the same bounded pipeline as
     POST /api/timesketch/start-multi (kape_service.run_kape_timesketch_pipeline).
@@ -433,7 +443,7 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
     kape_args = dict(
         kape_target=settings.get('kape_target', '_KapeTriage'),
         timeout_seconds=timeout_seconds,
-        cpu_limit=settings.get('cpu_limit', 50),
+        cpu_limit=_job_cpu(options, settings.get('cpu_limit', 50)),
         max_rows=settings.get('flow_max_rows', 10000000),
         max_logs=settings.get('flow_max_logs', 1000000),
         max_upload_mb=settings.get('flow_max_upload_mb', 51200),
@@ -605,6 +615,9 @@ def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None)
                 timeouts[k] = v
         except (TypeError, ValueError):
             pass
+    # The schedule's own CPU for the acquisition; the pipeline puts it over the blueprint's.
+    if _job_cpu(options, None):
+        timeouts["cpu_limit"] = _job_cpu(options, None)
 
     from services.workflow_service import register_cancel_event, register_cleanup, request_stop, unregister_cancel
 

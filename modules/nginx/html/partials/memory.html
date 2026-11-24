@@ -52,7 +52,7 @@
                         Capture Windows physical memory via Velociraptor, run Volatility 3 plugins
                         + YARA scanning in
                         <a href="https://github.com/forensicxlab/VolWeb" target="_blank" rel="noreferrer"
-                           class="text-indigo-300 hover:text-indigo-200 underline">VolWeb</a>,
+                           class="text-blue-300 hover:text-blue-300 underline">VolWeb</a>,
                         and extract findings. The findings feed the case for analysis.
                     </p>
 
@@ -97,9 +97,9 @@
                          nothing, so none of it applies there. -->
                     <div x-show="memoryTab !== 'adopt' && memoryTab !== 'symbols'"
                          class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
+                        <label class="block text-sm font-medium text-gray-300 mb-1">Blueprint</label>
                         <select x-model="$store.memory.blueprintId"
-                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
+                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                             <template x-for="b in $store.memory.blueprints" :key="b.id">
                                 <option :value="b.id" x-text="b.name"></option>
                             </template>
@@ -118,6 +118,32 @@
                                   })()"></span>
                         </p>
 
+                        <!-- This run's settings: the blueprint supplies the defaults, the
+                             blueprint itself is not changed (same row as the Velociraptor page).
+                             Blank timeouts use the defaults; the YARA scan scales with image size. -->
+                        <div class="mt-2 bg-gray-900 rounded-lg p-3 border border-gray-700"
+                             x-effect="$store.memory.blueprintId; $store.memory.cpuLimit = null">
+                            <div class="grid grid-cols-3 gap-3 text-xs text-gray-400">
+                                <label class="block">Acquire timeout (s)
+                                    <input type="number" min="60" max="86400" step="60" x-model.number="$store.memory.acquireTimeoutS" :placeholder="'default 5400'"
+                                           class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-xs focus:border-blue-500 focus:outline-none"></label>
+                                <label class="block">Plugin timeout (s)
+                                    <input type="number" min="60" max="86400" step="60" x-model.number="$store.memory.pluginTimeoutS" :placeholder="'default 1800'"
+                                           class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-xs focus:border-blue-500 focus:outline-none"></label>
+                                <label class="block">YARA timeout (s)
+                                    <input type="number" min="60" max="86400" step="60" x-model.number="$store.memory.yarascanTimeoutS" :placeholder="'auto'"
+                                           class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-xs focus:border-blue-500 focus:outline-none"></label>
+                                <label class="block">CPU (%)
+                                    <input type="number" min="1" max="100" step="1" x-model.number="$store.memory.cpuLimit" :placeholder="'default ' + $store.memory.blueprintCpu()"
+                                           class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-xs focus:border-blue-500 focus:outline-none"></label>
+                            </div>
+                            <p class="text-[10px] text-gray-500 mt-1">Blank fields use the default shown. The YARA scan scales with the image size (about 400 s per GB) when left blank.</p>
+                            <div class="mt-1 text-right">
+                                <button type="button" @click="$store.memory.acquireTimeoutS = null; $store.memory.pluginTimeoutS = null; $store.memory.yarascanTimeoutS = null; $store.memory.cpuLimit = null"
+                                        class="text-[11px] text-blue-400 hover:text-blue-300">Reset to blueprint defaults</button>
+                            </div>
+                        </div>
+
                         <!-- YARA toggle — independent of blueprint. Adds the
                              yarascan "layer" on top of plugin extraction. For
                              a blueprint with an empty plugin_set (YARA-only
@@ -126,7 +152,7 @@
                         <div class="mt-4 pt-4 border-t border-gray-700">
                             <label class="flex items-center gap-3 cursor-pointer">
                                 <input type="checkbox" x-model="$store.memory.includeYara"
-                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-600 focus:ring-blue-500">
                                 <div>
                                     <div class="text-sm font-medium text-gray-300">Include YARA</div>
                                     <div class="text-xs text-gray-500">Run yarascan in parallel with plugin extraction. Adds signature-based detection on top of behavioural plugin output.</div>
@@ -156,12 +182,12 @@
                         <div x-show="memoryTab !== 'reuse'" class="mt-4 pt-4 border-t border-gray-700">
                             <label class="flex items-center gap-3 cursor-pointer">
                                 <input type="checkbox" x-model="$store.memory.keepDump"
-                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-600 focus:ring-blue-500">
                                 <div>
                                     <div class="text-sm font-medium text-gray-300">Keep the memory image after analysis</div>
                                     <div class="text-xs text-gray-500">
-                                        The <code class="text-indigo-300">.raw</code> stays on the appliance in
-                                        <code class="text-indigo-300">/data/memory_dumps</code> so you can re-run against it
+                                        The <code class="text-blue-300">.raw</code> stays on the appliance in
+                                        <code class="text-blue-300">/data/memory_dumps</code> so you can re-run against it
                                         without acquiring again (~9&nbsp;GB per host). Only that one copy is kept — the
                                         Velociraptor-side copy is always removed, so the image is never stored twice.
                                         Reclaim it later from Settings → Purge.
@@ -176,44 +202,6 @@
                                    class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                         </div>
 
-                        <!-- Timeouts — always visible (moved out of a collapsed
-                             "Advanced" panel 2026-06-17 so operators see them
-                             before dispatching). Leave blank to use the defaults
-                             below; YARA-scan auto-scales with dump size when left
-                             at default (~400 s/GB). Bump them for huge dumps
-                             (32 GB+) or slow extraction hardware. -->
-                        <div class="mt-4 pt-4 border-t border-gray-700">
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-sm font-medium text-gray-300">Timeouts</span>
-                                <span class="text-[10px] text-gray-500">blank = use default (shown in each box)</span>
-                            </div>
-                            <div class="grid grid-cols-3 gap-3">
-                                <div>
-                                    <label class="block text-xs text-gray-400 mb-1">Acquire timeout (sec)</label>
-                                    <input type="number" min="60" max="86400" step="60"
-                                           x-model.number="$store.memory.acquireTimeoutS"
-                                           :placeholder="'default 5400'"
-                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
-                                    <p class="text-[10px] text-gray-500 mt-0.5">Velociraptor flow + extract. Default 90 min.</p>
-                                </div>
-                                <div>
-                                    <label class="block text-xs text-gray-400 mb-1">Plugin extract timeout (sec)</label>
-                                    <input type="number" min="60" max="86400" step="60"
-                                           x-model.number="$store.memory.pluginTimeoutS"
-                                           :placeholder="'default 1800'"
-                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
-                                    <p class="text-[10px] text-gray-500 mt-0.5">Vol3 selective-extraction cap. Default 30 min.</p>
-                                </div>
-                                <div>
-                                    <label class="block text-xs text-gray-400 mb-1">YARA scan timeout (sec)</label>
-                                    <input type="number" min="60" max="86400" step="60"
-                                           x-model.number="$store.memory.yarascanTimeoutS"
-                                           :placeholder="'default 3600'"
-                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
-                                    <p class="text-[10px] text-gray-500 mt-0.5">Auto-scales to dump size (~400 s/GB) when blank. Default 60 min.</p>
-                                </div>
-                            </div>
-                        </div>
                     </div>
 
                     <!-- ==================== ACQUIRE TAB ==================== -->
@@ -221,7 +209,7 @@
                     <div x-show="memoryTab === 'acquire'" class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
                         <div class="velo-org-slot mb-4"></div>
                         <div class="flex items-center justify-between mb-2">
-                            <label class="block text-sm font-medium text-gray-300">Select Client for Acquisition</label>
+                            <label class="block text-sm font-medium text-gray-300">Client</label>
                             <button type="button" onclick="window.memoryClientManager ? window.memoryClientManager.refresh(this) : Alpine.store('memory').refreshClients()"
                                     class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded disabled:opacity-60" title="Reload the client list from Velociraptor">↻ Refresh</button>
                         </div>
@@ -232,21 +220,21 @@
                         <input type="text" id="memory-client-search"
                                oninput="window.memoryClientManager && window.memoryClientManager.filter(this.value)"
                                placeholder="Filter by name, OS, or label..."
-                               class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
+                               class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-blue-500 focus:outline-none">
                         <div id="memory-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
                             <p class="text-sm text-gray-500">Loading clients...</p>
                         </div>
                     </div>
 
                     <!-- Dispatch (live acquire) -->
-                    <div x-show="memoryTab === 'acquire'" class="flex items-center justify-end gap-3 mb-6">
-                        <span x-show="$store.memory.lastStatus" class="text-xs text-gray-400" x-text="$store.memory.lastStatus"></span>
+                    <div x-show="memoryTab === 'acquire'" class="mb-6">
                         <button @click="$store.memory.startRun()"
                                 :disabled="!$store.memory.selectedClient || $store.memory.dispatching"
-                                class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                                class="w-full px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white">
                             <span x-show="!$store.memory.dispatching">Acquire &amp; Extract</span>
                             <span x-show="$store.memory.dispatching">Starting…</span>
                         </button>
+                        <span x-show="$store.memory.lastStatus" class="block mt-3 text-xs text-gray-400" x-text="$store.memory.lastStatus"></span>
                     </div>
 
                     <!-- ==================== KEPT IMAGE TAB ====================
@@ -278,7 +266,7 @@
                             <template x-for="d in $store.memory.dumps" :key="d.path">
                                 <label class="flex items-start gap-3 cursor-pointer p-2 rounded hover:bg-gray-800"
                                        :class="$store.memory.selectedDump === d.path ? 'bg-gray-800 ring-1 ring-purple-500' : ''">
-                                    <input type="radio" name="memory-dump" class="mt-1 w-4 h-4 text-purple-600 bg-gray-900 border-gray-600"
+                                    <input type="radio" name="memory-dump" class="mt-1 w-4 h-4 text-blue-600 bg-gray-900 border-gray-600"
                                            :value="d.path" x-model="$store.memory.selectedDump">
                                     <div class="min-w-0 flex-1">
                                         <div class="text-sm text-gray-200 font-mono truncate" x-text="d.name"></div>
@@ -292,14 +280,14 @@
                             </template>
                         </div>
 
-                        <div class="flex items-center justify-end gap-3 pt-4 mt-4 border-t border-gray-700">
-                            <span x-show="$store.memory.reuseStatus" class="text-xs text-gray-400"
-                                  x-text="$store.memory.reuseStatus"></span>
+                        <div class="pt-4 mt-4 border-t border-gray-700">
                             <button @click="$store.memory.startReuse()"
                                     :disabled="!$store.memory.selectedDump || $store.memory.dispatching"
-                                    class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                                    class="w-full px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white">
                                 Analyze this image
                             </button>
+                            <span x-show="$store.memory.reuseStatus" class="block mt-3 text-xs text-gray-400"
+                                  x-text="$store.memory.reuseStatus"></span>
                         </div>
                     </div>
 
@@ -317,7 +305,7 @@
                             </p>
                             <p class="text-xs text-gray-300 mt-3">
                                 <b>Full Windows pack:</b> on a connected computer download
-                                <code class="text-indigo-300 break-all">https://downloads.volatilityfoundation.org/volatility3/symbols/windows.zip</code>
+                                <code class="text-blue-300 break-all">https://downloads.volatilityfoundation.org/volatility3/symbols/windows.zip</code>
                                 (840 MB, Volatility Foundation) and upload the <code>.zip</code> as it is.
                             </p>
                             <p class="text-[11px] text-gray-500 mt-2">
@@ -363,7 +351,7 @@
                                        class="flex-1 text-sm text-gray-300 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-gray-700 file:text-gray-200">
                                 <button type="button" @click="$store.memory.uploadSymbol($refs.symFile)"
                                         :disabled="$store.memory.symUploading"
-                                        class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 px-4 py-2 rounded text-sm font-medium text-white">
+                                        class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 px-4 py-2 rounded text-sm font-medium text-white">
                                     <span x-text="$store.memory.symUploading ? 'Uploading…' : 'Upload'"></span>
                                 </button>
                             </div>
@@ -376,11 +364,11 @@
                     <div x-show="memoryTab === 'upload'" class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
                         <label class="block text-sm font-medium text-gray-300 mb-1">Memory dump file</label>
                         <p class="text-xs text-gray-500 mb-3">
-                            Accepts a raw memory image (<code class="text-indigo-300">.raw</code>,
-                            <code class="text-indigo-300">.bin</code>, <code class="text-indigo-300">.mem</code>,
-                            <code class="text-indigo-300">.dmp</code>) or a Velociraptor
+                            Accepts a raw memory image (<code class="text-blue-300">.raw</code>,
+                            <code class="text-blue-300">.bin</code>, <code class="text-blue-300">.mem</code>,
+                            <code class="text-blue-300">.dmp</code>) or a Velociraptor
                             <em>Prepare Download</em> / offline-collector ZIP. We'll detect the
-                            <code class="text-indigo-300">PhysicalMemory</code> file inside the ZIP automatically.
+                            <code class="text-blue-300">PhysicalMemory</code> file inside the ZIP automatically.
                         </p>
                         <div class="flex items-center gap-3 bg-gray-900 border border-dashed border-gray-600 rounded px-4 py-4">
                             <input type="file"
@@ -401,10 +389,10 @@
                             after that — progress, logs, failures — happens there.
                         </p>
 
-                        <div class="flex items-center justify-end gap-3 pt-4 mt-4 border-t border-gray-700">
+                        <div class="pt-4 mt-4 border-t border-gray-700">
                             <button @click="$store.memory.startUpload()"
                                     :disabled="!$store.memory.uploadFile || $store.memory.uploading"
-                                    class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                                    class="w-full px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white">
 Upload &amp; Analyze
                             </button>
                         </div>
@@ -425,19 +413,19 @@ Upload &amp; Analyze
                         <input type="text" x-model="$store.memory.adoptId"
                                @keydown.enter="$store.memory.adoptRun()"
                                placeholder="memory_1790012609712"
-                               class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-purple-500 focus:outline-none">
+                               class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-blue-500 focus:outline-none">
                         <p class="text-xs text-gray-500 mt-1">Copy it from the Workflows page of the case that ran it.</p>
 
-                        <div class="flex items-center justify-end gap-3 pt-4 mt-4 border-t border-gray-700">
-                            <span x-show="$store.memory.adoptStatus" class="text-xs"
-                                  :class="$store.memory.adoptFailed ? 'text-red-400' : 'text-gray-400'"
-                                  x-text="$store.memory.adoptStatus"></span>
+                        <div class="pt-4 mt-4 border-t border-gray-700">
                             <button @click="$store.memory.adoptRun()"
                                     :disabled="!$store.memory.adoptId || $store.memory.adopting"
-                                    class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                                    class="w-full px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white">
                                 <span x-show="!$store.memory.adopting">Add to Case</span>
                                 <span x-show="$store.memory.adopting">Pulling…</span>
                             </button>
+                            <span x-show="$store.memory.adoptStatus" class="block mt-3 text-xs"
+                                  :class="$store.memory.adoptFailed ? 'text-red-400' : 'text-gray-400'"
+                                  x-text="$store.memory.adoptStatus"></span>
                         </div>
                     </div>
 

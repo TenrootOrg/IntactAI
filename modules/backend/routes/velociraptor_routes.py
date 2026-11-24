@@ -36,7 +36,12 @@ def run_timesketch_collection():
         client_name = data.get('client_name', 'Unknown')  # Get client name (hostname)
         kape_target = data.get('kape_target', '_KapeTriage')  # Default to _KapeTriage
         timeout_seconds = data.get('timeout_seconds', 10000)  # Default ~2.8 hours
-        cpu_limit = data.get('cpu_limit', 50)  # Default 50%
+        # Written into the collection's VQL, so a whole number in range only.
+        from services.vql_safety import validate_run_settings
+        _rs, _rs_err = validate_run_settings({'cpu_limit': data.get('cpu_limit')}, allow_expiry=False)
+        if _rs_err:
+            return jsonify({"error": _rs_err}), 400
+        cpu_limit = _rs.get('cpu_limit', 50)
         blueprint_id = data.get('blueprint_id')
         blueprint_name = data.get('blueprint', 'Unknown')
 

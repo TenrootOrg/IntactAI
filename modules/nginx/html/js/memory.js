@@ -65,6 +65,13 @@ document.addEventListener('alpine:init', () => {
         acquireTimeoutS: null,
         pluginTimeoutS: null,
         yarascanTimeoutS: null,
+        // This run's CPU cap for the acquisition. The panel fills it with the
+        // blueprint's value whenever the blueprint changes; it stays editable.
+        cpuLimit: null,
+        blueprintCpu() {
+            const bp = this.selectedBlueprint();
+            return (bp && bp.settings && bp.settings.cpu_limit) || 50;
+        },
 
         // --------------------------------------------------------------
         // Caches
@@ -326,6 +333,11 @@ document.addEventListener('alpine:init', () => {
         // --------------------------------------------------------------
         async startRun() {
             if (!this.selectedClient) { this.lastStatus = 'pick a client first'; return; }
+            const cpu = (this.cpuLimit === null || this.cpuLimit === '') ? this.blueprintCpu() : Number(this.cpuLimit);
+            if (!Number.isInteger(cpu) || cpu < 1 || cpu > 100) {
+                this.lastStatus = 'CPU (%) must be a whole number between 1 and 100';
+                return;
+            }
             this.dispatching = true;
             this.lastStatus = '';
             try {
@@ -340,6 +352,7 @@ document.addEventListener('alpine:init', () => {
                     mode: this.derivedMode(),
                     case_name: this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]),
                     keep_dump: !!this.keepDump,
+                    cpu_limit: cpu,
                 };
                 // Only send timeouts the operator actually overrode —
                 // sending nulls / zeros would defeat the server-side

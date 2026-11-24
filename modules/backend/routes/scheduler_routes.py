@@ -69,6 +69,23 @@ def _schedule_case(value):
     return cid, None
 
 
+def _clean_cpu(options):
+    """A schedule may carry its own CPU (1-100) in its options; none means the
+    blueprint's. Checked when saved because every firing writes it into VQL.
+    Returns an error message or None."""
+    if not isinstance(options, dict):
+        return None
+    if options.get('cpu_limit') in (None, ''):
+        options.pop('cpu_limit', None)
+        return None
+    from services.vql_safety import validate_run_settings
+    v, err = validate_run_settings({'cpu_limit': options['cpu_limit']}, allow_expiry=False)
+    if err:
+        return err
+    options['cpu_limit'] = v['cpu_limit']
+    return None
+
+
 @scheduler_bp.route('/api/scheduler/jobs', methods=['POST'])
 def create_job():
     """Create a new scheduled job."""
@@ -83,6 +100,9 @@ def create_job():
         interval_unit = data.get('interval_unit', 'days')
         start_date = data.get('start_date') or data.get('start_at')
         options = data.get('options') if isinstance(data.get('options'), dict) else {}
+        cpu_err = _clean_cpu(options)
+        if cpu_err:
+            return jsonify({"error": cpu_err}), 400
 
         if not name:
             return jsonify({"error": "name is required"}), 400
@@ -190,6 +210,9 @@ def update_job(job_id):
         # is `start_at` (composed with run_time into a datetime downstream).
         if 'start_date' in data and 'start_at' not in data:
             data['start_at'] = data.pop('start_date')
+        cpu_err = _clean_cpu(data.get('options'))
+        if cpu_err:
+            return jsonify({"error": cpu_err}), 400
         # Validate interval_unit if the edit changes it.
         if 'interval_unit' in data:
             from services.scheduler.jobs import INTERVAL_UNITS

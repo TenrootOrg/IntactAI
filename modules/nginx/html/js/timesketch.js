@@ -74,7 +74,22 @@ function onTimesketchBlueprintChange() {
         if (descP) descP.textContent = 'Select a blueprint to configure triage target and Plaso processing settings';
     }
     plasoSpan.textContent = `Plaso: ${blueprint.settings.plaso_parser || 'N/A'}`;
+    // CPU applies to the collection, so Upload mode has none. A mode switch keeps
+    // the operator's value; only a different blueprint resets it.
+    document.getElementById('ts-run-settings')?.classList.toggle('hidden', isUpload);
+    if (window._tsRunBlueprint !== blueprintId) {
+        window._tsRunBlueprint = blueprintId;
+        resetTimesketchRunSettings();
+    }
     infoDiv.classList.remove('hidden');
+}
+
+function resetTimesketchRunSettings() {
+    const el = document.getElementById('ts-run-cpu');
+    const s = getTimesketchBlueprintSettings();
+    if (!el) return;
+    el.value = '';                                   // empty = the blueprint's, shown as the placeholder
+    el.placeholder = 'default ' + ((s && s.cpu_limit) || 50);
 }
 
 // Get current blueprint settings
@@ -163,7 +178,13 @@ async function runTimeSketchWorkflow() {
     const sketchName = document.getElementById('sketch-name').value.trim() || `Investigation-${new Date().toISOString().split('T')[0]}`;
     const kapeTarget = blueprintSettings.kape_target;
     const timeoutSeconds = blueprintSettings.collection_timeout || 10000;
-    const cpuLimit = blueprintSettings.cpu_limit || 50;
+    // This run's CPU, pre-filled from the blueprint and editable, as on the Velociraptor page.
+    const cpuRaw = (document.getElementById('ts-run-cpu')?.value ?? '').toString().trim();
+    const cpuLimit = cpuRaw === '' ? (blueprintSettings.cpu_limit || 50) : Number(cpuRaw);
+    if (!Number.isInteger(cpuLimit) || cpuLimit < 1 || cpuLimit > 100) {
+        alert('CPU (%) must be a whole number between 1 and 100.');
+        return;
+    }
     const monitorTimeout = blueprintSettings.collection_timeout || 10000;
 
     // Plaso settings from blueprint
@@ -233,10 +254,33 @@ async function runTimeSketchWorkflow() {
 let tsSelectedFile = null;
 
 // Toggle between automation and upload modes
+// The mode tabs (styled like the Velociraptor page) drive the hidden ts-mode radios.
+const _TS_TAB_ON = ['border-b-2', 'border-blue-500', 'text-blue-400'];
+const _TS_TAB_OFF = ['text-gray-400', 'hover:text-gray-200'];
+const _TS_MODE_DESC = {
+    automation: 'Run a triage collection on clients and import it into TimeSketch as a timeline',
+    upload: 'Import a triage or Velociraptor collection you already have as a timeline',
+};
+
+function setTimesketchMode(mode) {
+    const radio = document.querySelector(`input[name="ts-mode"][value="${mode}"]`);
+    if (!radio) return;
+    radio.checked = true;
+    toggleTimesketchMode();
+}
+
 function toggleTimesketchMode() {
     const mode = document.querySelector('input[name="ts-mode"]:checked').value;
     const automationSection = document.getElementById('ts-automation-section');
     const uploadSection = document.getElementById('ts-upload-section');
+    for (const m of ['automation', 'upload']) {
+        const tab = document.getElementById(`ts-mode-${m}-tab`);
+        if (!tab) continue;
+        tab.classList.remove(...(m === mode ? _TS_TAB_OFF : _TS_TAB_ON));
+        tab.classList.add(...(m === mode ? _TS_TAB_ON : _TS_TAB_OFF));
+    }
+    const desc = document.getElementById('ts-mode-desc');
+    if (desc) desc.textContent = _TS_MODE_DESC[mode] || '';
 
     if (mode === 'automation') {
         automationSection.classList.remove('hidden');

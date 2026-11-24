@@ -506,6 +506,13 @@
                                 </select>
                             </div>
                         </div>
+                        <!-- This schedule's CPU on the endpoint: the blueprint's value is the
+                             default, the blueprint itself is not changed. AWS has none. -->
+                        <div id="schedule-cpu-row" class="mt-3 flex items-center gap-3 text-sm text-gray-400">
+                            <label class="flex items-center gap-2">CPU (%)
+                                <input type="number" id="schedule-cpu" min="1" max="100" step="1" class="w-20 bg-gray-800 text-white border border-gray-700 rounded-lg px-2 py-1"></label>
+                            <button type="button" onclick="resetScheduleCpu()" class="text-[11px] text-blue-400 hover:text-blue-300">Reset to blueprint default</button>
+                        </div>
 
                         <!-- Interval Settings -->
                         <div class="grid grid-cols-2 gap-4">
@@ -680,22 +687,22 @@
     <!-- Shared client picker — must load BEFORE any module that instantiates
          ClientManager at script scope (blueprints-forensics, scheduler, ...). -->
     <script src="js/utils/client-manager.js?v=11"></script>
-    <script src="js/blueprints-forensics.js?v=12"></script>
+    <script src="js/blueprints-forensics.js?v=13"></script>
     <!-- tus resumable upload protocol (local) -->
     <script src="vendor/tus/tus.min.js"></script>
     <script src="js/upload.js?v=6"></script>
-    <script src="js/timesketch.js?v=6"></script>
+    <script src="js/timesketch.js?v=9"></script>
     <!-- Must load before the stores/partials that call TabReset.arm(). -->
     <script src="js/components/tab-reset.js?v=1"></script>
-    <script src="js/memory.js?v=27"></script>
-    <script src="js/scheduler.js?v=11"></script>
+    <script src="js/memory.js?v=28"></script>
+    <script src="js/scheduler.js?v=13"></script>
     <!-- Extracted inline helpers (Phase C): downloads copy/availability,
          active-case bar, AWS/Azure flatpickr pickers. -->
     <script src="js/components/downloads.js?v=1"></script>
     <script src="js/components/workspace-bar.js?v=7"></script>
     <script src="js/components/cloud-datepickers.js?v=8"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=301"></script>
+    <script src="js/bootstrap/partial-loader.js?v=304"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

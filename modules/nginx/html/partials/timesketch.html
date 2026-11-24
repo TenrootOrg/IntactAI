@@ -1,6 +1,7 @@
             <div x-show="$store.app.currentTab === 'modules-timesketch'" data-automation-tab="modules-timesketch" x-transition class="tab-panel">
-                <h2 class="text-3xl font-bold text-white mb-2">TimeSketch Automation</h2>
-                <p class="text-gray-400 mb-6">Collect forensic artifacts and create investigation timelines</p>
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-3xl font-bold text-white">TimeSketch</h2>
+                </div>
 
                 <!-- Stopped-container warnings. TimeSketch needs BOTH its own
                      server (for sketch / timeline ingest) AND Velociraptor (for
@@ -42,125 +43,131 @@
                     </div>
                 </div>
 
-                <!-- Mode Selection -->
-                <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
-                    <h3 class="text-2xl font-semibold text-white mb-4">Triage Collection & Timeline Import</h3>
-
-                    <!-- Mode Toggle -->
-                    <div class="mb-6">
-                        <label class="block text-sm font-medium text-gray-300 mb-3">Mode:</label>
-                        <div class="flex gap-6">
-                            <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="radio" name="ts-mode" value="automation" checked onchange="toggleTimesketchMode()" class="w-4 h-4 text-purple-500 bg-gray-900 border-gray-600 focus:ring-purple-500">
-                                <span class="text-white">Full Automation</span>
-                                <span class="text-xs text-gray-500">(Live Velociraptor hunt)</span>
-                            </label>
-                            <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="radio" name="ts-mode" value="upload" onchange="toggleTimesketchMode()" class="w-4 h-4 text-purple-500 bg-gray-900 border-gray-600 focus:ring-purple-500">
-                                <span class="text-white">Upload Triage</span>
-                                <span class="text-xs text-gray-500">(External collection)</span>
-                            </label>
-                        </div>
-                        <p class="text-xs text-gray-500 mt-2">Full Automation: Run triage hunt on connected clients | Upload: Process an existing triage/Velociraptor collection</p>
-                    </div>
-
-                    <!-- Blueprint Selection (shared) -->
-                    <div class="mb-6">
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Processing Blueprint:</label>
-                        <select id="timesketch-blueprint-select" onchange="onTimesketchBlueprintChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
-                            <option value="">Loading blueprints...</option>
-                        </select>
-                        <p class="text-xs text-gray-500 mt-1">Select a blueprint to configure triage target and Plaso processing settings</p>
-                        <div id="timesketch-blueprint-info" class="mt-2 text-xs text-gray-400 hidden">
-                            <span id="ts-blueprint-kape" class="inline-block bg-gray-700 px-2 py-1 rounded mr-2"></span>
-                            <span id="ts-blueprint-plaso" class="inline-block bg-gray-700 px-2 py-1 rounded"></span>
-                        </div>
-                    </div>
-
-                    <!-- ============ AUTOMATION MODE SECTION ============ -->
-                    <div id="ts-automation-section">
-                        <div class="velo-org-slot mb-4"></div>
-                        <!-- Client Selection -->
-                        <div class="mb-6">
-                            <div class="flex items-center justify-between mb-2">
-                                <label class="block text-sm font-medium text-gray-300">Select Clients for Collection</label>
-                                <div class="flex gap-2">
-                                    <button type="button" onclick="timesketchClientManager.refresh(this)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded disabled:opacity-60" title="Reload the client list from Velociraptor">↻ Refresh</button>
-                                    <button onclick="selectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Select All</button>
-                                    <button onclick="deselectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
-                                </div>
-                            </div>
-                            <input type="text" id="timesketch-client-search" placeholder="Filter by name, OS, or label..."
-                                oninput="filterTimesketchClients(this.value)"
-                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
-                            <div id="timesketch-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
-                                <p class="text-sm text-gray-500">Loading clients...</p>
-                            </div>
-                        </div>
-
-                        <!-- Sketch Name -->
-                        <div class="mb-6">
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Sketch Name:</label>
-                            <input type="text" id="sketch-name" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm"
-                                x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
-                            <p class="text-xs text-gray-500 mt-1">If a sketch with this name exists, timelines will be added to it. Otherwise a new sketch is created.</p>
-                        </div>
-
-                        <!-- Action Button -->
-                        <button onclick="runTimeSketchWorkflow()" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 px-6 py-3 rounded-lg font-medium transition-colors">
-                            <span class="flex items-center justify-center gap-2">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                </svg>
-                                Start Collection & Timeline Import
-                            </span>
+                <!-- Same frame as the Velociraptor page: mode tabs, one line of what the
+                     mode does, then one card. -->
+                <div class="max-w-3xl">
+                    <div class="flex border-b border-gray-700 mb-4">
+                        <button type="button" id="ts-mode-automation-tab" onclick="setTimesketchMode('automation')"
+                            class="px-4 py-2 text-sm font-medium transition-colors border-b-2 border-blue-500 text-blue-400">
+                            Full Automation
+                        </button>
+                        <button type="button" id="ts-mode-upload-tab" onclick="setTimesketchMode('upload')"
+                            class="px-4 py-2 text-sm font-medium transition-colors text-gray-400 hover:text-gray-200">
+                            Upload Triage
                         </button>
                     </div>
+                    <!-- The tabs set these; toggleTimesketchMode() and the upload code read them. -->
+                    <div class="hidden">
+                        <input type="radio" name="ts-mode" value="automation" checked onchange="toggleTimesketchMode()">
+                        <input type="radio" name="ts-mode" value="upload" onchange="toggleTimesketchMode()">
+                    </div>
+                    <p id="ts-mode-desc" class="text-gray-400 mb-6 text-sm">Run a triage collection on clients and import it into TimeSketch as a timeline</p>
 
-                    <!-- ============ UPLOAD MODE SECTION ============ -->
-                    <div id="ts-upload-section" class="hidden">
-                        <!-- File Upload with Drag & Drop -->
-                        <div class="mb-6">
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Triage Collection File:</label>
-                            <div id="ts-upload-dropzone" class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center cursor-pointer hover:border-purple-500 transition-colors">
-                                <input type="file" id="ts-kape-file" accept=".zip" class="hidden">
-                                <svg class="w-12 h-12 mx-auto mb-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-                                </svg>
-                                <p id="ts-dropzone-text" class="text-gray-400">Drag & drop ZIP file or click to browse</p>
-                                <p class="text-xs text-gray-500 mt-2">Supports: Velociraptor offline collection, triage output (any size, resumable)</p>
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <div class="space-y-4">
+                            <!-- Blueprint (shared) -->
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Blueprint</label>
+                                <select id="timesketch-blueprint-select" onchange="onTimesketchBlueprintChange()" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <option value="">Loading blueprints...</option>
+                                </select>
+                                <p class="text-xs text-gray-500 mt-1">Select a blueprint to configure triage target and Plaso processing settings</p>
+                                <div id="timesketch-blueprint-info" class="mt-2 bg-gray-900 rounded-lg p-3 border border-gray-700 text-xs text-gray-400 hidden">
+                                    <span id="ts-blueprint-kape" class="inline-block bg-gray-800 px-2 py-1 rounded mr-2"></span>
+                                    <span id="ts-blueprint-plaso" class="inline-block bg-gray-800 px-2 py-1 rounded"></span>
+                                    <!-- This run's CPU on the endpoint: the blueprint's value is the
+                                         default, the blueprint itself is not changed. -->
+                                    <div id="ts-run-settings">
+                                        <div class="grid grid-cols-3 gap-3 mt-2 text-xs text-gray-400">
+                                            <label class="block">CPU (%)
+                                                <input type="number" id="ts-run-cpu" min="1" max="100" step="1" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-xs focus:border-blue-500 focus:outline-none"></label>
+                                        </div>
+                                        <div class="mt-1 text-right">
+                                            <button type="button" onclick="resetTimesketchRunSettings()" class="text-[11px] text-blue-400 hover:text-blue-300">Reset to blueprint defaults</button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
 
-                            <!-- Upload Progress -->
-                            <div id="ts-upload-progress" class="hidden mt-4">
-                                <div class="flex justify-between text-xs text-gray-400 mb-1">
-                                    <span id="ts-upload-filename"></span>
-                                    <span id="ts-upload-percent">0%</span>
+                            <!-- ============ AUTOMATION MODE SECTION ============ -->
+                            <div id="ts-automation-section" class="space-y-4">
+                                <div class="velo-org-slot mb-4"></div>
+                                <!-- Clients -->
+                                <div>
+                                    <div class="flex items-center justify-between mb-2">
+                                        <label class="block text-sm font-medium text-gray-300">Clients</label>
+                                        <div class="flex gap-2">
+                                            <button type="button" onclick="timesketchClientManager.refresh(this)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded disabled:opacity-60" title="Reload the client list from Velociraptor">↻ Refresh</button>
+                                            <button onclick="selectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Select All</button>
+                                            <button onclick="deselectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                                        </div>
+                                    </div>
+                                    <input type="text" id="timesketch-client-search" placeholder="Filter by name, OS, or label..."
+                                        oninput="filterTimesketchClients(this.value)"
+                                        class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-blue-500 focus:outline-none">
+                                    <div id="timesketch-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-96 overflow-y-auto space-y-2">
+                                        <p class="text-sm text-gray-500">Loading clients...</p>
+                                    </div>
                                 </div>
-                                <div class="bg-gray-700 rounded-full h-2.5">
-                                    <div id="ts-upload-bar" class="bg-gradient-to-r from-purple-500 to-blue-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+
+                                <!-- Sketch name -->
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Sketch name</label>
+                                    <input type="text" id="sketch-name" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                                        x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
+                                    <p class="text-xs text-gray-500 mt-1">If a sketch with this name exists, timelines will be added to it. Otherwise a new sketch is created.</p>
                                 </div>
-                                <p id="ts-upload-status" class="js-run-status text-xs text-gray-400 mt-1"></p>
+
+                                <button onclick="runTimeSketchWorkflow()" class="w-full mt-4 px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors bg-blue-600 hover:bg-blue-700">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                    </svg>
+                                    Start Collection & Timeline Import
+                                </button>
+                            </div>
+
+                            <!-- ============ UPLOAD MODE SECTION ============ -->
+                            <div id="ts-upload-section" class="hidden space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Triage collection file</label>
+                                    <div id="ts-upload-dropzone" class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center cursor-pointer hover:border-blue-500 transition-colors">
+                                        <input type="file" id="ts-kape-file" accept=".zip" class="hidden">
+                                        <svg class="w-12 h-12 mx-auto mb-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                        </svg>
+                                        <p id="ts-dropzone-text" class="text-gray-400">Drag & drop ZIP file or click to browse</p>
+                                        <p class="text-xs text-gray-500 mt-2">Supports: Velociraptor offline collection, triage output (any size, resumable)</p>
+                                    </div>
+
+                                    <!-- Upload Progress -->
+                                    <div id="ts-upload-progress" class="hidden mt-4">
+                                        <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                            <span id="ts-upload-filename"></span>
+                                            <span id="ts-upload-percent">0%</span>
+                                        </div>
+                                        <div class="bg-gray-700 rounded-full h-2.5">
+                                            <div id="ts-upload-bar" class="bg-blue-600 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                        </div>
+                                        <p id="ts-upload-status" class="js-run-status text-xs text-gray-400 mt-1"></p>
+                                    </div>
+                                </div>
+
+                                <!-- Sketch name (Upload mode) -->
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Sketch name</label>
+                                    <input type="text" id="ts-upload-sketch" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                                        x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
+                                    <p class="text-xs text-gray-500 mt-1">Timeline will be named from the hostname in the collection.</p>
+                                </div>
+
+                                <button id="ts-upload-btn" onclick="uploadKapeToTimesketch()" class="w-full mt-4 px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors bg-blue-600 hover:bg-blue-700">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                                    </svg>
+                                    Upload & Import to TimeSketch
+                                </button>
                             </div>
                         </div>
-
-                        <!-- Sketch Name (Upload mode) -->
-                        <div class="mb-6">
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Sketch Name:</label>
-                            <input type="text" id="ts-upload-sketch" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm"
-                                x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
-                            <p class="text-xs text-gray-500 mt-1">Timeline will be named from the hostname in the collection.</p>
-                        </div>
-
-                        <!-- Upload Button -->
-                        <button id="ts-upload-btn" onclick="uploadKapeToTimesketch()" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 px-6 py-3 rounded-lg font-medium transition-colors">
-                            <span class="flex items-center justify-center gap-2">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
-                                </svg>
-                                Upload & Import to Timesketch
-                            </span>
-                        </button>
                     </div>
                 </div>
             </div>

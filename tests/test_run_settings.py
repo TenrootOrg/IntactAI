@@ -107,5 +107,55 @@ class TheValuesReachVelociraptor(unittest.TestCase):
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
 
 
+class TimesketchAndMemoryCpu(unittest.TestCase):
+    """2026-11-24: CPU is set per run on the Timesketch and Memory pages too,
+    pre-filled from the blueprint, as on the Velociraptor page."""
+
+    def test_every_route_validates_cpu_before_it_reaches_vql(self):
+        for rel in ("modules/backend/routes/timesketch_routes.py",
+                    "modules/backend/routes/velociraptor_routes.py",
+                    "modules/backend/routes/memory_routes.py"):
+            src = _src(rel)
+            self.assertRegex(src, r"validate_run_settings\(\{['\"]cpu_limit['\"]", rel)
+            self.assertNotRegex(src, r"cpu_limit\s*=\s*data\.get\(['\"]cpu_limit", rel)
+
+    def test_the_memory_run_value_wins_over_the_blueprint(self):
+        seg = _src("modules/backend/services/memory/pipeline.py")
+        i = seg.index('for k in ("max_bytes", "cpu_limit", "compression")')
+        self.assertIn('overrides["cpu_limit"] = int(_to["cpu_limit"])', seg[i:i + 400])
+
+    def test_both_pages_offer_an_editable_cpu_and_a_reset(self):
+        ts, mem = _src("modules/nginx/html/partials/timesketch.html"), _src("modules/nginx/html/partials/memory.html")
+        self.assertIn('id="ts-run-cpu"', ts)
+        self.assertIn("resetTimesketchRunSettings()", ts)
+        self.assertIn('x-model.number="$store.memory.cpuLimit"', mem)
+        self.assertIn("$store.memory.blueprintCpu()", mem)
+        self.assertIn("document.getElementById('ts-run-cpu')", _src("modules/nginx/html/js/timesketch.js"))
+        self.assertIn("cpu_limit: cpu,", _src("modules/nginx/html/js/memory.js"))
+
+
+class SchedulerCpu(unittest.TestCase):
+    """2026-11-24: a schedule carries its own CPU, pre-filled from the blueprint,
+    and every run it fires uses it (AWS has none)."""
+
+    def test_it_is_checked_when_a_schedule_is_saved_or_edited(self):
+        src = _src("modules/backend/routes/scheduler_routes.py")
+        self.assertIn("cpu_err = _clean_cpu(options)", src)
+        self.assertIn("cpu_err = _clean_cpu(data.get('options'))", src)
+
+    def test_every_endpoint_run_type_uses_it(self):
+        src = _src("modules/backend/services/scheduler/executor.py")
+        self.assertEqual(2, src.count("_job_cpu(options, settings.get('cpu_limit', 50))"))   # hunt, timesketch
+        self.assertIn('run_settings={"cpu_limit": _cpu}', src)                              # collection
+        self.assertIn('timeouts["cpu_limit"] = _job_cpu(options, None)', src)               # memory
+        self.assertIn("run_timesketch_pipeline(job_meta, client_ids, options)", src)
+
+    def test_the_form_offers_it(self):
+        self.assertIn('id="schedule-cpu"', _src("modules/nginx/html/index.html"))
+        js = _src("modules/nginx/html/js/scheduler.js")
+        self.assertIn("options.cpu_limit = cpu", js)
+        self.assertIn("setV('schedule-cpu', opts.cpu_limit)", js)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

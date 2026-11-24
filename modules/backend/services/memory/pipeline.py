@@ -1062,6 +1062,8 @@ def run_memory_pipeline(
                 for k in ("max_bytes", "cpu_limit", "compression"):
                     if bp_settings.get(k) is not None:
                         overrides[k] = bp_settings[k]
+            if _to.get("cpu_limit"):
+                overrides["cpu_limit"] = int(_to["cpu_limit"])   # the run's own value wins
             def _on_dispatched(fid: str, dst: str) -> None:
                 # Known the moment the flow is dispatched, not after the up-to-
                 # 90-minute acquire: a restart in that window left the boot

@@ -196,6 +196,19 @@ function filterScheduleClients(searchTerm) { schedulerClientManager.filter(searc
 function selectAllScheduleClients(checked) { schedulerClientManager.selectAll(checked); }
 function getSelectedScheduleClients() { return schedulerClientManager.getSelected(); }
 
+// The blueprints listed for the selected type, so the CPU field can show the
+// selected one's default.
+let _scheduleBlueprints = [];
+
+function resetScheduleCpu() {
+    const id = document.getElementById('schedule-blueprint-select').value;
+    const bp = _scheduleBlueprints.find(b => b.id === id);
+    const el = document.getElementById('schedule-cpu');
+    if (!el) return;
+    el.value = '';                                   // empty = the blueprint's, shown as the placeholder
+    el.placeholder = 'default ' + ((bp && bp.settings && bp.settings.cpu_limit) || 50);
+}
+
 // Handle blueprint type change
 async function onScheduleBlueprintTypeChange() {
     const type = document.getElementById('schedule-blueprint-type').value;
@@ -219,6 +232,8 @@ async function onScheduleBlueprintTypeChange() {
                      memory: 'memory', aws: 'aws' }[type];
     const optEl = optKey && document.getElementById('schedule-' + optKey + '-options');
     if (optEl) optEl.classList.remove('hidden');
+    document.getElementById('schedule-cpu-row')?.classList.toggle('hidden', type === 'aws');
+    select.onchange = resetScheduleCpu;
 
     blueprintSelectContainer.classList.remove('hidden');
 
@@ -242,6 +257,8 @@ async function onScheduleBlueprintTypeChange() {
             }).join('') || '<option value="">No blueprints available</option>';
         // Default to the first blueprint (no "-- Select --" placeholder).
         if (blueprints.length) select.value = blueprints[0].id;
+        _scheduleBlueprints = blueprints;
+        resetScheduleCpu();
 
     } catch (error) {
         select.innerHTML = '<option value="">Error loading blueprints</option>';
@@ -356,6 +373,7 @@ async function editSchedule(jobId) {
         // Load blueprints then set selected
         await onScheduleBlueprintTypeChange();
         document.getElementById('schedule-blueprint-select').value = job.blueprint_id || '';
+        resetScheduleCpu();
 
         // Restore the saved client selection (Set model survives facet filtering)
         try {
@@ -382,6 +400,7 @@ async function editSchedule(jobId) {
         setV('schedule-aws-scope', opts.scope_mode);
         setV('schedule-aws-max-events', opts.max_events_per_region);
         setV('schedule-aws-regions', (opts.regions || []).join(', '));
+        setV('schedule-cpu', opts.cpu_limit);
 
     } catch (error) {
         alert('Error loading job: ' + error.message);
@@ -436,6 +455,16 @@ async function saveScheduleFromModal() {
         options = { scope_mode: document.getElementById('schedule-aws-scope').value,
                     regions: csv('schedule-aws-regions'),
                     max_events_per_region: num('schedule-aws-max-events') };
+    }
+    // Every type but AWS runs on endpoints: its CPU is saved with the schedule.
+    if (blueprintType !== 'aws') {
+        const raw = ((document.getElementById('schedule-cpu') || {}).value || '').trim();
+        const cpu = raw === '' ? null : Number(raw);
+        if (cpu !== null && (!Number.isInteger(cpu) || cpu < 1 || cpu > 100)) {
+            alert('CPU (%) must be a whole number between 1 and 100.');
+            return;
+        }
+        if (cpu !== null) options.cpu_limit = cpu;
     }
 
     // Validation

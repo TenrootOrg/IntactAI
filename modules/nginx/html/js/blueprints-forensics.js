@@ -166,10 +166,13 @@ const _FORENSICS_RANGES = {
     cpu_limit: [1, 100, 'CPU (%)', 'forensics-bp-cpu'],
 };
 
+// The blueprint's value shows as the field's placeholder; an empty field means it.
 function resetForensicsRunSettings() {
     for (const [key, [, , , id]] of Object.entries(_FORENSICS_RANGES)) {
         const el = document.getElementById(id);
-        if (el) el.value = _forensicsDefaults[key];
+        if (!el) continue;
+        el.value = '';
+        el.placeholder = 'default ' + _forensicsDefaults[key];
     }
 }
 

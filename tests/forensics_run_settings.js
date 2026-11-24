@@ -27,11 +27,13 @@ function page() {
 }
 
 (async () => {
-  // 1. choosing a blueprint fills the fields with its defaults
+  // 1. choosing a blueprint shows its defaults as placeholders and leaves the fields empty
   {
     const p = page();
     await p.api.onForensicsBlueprintChange('bp1');
-    assert.deepStrictEqual([p.els['forensics-bp-expiry'].value, p.els['forensics-bp-timeout'].value, p.els['forensics-bp-cpu'].value], [720, 3600, 50]);
+    const ids = ['forensics-bp-expiry', 'forensics-bp-timeout', 'forensics-bp-cpu'];
+    assert.deepStrictEqual(ids.map(i => p.els[i].value), ['', '', '']);
+    assert.deepStrictEqual(ids.map(i => p.els[i].placeholder), ['default 720', 'default 3600', 'default 50']);
   }
   // 2. Collection sends the edited timeout + CPU, and no expiry
   {
@@ -75,7 +77,8 @@ function page() {
     await p.api.onForensicsBlueprintChange('bp1');
     p.els['forensics-bp-cpu'].value = '5';
     p.api.resetForensicsRunSettings();
-    assert.strictEqual(p.els['forensics-bp-cpu'].value, 50);
+    assert.strictEqual(p.els['forensics-bp-cpu'].value, '');
+    assert.strictEqual(p.els['forensics-bp-cpu'].placeholder, 'default 50');
   }
   console.log('forensics run settings: all checks pass');
 })().catch(e => { console.error('FAIL:', e.message); process.exit(1); });

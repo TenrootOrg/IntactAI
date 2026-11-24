@@ -283,6 +283,14 @@ def start_memory_run():
                 timeouts[k] = int(v)
             except (TypeError, ValueError):
                 return jsonify({"error": f"{k} must be an integer (seconds)"}), 400
+    # The acquisition's CPU cap for this run, pre-filled on the page from the
+    # blueprint. It rides with the timeouts: they are this run's overrides.
+    if data.get("cpu_limit") is not None:
+        from services.vql_safety import validate_run_settings
+        _rs, _rs_err = validate_run_settings({"cpu_limit": data.get("cpu_limit")}, allow_expiry=False)
+        if _rs_err:
+            return jsonify({"error": _rs_err}), 400
+        timeouts["cpu_limit"] = _rs["cpu_limit"]
 
     import os as _os
     if dump_path:
