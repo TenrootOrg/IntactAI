@@ -64,7 +64,7 @@ verify the package   sha256, gzip integrity, unsafe-path refusal,
                      per-file checksums, format gate
 plan                 what is installed vs what the package carries,
                      downgrade refusal, disk check
-upgrade each module  intact first, then presidio, elk, timesketch, plaso, iris,
+upgrade each module  intact first, then presidio, elk, plaso, timesketch, iris,
                      velociraptor, aws_sigma, o365rc, volweb, portainer
 refresh              Velociraptor artifacts/tools/downloads
 report               what upgraded, what was skipped, what rolled back
@@ -181,7 +181,9 @@ printed at the end of every run.
   for the rest. Database dumps are under `backups/<module>/`.
 - **The Velociraptor refresh failed.** Velociraptor itself is fine; artifacts
   or tools may be stale. Re-run just that step:
-  `sudo bash scripts/upgrade.sh --velo-refresh --package <dir>`.
+  `sudo bash scripts/upgrade.sh --velo-refresh`. It takes no release tag and
+  no `--package`; to refresh from an already-extracted package tree, add
+  `--package-dir <dir>`.
 - **Re-running is safe.** Modules already at the target version are skipped,
   except the re-applies described under *Reading the report*.
 - **A download is slow or stalls.** Each release asset is fetched in 5-minute

@@ -43,7 +43,9 @@ _u_install_sigma_pack() {
     local dest="/opt/sigma-rules/rules/cloud/aws"
     # Streamed over stdin so no host path has to be translated into the
     # container. aws.py:110-115.
-    if ! "${DOCKER_BIN:-docker}" run --rm -i -v /opt/sigma-rules:/opt/sigma-rules \
+    # --pull never: an air-gapped box must not stall on a registry, and an
+    # online one should not fetch an image for a best-effort copy.
+    if ! "${DOCKER_BIN:-docker}" run --rm -i --pull never -v /opt/sigma-rules:/opt/sigma-rules \
             ubuntu:22.04 sh -c "mkdir -p '${dest}' && tar xf - -C '${dest}'" \
             < "$tar" >>"${LOG_FILE:-/dev/null}" 2>&1; then
         log_warn "  could not unpack the AWS SIGMA rule pack"

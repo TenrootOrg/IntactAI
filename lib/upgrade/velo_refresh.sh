@@ -53,9 +53,11 @@ velo_refresh() {
     return 0
 }
 
+# No --package-dir <this run's tree>: that is scratch, and upkg_cleanup deletes
+# it when this run exits, so the printed command pointed at nothing.
 _velo_refresh_remediation() {
     log_warn "  Re-run just this step with:"
-    log_warn "    sudo bash scripts/upgrade.sh --velo-refresh${1:+ --package-dir $1}"
+    log_warn "    sudo bash ${SCRIPT_DIR}/scripts/upgrade.sh --velo-refresh"
 }
 
 # ---------------------------------------------------------------------------

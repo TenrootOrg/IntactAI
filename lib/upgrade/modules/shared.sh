@@ -334,9 +334,15 @@ _u_image_present() {
 # box's copy is only refreshed when intact mirrors the backend tree, so with the
 # old order a failed/skipped intact silently degraded every later module, and
 # `--only timesketch` could never repair itself.
+#
+# source/intact/ first: that is where the packager puts the backend tree, so the
+# old path alone never matched a real package and the box's copy always won.
 _u_image_map_file() {
-    local pkg="${UPKG_DIR:-}/modules/backend/services/image_map.py"
-    [[ -n "${UPKG_DIR:-}" && -f "$pkg" ]] && { printf '%s\n' "$pkg"; return 0; }
+    local pkg
+    for pkg in "${UPKG_DIR:-}/source/intact/modules/backend/services/image_map.py" \
+               "${UPKG_DIR:-}/modules/backend/services/image_map.py"; do
+        [[ -n "${UPKG_DIR:-}" && -f "$pkg" ]] && { printf '%s\n' "$pkg"; return 0; }
+    done
     local box="${SCRIPT_DIR}/modules/backend/services/image_map.py"
     [[ -f "$box" ]] && { printf '%s\n' "$box"; return 0; }
     return 1
@@ -713,7 +719,7 @@ _u_stamp_transitive() {
         local man_key="${rest%%:*}"
         cfg_key="${rest#*:}"
 
-        value="$(_u_manifest_transitive "$module" "$man_key")"
+        value="$(_u_manifest_transitive "$module" "$man_key" "$env_var")"
         src="package manifest"
         if [[ -z "$value" ]]; then
             value="$(read_config "['versions']['${cfg_key}']" 2>/dev/null || echo '')"
@@ -745,9 +751,11 @@ _u_stamp_transitive() {
 }
 
 # contents.transitive_versions.<module>.<dep> from the package manifest.
+# _u_manifest_transitive <module> <dep> [env var]: the packager keys volweb's by
+# env var (VOLWEB_POSTGRES_VERSION), which a prefix match on 'postgres' misses.
 _u_manifest_transitive() {
     [[ -f "${UPKG_MANIFEST:-}" ]] || return 0
-    python3 - "$UPKG_MANIFEST" "$1" "$2" <<'PY' 2>/dev/null
+    python3 - "$UPKG_MANIFEST" "$1" "$2" "${3:-}" <<'PY' 2>/dev/null
 import json, sys
 try:
     m = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -757,6 +765,8 @@ tv = ((m.get("contents") or {}).get("transitive_versions") or {}).get(sys.argv[2
 # Accept either the dep name ('postgres') or the env var ('POSTGRES_VERSION')
 # as the key: the CI packager has emitted both shapes over time.
 v = tv.get(sys.argv[3])
+if v is None and sys.argv[4]:
+    v = tv.get(sys.argv[4])
 if v is None:
     for k, val in tv.items():
         if k.lower().startswith(sys.argv[3].lower()):
@@ -781,11 +791,14 @@ _u_stamp() {
 # next step may wipe the volume; it is not for IRIS, whose volume is never
 # touched). Empty output is treated as failure -- a 0-byte .sql is worse than
 # no dump, because it looks like one.
+#
+# No `exec -t`: a TTY merges the container's stderr into the dump and turns
+# every newline into CRLF, so the "backup" did not restore.
 _u_pg_dump() {
     local container="$1" user="$2" db="$3" out="$4"
     mkdir -p "$(dirname "$out")" 2>/dev/null
     if ! RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "pg_dump ${db}" 900 \
-            bash -c '"$1" exec -t "$2" pg_dump -U "$3" -d "$4" > "$5" 2>>"$6"' \
+            bash -c '"$1" exec "$2" pg_dump -U "$3" -d "$4" > "$5" 2>>"$6"' \
             _ "${DOCKER_BIN:-docker}" "$container" "$user" "$db" "$out" "${LOG_FILE:-/dev/null}"; then
         rm -f "$out"
         log_warn "  pg_dump of ${db} failed"

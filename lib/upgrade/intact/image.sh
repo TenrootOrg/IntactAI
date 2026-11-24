@@ -7,24 +7,42 @@
 # only ever produce "pull access denied for intact-backend, repository does
 # not exist" -- which reads like a credentials problem and is really a missing
 # asset. Present, or loaded from the package's tar, or a clear failure.
+#
+# THE PACKAGE'S TAR WINS OVER A TAG THAT ALREADY EXISTS, as for velociraptor
+# (velociraptor/image.sh). A release re-cut under the same tag carries a new
+# image under the old name, and returning early on "present" kept the box on the
+# first cut forever. The tag that was there is kept as <ref>-pre-upgrade so the
+# rollback can put it back (_intact_put_back_image): runs under --timeout, a
+# subshell, so the docker tag itself is the record, not a variable.
 _intact_ensure_image() {
-    local target="$1" ref="intact-backend:${target}"
+    # Two statements: `local` expands every word before assigning, so ref read
+    # the CALLER's $target (upgrade_module_intact's, by dynamic scope).
+    local target="$1"
+    local ref="intact-backend:${target}" tar="" t
+    for t in "${UPKG_DIR}/images/intact-backend-${target}.tar" \
+             "${UPKG_DIR}/images/intact-backend-${target}.tar.gz"; do
+        [[ -f "$t" ]] && { tar="$t"; break; }
+    done
 
+    # A -pre-upgrade tag left by a run that died is not this run's to restore.
+    "${DOCKER_BIN:-docker}" image rm "${ref}-pre-upgrade" >/dev/null 2>&1 || true
     if _u_image_present "$ref"; then
-        log_info "  ${ref} already present"
-        return 0
+        if [[ -z "$tar" ]]; then
+            log_info "  ${ref} already present"
+            return 0
+        fi
+        log_info "  ${ref} is present, but the package carries this release's image — loading it"
+        "${DOCKER_BIN:-docker}" tag "$ref" "${ref}-pre-upgrade" >>"${LOG_FILE:-/dev/null}" 2>&1 \
+            || { log_error "  could not keep the existing ${ref} for a rollback"; return 1; }
     fi
 
-    local tar
-    for tar in "${UPKG_DIR}/images/intact-backend-${target}.tar" \
-               "${UPKG_DIR}/images/intact-backend-${target}.tar.gz"; do
-        [[ -f "$tar" ]] || continue
+    if [[ -n "$tar" ]]; then
         log_info "  loading ${ref} from $(basename "$tar")"
         if RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "loading the backend image" 1800 \
              bash -c '"$1" load -i "$2" >>"$3" 2>&1' _ "${DOCKER_BIN:-docker}" \
              "$tar" "${LOG_FILE:-/dev/null}"; then
             if _u_image_present "$ref"; then
-                # $tar is the loop variable, so the .tar.gz form is covered too.
+                # $tar is whichever form was found, so .tar.gz is covered too.
                 _U_TAR_FREED["$(basename "$tar")"]=1
                 upkg_release_loaded_tar "$tar"
                 return 0
@@ -36,13 +54,28 @@ _intact_ensure_image() {
         log_error "  could not load $(basename "$tar")"
         u_mark_keep_scratch
         return 1
-    done
+    fi
 
     log_error "  ${ref} is not present and this package carries no backend image."
     log_error "  intact-backend is built by CI and shipped inside the release package;"
     log_error "  it is not published to any registry, so there is nothing to pull."
     log_error "  This package was built without --module intact, or its image tar is missing."
     return 1
+}
+
+# Undo for _intact_ensure_image: the image the tag named before this run.
+_intact_put_back_image() {
+    local ref="intact-backend:$1"
+    _u_image_present "${ref}-pre-upgrade" || return 0
+    "${DOCKER_BIN:-docker}" tag "${ref}-pre-upgrade" "$ref" || return 1
+    "${DOCKER_BIN:-docker}" image rm "${ref}-pre-upgrade" >/dev/null 2>&1 || true
+    log_info "  put the previous ${ref} back"
+}
+
+# After a commit the old cut is unused; nothing else would free it, because
+# the prune keys off a version change and a re-cut has none.
+_intact_drop_kept_image() {
+    "${DOCKER_BIN:-docker}" image rm "intact-backend:$1-pre-upgrade" >/dev/null 2>&1 || true
 }
 
 # Import-check the mirrored tree inside the TARGET image, before anything

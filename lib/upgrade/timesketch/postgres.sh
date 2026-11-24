@@ -137,7 +137,9 @@ _ts_restore_db() {
         >>"${LOG_FILE:-/dev/null}" 2>&1
     $d exec intact_timesketch_postgres dropdb --if-exists -U timesketch timesketch >>"${LOG_FILE:-/dev/null}" 2>&1
     $d exec intact_timesketch_postgres createdb -U timesketch timesketch >>"${LOG_FILE:-/dev/null}" 2>&1 || return 1
-    $d exec -i intact_timesketch_postgres psql -U timesketch -d timesketch < "$dump" >>"${LOG_FILE:-/dev/null}" 2>&1 || return 1
+    # ON_ERROR_STOP: without it psql exits 0 past a failed statement, and a
+    # half-restored database was reported as restored.
+    $d exec -i intact_timesketch_postgres psql -v ON_ERROR_STOP=1 -U timesketch -d timesketch < "$dump" >>"${LOG_FILE:-/dev/null}" 2>&1 || return 1
     log_info "  restored the Timesketch database from ${dump}"
     return 0
 }

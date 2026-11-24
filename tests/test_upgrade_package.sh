@@ -111,6 +111,53 @@ test_a_dotdot_nested_deeper_in_the_path_is_refused() {
     _teardown
 }
 
+# A safe member NAME says nothing about where a symlink points; the check
+# claimed link targets and did not look at them.
+test_a_symlink_pointing_outside_the_package_is_refused() {
+    _setup
+    mkdir -p "${WORK}/b/intact-upgrade-test/a"
+    ln -s ../../../etc "${WORK}/b/intact-upgrade-test/a/up"
+    ( cd "${WORK}/b" && tar -cf "${WORK}/ln.tar" intact-upgrade-test )
+    assert_false upkg_check_tar_slip "${WORK}/ln.tar"
+    assert_contains "$(cat "$LOG_FILE")" "points outside the package"
+    _teardown
+}
+
+test_an_absolute_symlink_is_refused() {
+    _setup
+    mkdir -p "${WORK}/b/intact-upgrade-test"
+    ln -s /etc/cron.d "${WORK}/b/intact-upgrade-test/abs"
+    ( cd "${WORK}/b" && tar -cf "${WORK}/lnabs.tar" intact-upgrade-test )
+    assert_false upkg_check_tar_slip "${WORK}/lnabs.tar"
+    _teardown
+}
+
+test_a_hardlink_to_an_escaping_name_is_refused() {
+    # Python, not tar -c: GNU tar strips the leading ../ from a link target.
+    _setup
+    python3 - "${WORK}/hl.tar" <<'PY'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], "w") as tf:
+    f = tarfile.TarInfo("intact-upgrade-test/f"); f.size = 1
+    tf.addfile(f, io.BytesIO(b"x"))
+    h = tarfile.TarInfo("intact-upgrade-test/g"); h.type = tarfile.LNKTYPE; h.linkname = "../escaped"
+    tf.addfile(h)
+PY
+    assert_false upkg_check_tar_slip "${WORK}/hl.tar"
+    assert_contains "$(cat "$LOG_FILE")" "points outside the package"
+    _teardown
+}
+
+test_a_symlink_that_stays_inside_passes() {
+    _setup
+    mkdir -p "${WORK}/b/intact-upgrade-test/a/b"
+    echo x > "${WORK}/b/intact-upgrade-test/f"
+    ln -s ../../f "${WORK}/b/intact-upgrade-test/a/b/ok"
+    ( cd "${WORK}/b" && tar -cf "${WORK}/lnok.tar" intact-upgrade-test )
+    assert_true upkg_check_tar_slip "${WORK}/lnok.tar"
+    _teardown
+}
+
 test_an_ordinary_package_passes_the_slip_check() {
     _setup; _make_pkg clean.tar
     assert_true upkg_check_tar_slip "${WORK}/clean.tar"

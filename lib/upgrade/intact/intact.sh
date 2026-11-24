@@ -63,6 +63,9 @@ upgrade_module_intact() {
 
     # 1. config.yaml: merge the release's pins in, then run schema migrations.
     #    Both edit in place; see _intact_merge_versions for why that matters.
+    #    The undo is registered first and so runs LAST, after the tree and .env
+    #    restores, which leaves config.yaml agreeing with the restored .env.
+    u_undo "_intact_unmerge_versions"
     u_do "merge version pins into config.yaml" -- _intact_merge_versions "$src"
     u_do "apply config.yaml schema migrations" -- _intact_config_migrations
     # Seed BEFORE validating. The merge above only carries module-primary pins;
@@ -78,6 +81,7 @@ upgrade_module_intact() {
     # 2. Snapshot before touching anything, and register the undos coarsest
     #    first so the tree is back before the container that runs it restarts.
     u_do "snapshot the platform tree" -- _intact_snapshot "$snap"
+    _INTACT_SIDECAR_SNAP="${snap}/sidecars"
     # The .env backup goes NEXT TO THE SNAPSHOT, not beside the file. Every
     # other module can back up in place, but this one then mirrors a new tree
     # over modules/backend with rsync --delete -- and `--exclude='.env'` does
@@ -136,6 +140,7 @@ upgrade_module_intact() {
     fi
     u_do "mirror install.sh" -- _intact_mirror_install_sh "$src"
     u_do "mirror .gitignore" -- _intact_mirror_gitignore "$src"
+    u_do "mirror data/ release content" -- _intact_mirror_data "$src"
     _INTACT_REFRESHED="$(mktemp -p "${SCRIPT_DIR}/data/tmp" intact-refreshed-XXXXXX 2>/dev/null || mktemp)"
     u_do --timeout 600 "refresh sidecar compose files and assets" -- _intact_refresh_sidecars "$src"
     # The shared Nginx TLS pair is PLATFORM state, not any one module's: three
@@ -155,6 +160,7 @@ upgrade_module_intact() {
     # 4. The image, then the compile gate BEFORE anything restarts. A backend
     #    that cannot import is a bricked appliance, and the gate is what turns
     #    that into a clean rollback instead.
+    u_undo "$(printf '_intact_put_back_image %q' "$target")"
     u_do --timeout 1800 "ensure intact-backend:${target}" -- _intact_ensure_image "$target"
     u_do --timeout 300 "verify the new backend compiles" -- _intact_compile_gate "$target"
 
@@ -168,6 +174,7 @@ upgrade_module_intact() {
     if (( rc == 0 )); then
         discard_backup "$bak"
         rm -rf "$snap"
+        _intact_drop_kept_image "$target"
         local sidecars_ok=1
         _intact_move_sidecars || { sidecars_ok=0; log_error "  a sidecar could not move to the package's version (see above)"; }
         # Sidecars that proxy the backend cache its IP; recreating them after
@@ -195,6 +202,6 @@ upgrade_module_intact() {
     else
         log_warn "  the pre-upgrade tree snapshot is kept at ${snap}"
     fi
-    rm -f "$_INTACT_REFRESHED"; _INTACT_REFRESHED=""
+    rm -f "$_INTACT_REFRESHED"; _INTACT_REFRESHED=""; _INTACT_SIDECAR_SNAP=""
     return $rc
 }

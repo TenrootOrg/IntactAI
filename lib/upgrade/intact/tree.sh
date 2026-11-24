@@ -112,6 +112,9 @@ _intact_restore() {
           && log_info "  restored VERSION to $(cat "${snap}/VERSION" 2>/dev/null)" \
           || log_warn "  could not restore VERSION"
     fi
+    # After the backend tree: sidecars/ also holds modules/backend's compose and
+    # .env when the refresh touched them, and the pre-refresh copy is the truer one.
+    _intact_restore_sidecars "$snap" || true
 
     # intact.db is NOT restored here. This engine never writes to data/ on
     # the forward path, so the live DB is still the correct one after a
@@ -209,5 +212,33 @@ _intact_mirror_gitignore() {
     cmp -s "$s" "$d" 2>/dev/null && return 0
     cp -p "$s" "$d" 2>/dev/null || { log_warn "  could not update .gitignore"; return 0; }
     log_info "  updated .gitignore"
+    return 0
+}
+
+# Release content under data/ that velo_refresh.sh reads from ${SCRIPT_DIR}/data/.
+# The packager ships it at source/intact/data/, and no mirror above copied it, so
+# a box kept its first install's tool inventory and never saw a new artifact.
+# tools_inventory.yaml is the release's and is replaced. custom_artifacts/ only
+# gains files the box lacks: a box may hold its own edited copies with
+# box-specific values, and an upgrade must not overwrite them. Recorded for the
+# rollback like the sidecar refresh (_intact_keep_for_rollback).
+_intact_mirror_data() {
+    local s="$1/data" d="${SCRIPT_DIR}/data" f n=0
+    [[ -d "$s" ]] || return 0
+    if [[ -f "${s}/tools_inventory.yaml" ]] && ! cmp -s "${s}/tools_inventory.yaml" "${d}/tools_inventory.yaml"; then
+        mkdir -p "$d" || return 1
+        _intact_keep_for_rollback "${d}/tools_inventory.yaml" || return 1
+        cp -p "${s}/tools_inventory.yaml" "${d}/tools_inventory.yaml" || return 1
+        log_info "  updated data/tools_inventory.yaml"
+    fi
+    for f in "${s}"/custom_artifacts/*.yaml; do
+        [[ -f "$f" ]] || continue
+        [[ -e "${d}/custom_artifacts/$(basename "$f")" ]] && continue
+        mkdir -p "${d}/custom_artifacts" || return 1
+        _intact_keep_for_rollback "${d}/custom_artifacts/$(basename "$f")" || return 1
+        cp -p "$f" "${d}/custom_artifacts/" || return 1
+        n=$((n + 1))
+    done
+    (( n )) && log_info "  added ${n} custom artifact(s) to data/custom_artifacts"
     return 0
 }

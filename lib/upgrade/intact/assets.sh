@@ -15,6 +15,48 @@ _intact_module_is_enabled() {
     case "$v" in True|true|1|yes) return 0 ;; *) return 1 ;; esac
 }
 
+# THE SIDECAR REFRESH IS PART OF INTACT'S TRANSACTION. Compose files, their
+# mount assets (nginx.conf is copied in place) and module code files it
+# replaced or created used to stay new after an intact rollback, beside the old
+# backend. data/upgrade-backups/ cannot undo that: it holds replaced files from
+# every run ever, and nothing for files a run created. So each one is recorded
+# under the rollback snapshot before it is touched -- the original under
+# sidecars/files/<path>, or a marker under sidecars/new/<path> when there was
+# none. Files, not a variable: the refresh runs under --timeout, a subshell.
+# First touch wins, so a second write in the same run keeps the true original.
+_INTACT_SIDECAR_SNAP=""
+_intact_keep_for_rollback() {
+    local d="$1" root="${_INTACT_SIDECAR_SNAP:-}" rel
+    [[ -n "$root" ]] || return 0
+    rel="${d#"${SCRIPT_DIR}/"}"
+    [[ "$rel" == /* ]] && return 0
+    [[ -e "${root}/files/${rel}" || -e "${root}/new/${rel}" ]] && return 0
+    if [[ -f "$d" ]]; then
+        mkdir -p "$(dirname "${root}/files/${rel}")" && cp -p "$d" "${root}/files/${rel}"
+    else
+        mkdir -p "$(dirname "${root}/new/${rel}")" && : > "${root}/new/${rel}"
+    fi
+}
+
+# Called from _intact_restore. Restores in place (restore_file_from_backup keeps
+# the inode, which bind mounts and env_file sources need) and removes what the
+# run created.
+_intact_restore_sidecars() {
+    local root="$1/sidecars" rel rc=0
+    [[ -d "$root" ]] || return 0
+    while IFS= read -r rel; do
+        [[ -n "$rel" ]] || continue
+        restore_file_from_backup "${SCRIPT_DIR}/${rel}" "${root}/files/${rel}" || rc=1
+    done < <(cd "${root}/files" 2>/dev/null && find . -type f -printf '%P\n')
+    while IFS= read -r rel; do
+        [[ -n "$rel" ]] || continue
+        rm -f "${SCRIPT_DIR}/${rel}" || rc=1
+    done < <(cd "${root}/new" 2>/dev/null && find . -type f -printf '%P\n')
+    (( rc )) && log_warn "  could not restore every sidecar file from ${root}"
+    log_info "  restored the sidecar compose files, assets and .env files"
+    return $rc
+}
+
 _intact_refresh_sidecars() {
     local src="$1" m n=0
     # Derived from the package, not a hand-kept list. The eight names that used
@@ -30,6 +72,7 @@ _intact_refresh_sidecars() {
         [[ -f "$s" ]] || continue
         if ! cmp -s "$s" "$d"; then
             mkdir -p "$(dirname "$d")"
+            _intact_keep_for_rollback "$d" || return 1
             cp -p "$s" "$d" || return 1
             n=$((n + 1))
             log_info "    refreshed modules/${m}/docker-compose.yaml"
@@ -89,6 +132,7 @@ _intact_refresh_module_code() {
                 mkdir -p "$(dirname "$keep")" 2>/dev/null
                 cp -p "$d" "$keep" 2>/dev/null
             fi
+            _intact_keep_for_rollback "$d" || return 1
             cp -p "$f" "$d" || return 1
             n=$((n + 1))
             log_info "    refreshed modules/${name}/${base}"
@@ -240,6 +284,7 @@ _intact_deliver_mount_assets() {
                         mkdir -p "$(dirname "$dkeep")" 2>/dev/null
                         cp -p "$dd" "$dkeep" 2>/dev/null
                     fi
+                    _intact_keep_for_rollback "$dd" || return 1
                     cp -p "$ss" "$dd" || return 1
                     log_info "    delivered ${rel}/${sub}"
                 fi
@@ -287,6 +332,7 @@ _intact_deliver_mount_assets() {
                 mkdir -p "$(dirname "$keep")" 2>/dev/null
                 cp -p "$d" "$keep" 2>/dev/null
             fi
+            _intact_keep_for_rollback "$d" || return 1
             cp -p "$s" "$d" || return 1
             log_info "    delivered ${rel}"
         fi

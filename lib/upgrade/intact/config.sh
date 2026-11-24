@@ -75,15 +75,63 @@ PY
     declare -A _pin_key=( [intact]=backend )
 
     local n=0 key val cur
+    _INTACT_PINS_PREV=()
     while IFS=$'\t' read -r key val; do
         [[ -n "$key" ]] || continue
+        # A module's pin moves only when that module does. --only, --skip and an
+        # unticked dashboard row used to get their pins written anyway, so
+        # config.yaml claimed a version the box never ran. Keys no module owns
+        # (nginx, backend_tusd, sigma_rules, dfiq) are not in PLAN_ACTION and
+        # keep moving with intact; with no plan at all (a direct caller) every
+        # key merges, as before. Two still merge (reviewer, 2026-11-24): a
+        # no-op module, whose .env is already at the version, so a lagging
+        # config.yaml is healed rather than re-rendered back over .env later;
+        # and a key the box has no pin for at all, which the pin check after
+        # the merge would otherwise fail on.
+        local mod_key="$key"
         key="${_pin_key[$key]:-$key}"
         cur="$(read_config "['versions']['${key}']" 2>/dev/null || echo '')"
+        [[ "$cur" == "None" ]] && cur=""
+        if [[ -n "${PLAN_ACTION[$mod_key]+x}" && -n "$cur" ]]; then
+            case "${PLAN_ACTION[$mod_key]}" in upgrade|install|noop:*) ;; *) continue ;; esac
+        fi
         [[ "$cur" == "$val" ]] && continue
-        _pin_module_version "$key" "$val" && n=$((n + 1))
+        if _pin_module_version "$key" "$val"; then
+            n=$((n + 1))
+            _INTACT_PINS_PREV+=("${key}"$'\t'"${cur}")
+        fi
     done <<< "$pairs"
     log_info "  merged ${n} version pin(s) from the package into config.yaml"
     return 0
+}
+
+# Survive being sourced without core.sh (tests): on an undeclared name the
+# merge's ${PLAN_ACTION[$key]} is an arithmetic subscript and dies under set -u.
+declare -gA PLAN_ACTION 2>/dev/null || true
+
+# What _intact_merge_versions changed, as "key<TAB>previous value" ("" = the key
+# was absent). The merge runs as a plain u_do -- this shell, not a subshell --
+# so the undo registered before it can read this after a failure.
+_INTACT_PINS_PREV=()
+
+# Undo for the merge. Without it a rolled-back intact left versions.backend (and
+# every other merged pin) on the release it rolled back FROM, and the next
+# update_env_files re-derived BACKEND_VERSION from it: a box forced onto an
+# image the rollback had just walked away from. u_undo_pin cannot cover this --
+# its snapshot is keyed by module name, and the config key here is `backend`.
+_intact_unmerge_versions() {
+    local e key prev rc=0
+    for e in "${_INTACT_PINS_PREV[@]}"; do
+        IFS=$'\t' read -r key prev <<<"$e"
+        if [[ -n "$prev" ]]; then
+            _pin_module_version "$key" "$prev" || rc=1
+        else
+            _unpin_module_version "$key" || rc=1
+        fi
+    done
+    (( ${#_INTACT_PINS_PREV[@]} )) && log_info "  restored ${#_INTACT_PINS_PREV[@]} config.yaml version pin(s)"
+    _INTACT_PINS_PREV=()
+    return $rc
 }
 
 # ---------------------------------------------------------------------------
@@ -176,7 +224,7 @@ _intact_seed_missing_pins() {
             [[ "$cur" == "None" ]] && cur=""
             [[ -n "$cur" ]] && continue          # operator's value wins, always
 
-            val="$(_u_manifest_transitive "$m" "$man_key")"; how="package manifest"
+            val="$(_u_manifest_transitive "$m" "$man_key" "$env_var")"; how="package manifest"
             if [[ -z "$val" && -n "$tar_prefix" ]]; then
                 val="$(_intact_pkg_image_version "$tar_prefix")"; how="bundled image ${tar_prefix}*.tar"
             fi
@@ -624,7 +672,12 @@ _intact_add_missing_env_keys() {
         log_warn "  update_env_files is unavailable; skipping the .env key check"
         return 0
     fi
-    local before after
+    local before after d
+    # Recorded for the rollback (assets.sh, _intact_keep_for_rollback): added
+    # keys used to outlive a rolled-back intact.
+    for d in "${SCRIPT_DIR}"/modules/*/; do
+        _intact_keep_for_rollback "${d}.env" || return 1
+    done
     before="$(cat "${SCRIPT_DIR}"/modules/*/.env 2>/dev/null | wc -l)"
     UPDATE_ENV_ADD_ONLY=1 update_env_files >/dev/null 2>&1
     unset UPDATE_ENV_ADD_ONLY
