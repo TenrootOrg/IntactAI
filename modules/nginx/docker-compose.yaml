@@ -25,6 +25,9 @@ services:
     volumes:
       - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./config/nginx-safe.conf:/etc/nginx/nginx-safe.conf:ro
+      # Per-box snippets other modules write (Timesketch's SSO header carries a
+      # per-box secret in its name, so it cannot live in the tracked nginx.conf).
+      - ./config/local:/etc/nginx/local:ro
       - ./html:/usr/share/nginx/html:ro
       - ./ssl/nginx-cert.crt:/etc/nginx/cert.crt:ro
       - ./ssl/nginx-cert.key:/etc/nginx/cert.key:ro

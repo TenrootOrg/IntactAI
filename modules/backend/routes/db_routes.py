@@ -32,6 +32,11 @@ def _make_redacted_backup_copy(src_path: str) -> str:
         # (a restored box resets the Super-admin with reset-login.sh, then the rest).
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone():
             conn.execute("UPDATE users SET pw_hash = '[REDACTED]'")
+        # Generated tool passwords (services/tool_accounts/vault.py): encrypted
+        # with a key that is not in the file, blanked anyway. A restored box's
+        # reconciler sets fresh ones.
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tool_accounts'").fetchone():
+            conn.execute("UPDATE tool_accounts SET secret = NULL, state = 'pending'")
 
         rows = conn.execute(
             "SELECT key, value FROM frontend_config WHERE key IN ('cloud', 'agentic')"

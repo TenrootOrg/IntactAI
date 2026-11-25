@@ -75,6 +75,13 @@ try:
         print("[AUTH] The existing dashboard login is now the Super-admin", flush=True)
 except Exception as _mle:
     print(f"[AUTH] Users migration failed: {_mle}", flush=True)
+# Per-user accounts inside the bundled tools (services/tool_accounts): one
+# background thread keeps them matching the users table.
+try:
+    from services import tool_accounts as _tool_accounts
+    _tool_accounts.start()
+except Exception as _tae:
+    print(f"[AUTH] Tool accounts reconciler not started: {_tae}", flush=True)
 app.config.update(
     SESSION_COOKIE_NAME='intact_session',
     SESSION_COOKIE_HTTPONLY=True,

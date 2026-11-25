@@ -314,3 +314,7 @@ data/volweb-symbols/*
 
 # Local instructions for AI coding agents on this machine
 AGENTS.override.md
+
+# Per-box nginx snippets (modules/nginx/config/local/*.conf, written at install).
+modules/nginx/config/local/*
+!modules/nginx/config/local/.gitkeep

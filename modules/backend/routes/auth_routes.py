@@ -9,12 +9,30 @@ See services/auth_service.py for the policy and the three security-critical
 invariants it documents.
 """
 
+import re
+
 from flask import Blueprint, jsonify, request, session
 
 from services import auth_service as auth
 from services import users
 
 auth_bp = Blueprint('auth', __name__)
+
+
+# Timesketch keeps its own session after its header SSO signs a user in
+# (Phase 0, docs/PLAN_multi_user_accounts.md): left alone, the next person to
+# sign in to the dashboard in the same browser would land in Timesketch as the
+# previous one. Cookies are not isolated by port, so the dashboard expires them.
+# Kibana's `sid` too: with no injected credential (an account not made yet)
+# Kibana would fall back to a form login left in this browser by someone else.
+TOOL_SESSION_COOKIES = ("timesketch_session", "remember_token", "sid")
+
+
+def _expire_tool_sessions(resp):
+    for name in TOOL_SESSION_COOKIES:
+        if hasattr(resp, "delete_cookie"):
+            resp.delete_cookie(name, path="/")
+    return resp
 
 
 def _client_ip():
@@ -193,7 +211,7 @@ def auth_setup():
     row = users.superadmin()
     auth.start_session(session, row)
     auth.audit('setup', request, username_value=row['username'], role=row['role'])
-    return jsonify({'success': True, 'user': row['username']})
+    return _expire_tool_sessions(jsonify({'success': True, 'user': row['username']}))
 
 
 @auth_bp.route('/api/auth/login', methods=['POST'])
@@ -278,8 +296,8 @@ def auth_login():
         session['must_change'] = auth.MUST_CHANGE_TEMP if temp else True
     auth.audit('login_ok', request, username_value=row['username'], role=row['role'],
                must_change=must_change or None)
-    return jsonify({'success': True, 'user': row['username'], 'role': row['role'],
-                    'must_change': must_change})
+    return _expire_tool_sessions(jsonify({'success': True, 'user': row['username'],
+                                          'role': row['role'], 'must_change': must_change}))
 
 
 @auth_bp.route('/api/auth/logout', methods=['POST'])
@@ -287,7 +305,7 @@ def auth_logout():
     user = session.get('user')
     session.clear()
     auth.audit('logout', request, username_value=user)
-    return jsonify({'success': True})
+    return _expire_tool_sessions(jsonify({'success': True}))
 
 
 @auth_bp.route('/api/auth/change-password', methods=['POST'])
@@ -392,9 +410,26 @@ def auth_verify():
     tool = request.args.get('tool') or ''
     if auth.evaluate_session(session) != auth.SESSION_OK or auth.must_change(session):
         return '', 401
-    who = {'X-Intact-User': session.get('user') or '-'}
+    # The access log and VolWeb's /__intact_sso page print it. New names are
+    # [a-z0-9._-] (users.name_problem); a name migrated from the single-user
+    # login was never checked, so it is cleaned here, once, for every reader.
+    who = {'X-Intact-User': re.sub(r'[^a-z0-9._-]', '_', (session.get('user') or '-').lower()) or '-'}
     if not auth.tool_allowed(session, tool):
         return '', 403, who         # logged too: who tried a tool above their role
+    # nginx injects this user's own credential into the tool request, so a
+    # state change from another origin (a script on another port of the box,
+    # which is "same-site") would run as them. The tool's own pages are its own
+    # origin and pass (Sec-Fetch-Site: same-origin).
+    if auth.csrf_problem(request.headers.get('X-Original-Method') or 'GET', request.headers):
+        auth.audit('denied', request, username_value=session.get('user'), reason='csrf_rejected',
+                   endpoint=f'tool:{tool}')
+        return '', 403, who
+    # The user's own credential for this tool, for nginx to inject
+    # (services/tool_accounts). Absent: the tool shows its own login.
+    from services import tool_accounts
+    value = tool_accounts.auth_value(users.get(session.get('uid')), tool)
+    if value:
+        who['X-Intact-Auth'] = value
     return '', 200, who
 
 

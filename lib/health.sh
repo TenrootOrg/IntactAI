@@ -440,6 +440,13 @@ recreate_cert_consumers() {
         # Restart didn't bring it back — recreate (re-binds the cert mount).
         log_warn "  $c unhealthy after restart — recreating…"
         docker rm -f "$c" >/dev/null 2>&1 || true
+        # Timesketch's compose requires secrets/sso.env (header SSO); a box between
+        # the intact module's compose refresh and the timesketch module has none
+        # yet, and compose would refuse the whole `up`, leaving $c removed.
+        if [[ "$dir" == *modules/timesketch && ! -f "$dir/secrets/sso.env" ]] \
+            && declare -F render_timesketch_conf_templates >/dev/null; then
+            render_timesketch_conf_templates >/dev/null 2>&1 || true
+        fi
         ( cd "$dir" && docker compose up -d --pull never >/dev/null 2>&1 ) || true
         if _cert_consumer_healthy "$c"; then
             log_success "  $c healthy after recreate"

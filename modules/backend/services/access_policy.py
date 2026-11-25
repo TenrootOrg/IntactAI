@@ -49,6 +49,9 @@ TOOLS = {
     "iris": OPERATOR,
     # Portainer drives Docker: root on the host, so above every role below it.
     "portainer": SUPERADMIN,
+    # VolWeb's Django /admin/ can change any VolWeb password (the Super-admin's
+    # tool account included): its own gate, above everyone who uses VolWeb.
+    "volweb_admin": SUPERADMIN,
 }
 
 _Value = Union[str, Rule, dict]

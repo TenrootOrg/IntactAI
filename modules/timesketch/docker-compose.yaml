@@ -131,9 +131,14 @@ services:
     # service reads the store (the upgrade decides from that whether the old
     # .env copy can be blanked). Only this service: the others never need it.
     # required: false so compose still parses on a box not migrated yet.
+    # secrets/sso.env holds header SSO's secret; required on purpose (see
+    # lib/modules/timesketch.sh _ts_write_sso_env): a box without it gets the
+    # timesketch module re-applied by the upgrade. No comment lines inside the
+    # list: _u_compose_sources reads a comment as the end of it.
     env_file:
       - path: ./secrets/creds.env
         required: false
+      - ./secrets/sso.env
     volumes:
       - ./config:/etc/timesketch
       # IntactAI's contrib LLM providers (openrouter, litellm_proxy). apply.sh
@@ -175,6 +180,9 @@ services:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-2}
       - TIMESKETCH_UI_MODE=legacy
       - TIMESKETCH_SETTINGS=/etc/timesketch/timesketch_legacy.conf
+    # Header SSO secret, see timesketch-web.
+    env_file:
+      - ./secrets/sso.env
     volumes:
       - ./config:/etc/timesketch
       - ./llm_providers:/opt/intact/llm_providers:ro
@@ -210,6 +218,9 @@ services:
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-2}
       - TIMESKETCH_UI_MODE=v3
+    # Header SSO secret, see timesketch-web.
+    env_file:
+      - ./secrets/sso.env
     volumes:
       - ./config:/etc/timesketch
       - ./llm_providers:/opt/intact/llm_providers:ro

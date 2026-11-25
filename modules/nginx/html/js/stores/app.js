@@ -15,7 +15,9 @@ window.services = {
     kibana: { port: 5602, protocol: 'https' },
     iris: { port: 8444, protocol: 'https' },
     portainer: { port: 9444, protocol: 'https' },
-    volweb: { port: 8002, protocol: 'https' }
+    // /__intact_sso (nginx) primes VolWeb's SPA so it skips its own login: nginx
+    // signs every VolWeb request in as the dashboard user.
+    volweb: { port: 8002, protocol: 'https', entry: '__intact_sso' }
 };
 
 window.defaultConfig = {
@@ -56,7 +58,7 @@ function openService(serviceId) {
     }
     const url = service.path
         ? `${service.protocol}://${window.baseHost}${service.path}`
-        : `${service.protocol}://${window.baseHost}:${service.port}/`;
+        : `${service.protocol}://${window.baseHost}:${service.port}/${service.entry || ''}`;
     window.open(url, '_blank');
 }
 

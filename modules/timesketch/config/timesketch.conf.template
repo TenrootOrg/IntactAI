@@ -38,7 +38,10 @@ LABELS_TO_PREVENT_DELETION = ['protected', 'preserved']
 # Event import timeout
 TIMEOUT_FOR_EVENT_IMPORT = 600
 
-# SSO disabled
+# Header SSO from Intact's nginx. Off here on purpose: the render step
+# (lib/modules/timesketch.sh _ts_render_sso) turns it on with the per-box
+# header name, HTTP_X_INTACT_USER_<secret>. The secret is in the NAME because
+# every container on intact_network reaches gunicorn directly.
 SSO_ENABLED = False
 SSO_USER_ENV_VARIABLE = 'REMOTE_USER'
 SSO_GROUP_ENV_VARIABLE = None

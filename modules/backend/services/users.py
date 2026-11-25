@@ -50,6 +50,9 @@ SNAPSHOT_SECONDS = 30
 _lock = threading.Lock()
 _snapshot: Optional[Dict[int, dict]] = None
 _snapshot_at = 0.0
+# Called after every write that changes who may do what (services.tool_accounts
+# registers its reconciler here). Not after a login stamp: that changes nothing.
+on_change: list = []
 
 
 def ensure_table() -> None:
@@ -88,12 +91,22 @@ def invalidate() -> None:
         _snapshot = None
 
 
-def _write(sql: str, args: tuple) -> int:
+def _notify() -> None:
+    for hook in list(on_change):
+        try:
+            hook()
+        except Exception as exc:            # noqa: BLE001 -- a hook must not fail a write
+            print(f"[USERS] change hook failed: {exc}", flush=True)
+
+
+def _write(sql: str, args: tuple, notify: bool = True) -> int:
     ensure_table()
     conn = get_connection()
     cur = conn.execute(sql, args)
     conn.commit()
     invalidate()
+    if notify:
+        _notify()
     return cur.lastrowid
 
 
@@ -144,6 +157,10 @@ def name_problem(username: str) -> Optional[str]:
         return f"it must be {NAME_MIN} to {NAME_MAX} characters"
     if not set(name) <= _NAME_CHARS or name[0] in ".-":
         return "use only a-z, 0-9, dot, dash and underscore, starting with a letter or digit"
+    if name.endswith("-intact"):
+        # services/tool_accounts maps a name a tool already uses (e.g. the
+        # install's "tenroot") to "<name>-intact" there: two people, one account.
+        return "it may not end in -intact"
     return None
 
 
@@ -194,7 +211,7 @@ def rename(uid: int, username: str) -> None:
 
 
 def touch_login(uid: int) -> None:
-    _write("UPDATE users SET last_login = ? WHERE id = ?", (time.time(), uid))
+    _write("UPDATE users SET last_login = ? WHERE id = ?", (time.time(), uid), notify=False)
 
 
 def transfer_superadmin(from_uid: int, to_uid: int) -> None:
@@ -207,6 +224,7 @@ def transfer_superadmin(from_uid: int, to_uid: int) -> None:
         conn.execute("UPDATE users SET role = ?, generation = generation + 1 WHERE id = ?",
                      (SUPERADMIN, to_uid))
     invalidate()
+    _notify()
 
 
 # --- the caller, inside a route ---------------------------------------------

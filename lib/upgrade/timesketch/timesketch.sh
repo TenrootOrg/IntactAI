@@ -64,7 +64,9 @@ upgrade_module_timesketch() {
     # same Docker-fabricates-an-empty-directory failure the intact module's
     # own mount-asset delivery guards against for other files. Idempotent
     # (skips a conf that already exists), so unconditional here costs
-    # nothing on every normal upgrade.
+    # nothing on every normal upgrade. It also creates the header-SSO secret
+    # and turns SSO on in both confs (_ts_render_sso); the compose down/up
+    # below is what makes the web containers read them.
     u_do "render timesketch conf templates" -- render_timesketch_conf_templates
 
     # Same idempotent-so-unconditional reasoning as the conf-template render
@@ -201,6 +203,13 @@ upgrade_module_timesketch() {
         # -established install has no reason to pay on every upgrade.
         if [[ "$U_FROM" == "not installed" ]] && declare -F create_timesketch_admin_user >/dev/null; then
             create_timesketch_admin_user || log_warn "  could not create the TimeSketch admin user"
+        fi
+        # The intact module runs first and restarts the main nginx before the
+        # render above may have written its timesketch-sso.conf include; a
+        # graceful reload makes it send the SSO header now, not at next boot.
+        if "${DOCKER_BIN:-docker}" exec intact_nginx nginx -t >/dev/null 2>&1; then
+            "${DOCKER_BIN:-docker}" exec intact_nginx nginx -s reload >/dev/null 2>&1 \
+                || log_warn "  could not reload intact_nginx (Timesketch header login starts at its next restart)"
         fi
         discard_backup "$bak"
         # The DB dump is deliberately KEPT. It is the only copy of the

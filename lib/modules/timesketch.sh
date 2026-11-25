@@ -149,7 +149,7 @@ create_timesketch_admin_user() {
 # Render timesketch.conf / timesketch_legacy.conf from their .template
 # files, if they are not already present. Idempotent: an existing conf is
 # left untouched (post-install edits, manual or via the Settings UI,
-# survive), so this is a no-op on every deploy past the first.
+# survive) except for its two header-SSO lines (_ts_render_sso below).
 #
 # Reads the postgres password FROM secrets/postgres.env rather than
 # generating one itself -- that file's generation is the caller's job
@@ -198,6 +198,82 @@ render_timesketch_conf_templates() {
         fi
         log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY + DB password randomized)"
     done
+    # Outside the skip above: an existing box's confs need it too.
+    _ts_render_sso
+    return 0
+}
+
+# Header SSO (docs/PLAN_multi_user_accounts.md section 5): Intact's nginx names
+# the signed-in user in `X-Intact-User-<secret>`, and Timesketch logs that user
+# in on /login/. The secret is in the header NAME because every container on
+# intact_network reaches gunicorn directly: with a fixed name any of them could
+# log in as anyone. 32 hex chars, so no underscore (gunicorn 26 and nginx drop
+# those) and an exact environ key, HTTP_X_INTACT_USER_<SECRET>. Generated once
+# per box, kept in secrets/creds.env; idempotent, so safe on every render.
+# Without a stored secret SSO stays off -- the safe direction.
+# secrets/sso.env, a REQUIRED env_file of the three Timesketch web containers.
+# It is how an upgrade finds a box that predates header SSO: the planner
+# re-applies a same-version module whose compose names a generated file the box
+# lacks (plan.sh _plan_missing_generated_assets), so the timesketch module runs
+# and this render switches SSO on. A marker only -- Timesketch reads the secret
+# from its conf, and the containers' environment need not carry it. Always
+# written (off on failure), or compose would refuse to start Timesketch at all.
+_ts_write_sso_env() {
+    local f="${SCRIPT_DIR}/modules/timesketch/secrets/sso.env"
+    local line="INTACT_SSO_HEADER=${1}"
+    [[ "$(cat "$f" 2>/dev/null)" == "$line" ]] && return 0
+    ( umask 077; printf '%s\n' "$line" > "$f" ) \
+        || log_warn "  Could not write ${f} — Timesketch will not start until it exists"
+}
+
+_ts_render_sso() {
+    local dir="${SCRIPT_DIR}/modules/timesketch" s
+    s="$(secret_get timesketch SSO_HEADER_SECRET 2>/dev/null)" || s=""
+    if [[ ! "$s" =~ ^[0-9a-f]{32}$ ]]; then
+        s="$(openssl rand -hex 16)"
+        if ! secret_set timesketch SSO_HEADER_SECRET "$s"; then
+            log_warn "  Could not store the Timesketch SSO header secret — header login stays off"
+            _ts_write_sso_env off
+            return 0
+        fi
+        log_info "  Generated the Timesketch SSO header secret"
+    fi
+    _ts_write_sso_env on
+    local env_line="SSO_USER_ENV_VARIABLE = 'HTTP_X_INTACT_USER_${s^^}'"
+    local conf old new line have_on have_var
+    for conf in "${dir}/config/timesketch.conf" "${dir}/config/timesketch_legacy.conf"; do
+        [[ -f "$conf" ]] || continue
+        old="$(<"$conf")" || continue
+        # Pure bash: the secret is in env_line, and a sed/grep argument shows in
+        # every `ps` on the host (lib/credentials_apply.sh avoids it the same way).
+        new="" have_on=0 have_var=0
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" =~ ^SSO_ENABLED[[:space:]]*= ]]; then
+                line="SSO_ENABLED = True"; have_on=1
+            elif [[ "$line" =~ ^SSO_USER_ENV_VARIABLE[[:space:]]*= ]]; then
+                line="$env_line"; have_var=1
+            fi
+            new+="${line}"$'\n'
+        done <<< "$old"
+        new="${new%$'\n'}"
+        # A hand-edited conf without one of the lines: Python takes the last
+        # assignment, so appending is enough.
+        (( have_on )) || new+=$'\nSSO_ENABLED = True'
+        (( have_var )) || new+=$'\n'"$env_line"
+        # Written in place, never sed -i: state_registry hard-links these files
+        # into data/state, and a rename would split the pair.
+        [[ "$new" == "$old" ]] || printf '%s\n' "$new" > "$conf"
+    done
+    # Read by Intact's main nginx (include in its Timesketch location).
+    # Root-only: the header name IS the secret, and Timesketch's own nginx is
+    # published on 127.0.0.1:5000. nginx reads includes as root.
+    local inc="${SCRIPT_DIR}/modules/nginx/config/local/timesketch-sso.conf"
+    line="proxy_set_header X-Intact-User-${s} \$intact_auth;"
+    if [[ "$(cat "$inc" 2>/dev/null)" != "$line" ]]; then
+        { mkdir -p "${inc%/*}" && ( umask 077; printf '%s\n' "$line" > "$inc" ); } \
+            || log_warn "  Could not write ${inc} — Timesketch header login will not work"
+    fi
+    chmod 600 "$inc" 2>/dev/null
     return 0
 }
 

@@ -569,6 +569,18 @@ class Roles(Base):
         SESSION.clear()
         self.assertEqual(call(routes.auth_verify)[1], 401)
 
+    def test_tool_writes_from_another_origin_are_refused(self):
+        self.make("op", users.OPERATOR)
+        self.login("op", STRONG)
+        REQUEST.args = {"tool": "volweb"}
+        for hdrs, status in (({"X-Original-Method": "POST", "Sec-Fetch-Site": "same-site"}, 403),
+                             ({"X-Original-Method": "POST", "Sec-Fetch-Site": "same-origin"}, 200),
+                             ({"X-Original-Method": "GET", "Sec-Fetch-Site": "same-site"}, 200)):
+            REQUEST.headers = hdrs
+            REQUEST.remote_addr = NGINX
+            self.assertEqual(routes.auth_verify()[1], status, hdrs)
+        REQUEST.args = {}
+
     def test_csrf_from_another_origin_is_refused(self):
         refused = [{"Sec-Fetch-Site": "same-site"}, {"Sec-Fetch-Site": "cross-site"},
                    {"Origin": "https://box:5602", "Host": "box"}, {"Origin": "null"}]
@@ -674,6 +686,10 @@ class Roles(Base):
         self.assertEqual({h for _, h in rows}, {"[REDACTED]"})
         users._write("UPDATE users SET pw_hash = '[REDACTED]' WHERE username = 'boss'", ())
         self.assertIsNone(auth.authenticate("boss", GOOD), "a restored, redacted hash fails closed")
+
+    def test_names_that_could_collide_in_a_tool_are_refused(self):
+        self.assertEqual(users.name_problem("tenroot-intact"), "it may not end in -intact")
+        self.assertIsNone(users.name_problem("intact-anna"))
 
     def test_absolute_session_limit(self):
         SESSION["iat"] -= auth.SESSION_ABSOLUTE_LIMIT_SECONDS + 1

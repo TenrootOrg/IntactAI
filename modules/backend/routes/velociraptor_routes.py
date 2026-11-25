@@ -745,6 +745,9 @@ def list_orgs():
                 _query(f"SELECT user_grant(user='{me}', roles=['administrator', 'api'], "
                        f"orgs={json.dumps(missing)}) AS g FROM scope()", timeout=30)
                 print(f"[ORGS] granted {me} access to org(s) {missing}", flush=True)
+                # The people's Velociraptor accounts need roles in the new org too.
+                from services import tool_accounts
+                tool_accounts.request_reconcile()
                 # A new org: give it root's tools too (a minute or two of copies,
                 # so not in this request).
                 from services.velociraptor_clients import sync_tools_to_orgs
