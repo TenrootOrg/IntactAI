@@ -191,6 +191,14 @@ import os
 u.set_password(os.environ['_VW_PW'])
 u.save()
 print('CREATED' if created else 'UPDATED', 'admin', u.username)
+# VolWeb's own entrypoint (initadmin) seeds admin/password (superuser) and
+# user/password into an empty database, and both logged in on every box. Lock
+# them, never delete: cases may still be linked to them.
+for d in U.objects.filter(username__in=['admin', 'user']).exclude(username='${tenroot_user}'):
+    d.is_active = False
+    d.set_unusable_password()
+    d.save()
+    print('LOCKED', 'default', d.username)
 EOF
     # PIPESTATUS[0], NOT $?. `$?` after a pipeline is TAIL's status, and tail
     # succeeds whatever docker exec did -- so this function returned 0
