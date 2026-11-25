@@ -558,7 +558,7 @@ class Roles(Base):
         self.make("ro", users.READONLY)
         self.make("op", users.OPERATOR)
         expect = {"boss": {"portainer": 200, "kibana": 200, "nosuch": 403},
-                  "op": {"portainer": 403, "kibana": 200, "velociraptor": 200, "iris": 403},
+                  "op": {"portainer": 403, "kibana": 200, "velociraptor": 200, "iris": 200},
                   "ro": {"kibana": 403, "velociraptor": 403, "uploads": 403}}
         for name, tools in expect.items():
             self.login(name, GOOD if name == "boss" else STRONG)

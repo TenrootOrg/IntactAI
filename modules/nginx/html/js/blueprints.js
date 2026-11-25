@@ -319,7 +319,7 @@ function renderBlueprintCard(bp) {
                     ${settingsHtml}
                 </div>
             </div>
-            <div data-needs="settings" class="flex gap-2 ml-4">
+            <div data-needs="write" class="flex gap-2 ml-4">
                 ${!isDefault ? `<button onclick="editBlueprint('${escapeJsAttr(bp.id)}', '${actualType}')" class="text-xs bg-blue-700 hover:bg-blue-600 px-3 py-1.5 rounded">Edit</button>` : ''}
                 <button onclick="editBlueprint('${escapeJsAttr(bp.id)}', '${actualType}', true)" ${isDefault ? `title="${DEFAULT_BLUEPRINT_READONLY_HINT}"` : ''} class="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded">Duplicate</button>
                 ${!isDefault ? `<button onclick="deleteBlueprintById('${escapeJsAttr(bp.id)}', '${actualType}')" class="text-xs bg-red-700 hover:bg-red-600 px-3 py-1.5 rounded">Delete</button>` : ''}

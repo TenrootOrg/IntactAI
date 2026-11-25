@@ -1,6 +1,6 @@
 # Multi-user accounts, roles and one login for every tool
 
-Status: Phase 1 being built (2026-11-25). Replaces the 2026-11-10 plan, which
+Status: Phase 1 live on dev (2026-11-25). Replaces the 2026-11-10 plan, which
 kept per-tool logins out of scope, let an Admin set other users' passwords
 (OWASP ASVS 5.0 6.4.6 forbids it) and kept 7-day sessions.
 
@@ -9,7 +9,10 @@ in `~/intact-work/reports/Intact multi user roles and SSO.md`.
 
 ## 1. Roles
 
-Four roles on one ladder. One rule covers all user management: a user may
+Four roles on one ladder. An Operator is an Admin without the Settings page
+and without user management (decided 2026-11-25), so Operators also write
+blueprints and run any artifact; every hunt is audited under their name. One
+rule covers all user management: a user may
 create, edit, disable or reset only users strictly **below** their own rank,
 and may grant only roles below their own. Nobody edits their own role.
 
@@ -18,12 +21,14 @@ and may grant only roles below their own. Nobody edits their own role.
 | View cases, workflows, reports | yes | yes | yes | yes |
 | Create/change cases, run blueprints, collect, upload, chat | yes | yes | yes | no |
 | Download raw evidence | yes | yes | yes | no (reports yes) |
-| Create or edit blueprints and artifacts, run raw VQL | yes | yes | no | no |
-| Intact settings (LLM keys, cloud credentials, config) | yes | yes | no | no |
+| Create or edit blueprints, collector configs, custom rules | yes | yes | yes | no |
+| Delete a case | yes | yes | yes | no |
+| Case export, import, relevance scoring (progress is in Settings) | yes | yes | no | no |
+| The Settings page (LLM keys, cloud credentials, tools, network) | yes | yes | no | no |
 | Host-level: upgrade, restore, data move, purge, Docker, Portainer | yes | no | no | no |
 | Manage users | everyone below | Operators, Read-only | no | no |
 | Bundled tools (Velociraptor, Timesketch, Kibana, VolWeb) | yes | yes | yes | no |
-| IRIS (until it is removed) | yes | yes | no | no |
+| IRIS (until it is removed) | yes | yes | yes | no |
 | Portainer | yes | no | no | no |
 
 Host-level power is Super-admin only because it is root-equivalent: the

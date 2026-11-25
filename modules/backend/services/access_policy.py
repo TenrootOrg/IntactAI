@@ -8,8 +8,9 @@ auth_service.gate_decision() enforces it on every request; the server is the
 only place a role is enforced (the UI only hides what a role cannot use).
 
     readonly    view existing cases, workflows, reports
-    operator    investigate: create and change cases, runs, uploads, chat
-    admin       Intact settings, blueprints/artifacts, users below admin
+    operator    everything an Admin does except the Settings page and users:
+                cases, runs, uploads, chat, blueprints, collector configs
+    admin       the Settings page (LLM, cloud, tools, network...), users below
     superadmin  host-level power: upgrade, restore, data move, Docker, Portainer
 
 A route that is not in POLICY needs SUPERADMIN (fail closed), and
@@ -45,7 +46,7 @@ TOOLS = {
     "kibana": OPERATOR,
     "volweb": OPERATOR,
     "uploads": OPERATOR,
-    "iris": ADMIN,
+    "iris": OPERATOR,
     # Portainer drives Docker: root on the host, so above every role below it.
     "portainer": SUPERADMIN,
 }
@@ -136,9 +137,10 @@ POLICY = {
     "case.chat": OPERATOR,
     "case.chat_clear": OPERATOR,
     "case.disposition": OPERATOR,
-    # Destroying a whole case (every run tagged to it) or its activity log
-    # erases the record of an investigation: above the people doing it.
-    "case.delete_case": ADMIN,
+    # Destroying a case or its activity log: an Operator may (decided
+    # 2026-11-25: Operator = Admin minus the Settings page and users). The
+    # audit log still records who did it.
+    "case.delete_case": OPERATOR,
     # Their runs are System runs (Settings -> Actions shows progress and the
     # download; stopping one is there too), so they go with that audience.
     # shortcut: Operators cannot export a case yet; show those runs on the
@@ -146,7 +148,7 @@ POLICY = {
     "case.export_case": ADMIN,
     "case.import_case": ADMIN,
     "case.start_relevance": ADMIN,
-    "case.case_log_clear": ADMIN,
+    "case.case_log_clear": OPERATOR,
 
     # --- workflows: routes/dashboard_routes.py --------------------------------
     "dashboard.get_all_automations": READONLY,
@@ -181,11 +183,11 @@ POLICY = {
     "velociraptor_offline.generate_offline_collector": OPERATOR,
     "velociraptor_offline.download_offline_collector": OPERATOR,
     "velociraptor_offline.import_offline_results": OPERATOR,
-    # A collector config is a stored artifact set, like a blueprint: operators
-    # run them, admins write them.
-    "velociraptor_offline.create_offline_config": ADMIN,
-    "velociraptor_offline.update_offline_config": ADMIN,
-    "velociraptor_offline.delete_offline_config": ADMIN,
+    # A collector config is a stored artifact set, like a blueprint: Operators
+    # write and run them.
+    "velociraptor_offline.create_offline_config": OPERATOR,
+    "velociraptor_offline.update_offline_config": OPERATOR,
+    "velociraptor_offline.delete_offline_config": OPERATOR,
     # Settings -> Velociraptor clients: pushes a new binary to every endpoint.
     "velociraptor.velociraptor_client_versions": ADMIN,
     "velociraptor.velociraptor_pilot_candidates": ADMIN,
@@ -198,8 +200,9 @@ POLICY = {
     "reinit_msi": ADMIN,
 
     # --- blueprints: routes/blueprint_routes.py, memory_routes.py ------------
-    # Operators pick one to run; writing one is authoring VQL, which is
-    # admin power in Velociraptor.
+    # Operators write and run them. Writing one is authoring VQL, which is
+    # admin power in Velociraptor -- decided: Operators are trusted with it,
+    # and every hunt they start is audited under their name.
     "blueprints.list_forensics_blueprints": OPERATOR,
     "blueprints.list_velociraptor_blueprints": OPERATOR,
     "blueprints.get_velociraptor_blueprint_by_id": OPERATOR,
@@ -211,21 +214,21 @@ POLICY = {
     "blueprints.get_memory_blueprint_by_id": OPERATOR,
     "memory.list_memory_blueprints": OPERATOR,
     "memory.list_available_memory_plugins": OPERATOR,
-    "blueprints.create_velociraptor_blueprint": ADMIN,
-    "blueprints.update_velociraptor_blueprint_route": ADMIN,
-    "blueprints.delete_velociraptor_blueprint_route": ADMIN,
-    "blueprints.create_agentic_blueprint": ADMIN,
-    "blueprints.update_agentic_blueprint_route": ADMIN,
-    "blueprints.delete_agentic_blueprint_route": ADMIN,
-    "blueprints.create_timesketch_blueprint": ADMIN,
-    "blueprints.update_timesketch_blueprint_route": ADMIN,
-    "blueprints.delete_timesketch_blueprint_route": ADMIN,
-    "blueprints.create_memory_blueprint": ADMIN,
-    "blueprints.update_memory_blueprint_route": ADMIN,
-    "blueprints.delete_memory_blueprint_route": ADMIN,
-    "memory.create_memory_blueprint": ADMIN,
-    "memory.update_memory_blueprint": ADMIN,
-    "memory.delete_memory_blueprint": ADMIN,
+    "blueprints.create_velociraptor_blueprint": OPERATOR,
+    "blueprints.update_velociraptor_blueprint_route": OPERATOR,
+    "blueprints.delete_velociraptor_blueprint_route": OPERATOR,
+    "blueprints.create_agentic_blueprint": OPERATOR,
+    "blueprints.update_agentic_blueprint_route": OPERATOR,
+    "blueprints.delete_agentic_blueprint_route": OPERATOR,
+    "blueprints.create_timesketch_blueprint": OPERATOR,
+    "blueprints.update_timesketch_blueprint_route": OPERATOR,
+    "blueprints.delete_timesketch_blueprint_route": OPERATOR,
+    "blueprints.create_memory_blueprint": OPERATOR,
+    "blueprints.update_memory_blueprint_route": OPERATOR,
+    "blueprints.delete_memory_blueprint_route": OPERATOR,
+    "memory.create_memory_blueprint": OPERATOR,
+    "memory.update_memory_blueprint": OPERATOR,
+    "memory.delete_memory_blueprint": OPERATOR,
 
     # --- memory: routes/memory_routes.py --------------------------------------
     "memory.get_memory_status": READONLY,
@@ -284,9 +287,9 @@ POLICY = {
     "azure.upload_logs": OPERATOR,
     "azure.analyze_offline": OPERATOR,
     "azure.delete_run": OPERATOR,
-    # Detection content for every later scan, like a custom artifact.
-    "azure.upload_custom_azure_rule": ADMIN,
-    "azure.delete_custom_azure_rule": ADMIN,
+    # Detection content for every later scan, managed on the Azure page.
+    "azure.upload_custom_azure_rule": OPERATOR,
+    "azure.delete_custom_azure_rule": OPERATOR,
 
     # --- scheduler and uploads: routes/scheduler_routes.py, upload_routes.py -
     "scheduler.get_jobs": READONLY,
