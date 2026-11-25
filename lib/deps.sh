@@ -366,7 +366,12 @@ _apt_install_from_bundle() {
     fi
 
     echo "deb [trusted=yes] file:${resolved} ./" > "$list_file"
-    if ! apt-get update -qq -o Dir::Etc::sourcelist="sources.list.d/intact-system-bundle.list" \
+    # apt fetches as the unprivileged _apt user, which cannot enter a 0750
+    # home where the bundle is usually extracted (~/intact/data/tmp/...): every
+    # .deb failed "File not found ... (13: Permission denied)" on a customer's
+    # air-gapped install (2026-11-25). The files are local and already trusted.
+    local sandbox=(-o APT::Sandbox::User=root)
+    if ! apt-get update -qq "${sandbox[@]}" -o Dir::Etc::sourcelist="sources.list.d/intact-system-bundle.list" \
             -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" 2>> "$LOG_FILE"; then
         log_error "  Could not read the bundled dependency repo (${resolved})"
         rm -f "$list_file"
@@ -375,7 +380,7 @@ _apt_install_from_bundle() {
     # The same source restriction as the update: without it, install resolves
     # against every list on the box, and a mirror's newer version wins over
     # the bundle's (and is then not there to download).
-    if ! apt-get install -y -qq -o Dir::Etc::sourcelist="sources.list.d/intact-system-bundle.list" \
+    if ! apt-get install -y -qq "${sandbox[@]}" -o Dir::Etc::sourcelist="sources.list.d/intact-system-bundle.list" \
             -o Dir::Etc::sourceparts="-" "$@" 2>> "$LOG_FILE"; then
         log_error "  Failed installing from the bundled dependency repo — see $LOG_FILE"
         rm -f "$list_file"

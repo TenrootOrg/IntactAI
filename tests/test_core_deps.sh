@@ -286,4 +286,18 @@ test_online_skips_curl_bootstrap_when_already_present() {
         "must not run apt-get at all when curl is already on PATH"
 }
 
+# Both apt calls must fetch as root: the bundle sits under a 0750 home that
+# the _apt sandbox user cannot enter ("13: Permission denied", 2026-11-25).
+test_bundle_apt_calls_fetch_as_root() {
+    _reset
+    local b; b="$(mktemp -d)"
+    stub wait_for_dpkg_lock 0
+    stub apt-get 0
+    _INTACT_BUNDLE_APT_LIST="$(mktemp)" _apt_install_from_bundle "$b" python3-pip
+    local calls; calls="$(grep -- '^apt-get ' "$STUB_LOG")"
+    assert_eq "$(grep -c 'APT::Sandbox::User=root' <<<"$calls")" "2" \
+        "update and install must both pass APT::Sandbox::User=root"
+    rm -rf "$b"
+}
+
 run_all_tests
