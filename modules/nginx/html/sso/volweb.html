@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Opening VolWeb</title>
+<!-- Served by nginx's VolWeb server at /__intact_sso, after the Intact gate
+     (nginx.conf). VolWeb's SPA shows its own login unless localStorage holds a
+     token; nginx replaces the Bearer on every request with the signed-in Intact
+     user's own, so placeholders are enough. __INTACT_USER__ is filled in by
+     sub_filter from the verify's X-Intact-User ([a-z0-9._-], cleaned there). -->
+<script>
+localStorage.setItem("access_token", "intact");
+localStorage.setItem("refresh_token", "intact");
+localStorage.setItem("username", "__INTACT_USER__");
+location.replace("/");
+</script>

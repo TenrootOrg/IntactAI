@@ -1,6 +1,8 @@
 # Multi-user accounts, roles and one login for every tool
 
-Status: Phase 1 live on dev (2026-11-25). Replaces the 2026-11-10 plan, which
+Status: Phases 0-3 live on dev (2026-11-25): dashboard users and roles, and
+per-user accounts with automatic sign-in in Kibana, Velociraptor, Timesketch
+and VolWeb. Next: MFA, then Phase 4. Replaces the 2026-11-10 plan, which
 kept per-tool logins out of scope, let an Admin set other users' passwords
 (OWASP ASVS 5.0 6.4.6 forbids it) and kept 7-day sessions.
 
@@ -139,9 +141,9 @@ reading the code installed on the box.
 0. Done 2026-11-25 (section 6): every tool has a confirmed way in.
 1. **Dashboard users, roles, gate, CSRF/CORS, cookie strip, audit chain,
    screens.** Tools keep their shared logins.
-2. Timesketch header login, Kibana per-user accounts, the password vault and
-   reconciler, backend service accounts separate from human ones.
-3. Velociraptor and VolWeb per-user accounts; MFA (TOTP, then WebAuthn) for
-   Admins and up, with recovery codes.
+2. Done: Timesketch header login, Kibana per-user accounts, the password
+   vault and reconciler (services/tool_accounts).
+3. Done: Velociraptor and VolWeb per-user accounts. Next: MFA (TOTP, then
+   WebAuthn) for Admins and up, with recovery codes.
 4. Restricted cases, per-user API tokens, off-box audit, Portainer replacement,
    IRIS removal.
