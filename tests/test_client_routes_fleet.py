@@ -180,7 +180,7 @@ class Summary(FleetRouteCase):
 
     def test_picker_refresh_is_live_and_refreshes_the_cache(self):
         cr.get_clients_summary()
-        self.get(include_offline="true")                 # the pickers' ↻: never from cache
+        self.get(include_offline="true", fresh=1)        # the pickers' ↻: never from cache
         self.assertEqual(2, self.stub.queries)
         cr.get_clients_summary()
         self.assertEqual(2, self.stub.queries)
@@ -193,6 +193,68 @@ class Summary(FleetRouteCase):
         for t in ts:
             t.join()
         self.assertEqual(1, self.stub.queries)
+
+
+def big_row(i):
+    """20,000 clients: 3 OS groups, every 5th online, every 50th labelled dc."""
+    r = row(f"C.{i:05d}", f"host-{(i * 7919) % 20000:05d}", seen_ago_s=30 if i % 5 == 0 else 10**5)
+    r["os"] = ("windows", "linux", "darwin")[i % 3]
+    r["labels"] = ["dc"] if i % 50 == 0 else []
+    r["last_ip"] = f"10.0.{i // 256 % 256}.{i % 256}"
+    return r
+
+
+class PagedPicker(FleetRouteCase):
+    """2026-11-25: the pickers load one page at a time; this side filters,
+    counts and sorts, so no fleet size is capped and none travels whole."""
+    rows = [big_row(i) for i in range(20000)]
+
+    def test_a_page_and_honest_counts(self):
+        body = self.get(include_offline="true", offset=0, limit=200)
+        self.assertEqual(200, len(body["items"]))
+        self.assertEqual((20000, 20000, True), (body["total"], body["filtered"], body["truncated"]))
+        self.assertEqual({"Windows": 6667, "Linux": 6667, "macOS": 6666}, body["facets"]["os"])
+        self.assertEqual({"dc": 400}, body["facets"]["labels"])
+        self.assertEqual(4000, body["facets"]["online"])
+
+    def test_pages_walk_the_whole_fleet_once_in_picker_order(self):
+        seen, offset = [], 0
+        while True:
+            body = self.get(include_offline="true", offset=offset, limit=5000)
+            seen += body["items"]
+            offset += len(body["items"])
+            if not body["truncated"]:
+                break
+        self.assertEqual(20000, len({c["client_id"] for c in seen}), "every client, none twice")
+        groups = [cr._os_key(c["os"]) for c in seen]
+        self.assertEqual(["Windows"] * 6667 + ["Linux"] * 6667 + ["macOS"] * 6666, groups)
+        win = seen[:6667]
+        now = time.time()
+        online = [cr._online(c, now) for c in win]
+        self.assertEqual(sorted(online, reverse=True), online, "online first within a group")
+
+    def test_filters_combine_and_select_all_matching_gets_every_id(self):
+        body = self.get(include_offline="true", os="Windows", label="dc", online=1, limit=200)
+        # i % 3 == 0, i % 50 == 0, i % 5 == 0  ->  i % 150 == 0
+        self.assertEqual(134, body["filtered"])
+        ids = self.get(include_offline="true", os="Windows", label="dc", online=1, ids=1)
+        self.assertEqual(134, len(ids["ids"]))
+        self.assertTrue(all(cid and host.startswith("host-") for cid, host in ids["ids"]))
+        self.assertEqual({c["client_id"] for c in body["items"]}, {cid for cid, _ in ids["ids"]})
+
+    def test_search_reaches_clients_never_loaded_by_id_and_ip(self):
+        self.assertEqual(["C.19999"], [c["client_id"] for c in
+                                       self.get(include_offline="true", search="c.19999", limit=200)["items"]])
+        self.assertEqual(1, self.get(include_offline="true", search="10.0.78.31", limit=200)["filtered"])
+
+    def test_without_paging_the_whole_list_as_before(self):
+        self.assertEqual(20000, len(self.get(include_offline="true")["items"]))
+
+    def test_one_query_serves_every_page(self):
+        for off in (0, 200, 400):
+            self.get(include_offline="true", offset=off, limit=200)
+        self.get(include_offline="true", ids=1)
+        self.assertEqual(1, self.stub.queries, "pages and select-all come from the fleet cache")
 
 
 if __name__ == "__main__":

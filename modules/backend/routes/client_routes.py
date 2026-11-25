@@ -73,64 +73,133 @@ def _cached_fleet():
         return _fetch_fleet()
 
 
+def _os_key(os_name):
+    """The picker's OS group (js/utils/client-manager.js _osKey, same rule)."""
+    s = str(os_name or '').strip().lower()
+    if not s:
+        return 'Unknown'
+    if s == 'windows' or s.startswith('win'):
+        return 'Windows'
+    if s == 'linux':
+        return 'Linux'
+    if s in ('darwin', 'macos', 'osx', 'mac'):
+        return 'macOS'
+    return s[:1].upper() + s[1:]
+
+
+_OS_RANK = {'Windows': 0, 'Linux': 1, 'macOS': 2}
+
+
+def _os_rank(key):
+    """Windows, Linux, macOS, the rest A-Z, Unknown last: the picker's groups."""
+    return (3, '') if key == 'Unknown' else (_OS_RANK.get(key, 2.5), key)
+
+
+def _csv_arg(name):
+    return {v for v in (request.args.get(name, '') or '').split(',') if v}
+
+
 @client_bp.route('/api/clients')
 def get_clients():
-    """Get Velociraptor clients with optional search and limit.
+    """Velociraptor clients: the whole fleet, or one page of it.
 
     Query params:
-        search: filter by hostname (case-insensitive contains)
-        limit: max number of clients to return (default: all)
-        include_offline: 'true' to include clients not seen in the last
-            10 minutes. Default is online-only (current behavior). The
-            existing-flow analyzer flips this on for hunt-derived flows
-            where data is already collected and offline endpoints are
-            valid analysis targets.
+        include_offline: 'true' for every enrolled client; else only those seen
+            in the last 10 minutes.
+        fresh: '1' to query Velociraptor live instead of the fleet cache (at most
+            SUMMARY_MAX_AGE old; offline-inclusive lists only).
+        search: matched against hostname, OS (+ version), labels, client id, IP.
+        os, label: comma-separated picker groups / labels (any label matches).
+        online: '1' for clients seen in the last ONLINE_SECONDS only.
+        offset, limit: one page of the filtered list. No limit: all of it.
+        ids: '1' for every matching [client_id, hostname] instead of rows --
+            what "Select all (matching)" needs on a fleet the browser never loads.
 
-    Returns {items (online first, then hostname), total (agents), filtered
-    (matching `search`), truncated (true when `limit` cut items short of
-    filtered), imported (offline-collection imports left out)}.
+    The pickers ask for one page at a time and let this side filter, count and
+    sort, so a 20,000-client org never travels to the browser (2026-11-25: a
+    1,000-row cap hid the rest of a larger fleet). Sorted as the picker groups
+    it: OS group, online first, hostname.
+
+    Returns {items, total (agents), filtered (matching), offset, truncated (more
+    after this page), facets {os, labels, online} over the whole fleet,
+    groups {os group: matches}, imported (offline-collection imports left out)}.
     """
     try:
         include_offline = request.args.get('include_offline', '').lower() in ('true', '1', 'yes')
-        clients = _fetch_fleet() if include_offline else get_clients_from_snapshot(include_offline=False)
+        # The pickers load from the cache (at most SUMMARY_MAX_AGE old), so one
+        # Velociraptor query serves every picker and tab; fresh=1 (the pickers'
+        # ↻) always queries live.
+        fresh = request.args.get('fresh', '').lower() in ('true', '1', 'yes')
+        if include_offline:
+            clients = _fetch_fleet() if fresh else _cached_fleet()
+        else:
+            clients = get_clients_from_snapshot(include_offline=False)
         # Offline-collection imports are not agents: nothing can be sent to them,
         # so they are neither pickable nor counted (see _is_import).
         imported = sum(1 for c in clients if c.get('imported'))
         clients = [c for c in clients if not c.get('imported')]
         total = len(clients)
+        now = time.time()
 
-        # Smart filter: match the term against hostname, OS (+ version), or any
-        # Velociraptor label — so "windows", "linux", or a label like "servers"
-        # narrows the list, not just the hostname.
+        facets_os, facets_labels, facets_online = {}, {}, 0
+        for c in clients:
+            k = _os_key(c.get('os'))
+            facets_os[k] = facets_os.get(k, 0) + 1
+            for l in (c.get('labels') or []):
+                facets_labels[str(l)] = facets_labels.get(str(l), 0) + 1
+            facets_online += 1 if _online(c, now) else 0
+
+        # Every filter here, so a page, a count and "select all matching" agree.
         search = request.args.get('search', '').strip().lower()
-        if search:
-            def _match(c):
+        want_os, want_labels = _csv_arg('os'), _csv_arg('label')
+        online_only = request.args.get('online', '').lower() in ('true', '1', 'yes')
+
+        def _match(c):
+            if want_os and _os_key(c.get('os')) not in want_os:
+                return False
+            if want_labels and not any(str(l) in want_labels for l in (c.get('labels') or [])):
+                return False
+            if online_only and not _online(c, now):
+                return False
+            if search:
                 hay = ' '.join([
-                    str(c.get('hostname') or ''),
-                    str(c.get('os') or ''),
+                    str(c.get('hostname') or ''), str(c.get('os') or ''),
                     str(c.get('os_version') or ''),
                     ' '.join(str(l) for l in (c.get('labels') or [])),
+                    str(c.get('client_id') or ''), str(c.get('last_ip') or ''),
                 ]).lower()
                 return search in hay
-            clients = [c for c in clients if _match(c)]
+            return True
 
+        clients = [c for c in clients if _match(c)]
         filtered = len(clients)
+        groups = {}
+        for c in clients:
+            k = _os_key(c.get('os'))
+            groups[k] = groups.get(k, 0) + 1
 
-        # Sorted BEFORE the limit (online first, then hostname): the pickers ask
-        # for limit=1000, and cut from the unsorted fleet an arbitrary subset --
-        # online hosts included -- silently disappeared above 1,000 clients.
-        now = time.time()
-        clients.sort(key=lambda c: (not _online(c, now), str(c.get('hostname') or '').lower(),
+        # Sorted BEFORE any page is cut: limit=1000 cut from the unsorted fleet
+        # once dropped an arbitrary subset, online hosts included.
+        clients.sort(key=lambda c: (_os_rank(_os_key(c.get('os'))), not _online(c, now),
+                                    str(c.get('hostname') or '').lower(),
                                     str(c.get('client_id') or '')))
+
+        if request.args.get('ids', '').lower() in ('true', '1', 'yes'):
+            return jsonify({"ids": [[c.get('client_id'), c.get('hostname') or ''] for c in clients],
+                            "total": total, "filtered": filtered})
+
+        offset = max(0, request.args.get('offset', 0, type=int) or 0)
         limit = request.args.get('limit', type=int)
-        if limit and limit > 0:
-            clients = clients[:limit]
+        page = clients[offset:offset + limit] if limit and limit > 0 else clients[offset:]
 
         return jsonify({
-            "items": clients,
+            "items": page,
             "total": total,
             "filtered": filtered,
-            "truncated": len(clients) < filtered,
+            "offset": offset,
+            "truncated": offset + len(page) < filtered,
+            "facets": {"os": facets_os, "labels": facets_labels, "online": facets_online},
+            "groups": groups,
             "imported": imported,
         })
 
@@ -138,6 +207,7 @@ def get_clients():
         print(f"API Error: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e), "items": [], "total": 0}), 500
+
 
 @client_bp.route('/api/clients/summary')
 def get_clients_summary():

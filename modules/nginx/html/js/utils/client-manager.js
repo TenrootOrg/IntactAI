@@ -5,13 +5,13 @@
  * Faceted filter: narrow the fleet by OS + Velociraptor label + online state +
  * name, then include/exclude the *filtered* set ("Select all matching (N)" /
  * "Deselect matching"). Selection is a Set model (source of truth) so a client
- * stays selected even while a facet hides its row or it is past the rendered
- * page.
+ * stays selected even while a facet hides its row or it was never loaded.
  *
- * Built for 100-1,000 endpoints: nothing is pre-ticked, the name filter is
- * debounced, and only the first RENDER_PAGE matching rows are in the DOM
- * ("Show more" adds the next page). Every keystroke used to rebuild ~700 KB
- * of HTML for the whole fleet.
+ * Paged from the server, with no fleet cap (2026-11-25: a 1,000-row cap hid
+ * every client past the thousandth). The browser holds one page of RENDER_PAGE
+ * matches at a time ("Show more" fetches the next); /api/clients filters,
+ * counts and sorts from its fleet cache, so a 20,000-client org never travels
+ * whole. "Select all (matching)" asks the server for just the matching ids.
  *
  * Usage (multi-select):
  *   const m = new ClientManager('schedule-client-list', 'schedule-client-cb');
@@ -32,18 +32,13 @@ class ClientManager {
         // Nothing is pre-ticked. Pre-ticking every online client meant one click
         // on a 1,000-endpoint fleet started a collection on all of them.
         this.onlineThreshold = options.onlineThreshold || 600;
-        // Load the WHOLE fleet (incl. offline) once and filter client-side, so
-        // the OS/label facets + online toggle can operate over everything
-        // without re-hitting the API on every keystroke. Fleets are tens–low
-        // hundreds of hosts; 1000 is generous headroom (truncation is flagged).
-        this.limit = options.limit || 1000;
         this.onChange = typeof options.onChange === 'function' ? options.onChange : null;
         // () => case id: list the fleet of THAT case's Velociraptor org instead of
         // the active case's (the schedule form files its runs in a chosen case).
         this.caseId = typeof options.caseId === 'function' ? options.caseId : null;
 
         // Selection is a Set of client_ids — the source of truth. Survives
-        // facet filtering (a hidden row's id stays selected).
+        // facet filtering and paging (a hidden or never-loaded id stays selected).
         this.selected = new Set();
 
         // Facet state.
@@ -57,10 +52,15 @@ class ClientManager {
         this.activeLabels = new Set();
         this.search = '';
 
-        this._clients = [];        // full fleet from the last load()
-        this._shownCount = 0;      // rows passing facets on the last render()
-        this._renderLimit = ClientManager.RENDER_PAGE;  // rows in the DOM; "Show more" grows it
-        this._filterTimer = null;  // pending debounced name-filter render
+        this._items = [];          // the loaded pages of matches, in server order
+        this._known = new Map();   // client_id -> row (or {client_id, hostname}) ever seen
+        this._filtered = 0;        // matches on the server, all pages
+        this._groups = {};         // OS group -> matches
+        this._facets = { os: {}, labels: {}, online: 0 };  // over the whole fleet
+        this._hiddenSelected = 0;  // selected ids the current filter does not match
+        this._seq = 0;             // newest list request; older answers are dropped
+        this._loadingMore = false;
+        this._filterTimer = null;  // pending debounced name filter
         this.totalClients = 0;
         this._listenerAttached = false;
         this._facetBar = null;
@@ -81,9 +81,7 @@ class ClientManager {
         });
     }
 
-    /**
-     * Load the full fleet from the API and render.
-     */
+    /** The first page of matches, from the server's fleet cache. */
     async load(search = null) {
         if (search !== null) this.search = search;
         const container = document.getElementById(this.containerId);
@@ -103,40 +101,120 @@ class ClientManager {
             container.addEventListener('click', (e) => {
                 if (!e.target.closest || !e.target.closest('[data-act="show-more"]')) return;
                 e.preventDefault();
-                this._renderLimit += ClientManager.RENDER_PAGE;
-                this.render();
+                this._showMore();
             });
             this._listenerAttached = true;
         }
 
         try {
-            const data = await this._fetchFleet();
-            if (!data) {
+            const data = await this._reload();
+            if (data === null) {
                 container.innerHTML = '<p class="text-sm text-red-400">Failed to load clients</p>';
-                return;
             }
-            this._setFleet(data);
-            this.render();
         } catch (error) {
             container.innerHTML = `<p class="text-sm text-red-400">Error: ${escapeHtml(error.message)}</p>`;
         }
     }
 
-    /** GET the fleet. Returns the JSON body, or null on a non-OK response. */
-    async _fetchFleet() {
-        let url = `/api/clients?limit=${this.limit}&include_offline=true`;
-        if (this.search) url += `&search=${encodeURIComponent(this.search)}`;
+    // ------------------------------------------------------------------
+    // Server
+    // ------------------------------------------------------------------
+
+    /** The current filters as /api/clients parameters. */
+    _filterParams() {
+        const p = {};
+        if (this.search) p.search = this.search;
+        if (this.activeOs.size) p.os = [...this.activeOs].join(',');
+        if (this.activeLabels.size) p.label = [...this.activeLabels].join(',');
+        if (this.onlineOnly) p.online = '1';
+        return p;
+    }
+
+    /** GET /api/clients. Returns the JSON body, or null on a non-OK answer.
+     *  Without `fresh` it is the server's fleet cache (at most 30 s old: one
+     *  Velociraptor query for every picker and tab); the ↻ button asks live. */
+    async _get(params) {
+        const q = new URLSearchParams({ include_offline: 'true', ...params });
         const cid = this.caseId && this.caseId();
         // An explicit X-Case-Id wins over the active case (js/active-case.js).
-        const response = await fetch(url, cid ? { headers: { 'X-Case-Id': cid } } : undefined);
+        const response = await fetch(`/api/clients?${q}`, cid ? { headers: { 'X-Case-Id': cid } } : undefined);
         if (!response.ok) return null;
         return response.json();
     }
 
-    _setFleet(data) {
-        this._clients = data.items || [];
-        this.totalClients = data.total || this._clients.length;
+    /** [[client_id, hostname], ...] for every client matching `params`. */
+    async _ids(params) {
+        const data = await this._get({ ...params, ids: '1' });
+        if (!data || !Array.isArray(data.ids)) throw new Error('the server did not return the client ids');
+        for (const [id, hostname] of data.ids) {
+            if (!this._known.has(id)) this._known.set(id, { client_id: id, hostname });
+        }
+        return data.ids.map(([id]) => id);
+    }
+
+    /** Start the list over at the first page of the current filter. Returns the
+     *  page's data, null on a failed request, or undefined when a newer request
+     *  overtook it (its answer is the one that renders). */
+    async _reload(fresh = false) {
+        const seq = ++this._seq;
+        const params = { ...this._filterParams(), offset: '0', limit: String(ClientManager.RENDER_PAGE) };
+        if (fresh) params.fresh = '1';
+        const data = await this._get(params);
+        if (seq !== this._seq) return undefined;
+        if (!data) return null;
+        this._items = [];
+        this._applyPage(data);
+        this.render();
+        this._countHidden(seq);
+        return data;
+    }
+
+    async _showMore() {
+        if (this._loadingMore || this._items.length >= this._filtered) return;
+        this._loadingMore = true;
+        const seq = this._seq;
+        try {
+            const data = await this._get({ ...this._filterParams(), offset: String(this._items.length),
+                                           limit: String(ClientManager.RENDER_PAGE) });
+            if (data && seq === this._seq) {
+                this._applyPage(data);
+                this.render();
+            }
+        } finally {
+            this._loadingMore = false;
+        }
+    }
+
+    _applyPage(data) {
+        const items = data.items || [];
+        this._items = this._items.concat(items);
+        for (const c of items) this._known.set(c.client_id, c);
+        this.totalClients = data.total || 0;
+        // An older backend answers without `filtered`: the whole list came back.
+        this._filtered = typeof data.filtered === 'number' ? data.filtered : this._items.length;
+        this._groups = data.groups || null;
+        if (data.facets) this._facets = data.facets;
         this._loadedAt = new Date();
+    }
+
+    /** How many selected clients the current filter hides -- the header's
+     *  Select All takes the whole fleet, offline ones included, while the list
+     *  shows "Online only" by default; that used to be visible nowhere. */
+    async _countHidden(seq) {
+        const filtering = Object.keys(this._filterParams()).length > 0;
+        if (!this.selected.size || !filtering) {
+            this._hiddenSelected = 0;
+            this._updateCounts();
+            return;
+        }
+        try {
+            const matching = new Set(await this._ids(this._filterParams()));
+            if (seq !== this._seq) return;
+            let hidden = 0;
+            for (const id of this.selected) if (!matching.has(id)) hidden++;
+            this._hiddenSelected = hidden;
+            this._updateCounts();
+        } catch (_) { /* the counts just leave the hidden part out */ }
     }
 
     /**
@@ -160,73 +238,56 @@ class ClientManager {
         if (button) { button.disabled = true; button.textContent = 'Refreshing…'; }
         this._renderFacetBar();
         try {
-            const data = await this._fetchFleet();
-            if (!data) throw new Error('the server did not return the client list');
-            this._setFleet(data);
-            const ids = new Set(this._clients.map(c => c.client_id));
-            const before = this.selected.size;
-            this.selected = new Set([...this.selected].filter(id => ids.has(id)));
-            this._refreshing = false;
-            this.render();
-            if (this.selected.size !== before) this._fireChange();
+            const data = await this._reload(true);
+            if (data === null) throw new Error('the server did not return the client list');
+            if (this.selected.size) {
+                // The fleet the live query just cached: every id, not one page.
+                const ids = new Set(await this._ids({}));
+                const before = this.selected.size;
+                this.selected = new Set([...this.selected].filter(id => ids.has(id)));
+                if (this.selected.size !== before) { this.render(); this._fireChange(); }
+            }
         } catch (error) {
-            this._refreshing = false;
             this._refreshError = 'Refresh failed — showing the previous list';
-            this._renderFacetBar();
         } finally {
+            this._refreshing = false;
+            this._renderFacetBar();
             if (button) { button.disabled = false; button.textContent = label; }
         }
     }
 
-    /**
-     * Render the facet bar + the client list (grouped by OS), showing only the
-     * clients that pass the active facets -- the first _renderLimit of them.
-     */
+    // ------------------------------------------------------------------
+    // Render
+    // ------------------------------------------------------------------
+
+    /** The facet bar + the loaded pages of matches, grouped by OS. */
     render() {
         const container = document.getElementById(this.containerId);
         if (!container) return;
 
         const now = Date.now() / 1000;
-
-        // Rows passing the active facets, sorted online-first then by hostname.
-        const shown = this._clients
-            .filter(c => this._passesFacets(c, now))
-            .sort((a, b) => {
-                const ao = this._isOnline(a, now), bo = this._isOnline(b, now);
-                if (ao !== bo) return ao ? -1 : 1;
-                return (a.hostname || '').localeCompare(b.hostname || '');
-            });
-        this._shownCount = shown.length;
-
         this._renderFacetBar();
 
-        if (this._clients.length === 0) {
+        if (this.totalClients === 0) {
             container.innerHTML = this.emptyNote
                 ? `<p class="text-sm" style="color:#f87171">${escapeHtml(this.emptyNote)}</p>`
                 : '<p class="text-sm text-gray-500">No clients found</p>';
             return;
         }
-        if (shown.length === 0) {
+        if (this._filtered === 0 || this._items.length === 0) {
             container.innerHTML = '<p class="text-sm text-gray-500">No clients match the current filter</p>';
             return;
         }
 
-        // Group shown clients by normalized OS: Windows → Linux → macOS →
-        // others (alpha) → Unknown last.
+        // The server sends the matches already grouped (Windows → Linux → macOS →
+        // others A-Z → Unknown), online first, then by hostname.
         const groups = {};
-        for (const c of shown) {
+        const order = [];
+        for (const c of this._items) {
             const key = this._osKey(c.os);
-            (groups[key] = groups[key] || []).push(c);
+            if (!groups[key]) { groups[key] = []; order.push(key); }
+            groups[key].push(c);
         }
-        const preferred = ['Windows', 'Linux', 'macOS'];
-        const others = Object.keys(groups)
-            .filter(k => !preferred.includes(k) && k !== 'Unknown')
-            .sort();
-        const orderedKeys = [
-            ...preferred.filter(k => groups[k] && groups[k].length),
-            ...others,
-            ...(groups['Unknown'] && groups['Unknown'].length ? ['Unknown'] : []),
-        ];
 
         const inputType = this.singleSelect ? 'radio' : 'checkbox';
         const nameAttr = this.singleSelect ? ` name="${this._radioName}"` : '';
@@ -266,33 +327,22 @@ class ClientManager {
             `;
         };
 
-        // Only the first _renderLimit rows (in display order) go into the DOM.
-        // Group headings still count every match, and the selection is the Set,
-        // so an unrendered client that is selected stays selected.
-        let budget = this._renderLimit;
-        let html = orderedKeys.map(key => {
-            const groupClients = groups[key];
-            if (budget <= 0) return '';
-            const rows = groupClients.slice(0, budget);
-            budget -= rows.length;
+        // Group headings count every match of the group on the server, loaded or not.
+        let html = order.map(key => {
+            const n = (this._groups && typeof this._groups[key] === 'number') ? this._groups[key] : groups[key].length;
             const heading = `
                 <div class="flex items-center gap-2 px-2 pt-2 pb-1 mt-1 border-t border-gray-800 first:border-t-0 first:mt-0 first:pt-0">
                     <span class="text-xs uppercase tracking-wide text-gray-400 font-semibold">${escapeHtml(key)}</span>
-                    <span class="text-xs text-gray-600">(${groupClients.length})</span>
+                    <span class="text-xs text-gray-600">(${n})</span>
                 </div>
             `;
-            return heading + rows.map(renderClient).join('');
+            return heading + groups[key].map(renderClient).join('');
         }).join('');
 
-        const notListed = shown.length - Math.min(shown.length, this._renderLimit);
+        const notListed = this._filtered - this._items.length;
         if (notListed > 0) {
             const next = Math.min(notListed, ClientManager.RENDER_PAGE);
             html += `<button type="button" data-act="show-more" class="w-full text-xs text-blue-400 hover:text-blue-300 py-2">Show ${next} more (${notListed} not listed — narrow the filter, or use Select all matching)</button>`;
-        }
-
-        if (this.totalClients > this._clients.length) {
-            const more = this.totalClients - this._clients.length;
-            html += `<p class="text-xs text-gray-500 text-center py-2">${more} more not shown — fleet exceeds display cap</p>`;
         }
 
         container.innerHTML = html;
@@ -331,20 +381,15 @@ class ClientManager {
         const bar = this._ensureFacetBar();
         if (!bar) return;
 
-        // Available facet values derived from the full fleet.
-        const osSet = new Set();
-        const labelSet = new Set();
-        for (const c of this._clients) {
-            osSet.add(this._osKey(c.os));
-            (Array.isArray(c.labels) ? c.labels : []).forEach(l => { if (l) labelSet.add(String(l)); });
-        }
+        // Facet values over the whole fleet, as the server counted them.
+        const osSet = new Set(Object.keys(this._facets.os || {}));
         const preferred = ['Windows', 'Linux', 'macOS'];
         const osOrder = [
             ...preferred.filter(k => osSet.has(k)),
             ...[...osSet].filter(k => !preferred.includes(k) && k !== 'Unknown').sort(),
             ...(osSet.has('Unknown') ? ['Unknown'] : []),
         ];
-        const labelOrder = [...labelSet].sort();
+        const labelOrder = Object.keys(this._facets.labels || {}).sort();
 
         const chip = (facet, val, label, active) => {
             const cls = active
@@ -369,7 +414,7 @@ class ClientManager {
         // is in each module's header, beside Select All / None.
         const counts = this._countsText();
         const selectBtns = this.singleSelect ? '' : `
-                <button type="button" data-act="select-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Select all matching (${this._shownCount})</button>
+                <button type="button" data-act="select-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Select all matching (${this._filtered})</button>
                 <button type="button" data-act="deselect-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Deselect matching</button>`;
         const actions = `<div class="flex gap-2 items-center">${selectBtns}${this._refreshError ? `<span class="text-[11px] text-red-400">${escapeHtml(this._refreshError)}</span>` : ''}</div>`;
         const actionRow = `<div class="flex items-center justify-between">${actions}<span class="text-[11px] text-gray-500">${counts}</span></div>`;
@@ -385,9 +430,12 @@ class ClientManager {
     }
 
     _countsText() {
-        const base = this.singleSelect
-            ? `${this._shownCount} matching`
-            : `${this._shownCount} matching · ${this.selected.size} selected`;
+        const of = `${this._filtered} matching of ${this.totalClients}`;
+        let base = of;
+        if (!this.singleSelect) {
+            base += ` · ${this.selected.size} selected`;
+            if (this._hiddenSelected > 0) base += ` (${this._hiddenSelected} not in this view)`;
+        }
         if (!this._loadedAt) return base;
         const p = n => String(n).padStart(2, '0');
         const t = this._loadedAt;
@@ -416,29 +464,7 @@ class ClientManager {
     /** A new filter starts back at the first page of matches. */
     _refilter() {
         clearTimeout(this._filterTimer);
-        this._renderLimit = ClientManager.RENDER_PAGE;
-        this.render();
-    }
-
-    /**
-     * Does a client pass every active facet? Groups AND together; within the
-     * label group, a client matches if it carries ANY selected label.
-     */
-    _passesFacets(client, now) {
-        if (this.activeOs.size && !this.activeOs.has(this._osKey(client.os))) return false;
-        if (this.activeLabels.size) {
-            const labels = Array.isArray(client.labels) ? client.labels.map(String) : [];
-            if (!labels.some(l => this.activeLabels.has(l))) return false;
-        }
-        if (this.onlineOnly && !this._isOnline(client, now)) return false;
-        if (this.search) {
-            const hay = [
-                client.hostname || '', client.os || '', client.os_version || '',
-                (Array.isArray(client.labels) ? client.labels.join(' ') : ''),
-            ].join(' ').toLowerCase();
-            if (!hay.includes(this.search.toLowerCase())) return false;
-        }
-        return true;
+        return this._reload().catch(() => {});
     }
 
     // ------------------------------------------------------------------
@@ -459,10 +485,10 @@ class ClientManager {
     }
 
     /**
-     * Client-side name filter (kept as `filter` for the existing oninput
-     * handlers). The term is stored at once, so a submit or "Select all
-     * matching" acts on what was typed; only the re-render is debounced, so
-     * typing a hostname is one render, not one per keystroke.
+     * Name filter (kept as `filter` for the existing oninput handlers). The
+     * term is stored at once, so a submit or "Select all matching" acts on what
+     * was typed; only the request is debounced, so typing a hostname is one
+     * request, not one per keystroke.
      */
     filter(searchTerm) {
         this.search = searchTerm || '';
@@ -470,27 +496,32 @@ class ClientManager {
         this._filterTimer = setTimeout(() => this._refilter(), ClientManager.FILTER_DEBOUNCE_MS);
     }
 
-    /** Select/deselect the ENTIRE fleet (ignores facets). */
-    selectAll(checked) {
+    /** Select the ENTIRE fleet (ignores the filters; the counts then say how
+     *  many of them this view hides), or clear the selection. */
+    async selectAll(checked) {
         if (checked) {
-            this._clients.forEach(c => this.selected.add(c.client_id));
+            if (this.singleSelect) return;
+            const ids = await this._ids({});
+            ids.forEach(id => this.selected.add(id));
         } else {
             this.selected.clear();
         }
         this.render();
         this._fireChange();
+        this._countHidden(this._seq);
     }
 
-    /** Include/exclude the currently-FILTERED (shown) set. */
-    selectFiltered(checked) {
+    /** Include/exclude every client matching the current filters, loaded or not. */
+    async selectFiltered(checked) {
         if (this.singleSelect) return;
-        const now = Date.now() / 1000;
-        for (const c of this._clients) {
-            if (!this._passesFacets(c, now)) continue;
-            if (checked) this.selected.add(c.client_id); else this.selected.delete(c.client_id);
+        clearTimeout(this._filterTimer);   // a typed term counts even mid-debounce
+        const ids = await this._ids(this._filterParams());
+        for (const id of ids) {
+            if (checked) this.selected.add(id); else this.selected.delete(id);
         }
         this.render();
         this._fireChange();
+        this._countHidden(this._seq);
     }
 
     /** Replace the selection (e.g. restoring a saved scheduled job). */
@@ -498,14 +529,15 @@ class ClientManager {
         this.selected = new Set(ids || []);
         this.render();
         this._fireChange();
+        this._countHidden(this._seq);
     }
 
     getSelected() {
         return Array.from(this.selected);
     }
 
-    /** Ask before acting on many clients: "Select all matching" puts 1,000 one
-     *  click away. */
+    /** Ask before acting on many clients: "Select all matching" puts the whole
+     *  fleet one click away. */
     confirmMany(action) {
         if (this.selected.size <= ClientManager.CONFIRM_ABOVE) return true;
         return window.confirm(`${action} on ${this.describeSelected()}?\n\nCancel to change the selection.`);
@@ -521,9 +553,10 @@ class ClientManager {
         return `${head} (first ${max}: ${names.join(', ')}, …)`;
     }
 
-    /** Look up a loaded client object by id (e.g. to read its hostname). */
+    /** A client seen on any page, or through a select-all (then only
+     *  {client_id, hostname}) -- e.g. to read its hostname. */
     getClient(id) {
-        return this._clients.find(c => c.client_id === id) || null;
+        return this._known.get(id) || null;
     }
 
     _fireChange() {
@@ -536,6 +569,7 @@ class ClientManager {
     // Helpers
     // ------------------------------------------------------------------
 
+    /** The OS group (routes/client_routes.py _os_key, same rule). */
     _osKey(os) {
         if (!os) return 'Unknown';
         const s = String(os).trim().toLowerCase();
@@ -554,7 +588,7 @@ class ClientManager {
 }
 
 ClientManager.CONFIRM_ABOVE = 10;   // more selected than this asks first
-ClientManager.RENDER_PAGE = 200;    // rows put in the DOM per page of matches
+ClientManager.RENDER_PAGE = 200;    // matches fetched and drawn per page
 ClientManager.FILTER_DEBOUNCE_MS = 200;
 
 window.ClientManager = ClientManager;

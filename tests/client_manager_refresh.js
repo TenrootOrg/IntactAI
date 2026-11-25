@@ -25,31 +25,36 @@ const nowUs = () => Date.now() * 1000;
 const client = (id, host, os = 'windows', online = true) =>
   ({ client_id: id, hostname: host, os, labels: [], last_seen_at: online ? nowUs() : 1 });
 
+const { fakeClientsApi } = require('./fake_clients_api.js');
+
+// The picker pages from the server now: a fake paged /api/clients whose fleet
+// a test replaces (t.serve), with a failure or a delay injected per request.
 async function build(opts = {}) {
   const page = makePage();
-  const responses = [];
+  const api = fakeClientsApi([]);
+  const faults = [];
   let calls = 0;
-  const fetch = async () => {
+  const fetch = async (url) => {
     calls++;
-    const r = responses.shift();
-    if (r instanceof Error) throw r;
-    if (r === 'bad') return { ok: false, json: async () => ({}) };
-    if (r && r.delay) await new Promise(res => setTimeout(res, r.delay));
-    return { ok: true, json: async () => r.body };
+    const f = faults.shift();
+    if (f instanceof Error) throw f;
+    if (f === 'bad') return { ok: false, json: async () => ({}) };
+    if (f && f.delay) await new Promise(res => setTimeout(res, f.delay));
+    return api.fetch(url);
   };
   const escapeHtml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const window = {};
   new Function('document', 'fetch', 'escapeHtml', 'window', src)(page.doc, fetch, escapeHtml, window);
   const m = new window.ClientManager('list', 'cb', opts);
-  return { m, page, responses, calls: () => calls };
+  const serve = (...cs) => { api.fleet = cs; };
+  return { m, page, faults, serve, calls: () => calls };
 }
-const fleet = (...cs) => ({ body: { items: cs, total: cs.length } });
 
 (async () => {
   // 1. the button lives in the module header, so the component's own bar has none
   for (const single of [false, true]) {
     const t = await build({ singleSelect: single });
-    t.responses.push(fleet(client('C.1', 'A')));
+    t.serve(client('C.1', 'A'));
     await t.m.load();
     assert(!t.page.parent.bar.innerHTML.includes('data-act="refresh"'), `a second refresh button (singleSelect=${single})`);
   }
@@ -57,13 +62,13 @@ const fleet = (...cs) => ({ body: { items: cs, total: cs.length } });
   // 2. refresh keeps facets, search and selection; drops vanished clients; shows new ones
   {
     const t = await build();
-    t.responses.push(fleet(client('C.1', 'A'), client('C.2', 'B'), client('C.3', 'LNX', 'linux')));
+    t.serve(client('C.1', 'A'), client('C.2', 'B'), client('C.3', 'LNX', 'linux'));
     await t.m.load();
     t.m.setOsFacet('Windows');
     t.m.filter('a');
     t.m.setSelected(['C.1', 'C.2']);
     let changed = null; t.m.onChange = ids => { changed = ids; };
-    t.responses.push(fleet(client('C.1', 'A'), client('C.4', 'ALPHA-NEW')));      // C.2 removed, C.4 added
+    t.serve(client('C.1', 'A'), client('C.4', 'ALPHA-NEW'));      // C.2 removed, C.4 added
     await t.m.refresh();
     assert.deepStrictEqual(t.m.getSelected(), ['C.1'], 'a removed client must be dropped from the selection');
     assert.deepStrictEqual(changed, ['C.1'], 'the page is told the selection changed');
@@ -76,13 +81,12 @@ const fleet = (...cs) => ({ body: { items: cs, total: cs.length } });
   // 3. a failed refresh keeps the list and says so, and a later refresh recovers
   for (const failure of ['bad', new Error('network down')]) {
     const t = await build();
-    t.responses.push(fleet(client('C.1', 'KEEPME')));
+    t.serve(client('C.1', 'KEEPME'));
     await t.m.load();
-    t.responses.push(failure);
+    t.faults.push(failure);
     await t.m.refresh();
     assert(t.page.container.innerHTML.includes('KEEPME'), 'a failed refresh must not wipe the list');
     assert(t.page.parent.bar.innerHTML.includes('Refresh failed'), 'a failed refresh says so');
-    t.responses.push(fleet(client('C.1', 'KEEPME')));
     await t.m.refresh();
     assert(!t.page.parent.bar.innerHTML.includes('Refresh failed'), 'a successful refresh clears the error');
   }
@@ -90,9 +94,10 @@ const fleet = (...cs) => ({ body: { items: cs, total: cs.length } });
   // 4. the header button shows progress, ignores a double click, and is restored
   {
     const t = await build();
-    t.responses.push(fleet(client('C.1', 'A')));
+    t.serve(client('C.1', 'A'));
     await t.m.load();
-    t.responses.push({ delay: 30, body: { items: [client('C.1', 'A'), client('C.9', 'NEW-ONE')], total: 2 } });
+    t.serve(client('C.1', 'A'), client('C.9', 'NEW-ONE'));
+    t.faults.push({ delay: 30 });
     const button = { textContent: '↻ Refresh', disabled: false };
     const a = t.m.refresh(button), b = t.m.refresh(button);
     assert.strictEqual(button.textContent, 'Refreshing…', 'the button says it is working');
@@ -107,9 +112,9 @@ const fleet = (...cs) => ({ body: { items: cs, total: cs.length } });
   // 5. the header button is restored after a FAILED refresh too
   {
     const t = await build();
-    t.responses.push(fleet(client('C.1', 'A')));
+    t.serve(client('C.1', 'A'));
     await t.m.load();
-    t.responses.push(new Error('network down'));
+    t.faults.push(new Error('network down'));
     const button = { textContent: '↻ Refresh', disabled: false };
     await t.m.refresh(button);
     assert.strictEqual(button.textContent, '↻ Refresh');

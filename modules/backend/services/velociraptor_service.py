@@ -71,14 +71,17 @@ def get_clients_from_snapshot(include_offline=False):
         WHERE client_id != 'server'{liveness_clause}
         """
 
+        # max_row is rows per response packet, not a cap. Sized, with the
+        # timeout, for a 20,000-client org: 15 s and 1,000-row packets were
+        # set for fleets of a few hundred.
         request = api_pb2.VQLCollectorArgs(
             max_wait=10,
-            max_row=1000,
+            max_row=5000,
             Query=[api_pb2.VQLRequest(VQL=vql_query)]
         )
 
         clients = []
-        for response in stub.Query(request, timeout=15):
+        for response in stub.Query(request, timeout=60):
             if response.Response:
                 try:
                     result = json.loads(response.Response)

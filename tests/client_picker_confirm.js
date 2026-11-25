@@ -5,6 +5,7 @@ const fs = require('fs'), path = require('path'), assert = require('assert');
 let JSDOM;
 try { ({ JSDOM } = require('jsdom')); } catch (e) { process.exit(77); }
 
+const { fakeClientsApi } = require('./fake_clients_api.js');
 const src = fs.readFileSync(path.join(process.argv[2], 'modules/nginx/html/js/utils/client-manager.js'), 'utf8');
 
 async function picker(n) {
@@ -13,9 +14,9 @@ async function picker(n) {
   const asked = [];
   w.confirm = (msg) => { asked.push(msg); return false; };
   w.escapeHtml = s => String(s);
-  w.fetch = async () => ({ ok: true, json: async () => ({ total: n, items: Array.from({ length: n }, (_, i) => ({
+  w.fetch = fakeClientsApi(Array.from({ length: n }, (_, i) => ({
     client_id: `C.${i}`, hostname: `HOST-${i}`, os: i % 2 ? 'linux' : 'windows', labels: [],
-    last_seen_at: Date.now() * 1000 })) }) });
+    last_seen_at: Date.now() * 1000 }))).fetch;
   w.eval(src);
   const cm = new w.ClientManager('list', 'cb');
   await cm.load();
@@ -25,12 +26,13 @@ async function picker(n) {
 (async () => {
   const big = await picker(12);
   assert.strictEqual(big.cm.getSelected().length, 0, 'nothing is pre-selected');
-  big.cm.selectAll(true);
+  await big.cm.selectAll(true);
   big.cm.setOsFacet('Linux');                                  // hide the Windows half
   assert.strictEqual(big.cm.getSelected().length, 12, 'hidden selected clients dropped');
   assert.strictEqual(big.cm.confirmMany('Start the collection'), false, 'cancel must stop the run');
   assert.ok(/on 12 clients \(first 10: HOST-0,/.test(big.asked[0] || ''), 'the question names the count: ' + big.asked[0]);
-  assert.ok(!/HOST-11/.test(big.asked[0]), 'the question lists only the first 10 hosts');
+  const listed = (big.asked[0].match(/first 10: (.*?), …\)/) || [])[1] || '';
+  assert.strictEqual(listed.split(', ').length, 10, 'the question lists only the first 10 hosts: ' + big.asked[0]);
 
   const small = await picker(3);
   assert.strictEqual(small.cm.confirmMany('Start the collection'), true);

@@ -12,12 +12,13 @@ const appSrc = fs.readFileSync(path.join(html, 'stores/app.js'), 'utf8');
 const escSrc = appSrc.slice(appSrc.indexOf('function escapeHtml('), appSrc.indexOf('\n}\n', appSrc.indexOf('function escapeHtml(')) + 3);
 const cmSrc = fs.readFileSync(path.join(html, 'utils/client-manager.js'), 'utf8');
 
+const { fakeClientsApi } = require('./fake_clients_api.js');
 const EVIL = '"><img src=x onerror=alert(1)>\' onmouseover=\'alert(2)';
 const dom = new JSDOM('<div id="wrap"><div id="list"></div></div>', { runScripts: 'outside-only' });
 const w = dom.window;
-w.fetch = async () => ({ ok: true, json: async () => ({ total: 1, items: [{
+w.fetch = fakeClientsApi([{
   client_id: 'C.1' + EVIL, hostname: 'HOST' + EVIL, os: 'windows' + EVIL,
-  labels: ['lab' + EVIL], last_seen_at: Date.now() * 1000 }] }) });
+  labels: ['lab' + EVIL], last_seen_at: Date.now() * 1000 }]).fetch;
 w.eval(escSrc + '\nwindow.escapeHtml = escapeHtml;');
 w.eval(cmSrc);
 

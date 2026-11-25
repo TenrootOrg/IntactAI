@@ -19,6 +19,7 @@ const fleet = Array.from({ length: N }, (_, i) => ({
   client_id: `C.${pad(i)}`, hostname: `HOST-${pad(i)}`, os: 'windows', labels: [],
   last_seen_at: Date.now() * 1000 }));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const api = require('./fake_clients_api.js').fakeClientsApi(fleet);
 
 (async () => {
   const dom = new JSDOM(`<body>${read('partials/timesketch.html')}</body>`, { runScripts: 'dangerously' });
@@ -32,7 +33,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       posted.push(JSON.parse(opts.body));
       return { ok: true, json: async () => ({ run_id: 'r1' }) };
     }
-    return { ok: true, json: async () => ({ total: N, items: fleet }) };
+    return api.fetch(url);
   };
   w.eval(escSrc + '\nwindow.escapeHtml = escapeHtml;');
   w.eval(read('js/utils/client-manager.js'));

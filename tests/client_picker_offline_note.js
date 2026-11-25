@@ -2,6 +2,7 @@
 // and say, in red, that a scheduled run will not work for them while offline.
 // Other pages (no offlineNote) are unchanged. `node <file> <root>`
 const fs = require('fs'), path = require('path'), assert = require('assert');
+const { fakeClientsApi } = require('./fake_clients_api.js');
 const src = fs.readFileSync(path.join(process.argv[2], 'modules/nginx/html/js/utils/client-manager.js'), 'utf8');
 
 function el() {
@@ -11,7 +12,7 @@ async function build(opts, clients) {
   const container = el();
   container.parentNode = { insertBefore: () => {} };
   const doc = { getElementById: id => (id === 'list' ? container : null), createElement: () => el() };
-  const fetch = async () => ({ ok: true, json: async () => ({ items: clients, total: clients.length }) });
+  const fetch = fakeClientsApi(clients).fetch;
   const escapeHtml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const window = {};
   new Function('document', 'fetch', 'escapeHtml', 'window', src)(doc, fetch, escapeHtml, window);
