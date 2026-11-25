@@ -18,7 +18,8 @@ tables, so password hashes never reach a backup file.
 
 The gate runs on every request (and on one nginx auth_request per tus PATCH),
 so lookups come from an in-process snapshot of the table, reloaded after every
-write here. The backend is a single process, so the snapshot cannot drift.
+write here and at least every SNAPSHOT_SECONDS, so a row written by another
+process (a host script, a test harness) is seen within that time.
 """
 
 import secrets
@@ -44,8 +45,11 @@ TEMP_PASSWORD_HOURS = 24
 NAME_MIN, NAME_MAX = 2, 32
 _NAME_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789._-")
 
+SNAPSHOT_SECONDS = 30
+
 _lock = threading.Lock()
 _snapshot: Optional[Dict[int, dict]] = None
+_snapshot_at = 0.0
 
 
 def ensure_table() -> None:
@@ -68,9 +72,10 @@ def ensure_table() -> None:
 
 
 def _load() -> Dict[int, dict]:
-    global _snapshot
+    global _snapshot, _snapshot_at
     with _lock:
-        if _snapshot is None:
+        if _snapshot is None or time.monotonic() - _snapshot_at > SNAPSHOT_SECONDS:
+            _snapshot_at = time.monotonic()
             ensure_table()
             rows = get_connection().execute("SELECT * FROM users").fetchall()
             _snapshot = {r["id"]: dict(r) for r in rows}
