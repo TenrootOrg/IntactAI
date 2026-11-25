@@ -1,5 +1,8 @@
 """Dashboard login: one-time setup token, per-client lockout, password rule,
-must-change gate for a publicly known password, global brake.
+must-change gate for a publicly known password, global brake; and the users
+and roles on top (services/users.py, services/access_policy.py,
+routes/user_routes.py): rank rule, one-time passwords, disable/demote ending
+sessions, per-route and per-tool roles, step-up, CSRF, audit hash chain.
 
 QA found that while config.yaml had first_login: true, /api/auth/setup accepted
 the FIRST visitor from the network, and the lockout was one global counter: an
@@ -55,7 +58,7 @@ class _Session(dict):
     permanent = False
 
 
-REQUEST = types.SimpleNamespace(headers={}, remote_addr="172.18.0.9", body=None)
+REQUEST = types.SimpleNamespace(headers={}, remote_addr="172.18.0.9", body=None, args={})
 REQUEST.get_json = lambda silent=False: REQUEST.body
 SESSION = _Session()
 
@@ -71,12 +74,16 @@ class _Blueprint:
 
 
 _flask.Blueprint = _Blueprint
+_flask.send_file = lambda *a, **k: None
+_flask.Response = object
+_flask.after_this_request = lambda fn: fn
 _flask.jsonify = lambda body=None, **k: body if body is not None else k
 _flask.request = REQUEST
 _flask.session = SESSION
 sys.modules["flask"] = _flask
 
 from services import auth_service as auth  # noqa: E402
+from services import users  # noqa: E402
 _REAL_RESOLVE = auth._resolve_nginx
 
 _spec = importlib.util.spec_from_file_location(
@@ -85,7 +92,7 @@ routes = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(routes)
 
 GOOD = "Str0ng-Pass.word9"
-NO_SYMBOL = "Abcdefghijk1"   # strong before 2026-11-22; new passwords now need a symbol
+OLD_RULE = "Abcdefghijk1!"   # met the old 12-character rule; too short for a NEW password
 
 
 NGINX = "172.18.0.9"       # REQUEST.remote_addr by default: the stub resolver says nginx
@@ -118,6 +125,11 @@ class Base(unittest.TestCase):
         if os.path.exists(TOKEN):
             os.unlink(TOKEN)
         auth.set_secret(auth._K_HASH, "")      # no credential from an earlier test
+        auth.set_secret(auth._K_USER, "")
+        users.ensure_table()
+        users.get_connection().execute("DELETE FROM users")
+        users.get_connection().commit()
+        users.invalidate()
         auth.reset_lockout()
         auth.MIN_SECONDS_BETWEEN_ATTEMPTS = 0.0
         auth._resolve_nginx = lambda: frozenset({NGINX})
@@ -303,6 +315,7 @@ class MustChange(Base):
         self.assertEqual(self.gate("/api/security/default-passwords"), auth.PASSWORD_CHANGE_REQUIRED)
         for path in ("/api/auth/change-password", "/api/auth/logout", "/api/auth/status"):
             self.assertIsNone(self.gate(path), path)
+        REQUEST.args = {"tool": "uploads"}
         self.assertEqual(call(routes.auth_verify)[1], 401, "/velociraptor/ and uploads too")
         self.assertTrue(call(routes.auth_status)[0]["must_change"])
 
@@ -312,6 +325,8 @@ class MustChange(Base):
         self.assertEqual(status, 200, body)
         self.assertIsNone(self.gate(self.API))
         self.assertEqual(call(routes.auth_verify)[1], 200)
+        REQUEST.args = {}
+        self.assertEqual(call(routes.auth_verify)[1], 403, "no ?tool= is refused, never defaulted")
         self.assertFalse(call(routes.auth_status)[0]["must_change"])
         # And a later login with the new password is not flagged.
         SESSION.clear()
@@ -319,21 +334,14 @@ class MustChange(Base):
         self.assertFalse(body["must_change"])
         self.assertIsNone(self.gate(self.API))
 
-    def test_rule_failing_old_password_is_flagged_too(self):
+    def test_password_from_the_old_rule_is_not_flagged(self):
+        # Decided 2026-11-25: the 15-character rule applies at the next change;
+        # a password set under the old 12-character rule keeps signing in.
         auth.write_first_login(False)
-        auth.set_credential("admin", "short-but-old")
-        body, _ = call(routes.auth_login, {"username": "admin", "password": "short-but-old"})
-        self.assertTrue(body["must_change"])
-
-    def test_old_password_without_a_symbol_is_not_flagged(self):
-        # 2026-11-22: a NEW password needs a symbol; one set before that keeps
-        # working without being sent to change-password.
-        auth.write_first_login(False)
-        auth.set_credential("admin", NO_SYMBOL)
-        body, _ = call(routes.auth_login, {"username": "admin", "password": NO_SYMBOL})
+        auth.set_credential("admin", OLD_RULE)
+        body, _ = call(routes.auth_login, {"username": "admin", "password": OLD_RULE})
         self.assertFalse(body["must_change"])
-        self.assertEqual(auth.password_problem(NO_SYMBOL),
-                         "it needs a symbol (such as ! @ # % ^ & * + = ? ~)")
+        self.assertEqual(auth.password_problem(OLD_RULE), "it is shorter than 15 characters")
 
     def test_strong_password_session_is_not_gated(self):
         self.claim()
@@ -363,7 +371,8 @@ class MustChange(Base):
 class PasswordRule(Base):
     def test_setup_refuses_weak_without_spending_the_token(self):
         tok = write_token()
-        for weak in ("123123", "Short1Aa", "alllowercase123", "-Leading1Dash12", "Has Space1Abcd"):
+        for weak in ("123123", "Short1Aa", "fourteen chars", "aaaaaaaaaaaaaaaaaaaa",
+                     "password-but-long", "my-admin-passphrase"):
             body, status = call(routes.auth_setup, setup_body(tok, weak))
             self.assertEqual((status, body["error"]), (400, "weak_password"), weak)
             self.assertNotIn(weak, body["message"])
@@ -418,17 +427,279 @@ class PasswordRule(Base):
         body, status = call(routes.auth_login, {"username": "admin", "password": "123123"})
         self.assertEqual(status, 200, body)
 
-    def test_matches_lib_secrets_sh(self):
-        samples = ["", "123123", "changeme", "Ch4nge-Me!Intact2026", "Short1Aa", "Str0ng-Pass.word9",
-                   "alllowercase123", "ALLUPPERCASE123", "NoDigitsHereAtAll", "-Leading1Dash12",
-                   ".Leading1Dotxx", "Has Space1Abcd", "Dollar$1Abcdefg", "Abcdefghijk1", "Abcdefghij1",
-                   "Abcdefghij1!", "Abcdefgh1!@#%^&*()[]{}|;:,.<>/?~=+-_", "Back\\slash1Abc!",
-                   "Back`tick1Abcd!", 'Dq"uote1Abcde!', "Sq'uote1Abcde!", "Héllo1Abcdefg!", "!Leading1Abcde"]
-        script = 'source lib/secrets.sh; for v in "$@"; do secret_check "$v" >/dev/null && echo 1 || echo 0; done'
-        out = subprocess.run(["bash", "-c", script, "_"] + samples, cwd=ROOT,
-                             capture_output=True, text=True, timeout=30).stdout.split()
-        self.assertEqual(out, ["1" if auth.password_problem(v) is None else "0" for v in samples])
+    def test_rule_is_length_not_composition(self):
+        # NIST SP 800-63B-4: 15+ characters, any characters, no composition rules.
+        for ok in ("correct horse battery", "all lowercase words here", "Héllo wörld, long one",
+                   "quotes ' \" ` and $ are fine"):
+            self.assertIsNone(auth.password_problem(ok), ok)
+        self.assertEqual(auth.password_problem("x" * 257), "it is longer than 256 characters")
+        self.assertEqual(auth.password_problem("tab\there and more"), "it has control characters")
+        self.assertEqual(auth.password_problem("anna likes long walks", "anna"),
+                         "it contains the user name")
 
+
+_uspec = importlib.util.spec_from_file_location(
+    "user_routes_under_test", os.path.join(ROOT, "modules/backend/routes/user_routes.py"))
+uroutes = importlib.util.module_from_spec(_uspec)
+_uspec.loader.exec_module(uroutes)
+
+STRONG = "a long enough passphrase"
+
+
+class Roles(Base):
+    """Four roles, one rank rule, enforced on the server."""
+
+    def setUp(self):
+        super().setUp()
+        auth.write_first_login(False)
+        auth.set_credential("boss", GOOD)
+        self.login("boss", GOOD)
+
+    def login(self, name, password):
+        SESSION.clear()
+        body, status = call(routes.auth_login, {"username": name, "password": password})
+        self.assertEqual(status, 200, body)
+        return body
+
+    def make(self, name, role, password=STRONG):
+        """Create `name` as the current session's user, then give it a real password."""
+        actor = dict(SESSION)
+        body, status = call(uroutes.create_user, {"username": name, "role": role})
+        self.assertEqual(status, 200, body)
+        self.login(name, body["temporary_password"])
+        body, status = call(routes.auth_change_password, {"current_password": body["temporary_password"],
+                                                          "new_password": password, "confirm": password})
+        self.assertEqual(status, 200, body)
+        SESSION.clear()
+        SESSION.update(actor)
+
+    def gate(self, endpoint, method="GET", sess=None):
+        return auth.gate_decision("/api/x", method, "172.18.0.9", SESSION if sess is None else sess,
+                                  endpoint=endpoint, headers={})
+
+    def test_existing_login_becomes_the_superadmin(self):
+        users.get_connection().execute("DELETE FROM users")
+        users.get_connection().commit()
+        users.invalidate()
+        auth.set_secret(auth._K_USER, "Tenroot")
+        auth.set_secret(auth._K_HASH, auth.generate_password_hash("old-but-kept"))
+        self.assertTrue(auth.migrate_legacy_credential())
+        self.assertFalse(auth.migrate_legacy_credential(), "runs once")
+        row = auth.authenticate("tenroot", "old-but-kept")
+        self.assertEqual(row["role"], users.SUPERADMIN)
+
+    def test_old_cookie_is_signed_out_once(self):
+        SESSION.pop("uid")
+        self.assertEqual(auth.evaluate_session(SESSION), auth.SESSION_CREDENTIALS_CHANGED)
+
+    def test_rank_rule(self):
+        self.make("adm", users.ADMIN)
+        self.make("adm2", users.ADMIN)
+        self.login("adm", STRONG)
+        self.assertEqual(call(uroutes.create_user, {"username": "op", "role": users.OPERATOR})[1], 200)
+        for role in (users.ADMIN, users.SUPERADMIN):
+            self.assertEqual(call(uroutes.create_user, {"username": "x" + role, "role": role})[1], 403, role)
+        for name in ("boss", "adm2", "adm"):     # above, equal, self
+            self.assertEqual(call(lambda: uroutes.update_user(name), {"enabled": False})[1], 403, name)
+            self.assertEqual(call(lambda: uroutes.reset_password(name))[1], 403, name)
+        self.assertEqual(call(lambda: uroutes.update_user("op"), {"role": users.ADMIN})[1], 403)
+        self.assertEqual(call(lambda: uroutes.update_user("op"), {"role": users.READONLY})[1], 200)
+        self.assertEqual(call(uroutes.create_user, {"username": "op", "role": users.READONLY})[1], 409,
+                         "names are never reused")
+
+    def test_temporary_password_only_chooses_a_new_one(self):
+        body, _ = call(uroutes.create_user, {"username": "anna", "role": users.OPERATOR})
+        temp = body["temporary_password"]
+        self.assertNotIn(temp, str(users.by_name("anna")), "only the hash is stored")
+        self.assertTrue(self.login("anna", temp)["must_change"])
+        self.assertEqual(self.gate("case.list_cases"), auth.PASSWORD_CHANGE_REQUIRED)
+        users._write("UPDATE users SET temp_expires = 1 WHERE username = 'anna'", ())
+        SESSION.clear()
+        self.assertEqual(call(routes.auth_login, {"username": "anna", "password": temp})[1], 401,
+                         "an expired one-time password is refused")
+
+    def test_disable_and_demote_apply_on_the_next_request(self):
+        self.make("op", users.OPERATOR)
+        boss = dict(SESSION)
+        self.login("op", STRONG)
+        op = dict(SESSION)
+        SESSION.clear(); SESSION.update(boss)
+        auth.access_policy.POLICY["test.write"] = users.OPERATOR
+        try:
+            self.assertIsNone(self.gate("test.write", "POST", op))
+            call(lambda: uroutes.update_user("op"), {"role": users.READONLY})
+            self.assertEqual(self.gate("test.write", "POST", op), auth.SESSION_CREDENTIALS_CHANGED)
+            self.login("op", STRONG)
+            self.assertEqual(self.gate("test.write", "POST"), auth.FORBIDDEN)
+            op = dict(SESSION)
+            SESSION.clear(); SESSION.update(boss)
+            call(lambda: uroutes.update_user("op"), {"enabled": False})
+            self.assertEqual(auth.evaluate_session(op), auth.SESSION_DISABLED)
+            SESSION.clear()
+            self.assertEqual(call(routes.auth_login, {"username": "op", "password": STRONG})[1], 401)
+        finally:
+            auth.access_policy.POLICY.pop("test.write")
+
+    def test_unlisted_route_is_superadmin_only(self):
+        self.make("adm", users.ADMIN)
+        self.assertIsNone(self.gate("no.such_route"))
+        self.login("adm", STRONG)
+        self.assertEqual(self.gate("no.such_route"), auth.FORBIDDEN)
+
+    def test_user_management_needs_a_recent_password(self):
+        SESSION["auth_at"] -= auth.REAUTH_SECONDS + 1
+        self.assertEqual(self.gate("users.create_user", "POST"), auth.REAUTH_REQUIRED)
+        self.assertIsNone(self.gate("users.list_users"), "listing is not a change")
+        self.assertEqual(call(routes.auth_reauth, {"password": "wrong"})[1], 401)
+        self.assertEqual(call(routes.auth_reauth, {"password": GOOD})[1], 200)
+        self.assertIsNone(self.gate("users.create_user", "POST"))
+
+    def test_tools_by_role(self):
+        self.make("ro", users.READONLY)
+        self.make("op", users.OPERATOR)
+        expect = {"boss": {"portainer": 200, "kibana": 200, "nosuch": 403},
+                  "op": {"portainer": 403, "kibana": 200, "velociraptor": 200, "iris": 403},
+                  "ro": {"kibana": 403, "velociraptor": 403, "uploads": 403}}
+        for name, tools in expect.items():
+            self.login(name, GOOD if name == "boss" else STRONG)
+            for tool, status in tools.items():
+                REQUEST.args = {"tool": tool}
+                self.assertEqual(call(routes.auth_verify)[1], status, (name, tool))
+        REQUEST.args = {}
+        SESSION.clear()
+        self.assertEqual(call(routes.auth_verify)[1], 401)
+
+    def test_csrf_from_another_origin_is_refused(self):
+        refused = [{"Sec-Fetch-Site": "same-site"}, {"Sec-Fetch-Site": "cross-site"},
+                   {"Origin": "https://box:5602", "Host": "box"}, {"Origin": "null"}]
+        allowed = [{"Sec-Fetch-Site": "same-origin"}, {"Sec-Fetch-Site": "none"}, {},
+                   {"Origin": "https://box", "Host": "box"}]
+        for h in refused:
+            self.assertTrue(auth.csrf_problem("POST", h), h)
+            self.assertFalse(auth.csrf_problem("GET", h), h)
+        for h in allowed:
+            self.assertFalse(auth.csrf_problem("POST", h), h)
+        self.assertEqual(auth.gate_decision("/api/auth/login", "POST", NGINX, {},
+                                            headers={"Sec-Fetch-Site": "same-site"}),
+                         auth.CSRF_REJECTED, "login CSRF too")
+
+    def test_setup_recovery_resets_only_the_superadmin(self):
+        self.make("adm", users.ADMIN)
+        auth.write_first_login(True)
+        tok = write_token()
+        body, status = call(routes.auth_setup, setup_body(tok, user="adm"))
+        self.assertEqual((status, body["error"]), (400, "bad_username"), "cannot take over a user")
+        body, status = call(routes.auth_setup, setup_body(tok, user="newboss"))
+        self.assertEqual(status, 200, body)
+        self.assertEqual(users.superadmin()["username"], "boss",
+                         "recovery keeps the name: a freed name could be reused")
+        self.assertIsNotNone(auth.authenticate("boss", GOOD))
+        self.assertEqual(users.by_name("adm")["role"], users.ADMIN)
+        self.assertIsNotNone(auth.authenticate("adm", STRONG))
+
+    def test_transfer_superadmin(self):
+        self.make("adm", users.ADMIN)
+        self.assertEqual(call(uroutes.transfer_superadmin, {"to": "adm", "current_password": "no"})[1], 401)
+        body, status = call(uroutes.transfer_superadmin, {"to": "adm", "current_password": GOOD})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(users.superadmin()["username"], "adm")
+        self.assertEqual(users.by_name("boss")["role"], users.ADMIN)
+        self.assertEqual(auth.evaluate_session(SESSION), auth.SESSION_OK, "re-issued as an Admin")
+        self.assertEqual(auth.get_secret(auth._K_USER), "adm", "a rollback signs in the new Super-admin")
+
+    def test_role_checks_inside_a_route(self):
+        # dashboard_routes: System runs (upgrade, purge) need Admin to read and
+        # Super-admin to stop; a request with no session is the box itself.
+        self.make("op", users.OPERATOR)
+        self.assertTrue(users.caller_has(SESSION, users.SUPERADMIN))
+        self.assertTrue(users.caller_has({}, users.SUPERADMIN), "loopback")
+        self.login("op", STRONG)
+        self.assertFalse(users.caller_has(SESSION, users.ADMIN))
+        self.assertTrue(users.caller_has(SESSION, users.OPERATOR))
+        self.assertEqual(users.caller_name(SESSION), "op")
+
+    def test_rollback_cookie_never_matches_the_old_release(self):
+        # The release before users accepts any cookie whose `gen` equals its
+        # integer counter; a new user's generation starts at 1 too.
+        self.make("ro", users.READONLY)
+        self.login("ro", STRONG)
+        self.assertIsInstance(SESSION["gen"], str)
+        self.assertNotEqual(SESSION["gen"], int(auth.get_secret(auth._K_GENERATION) or 0))
+
+    def test_password_changed_during_a_rollback_is_picked_up(self):
+        # The older release ran meanwhile and the operator changed the password
+        # there: it wrote only the legacy rows.
+        auth.set_secret(auth._K_HASH, auth.generate_password_hash("set during rollback"))
+        auth.set_secret(auth._K_GENERATION, str(auth.credential_generation() + 1))
+        self.assertTrue(auth.migrate_legacy_credential())
+        self.assertIsNotNone(auth.authenticate("boss", "set during rollback"))
+        self.assertFalse(auth.migrate_legacy_credential(), "and only once")
+
+    def test_one_time_password_session_ignores_the_lab_switch(self):
+        body, _ = call(uroutes.create_user, {"username": "anna", "role": users.OPERATOR})
+        self.login("anna", body["temporary_password"])
+        os.environ["INTACT_ALLOW_WEAK_PASSWORDS"] = "1"
+        self.assertEqual(self.gate("case.list_cases"), auth.PASSWORD_CHANGE_REQUIRED)
+
+    def test_guessing_the_current_password_hits_the_lockout(self):
+        bad = {"current_password": "nope", "new_password": STRONG, "confirm": STRONG}
+        for _ in range(auth.LOCKOUT_THRESHOLD):
+            self.assertEqual(call(routes.auth_change_password, bad)[1], 401)
+        self.assertEqual(call(routes.auth_change_password, bad)[1], 429)
+        self.assertEqual(call(uroutes.transfer_superadmin, {"to": "x", "current_password": "no"})[1], 429)
+
+    def test_tool_only_activity_keeps_the_session(self):
+        # Working only inside Kibana: nginx's per-tool check is the only request,
+        # and its Set-Cookie is dropped, so the cookie's `seen` never moves.
+        SESSION["seen"] -= auth.SESSION_IDLE_LIMIT_SECONDS - 60
+        auth.note_activity(SESSION)
+        SESSION["seen"] -= 120
+        self.assertEqual(auth.evaluate_session(SESSION), auth.SESSION_OK)
+        auth._last_active.clear()
+        self.assertEqual(auth.evaluate_session(SESSION), auth.SESSION_EXPIRED)
+
+    def test_backup_copy_has_no_password_hash(self):
+        import sqlite3
+        spec = importlib.util.spec_from_file_location(
+            "db_routes_under_test", os.path.join(ROOT, "modules/backend/routes/db_routes.py"))
+        db_routes = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(db_routes)
+        users.get_connection().execute("PRAGMA wal_checkpoint(FULL)")
+        out = db_routes._make_redacted_backup_copy(os.path.join(_BASE, "intact.db"))
+        try:
+            rows = sqlite3.connect(out).execute("SELECT username, pw_hash FROM users").fetchall()
+        finally:
+            os.unlink(out)
+        self.assertTrue(rows)
+        self.assertEqual({h for _, h in rows}, {"[REDACTED]"})
+        users._write("UPDATE users SET pw_hash = '[REDACTED]' WHERE username = 'boss'", ())
+        self.assertIsNone(auth.authenticate("boss", GOOD), "a restored, redacted hash fails closed")
+
+    def test_absolute_session_limit(self):
+        SESSION["iat"] -= auth.SESSION_ABSOLUTE_LIMIT_SECONDS + 1
+        self.assertEqual(auth.evaluate_session(SESSION), auth.SESSION_EXPIRED)
+
+
+class AuditChain(Base):
+    def test_a_changed_or_removed_line_breaks_the_chain(self):
+        for f in [auth.AUDIT_LOG] + [f"{auth.AUDIT_LOG}.{i}" for i in range(1, auth.AUDIT_KEEP + 1)]:
+            if os.path.exists(f):
+                os.unlink(f)
+        auth._last_hash = None
+        for i in range(5):
+            auth.audit("action", username_value=f"u{i}")
+        self.assertIsNone(auth.verify_audit_chain([auth.AUDIT_LOG]))
+        auth._last_hash = None      # a restart: the chain continues from the file
+        auth.audit("action", username_value="after-restart")
+        self.assertIsNone(auth.verify_audit_chain([auth.AUDIT_LOG]))
+        with open(auth.AUDIT_LOG) as fh:
+            lines = fh.readlines()
+        with open(auth.AUDIT_LOG, "w") as fh:
+            fh.writelines(lines[:2] + lines[3:])
+        self.assertEqual(auth.verify_audit_chain([auth.AUDIT_LOG]), 3)
+        with open(auth.AUDIT_LOG, "w") as fh:
+            fh.writelines(lines[:1] + [lines[1].replace("u1", "uX")] + lines[2:])
+        self.assertEqual(auth.verify_audit_chain([auth.AUDIT_LOG]), 2)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,9 @@
 #!/bin/bash
 # Intact.AI — reopen the dashboard's setup page with a new one-time token.
 #
-# The recovery for a forgotten dashboard password (or a box with no usable
-# login). It used to be "set first_login: true in config.yaml", which opened
+# The recovery for a forgotten Super-admin password (or a box with no usable
+# login). It resets ONLY the Super-admin; every other user keeps their account
+# (an Admin resets other users from Settings -> Users). It used to be "set first_login: true in config.yaml", which opened
 # setup to the first visitor from the network (QA: lock the operator out, wait
 # for the recovery, claim the box). Now setup also needs a token only root on
 # the host can read, so recovery is this script, run as root.
@@ -74,7 +75,8 @@ Dashboard setup reopened.
   Open:         https://${host:-<appliance-address>}/setup.html
   Setup token:  ${token}
 
-Enter the token there and choose a new username and password. The token works
-once. The current login keeps working until setup is completed; after that the
-old password stops working and every open session is signed out.
+Enter the token there and choose the Super-admin's username and password. The
+token works once. Only the Super-admin is reset: other users keep their
+accounts. The current login keeps working until setup is completed; after that
+the old password stops working and every open session is signed out.
 EOF

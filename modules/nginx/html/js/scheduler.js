@@ -158,7 +158,7 @@ function renderScheduleCard(job) {
                     <span title="Runs are filed in this case">Case: ${escapeHtml(scheduleCaseName(job.case_id))}</span>
                 </div>
             </div>
-            <div class="flex gap-2 ml-4">
+            <div data-needs="write" class="flex gap-2 ml-4">
                 <button onclick="runScheduleNow('${job.id}')" title="Run Now" class="text-xs bg-green-700 hover:bg-green-600 px-3 py-1.5 rounded flex items-center gap-1">
                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>

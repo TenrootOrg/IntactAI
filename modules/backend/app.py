@@ -20,11 +20,11 @@ except Exception:
 from datetime import timedelta
 
 from flask import Flask, jsonify, request, session
-from flask_cors import CORS
 
 # Import blueprints
 from routes import (
     auth_bp,
+    users_bp,
     client_bp,
     velociraptor_bp,
     velociraptor_offline_bp,
@@ -60,16 +60,21 @@ from config import ELASTICSEARCH_CONFIG
 
 # Create Flask app
 app = Flask(__name__)
-# Pre-existing wart, documented so it isn't re-flagged: CORS(app) with no args
-# emits Access-Control-Allow-Origin: * and nginx.conf adds it again (duplicate
-# header). With a WILDCARD origin the browser refuses to send credentials
-# cross-origin, so the session cookie can't be replayed from another site — CSRF
-# protection therefore rests on SESSION_COOKIE_SAMESITE='Lax' below, which is an
-# acceptable posture for a single-operator internal appliance.
-CORS(app)
+# No CORS: the dashboard calls this API from its own origin only. The wildcard
+# CORS(app) that used to be here let any origin read cookieless answers, and
+# the bundled tools on the same host are other origins. Cross-origin state
+# changes are refused by auth_service.csrf_problem() in the gate below.
 
 # --- session cookie policy (see services/auth_service.py) --------------------
 app.secret_key = auth_service.session_secret_key()
+# Before the first request, not in the background start-up thread: the
+# pre-users login becomes the Super-admin, and a sign-in that raced a later
+# migration would be refused with "no credential configured".
+try:
+    if auth_service.migrate_legacy_credential():
+        print("[AUTH] The existing dashboard login is now the Super-admin", flush=True)
+except Exception as _mle:
+    print(f"[AUTH] Users migration failed: {_mle}", flush=True)
 app.config.update(
     SESSION_COOKIE_NAME='intact_session',
     SESSION_COOKIE_HTTPONLY=True,
@@ -88,6 +93,7 @@ app.config.update(
 
 # Register blueprints
 app.register_blueprint(auth_bp)
+app.register_blueprint(users_bp)
 app.register_blueprint(client_bp)
 app.register_blueprint(velociraptor_bp)
 app.register_blueprint(velociraptor_offline_bp)
@@ -139,15 +145,20 @@ app.register_blueprint(security_bp)
 @app.before_request
 def _auth_gate():
     reason = auth_service.gate_decision(
-        request.path, request.method, request.remote_addr, session)
+        request.path, request.method, request.remote_addr, session,
+        endpoint=request.endpoint, headers=request.headers)
 
     if reason is None:
-        # Slide the 7-day window for a genuinely logged-in caller. Guarded on
+        # Slide the idle window for a genuinely logged-in caller. Guarded on
         # `user` so an exempt/loopback request with no session doesn't get an
-        # empty cookie stamped onto it. Only re-stamps hourly, so this is not a
-        # cookie re-sign on every request.
-        if session.get('user') and auth_service.touch_session(session):
-            session.modified = True
+        # empty cookie stamped onto it, and on a VALID session because the open
+        # routes (status, login, verify) land here too: stamping an expired
+        # cookie there would bring it back to life. The cookie is re-signed at
+        # most every SESSION_TOUCH_INTERVAL_SECONDS, not on every request.
+        if session.get('user') and auth_service.evaluate_session(session) == auth_service.SESSION_OK:
+            auth_service.note_activity(session)
+            if auth_service.touch_session(session):
+                session.modified = True
         return None
 
     if reason == auth_service.PASSWORD_CHANGE_REQUIRED:
@@ -155,9 +166,22 @@ def _auth_gate():
         # logout and status until it is replaced (js/active-case.js redirects).
         return jsonify({
             'error': reason,
-            'message': 'This box still uses a publicly known dashboard '
-                       'password. Choose a new one.',
+            'message': 'You signed in with a one-time or publicly known '
+                       'password. Choose your own password to continue.',
         }), 403
+
+    if reason in (auth_service.FORBIDDEN, auth_service.REAUTH_REQUIRED,
+                  auth_service.CSRF_REJECTED):
+        messages = {
+            auth_service.FORBIDDEN: 'Your role does not allow this.',
+            auth_service.REAUTH_REQUIRED: 'Enter your password again to continue.',
+            auth_service.CSRF_REJECTED: 'Request refused: it came from another site.',
+        }
+        if reason != auth_service.REAUTH_REQUIRED:
+            auth_service.audit('denied', request, username_value=session.get('user'),
+                               reason=reason, endpoint=request.endpoint,
+                               method=request.method)
+        return jsonify({'error': reason, 'message': messages[reason]}), 403
 
     # `reason` is what lets login.html say "your session expired" or "the
     # password was changed" instead of showing a bare form — the whole point of
@@ -203,6 +227,23 @@ def _handle_workspace_error(e):
     # `code` lets the UI reliably detect "module run blocked in the System
     # workspace" (vs string-matching the message) and show one clear alert.
     return jsonify({"error": str(e), "code": getattr(e, "code", "workspace_system_blocked")}), 409
+
+
+@app.after_request
+def _audit_write(resp):
+    """Every state change by a person, under their name (NIST AU-2/AU-3). Reads
+    are not logged: pages poll every few seconds. Auth routes log themselves."""
+    try:
+        if (request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and session.get('user')
+                and resp.status_code < 400
+                and request.path.startswith('/api/')
+                and not (request.endpoint or '').startswith(('auth.', 'users.'))):
+            auth_service.audit('action', request, username_value=session.get('user'),
+                               method=request.method, endpoint=request.endpoint,
+                               path=request.path[:300], status=resp.status_code)
+    except Exception:
+        pass
+    return resp
 
 
 @app.after_request

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Set up your login — TenRoot Intact.AI</title>
+    <title>Create the Super-admin — TenRoot Intact.AI</title>
     <link rel="icon" type="image/png" href="img/tenroot-logo.png">
     <link rel="stylesheet" href="css/tailwind.css?v=10">
     <link rel="stylesheet" href="css/styles.css?v=13">
@@ -15,10 +15,11 @@
 
     <div style="text-align:center;margin-bottom:28px">
       <img src="img/tenroot-logo.png" alt="TenRoot" style="width:140px;height:auto;opacity:.9">
-      <h1 style="margin-top:16px;font-size:20px;font-weight:600">Create your login</h1>
+      <h1 style="margin-top:16px;font-size:20px;font-weight:600">Create the Super-admin account</h1>
       <p style="margin-top:8px;font-size:13px;color:#9ca3af;line-height:1.5">
-        This appliance has no login yet. Choose the operator username and password —
-        there is a single account, no roles.
+        The Super-admin runs the appliance and adds the other users in
+        Settings → Users. If this box already has users, this resets only the
+        Super-admin; every other account stays as it is.
       </p>
     </div>
 
@@ -40,13 +41,13 @@
              style="width:100%;padding:10px 12px;margin-bottom:14px;border-radius:6px;font-family:monospace;
                     background:#0d1117;border:1px solid #374151;color:#fff">
 
-      <label for="username" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Username</label>
+      <label for="username" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Super-admin username</label>
       <input id="username" name="username" type="text" autocomplete="username" value="admin" required
              style="width:100%;padding:10px 12px;margin-bottom:14px;border-radius:6px;
                     background:#0d1117;border:1px solid #374151;color:#fff">
 
       <label for="password" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Password</label>
-      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="12"
+      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="15"
              style="width:100%;padding:10px 12px;margin-bottom:14px;border-radius:6px;
                     background:#0d1117;border:1px solid #374151;color:#fff">
 
@@ -55,16 +56,17 @@
              style="width:100%;padding:10px 12px;margin-bottom:6px;border-radius:6px;
                     background:#0d1117;border:1px solid #374151;color:#fff">
 
-      <p style="font-size:11px;color:#6b7280;margin-top:8px">12+ characters with an uppercase letter, a
-        lowercase letter, a digit and a symbol (such as ! @ # % ^ &amp; * + = ? ~); no spaces,
-        quotes, \ or $; starting with a letter or digit.</p>
+      <!-- Same text as auth_service.PASSWORD_RULE: /api/auth/status only sends
+           it to a signed-in session, and nobody is signed in here yet. -->
+      <p style="font-size:11px;color:#6b7280;margin-top:8px">At least 15 characters; any characters,
+        spaces included. A passphrase of a few words works well.</p>
 
       <div id="error" style="display:none;color:#f87171;font-size:13px;margin:10px 0"></div>
 
       <button id="submitBtn" type="submit"
               style="width:100%;margin-top:14px;padding:11px;border-radius:6px;border:none;
                      background:#2563eb;color:#fff;font-weight:600;cursor:pointer">
-        Create login and sign in
+        Create Super-admin and sign in
       </button>
     </form>
 
@@ -124,7 +126,7 @@
     })
       .then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b }; }); })
       .then(function (res) {
-        btn.textContent = 'Create login and sign in';
+        btn.textContent = 'Create Super-admin and sign in';
         if (res.status === 200 && res.body.success) {
           location.replace('/');
           return;
@@ -138,7 +140,7 @@
       })
       .catch(function () {
         btn.disabled = false;
-        btn.textContent = 'Create login and sign in';
+        btn.textContent = 'Create Super-admin and sign in';
         show(errorBox, 'Could not reach the backend. Try again in a moment.');
       });
   });

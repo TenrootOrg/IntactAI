@@ -41,6 +41,7 @@ except ImportError:
     _flask.g = types.SimpleNamespace(case_id=None)
     _flask.request = types.SimpleNamespace(args={})
     _flask.has_request_context = lambda: False
+    _flask.session = {}   # no session = the box itself (users.caller_has)
     sys.modules["flask"] = _flask
 
 import _optional_deps  # noqa: F401,E402

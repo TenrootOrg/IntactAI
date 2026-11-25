@@ -123,7 +123,7 @@
                                                     </a>
                                                 </template>
                                                 <template x-if="run.status === 'running' || run.status === 'pending'">
-                                                    <button @click="$store.workflows.stopWorkflow(run.id)" class="bg-red-600 hover:bg-red-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Stop this workflow">
+                                                    <button data-needs="write" @click="$store.workflows.stopWorkflow(run.id)" class="bg-red-600 hover:bg-red-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Stop this workflow">
                                                         <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                                                             <rect x="6" y="6" width="12" height="12" rx="1"></rect>
                                                         </svg>
@@ -138,7 +138,7 @@
                                                      button reports honestly instead of silently relaunching
                                                      with defaults. -->
                                                 <template x-if="['completed','failed','cancelled'].includes(run.status)">
-                                                    <button @click.stop="$store.workflows.rerun(run.id)"
+                                                    <button data-needs="write" @click.stop="$store.workflows.rerun(run.id)"
                                                             :disabled="$store.workflows.rerunning === run.id"
                                                             style="color:#fff;background-color:#7c3aed;"
                                                             class="hover:bg-violet-700 disabled:opacity-50 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
@@ -156,7 +156,7 @@
                                                      Only Velociraptor-backed runs have anything to
                                                      re-fetch; the server refuses the rest by type. -->
                                                 <template x-if="['completed','failed','cancelled'].includes(run.status) &amp;&amp; ['velociraptor_collection','velociraptor_upload','velociraptor_hunt','velociraptor_offline_import','velociraptor_adopt'].includes(run.type)">
-                                                    <button @click.stop="$store.workflows.recollect(run.id)"
+                                                    <button data-needs="write" @click.stop="$store.workflows.recollect(run.id)"
                                                             :disabled="$store.workflows.recollecting === run.id"
                                                             title="Ask Velociraptor for results it already has — no new collection, the endpoint is not touched. Use after a collection ran out of time, or while a hunt is still reporting."
                                                             style="color:#fff;background-color:#0f766e;"

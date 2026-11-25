@@ -1,4 +1,4 @@
-            <div x-show="$store.app.currentTab === 'settings'" x-transition class="tab-panel">
+            <div x-show="$store.app.currentTab === 'settings'" data-needs="settings" x-transition class="tab-panel">
                 <div class="flex justify-between items-center mb-6">
                     <div>
                         <h2 class="text-3xl font-bold text-white mb-1">Settings</h2>
@@ -34,6 +34,9 @@
                         </button>
                         <button @click="settingsTab = 'actions'; $store.settings.loadActions()" :class="settingsTab === 'actions' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
                             Actions
+                        </button>
+                        <button data-needs="users" @click="settingsTab = 'users'" :class="settingsTab === 'users' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Users
                         </button>
                         <button @click="settingsTab = 'logs'; $store.settings.loadSystemLogs()" :class="settingsTab === 'logs' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
                             Logs
@@ -131,6 +134,132 @@
                         </div>
                     </div>
 
+                    <!-- Users Tab — Admins and up (js/components/users-card.js). Users are
+                         disabled, never deleted: their name stays on every run and audit
+                         line they left. The server checks every rank rule again. -->
+                    <div x-show="settingsTab === 'users'" data-needs="users" x-data="usersCard()" x-transition
+                         id="users-card" class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <h3 class="text-lg font-semibold text-white">Users</h3>
+                                <p class="text-gray-400 text-sm">Who can sign in, and what each role may do. A new user gets a one-time password.</p>
+                            </div>
+                            <button type="button" @click="load()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">Refresh</button>
+                        </div>
+
+                        <p x-show="err" class="text-sm text-red-400 mb-3" x-text="err"></p>
+
+                        <!-- Add user -->
+                        <form @submit.prevent="add()" class="flex flex-wrap items-center gap-2 mb-4 p-3 bg-gray-900 rounded-lg border border-gray-700">
+                            <span class="text-sm text-gray-300">Add user</span>
+                            <input type="text" x-model="addName" placeholder="name" aria-label="New user name" autocomplete="off" spellcheck="false"
+                                   class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                            <select x-model="addRole" aria-label="Role"
+                                    class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                <template x-for="r in grantable()" :key="r.role">
+                                    <option :value="r.role" x-text="r.label"></option>
+                                </template>
+                            </select>
+                            <button type="submit" :disabled="busy || !addName.trim() || !addRole"
+                                    class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-1.5 rounded text-sm text-white">Add user</button>
+                        </form>
+
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="text-left text-xs text-gray-400 border-b border-gray-700">
+                                        <th class="py-2 px-2">Name</th>
+                                        <th class="py-2 px-2">Role</th>
+                                        <th class="py-2 px-2">Status</th>
+                                        <th class="py-2 px-2">Last login</th>
+                                        <th class="py-2 px-2"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="u in users" :key="u.username">
+                                        <tr class="border-b border-gray-700" :data-user="u.username">
+                                            <td class="py-2 px-2 text-white">
+                                                <span x-text="u.username"></span>
+                                                <span x-show="u.username === me" class="text-xs text-gray-400">(you)</span>
+                                            </td>
+                                            <td class="py-2 px-2">
+                                                <template x-if="canManage(u)">
+                                                    <select :value="u.role" @change="setRole(u, $event.target.value)" :disabled="busy" aria-label="Role"
+                                                            class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-white">
+                                                        <template x-for="r in grantable()" :key="r.role">
+                                                            <option :value="r.role" :selected="r.role === u.role" x-text="r.label"></option>
+                                                        </template>
+                                                    </select>
+                                                </template>
+                                                <template x-if="!canManage(u)">
+                                                    <span class="text-gray-300" x-text="label(u.role)"></span>
+                                                </template>
+                                            </td>
+                                            <td class="py-2 px-2">
+                                                <span :class="u.enabled ? 'text-green-400' : 'text-red-400'" x-text="u.enabled ? 'Active' : 'Disabled'"></span>
+                                                <span x-show="u.temp_password_pending" class="text-xs text-yellow-300 whitespace-nowrap"
+                                                      title="A one-time password was issued and not used yet">· one-time password pending</span>
+                                            </td>
+                                            <td class="py-2 px-2 text-gray-400 whitespace-nowrap" x-text="when(u.last_login)"></td>
+                                            <td class="py-2 px-2 text-right whitespace-nowrap">
+                                                <template x-if="canManage(u)">
+                                                    <span class="inline-flex gap-2">
+                                                        <button type="button" @click="setEnabled(u, !u.enabled)" :disabled="busy"
+                                                                class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1 rounded text-xs"
+                                                                x-text="u.enabled ? 'Disable' : 'Enable'"></button>
+                                                        <button type="button" @click="reset(u)" :disabled="busy"
+                                                                class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1 rounded text-xs">Reset password</button>
+                                                    </span>
+                                                </template>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                            <p x-show="loading && !users.length" class="text-sm text-gray-500 mt-3">Loading users…</p>
+                        </div>
+
+                        <!-- Transfer Super-admin: only the Super-admin sees it -->
+                        <div x-show="myRole === 'superadmin'" class="mt-5 p-4 bg-gray-900 rounded-lg border border-gray-700">
+                            <h4 class="text-white font-medium">Transfer Super-admin</h4>
+                            <p class="text-gray-400 text-sm mb-3">Hand the Super-admin role to an enabled Admin. You become an Admin.</p>
+                            <p x-show="!admins().length" class="text-sm text-gray-500">No enabled Admin to hand it to. Add or promote one first.</p>
+                            <form x-show="admins().length" @submit.prevent="transfer()" class="flex flex-wrap items-center gap-2">
+                                <select x-model="transferTo" aria-label="New Super-admin"
+                                        class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white">
+                                    <option value="">Choose an Admin…</option>
+                                    <template x-for="a in admins()" :key="a.username">
+                                        <option :value="a.username" x-text="a.username"></option>
+                                    </template>
+                                </select>
+                                <input type="password" x-model="transferPw" placeholder="your password" aria-label="Your password" autocomplete="current-password"
+                                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                <button type="submit" :disabled="busy || !transferTo || !transferPw"
+                                        class="bg-red-600 hover:bg-red-700 disabled:opacity-50 px-4 py-1.5 rounded text-sm text-white">Transfer</button>
+                            </form>
+                        </div>
+
+                        <!-- One-time password: shown once, never again -->
+                        <div x-show="otp" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4"
+                             role="dialog" aria-modal="true" aria-labelledby="otp-title">
+                            <div class="bg-gray-800 rounded-lg p-5 border border-gray-700 w-full max-w-md">
+                                <h3 id="otp-title" class="text-lg font-semibold text-white mb-2" x-text="otp ? 'One-time password for ' + otp.name : ''"></h3>
+                                <div class="flex items-center gap-2 mb-3">
+                                    <code id="otp-value" class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2 font-mono text-sm text-white break-all"
+                                          style="user-select:all" x-text="otp && otp.password"></code>
+                                    <button type="button" @click="copy()" class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-sm text-white"
+                                            x-text="copied ? 'Copied' : 'Copy'"></button>
+                                </div>
+                                <p id="otp-note" class="text-sm text-gray-300 mb-4"
+                                   x-text="otp ? 'Give this to ' + otp.name + '. It works for ' + otp.hours + ' hours, and only to choose their own password.' : ''"></p>
+                                <p class="text-xs text-gray-500 mb-4">It is not shown again. If it is lost, reset the password.</p>
+                                <div class="flex justify-end">
+                                    <button type="button" @click="otp = null; copied = false" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">Done</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Logs Tab — each container's log. Listed on entry / Refresh only; a log is
                          read only while its viewer is open, new lines only (services/live_logs.py). -->
                     <div x-show="settingsTab === 'logs'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
@@ -201,7 +330,7 @@
                             <!-- Data storage (config.yaml data_path; scripts/move-data.sh). Where all
                                  of Intact's data lives, and moving it to another disk. Kept in plain
                                  words: a disk picker, one Move button (it checks first), a status line. -->
-                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700"
+                            <div data-needs="host" class="p-4 bg-gray-900 rounded-lg border border-gray-700"
                                  x-data="{
                                     info: null, disks: [], pick: '', other: '', busy: false, err: '', note: '', timer: null,
                                     gb(b) { return b == null ? '?' : (b / 1073741824).toFixed(b < 10737418240 ? 1 : 0) + ' GB'; },
@@ -335,7 +464,7 @@
                                  restarts Intact - so this card only starts the run and points at
                                  Settings -> Actions, where the run's log lands.
                                  NOTE: no double quotes anywhere inside x-data. -->
-                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700"
+                            <div data-needs="host" class="p-4 bg-gray-900 rounded-lg border border-gray-700"
                                  x-data="{
                                     info: null, open: false, form: { ip: '', ports: {} }, busy: false, err: '', done: '', newUrl: '',
                                     fields: [['kibana', 'Kibana'], ['portainer', 'Portainer'], ['iris', 'IRIS'], ['timesketch', 'Timesketch'], ['volweb', 'VolWeb'], ['velociraptor_agent', 'Velociraptor agents']],
@@ -454,7 +583,7 @@
                             </div>
 
                             <!-- Online Upgrade (combined prepare + apply, no tar.gz round-trip) -->
-                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                            <div data-needs="host" class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div>
                                     <h4 class="text-white font-medium">Online Upgrade</h4>
                                     <p class="text-gray-400 text-sm">Internet-connected: download modules &amp; apply in one workflow. Skips the intermediate package file.</p>
@@ -468,7 +597,7 @@
                             </div>
 
                             <!-- Prepare Upgrade Package -->
-                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                            <div data-needs="host" class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div>
                                     <h4 class="text-white font-medium">Prepare Upgrade Package</h4>
                                     <p class="text-gray-400 text-sm">Download and package modules for air-gapped transfer</p>
@@ -486,7 +615,7 @@
                                  when it finishes the review modal pops up
                                  so the operator picks which modules from the
                                  manifest to actually apply. No auto-apply. -->
-                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700">
+                            <div data-needs="host" class="p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div class="flex items-center justify-between mb-3">
                                     <div>
                                         <h4 class="text-white font-medium">Import Upgrade Package</h4>
@@ -628,7 +757,7 @@
                                  sizes + checkboxes + a live total. Nothing
                                  is purged until the operator submits a
                                  non-empty selection. -->
-                            <div class="p-4 bg-gray-900 rounded-lg border border-red-900/50">
+                            <div data-needs="host" class="p-4 bg-gray-900 rounded-lg border border-red-900/50">
                                 <div class="flex items-center justify-between">
                                     <div>
                                         <h4 class="text-red-400 font-medium">System Purge</h4>

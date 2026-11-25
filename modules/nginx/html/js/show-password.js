@@ -1,7 +1,7 @@
 /**
  * Show / Hide on every password field of the page (setup.html, login.html).
  *
- * Setup asks for a 12+ character password twice and refuses a mismatch it does
+ * Setup asks for a 15+ character password twice and refuses a mismatch it does
  * not show -- the operator could not see which of the two was mistyped. Each
  * field gets its own toggle, so one can be checked without exposing the other.
  * The field goes back to type=password on submit, so a password manager still

@@ -1,168 +1,113 @@
-# Plan: multi-user accounts
+# Multi-user accounts, roles and one login for every tool
 
-Status: **planned for a future release, not started.** Written 2026-11-10 from
-the first round of decisions. The case chat (section 5) still needs a design
-discussion before any code.
+Status: Phase 1 being built (2026-11-25). Replaces the 2026-11-10 plan, which
+kept per-tool logins out of scope, let an Admin set other users' passwords
+(OWASP ASVS 5.0 6.4.6 forbids it) and kept 7-day sessions.
 
-## 1. Goal
+The research behind it (sources for every claim below) is kept off the repo
+in `~/intact-work/reports/Intact multi user roles and SSO.md`.
 
-Several people can work on one appliance, each with their own login. Keep it
-simple and secure:
+## 1. Roles
 
-- one Admin, created at install;
-- the Admin creates the other users;
-- two other roles: read/write and read only.
+Four roles on one ladder. One rule covers all user management: a user may
+create, edit, disable or reset only users strictly **below** their own rank,
+and may grant only roles below their own. Nobody edits their own role.
 
-## 2. Roles
+| Area | Super-admin (1) | Admin | Operator | Read-only |
+|---|---|---|---|---|
+| View cases, workflows, reports | yes | yes | yes | yes |
+| Create/change cases, run blueprints, collect, upload, chat | yes | yes | yes | no |
+| Download raw evidence | yes | yes | yes | no (reports yes) |
+| Create or edit blueprints and artifacts, run raw VQL | yes | yes | no | no |
+| Intact settings (LLM keys, cloud credentials, config) | yes | yes | no | no |
+| Host-level: upgrade, restore, data move, purge, Docker, Portainer | yes | no | no | no |
+| Manage users | everyone below | Operators, Read-only | no | no |
+| Bundled tools (Velociraptor, Timesketch, Kibana, VolWeb) | yes | yes | yes | no |
+| IRIS (until it is removed) | yes | yes | no | no |
+| Portainer | yes | no | no | no |
 
-| | Admin | Analyst (read/write) | Viewer (read only) |
-|---|---|---|---|
-| How many | exactly one, created at install | any | any |
-| Created by | the installer | the Admin | the Admin |
-| Read cases, results, reports, dashboards | yes | yes | yes |
-| Create/edit cases, run collections, workflows, uploads | yes | yes | no |
-| Use the case chat (spends the LLM keys) | yes | yes | no, can only read it |
-| Settings (network/ports, upgrades, LLM keys, data move, users) | yes | no | no |
-| Manage users (create, delete, change role, set password, unlock) | yes | no | no |
+Host-level power is Super-admin only because it is root-equivalent: the
+backend drives the Docker socket, and Portainer is Docker. An Admin with it
+could rewrite the user table, so "Admins cannot touch the Super-admin" would
+not hold. Roles cannot constrain people who have a shell on the host.
 
-- The Admin can't create a second Admin, and the Admin account can't be
-  deleted or downgraded.
-- "Settings" means every Settings page and its API, not only what the UI hides.
-  The backend checks the role on every write route. Hiding a button is not
-  security.
+Code: `modules/backend/services/users.py` (table, ranks),
+`services/access_policy.py` (every route's lowest role, and each tool's),
+`services/auth_service.py:gate_decision` (enforces both on every request),
+`routes/user_routes.py` (management API).
 
-## 3. Login, lockout and recovery
+## 2. Accounts and passwords
 
-- **Login stays one simple page.** It takes a username and password, and the
-  same session cookie as today.
-- **Lockout is per user.** Too many failed logins lock that one account, and the
-  other users keep working.
-  - Today's counter (`services/auth_service.py`) is global, and on purpose it
-    is a *timed* lock with backoff (10 failures → 15 min, doubling, cap 24 h).
-    That stops someone on the network from locking the operator out for good.
-  - Keep the timed backoff per user, and add an Admin action to unlock early.
-- **The Admin unlocks users.** In user management the Admin can:
-  - unlock a locked user;
-  - set a new password for any user. That also unlocks them and ends their
-    sessions.
-- **A locked Admin recovers through config.yaml.**
-  - The login message for a locked Admin says: "Reset the admin password in
-    config.yaml and restart."
-  - Today's recovery path is `first_login: true` in config.yaml, which reopens
-    the setup page. Access to the host IS the authentication.
-  - With users, that path must reset **only the Admin** (password, lock,
-    sessions). Every other user, password and session stays as it was. This
-    needs its own test.
-- **Sessions are per user.** Changing a password or deleting a user ends that
-  user's sessions.
-- **nginx gate:** `/api/auth/verify` keeps gating the dashboard and every tool
-  port. It has to accept any valid user session.
-  - Any role may pass the gate to the bundled tools (see section 6).
-  - Portainer is the one to reconsider: anyone with its login controls Docker.
+- Users are **disabled, never deleted**, and names are never reused: a new
+  "anna" must not inherit an old one's audit trail or tool grants.
+- A new user, and a reset, gets a **one-time password** shown once to the
+  Admin. It works for 24 hours and only to choose the user's own password, so
+  the Admin never knows the final one.
+- Password rule (NIST SP 800-63B-4): 15+ characters, any characters, no
+  composition rules, checked against known and trivial values. Passwords set
+  under the old 12-character rule keep working until the next change.
+- Sessions: 1 hour idle, 12 hours in all. Disabling a user, changing their
+  role or their password ends their sessions on the next request.
+- User management needs the password typed in the last 15 minutes (step-up).
+- Super-admin transfer: from the Super-admin's own session, with the password,
+  to an enabled Admin, in one transaction; the old Super-admin becomes an Admin.
+- Recovery: `sudo scripts/reset-login.sh` on the host resets the Super-admin
+  only. A forgotten Admin/Operator password is reset by someone above them.
+- Upgrade: the existing single login becomes the Super-admin (same name and
+  password); everyone signs in once more. The old credential rows stay in sync
+  with the Super-admin, so a rollback still signs the Super-admin in.
 
-## 4. Every page works for several users
+## 3. Security
 
-- **Shared data is shared.** A case and everything in it (runs, results,
-  findings, reports, notes) belongs to the case, not to a user. When one user
-  changes something, everyone sees it.
-- **Not real time, but fast.** Open pages refresh shared data about every
-  **5 seconds**, using the polling pattern pages already use.
-  - Refresh only what the page shows, and only while the tab is visible.
-- **Per-user data stays per user.** That covers UI preferences, the private
-  case chat (section 5) and the user's own sessions.
-- **Show who did it.** Every run, change and chat message records its user, and
-  the Settings → Actions log shows it.
-- **Conflicts.** Two users editing the same field: last write wins, but the
-  page shows "changed by <user> just now" on refresh, so nobody overwrites
-  silently. Long-running actions (one collection per client, one upgrade at a
-  time) keep their existing locks.
-- **Audit.** The existing auth audit log records the username for every login,
-  failure, lock, unlock, password change and user change.
-- An audit of every page and route for single-user assumptions is still to do;
-  see section 7, open question 1.
+- CSRF: state-changing API requests from another **origin** are refused
+  (`Sec-Fetch-Site`, then `Origin`). SameSite=Lax was not enough: the tools on
+  other ports are "same-site" with the dashboard (RFC 6265 §8.5).
+- No CORS: the dashboard calls its own origin only.
+- nginx strips the dashboard cookie before requests reach any tool, logs the
+  user name for every tool request, and asks the backend per tool
+  (`/api/auth/verify?tool=`), so a role that may not open a tool gets 403.
+- Audit log: every login event and every state-changing request, under the
+  user's name, hash-chained so an edited or removed line is detectable
+  (`auth_service.verify_audit_chain`). An off-box copy is a later phase.
 
-## 5. Case chat (to discuss)
+## 4. Case chat
 
-Today the case has one chat (`/api/cases/<case_id>/chat` in
-`routes/case_routes.py`), shared by whoever is logged in.
+One shared chat per case for now; every message shows who wrote it.
+Read-only users read it and cannot write. Private per-user threads are later.
 
-Wanted:
+## 5. One login for every tool (Phases 2 and 3)
 
-- **A private chat per user, per case.** Each Analyst or Admin talks to the AI
-  in their own thread. Others don't see it.
-- **One shared chat** where users can talk to each other.
-- **Share from private to shared.** A user can push a message, or an AI answer,
-  from their private chat into the shared chat.
+The dashboard stays the only login. nginx asks it on every tool request, then
+passes that user's identity on. No free edition supports one SSO standard, so
+each tool gets its own way in:
 
-Options to decide on:
+| Tool | Way in | Generated password? |
+|---|---|---|
+| Timesketch | trusted user header set by nginx (`SSO_ENABLED`) | no |
+| Kibana / Elasticsearch (Basic licence) | per-user native user, nginx injects `Authorization: Basic` | yes |
+| Velociraptor | per-user user via VQL `user_create`/`user_grant`, injected Basic; OIDC fallback | yes |
+| VolWeb | per-user Django user, token handed to the browser on VolWeb's origin | yes |
+| Portainer | Super-admin only, keeps its own login (CE ends Aug 2027) | — |
 
-- **A. Shared chat per case** (recommended to start). Each case gets a "Team"
-  thread next to every user's private thread. Sharing copies the message, with
-  "shared by <user> from their chat", into that case's Team thread. It's simple
-  and keeps talk about a case inside the case.
-- **B. One global chat for the whole appliance.** Plus per-user private chats in
-  each case, and sharing into the global chat with a link back to the case. It's
-  better for cross-case talk, but a busy box gets noisy.
-- **C. Both.** A Team thread per case plus one global chat. It's the most
-  flexible and the most UI and code.
+Read-only users get no tool accounts: Kibana's and Velociraptor's read roles
+see every case, VolWeb and Portainer have no read-only role.
 
-Points to settle:
+Generated passwords: encrypted (AES-GCM) in their own table, key in a root-only
+file under `data/state/backend/`, never shown or logged, rotated freely. One
+reconciler keeps every tool account in its desired state (boot, user change,
+nightly) and reverts drift. No human gets Elasticsearch `superuser`, Velociraptor
+`administrator` (except the Super-admin) or VolWeb's `/admin/`.
 
-- Is the shared chat human-only, or can the AI be asked there too? Whose
-  context does the AI use?
-- Does a shared AI answer keep its sources and evidence links?
-- Do Viewers read the shared chat only, as decided in section 2?
-- Existing chats on upgrade go to the Admin's private thread (section 6).
+## 6. Phases
 
-## 6. Bundled tools, upgrades, and where it touches the code
-
-- **Bundled tools** (Kibana, IRIS, Timesketch, Portainer, VolWeb) keep their own
-  credentials. Our gate decides who reaches them, and their own login decides
-  what each person can do there. Per-user accounts inside those tools are not
-  part of this feature.
-- **Upgrading an existing box.** The current single login becomes the Admin
-  (same username and password), existing chats become the Admin's private
-  chats, and no data moves.
-  - This runs in the new backend on first start (a migration like
-    `services/auth_migrate.py`).
-  - The upgrade engine's backward-compatibility surface is untouched; see
-    `docs/UPGRADE_CONTRACT.md`.
-- **Code it touches** (first look, not a full audit):
-  - `services/auth_service.py`: one credential and one global lock today. It
-    becomes a users table in the DB, with a per-user lock and sessions.
-  - `routes/auth_routes.py`: setup, login, logout, change-password, verify.
-    Add the user-management routes (Admin only).
-  - A role check (decorator) on every write route, and Admin-only on
-    `system_routes`, upgrade, settings, data move and LLM keys.
-  - The case chat routes and storage, for per-user and shared threads.
-  - Frontend: a Users card in Settings; hide what the role can't do; a user
-    menu (name, role, change own password, log out).
-
-## 7. Decisions so far, and open questions
-
-Decided (2026-11-10):
-
-| Question | Decision |
-|---|---|
-| Roles | Admin, Analyst (read/write), Viewer (read only) |
-| Number of Admins | exactly one |
-| Locked Admin | reset via config.yaml; resets the Admin only, never other users |
-| Settings | Admin only; Analysts use the chats (and so the LLM keys) |
-| Viewer chat | read only, no chatting |
-| Bundled tools | keep their own credentials; gated there |
-| Sync | open pages refresh shared data about every 5 s |
-| Existing boxes | the current login becomes the Admin on upgrade |
-| When | a future release |
-
-Open:
-
-1. A full audit of pages and routes for single-user assumptions, to size the
-   work.
-2. Chat option A, B or C (section 5), and whether the AI answers in the
-   shared chat.
-3. Should Viewers reach Portainer at all? It hands out Docker control to
-   anyone with its login.
-4. Password rules for new users: minimum length, and whether to force a change
-   at first login.
-5. Deleting a user: keep their name on past runs and messages (recommended),
-   and decide what happens to their private chats.
+0. Lab tests: Velociraptor with an injected Basic header; Kibana when the
+   injected user changes in one browser; Timesketch's API client with
+   `SSO_ENABLED`; VolWeb's token hand-over.
+1. **Dashboard users, roles, gate, CSRF/CORS, cookie strip, audit chain,
+   screens.** Tools keep their shared logins.
+2. Timesketch header login, Kibana per-user accounts, the password vault and
+   reconciler, backend service accounts separate from human ones.
+3. Velociraptor and VolWeb per-user accounts; MFA (TOTP, then WebAuthn) for
+   Admins and up, with recovery codes.
+4. Restricted cases, per-user API tokens, off-box audit, Portainer replacement,
+   IRIS removal.

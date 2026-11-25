@@ -46,15 +46,16 @@
                      background:#2563eb;color:#fff;font-weight:600;cursor:pointer">Sign in</button>
     </form>
 
-    <!-- A session that signed in with a publicly known password may do nothing
-         else until it is replaced: the backend answers 403
-         password_change_required everywhere but change-password. -->
+    <!-- A session that signed in with a one-time password (from an Admin) or a
+         publicly known one may do nothing else until it is replaced: the
+         backend answers 403 password_change_required everywhere but
+         change-password. The dashboard's user menu opens it too (?change=1). -->
     <form id="changeForm" style="display:none;background:#111827;border:1px solid #1f2937;border-radius:10px;padding:20px">
-      <div style="margin-bottom:14px;padding:10px 12px;border-radius:6px;background:#3b1d1d;
+      <div id="mustChange" style="margin-bottom:14px;padding:10px 12px;border-radius:6px;background:#3b1d1d;
                   border:1px solid #7f1d1d;font-size:13px;line-height:1.5">
-        This box still uses a publicly known dashboard password. Choose a new one.
+        You signed in with a one-time or publicly known password. Choose your own password to continue.
       </div>
-      <label for="current" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Current password</label>
+      <label for="current" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Current password (or the one-time password)</label>
       <input id="current" type="password" autocomplete="current-password"
              style="width:100%;padding:10px 12px;margin-bottom:14px;border-radius:6px;
                     background:#0d1117;border:1px solid #374151;color:#fff">
@@ -66,24 +67,25 @@
       <input id="confirmpw" type="password" autocomplete="new-password"
              style="width:100%;padding:10px 12px;margin-bottom:6px;border-radius:6px;
                     background:#0d1117;border:1px solid #374151;color:#fff">
-      <div style="font-size:12px;color:#9ca3af;margin-top:6px">12+ characters with an uppercase letter, a
-        lowercase letter, a digit and a symbol (such as ! @ # % ^ &amp; * + = ? ~); no spaces,
-        quotes, \ or $; starting with a letter or digit.</div>
+      <!-- Default text; replaced by /api/auth/status password_rule once signed in. -->
+      <div id="pwRule" style="font-size:12px;color:#9ca3af;margin-top:6px">At least 15 characters; any
+        characters, spaces included. A passphrase of a few words works well.</div>
       <div id="changeError" style="display:none;color:#f87171;font-size:13px;margin:10px 0"></div>
       <button id="changeBtn" type="submit"
               style="width:100%;margin-top:14px;padding:11px;border-radius:6px;border:none;
                      background:#2563eb;color:#fff;font-weight:600;cursor:pointer">Change password</button>
+      <a id="changeCancel" href="/" style="display:none;margin-top:12px;text-align:center;font-size:13px;color:#93c5fd">Cancel</a>
     </form>
 
-    <!-- Shown ALWAYS, not only while locked out. There is one account and the
-         password is only stored as a hash, so a forgotten password has no
-         in-app way out — the way out has to be visible before you need it. -->
+    <!-- Shown ALWAYS, not only while locked out. Passwords are only stored as
+         hashes, so the way out has to be visible before you need it. -->
     <div style="margin-top:18px;padding:12px 14px;border-radius:8px;background:#111827;
                 border:1px solid #1f2937;font-size:12px;color:#9ca3af;line-height:1.6">
-      <strong style="color:#d1d5db">Forgotten the password, or locked out?</strong><br>
-      On the appliance, run <code style="color:#93c5fd">sudo scripts/reset-login.sh</code>
+      <strong style="color:#d1d5db">Forgotten your password, or locked out?</strong><br>
+      Ask an Admin to reset it: you get a one-time password to choose a new one.
+      For the Super-admin: on the appliance, run <code style="color:#93c5fd">sudo scripts/reset-login.sh</code>
       (in the Intact.AI directory). It prints a one-time setup token; reload this page and
-      enter it to choose new credentials. No restart needed.
+      enter it to choose new Super-admin credentials. Other users are not changed. No restart needed.
     </div>
 
   </div>
@@ -104,10 +106,24 @@
 
   var changeForm = document.getElementById('changeForm');
   var changeErr  = document.getElementById('changeError');
-  function showChange(current) {
+  // must: signed in with a one-time or known password (no way back to the
+  // dashboard until it is changed). Otherwise the user chose to change it.
+  function showChange(current, must) {
     hide(form); hide(notice); hide(lockbox);
-    document.querySelector('h1').textContent = 'Change the dashboard password';
+    document.querySelector('h1').textContent = 'Change your password';
+    document.getElementById('mustChange').style.display = must ? 'block' : 'none';
+    document.getElementById('changeCancel').style.display = must ? 'none' : 'block';
     changeForm.style.display = 'block';
+    // The rule comes from the backend once signed in; keep the default otherwise.
+    fetch('/api/auth/status', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        if (s && s.password_rule) {
+          var t = String(s.password_rule);
+          document.getElementById('pwRule').textContent = t.charAt(0).toUpperCase() + t.slice(1) + '.';
+        }
+      })
+      .catch(function () { /* keep the default text */ });
     var cur = document.getElementById('current');
     if (current) cur.value = current;
     (current ? document.getElementById('newpw') : cur).focus();
@@ -147,6 +163,7 @@
   var REASONS = {
     expired: 'Your session expired, so you have been signed out. Sign in again to continue.',
     credentials_changed: 'The password was changed, so all existing sessions were signed out.',
+    disabled: 'Your account was disabled, so you have been signed out. Ask an Admin if you need access again.',
     logged_out: 'You have been signed out.',
     none: ''
   };
@@ -193,7 +210,8 @@
     .then(function (r) { return r.json(); })
     .then(function (s) {
       if (s.mode === 'setup') { location.replace('/setup.html'); return; }
-      if (s.authenticated && s.must_change) { showChange(''); return; }
+      if (s.authenticated && s.must_change) { showChange('', true); return; }
+      if (s.authenticated && /[?&]change=1(&|$)/.test(location.search)) { showChange('', false); return; }
       if (s.authenticated)    { location.replace('/'); return; }
       if (s.mode === 'error') {
         show(notice, s.message || 'config.yaml could not be read on the appliance.');
@@ -226,7 +244,7 @@
       .then(function (res) {
         btn.textContent = 'Sign in';
         if (res.status === 200 && res.body.success && res.body.must_change) {
-          showChange(document.getElementById('password').value);
+          showChange(document.getElementById('password').value, true);
           return;
         }
         if (res.status === 200 && res.body.success) {

@@ -49,17 +49,24 @@
   let _redirecting = false;
   function _handleUnauthenticated(resp) {
     if (_redirecting) return;
-    _redirecting = true;
-    // Prefer the backend's reason ('expired' / 'credentials_changed'); fall back
-    // to a bare login page if the body isn't readable.
+    // Prefer the backend's reason ('expired' / 'credentials_changed' /
+    // 'disabled'); fall back to a bare login page if the body isn't readable.
     const go = function (reason) {
+      if (_redirecting) return;
+      _redirecting = true;
       const q = reason ? ('?reason=' + encodeURIComponent(reason)) : '';
       try { location.replace('/login.html' + q); }
       catch (e) { location.href = '/login.html' + q; }
     };
     try {
       resp.clone().json()
-        .then(function (d) { go(d && d.reason); })
+        .then(function (d) {
+          // A 401 naming another error is an answer, not a lost session: a
+          // wrong password typed into the re-auth prompt or the Super-admin
+          // transfer (invalid_credentials / forbidden). The caller shows it.
+          if (d && d.error && d.error !== 'unauthenticated') return;
+          go(d && d.reason);
+        })
         .catch(function () { go(''); });
     } catch (e) { go(''); }
   }
@@ -104,17 +111,35 @@
       // it there would cover 3 of them and leave every other panel silently
       // rendering empty on an expired session.
       if (resp.status === 401) { _handleUnauthenticated(resp); return resp; }
-      // Signed in with a publicly known password: the backend refuses
-      // everything but change-password until it is replaced. Other 403s pass.
       if (resp.status === 403) {
-        resp.clone().json().then(function (d) {
-          if (d && d.error === 'password_change_required' && !_redirecting) {
-            _redirecting = true;
-            // top: from the Case Analysis iframe the whole dashboard must go.
-            var u = '/login.html?reason=password_change_required';
-            try { window.top.location.replace(u); } catch (e) { location.replace(u); }
+        return resp.clone().json().then(function (d) {
+          var err = d && d.error;
+          // Signed in with a one-time or publicly known password: the backend
+          // refuses everything but change-password until it is replaced.
+          if (err === 'password_change_required') {
+            if (!_redirecting) {
+              _redirecting = true;
+              // top: from the Case Analysis iframe the whole dashboard must go.
+              var u = '/login.html?reason=password_change_required';
+              try { window.top.location.replace(u); } catch (e) { location.replace(u); }
+            }
+            return resp;
           }
-        }).catch(function () { /* not JSON: an ordinary 403 */ });
+          var acc = window.IntactAccess;
+          // User management wants the password typed in the last 15 minutes:
+          // ask for it, then send the same request once more (not again after).
+          if (err === 'reauth_required' && acc && !(init && init._intactReauth)) {
+            return acc.reauth().then(function (ok) {
+              return ok ? window.fetch(input, Object.assign({}, init, { _intactReauth: true })) : resp;
+            });
+          }
+          // The role may not. Say so for what the user did; a background GET
+          // (a poller on a page the role still sees) would toast every few
+          // seconds, so those stay quiet and render their own empty state.
+          var method = ((init && init.method) || (typeof input !== 'string' && input && input.method) || 'GET').toUpperCase();
+          if (err === 'forbidden' && acc && method !== 'GET') acc.toast(d.message);
+          return resp;
+        }).catch(function () { return resp; });   // not JSON: an ordinary 403
       }
       // PRIMARY path: the backend redirects a module launched from the System
       // workspace to Default and echoes the effective workspace here. Follow it
@@ -273,7 +298,7 @@
     el.innerHTML =
       `<span style="font-size:12px;color:var(--muted,#8b949e)">Case</span>
        <select class="ac-select" style="width:auto;min-width:160px">${options}
-         <option value="__new__">＋ New case…</option></select>
+         <option value="__new__" data-needs="write">＋ New case…</option></select>
        ${opts.manageLink === false ? '' :
         '<a href="/cases.html" title="Manage cases" style="font-size:12px">Manage</a>'}
        <span class="ac-org" style="font-size:12px;color:var(--muted,#8b949e)" title="The case's Velociraptor org: everything this case does in Velociraptor runs there. Change it by editing the case.">Org <b style="color:inherit;font-weight:600">${escapeHtml((cases.find(c => c.case_id === id) || {}).velo_org || 'root')}</b></span>`;

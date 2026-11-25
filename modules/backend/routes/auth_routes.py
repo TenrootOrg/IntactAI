@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Auth Routes — single-user dashboard login.
+"""Auth Routes — dashboard login, setup, password changes, the nginx check.
 
 Endpoints here are the ONLY ones reachable without a session (see the allowlist
 in app.py:_auth_gate). Keep that in mind before adding anything: whatever lands
@@ -12,6 +12,7 @@ invariants it documents.
 from flask import Blueprint, jsonify, request, session
 
 from services import auth_service as auth
+from services import users
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -37,20 +38,36 @@ def auth_status():
         'locked': locked > 0,
         'lock_remaining_seconds': locked,
         'recovery_hint': auth.recovery_hint(),
+        'password_rule': auth.PASSWORD_RULE,    # not secret: the setup page shows it
     }
     if mode == auth.MODE_ERROR:
         body['message'] = ('config.yaml could not be read, so the appliance '
                            'cannot tell whether it has been set up. Fix the '
                            'file on the host, then reload.')
-    if state == auth.SESSION_OK:
-        body['user'] = session.get('user')
+    row = auth.session_user(session)
+    if row:
+        body['user'] = row['username']
+        body['role'] = row['role']
+        body['role_label'] = users.ROLE_LABELS.get(row['role'], row['role'])
         body['must_change'] = auth.must_change(session)
+        # What the UI may show. The server enforces each one regardless.
+        rank = users.rank(row['role'])
+        body['can'] = {
+            'write': rank >= users.rank(users.OPERATOR),
+            'settings': rank >= users.rank(users.ADMIN),
+            'users': rank >= users.rank(users.ADMIN),
+            'host': row['role'] == users.SUPERADMIN,
+            'tools': sorted(t for t, need in auth.access_policy.TOOLS.items()
+                            if rank >= users.rank(need)),
+        }
     return jsonify(body)
 
 
 @auth_bp.route('/api/auth/setup', methods=['POST'])
 def auth_setup():
-    """Claim the appliance: set the single user's id + password.
+    """Claim the appliance: set the Super-admin's name + password. On a box
+    that already has users this is the recovery path: it resets the
+    Super-admin only and leaves every other account as it is.
 
     Needs BOTH config.yaml first_login: true AND the one-time setup token from
     data/state/backend/setup_token (printed by install.sh and by
@@ -122,11 +139,18 @@ def auth_setup():
     if password != confirm:
         return jsonify({'success': False, 'error': 'mismatch',
                         'message': 'The two passwords do not match.'}), 400
-    problem = auth.password_problem(password)
+    problem = auth.password_problem(password, user)
     if problem:
         return jsonify({'success': False, 'error': 'weak_password',
                         'message': f'Password rejected: {problem}. '
                                    f'Rule: {auth.PASSWORD_RULE}.'}), 400
+    existing = users.by_name(user)
+    name_problem = None if existing else users.name_problem(user)
+    if name_problem or (existing and existing['role'] != users.SUPERADMIN):
+        return jsonify({'success': False, 'error': 'bad_username',
+                        'message': (f'User name rejected: {name_problem}.' if name_problem else
+                                    'That name belongs to another user. Choose another '
+                                    'name for the Super-admin.')}), 400
 
     # ORDER IS SECURITY-CRITICAL: spend the token, close setup, THEN store the
     # credential. Spending first makes the token single-use even for two
@@ -166,10 +190,10 @@ def auth_setup():
                         'scripts/reset-login.sh on the appliance and try again.'),
         }), 500
 
-    auth.bump_generation_cache()
-    auth.start_session(session, user)
-    auth.audit('setup', request, username_value=user)
-    return jsonify({'success': True, 'user': user})
+    row = users.superadmin()
+    auth.start_session(session, row)
+    auth.audit('setup', request, username_value=row['username'], role=row['role'])
+    return jsonify({'success': True, 'user': row['username']})
 
 
 @auth_bp.route('/api/auth/login', methods=['POST'])
@@ -217,7 +241,8 @@ def auth_login():
             'recovery_hint': auth.recovery_hint(),
         }), 403
 
-    if not auth.verify_password(user, password):
+    row = auth.authenticate(user, password)
+    if row is None:
         lock_seconds = auth.register_failure(client)
         remaining = auth.failures_before_lock(client)
         auth.audit('login_failed', request, username_value=user,
@@ -242,15 +267,19 @@ def auth_login():
         }), 401
 
     auth.reset_lockout(client)
-    auth.bump_generation_cache()
-    auth.start_session(session, user)
-    # A publicly known (or rule-failing) password still gets in -- old boxes
-    # must -- but the session can do nothing except change it (gate_decision).
-    must_change = auth.needs_change(password)
+    auth.start_session(session, row)
+    users.touch_login(row['id'])
+    # A publicly known password still gets in -- old boxes must -- and so does a
+    # one-time password from an Admin, but either session can do nothing except
+    # choose a new password (gate_decision).
+    temp = bool(row.get('temp_expires'))
+    must_change = temp or auth.needs_change(password)
     if must_change:
-        session['must_change'] = True
-    auth.audit('login_ok', request, username_value=user, must_change=must_change or None)
-    return jsonify({'success': True, 'user': user, 'must_change': must_change})
+        session['must_change'] = auth.MUST_CHANGE_TEMP if temp else True
+    auth.audit('login_ok', request, username_value=row['username'], role=row['role'],
+               must_change=must_change or None)
+    return jsonify({'success': True, 'user': row['username'], 'role': row['role'],
+                    'must_change': must_change})
 
 
 @auth_bp.route('/api/auth/logout', methods=['POST'])
@@ -266,16 +295,22 @@ def auth_change_password():
     """Requires the current password even though the caller already holds a
     session — a stolen cookie should not be enough to lock the real operator
     out of their own appliance."""
-    if auth.evaluate_session(session) != auth.SESSION_OK:
+    row = auth.session_user(session)
+    if row is None:
         return jsonify({'success': False, 'error': 'unauthenticated'}), 401
 
     data = request.get_json(silent=True) or {}
     current = data.get('current_password') or ''
     new_password = data.get('new_password') or ''
     confirm = data.get('confirm') or ''
-    user = session.get('user')
+    user = row['username']
 
-    if not auth.verify_password(user, current):
+    refused = password_guess_guard()
+    if refused:
+        return refused
+    ok = auth.verify_password(user, current)
+    password_guess_result(ok)
+    if not ok:
         auth.audit('password_change_failed', request, username_value=user,
                    reason='wrong_current_password')
         return jsonify({'success': False, 'error': 'invalid_credentials',
@@ -287,38 +322,80 @@ def auth_change_password():
     # password on a tool that controls every endpoint was a QA finding. A box
     # still on an old short password keeps logging in; it just cannot change
     # TO one.
-    problem = auth.password_problem(new_password)
+    problem = auth.password_problem(new_password, user)
+    if not problem and new_password == current:
+        problem = 'it is the same as the current one'
     if problem:
         return jsonify({'success': False, 'error': 'weak_password',
                         'message': f'Password rejected: {problem}. '
                                    f'Rule: {auth.PASSWORD_RULE}.'}), 400
 
-    if not auth.set_credential(user, new_password):
+    try:
+        auth.set_user_password(row, new_password)
+    except Exception:
         return jsonify({'success': False, 'error': 'store_failed',
                         'message': 'Could not store the new password.'}), 500
 
-    # Bumping the generation invalidates every OTHER session; re-issue this one
-    # so the operator who just changed their own password isn't logged out.
-    auth.bump_generation_cache()
-    auth.start_session(session, user)
-    auth.audit('password_changed', request, username_value=user)
+    # The new generation ends every OTHER session of this user; re-issue this
+    # one so the person who just changed their own password stays signed in.
+    auth.start_session(session, users.get(row['id']))
+    auth.audit('password_changed', request, username_value=user, role=row['role'])
+    return jsonify({'success': True})
+
+
+def password_guess_guard():
+    refused = auth.password_guess_refusal(_client_ip())
+    return (jsonify(refused[0]), refused[1]) if refused else None
+
+
+def password_guess_result(ok: bool) -> None:
+    auth.password_guess_result(_client_ip(), ok)
+
+
+@auth_bp.route('/api/auth/reauth', methods=['POST'])
+def auth_reauth():
+    """Step-up: re-enter the password before user management (ASVS 7.5.3).
+    Wrong answers count toward the same per-address lockout as login."""
+    row = auth.session_user(session)
+    if row is None:
+        return jsonify({'success': False, 'error': 'unauthenticated'}), 401
+    refused = password_guess_guard()
+    if refused:
+        return refused
+    data = request.get_json(silent=True) or {}
+    ok = auth.verify_password(row['username'], data.get('password') or '')
+    password_guess_result(ok)
+    if not ok:
+        auth.audit('reauth_failed', request, username_value=row['username'])
+        return jsonify({'success': False, 'error': 'invalid_credentials',
+                        'message': 'Password is incorrect.'}), 401
+    auth.mark_reauthenticated(session)
+    auth.audit('reauth', request, username_value=row['username'])
     return jsonify({'success': True})
 
 
 @auth_bp.route('/api/auth/verify', methods=['GET'])
 def auth_verify():
-    """Target of nginx's `auth_request` for /velociraptor/ and /api/uploads/ —
-    the two protected paths that proxy to non-Flask upstreams and so can only be
-    gated in nginx.
+    """Target of nginx's `auth_request` for every bundled tool, /velociraptor/
+    and /api/uploads/ — paths that proxy to non-Flask upstreams and so can only
+    be gated in nginx. `?tool=<name>` (access_policy.TOOLS) also checks the
+    role: 401 means sign in, 403 means this role may not open that tool.
 
-    Deliberately a PURE signed-cookie check with no SQLite access: nginx fires
-    one subrequest per tus PATCH, which is ~2000 of them for a 10 GB upload
-    against a single-process threaded server. 200 or 401, no body.
+    No SQLite on this path: nginx fires one subrequest per tus PATCH, which is
+    ~2000 of them for a 10 GB upload against a single-process threaded server.
+    The user row comes from users' in-process snapshot. The X-Intact-User
+    response header is for nginx's access log (auth_request_set); nginx never
+    passes it to the browser.
     """
-    # must_change too: /velociraptor/ and uploads are "everything else".
-    if auth.evaluate_session(session) == auth.SESSION_OK and not auth.must_change(session):
-        return '', 200
-    return '', 401
+    # No default: an auth_request location that forgets ?tool= is refused,
+    # never quietly given some role's access.
+    tool = request.args.get('tool') or ''
+    if auth.evaluate_session(session) != auth.SESSION_OK or auth.must_change(session):
+        return '', 401
+    who = {'X-Intact-User': session.get('user') or '-'}
+    if not auth.tool_allowed(session, tool):
+        return '', 403, who         # logged too: who tried a tool above their role
+    return '', 200, who
 
 
 def _humanize(seconds: int) -> str:

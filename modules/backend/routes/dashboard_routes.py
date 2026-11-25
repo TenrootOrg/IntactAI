@@ -68,6 +68,14 @@ def get_all_automations():
         return jsonify({"error": "limit and offset must be integers"}), 400
     runs, total = list_workflow_summaries(getattr(g, "case_id", None) or None,
                                           request.args.get("type") or None, limit, offset)
+    from flask import session
+    from services import users
+    from services.workflow_service import SYSTEM_TYPES
+    if not users.caller_has(session, users.ADMIN):
+        # Same audience as _run_visible_in_active_workspace: no host-level runs.
+        # shortcut: filtered after paging, so a page can come back short and
+        # `total` still counts them; page through the store if that matters.
+        runs = [r for r in runs if r.get("automation_type") not in SYSTEM_TYPES]
     transformed = []
     for run in runs:
         _reconcile_velociraptor_hunt(run)
@@ -92,10 +100,13 @@ def _run_visible_in_active_workspace(run):
     404'd with "not found" for anyone whose active workspace isn't System
     (which is everyone, since System can no longer be selected), even
     though the run is right there in the list they clicked it from."""
-    from flask import g
+    from flask import g, session
+    from services import users
     from services.workflow_service import SYSTEM_TYPES
     if run.get("automation_type") in SYSTEM_TYPES:
-        return True
+        # Upgrade, purge, support-bundle and settings runs carry host detail:
+        # the Settings -> Actions audience (Admin and up), not every role.
+        return users.caller_has(session, users.ADMIN)
     case_id = getattr(g, "case_id", None)
     if not case_id:
         return True
@@ -517,6 +528,16 @@ def stop_automation(run_id):
     run = get_automation_run(run_id)
     if not run or not _run_visible_in_active_workspace(run):
         return jsonify({"error": f"Automation run {run_id} not found"}), 404
+    from flask import session
+    from services import users
+    from services.workflow_service import SYSTEM_TYPES
+    host_level = SYSTEM_TYPES - {"case_import", "case_export", "decision_relevance"}
+    if (run.get("automation_type") in host_level
+            and not users.caller_has(session, users.SUPERADMIN)):
+        # Stopping an upgrade or a purge is host-level, like starting one.
+        # Case export/import and relevance scoring are Admin runs: Admins stop them.
+        return jsonify({"error": "forbidden",
+                        "message": "Only the Super-admin can stop a system run."}), 403
     # 'uploaded' too: an AWS/Azure offline upload nobody analyses never ends on
     # its own, and refusing Stop left it in the list for ever.
     if run.get('status') not in ('running', 'pending', 'uploaded'):

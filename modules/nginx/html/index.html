@@ -15,7 +15,9 @@
     <link rel="stylesheet" href="vendor/flatpickr/dark.css">
     <script src="vendor/flatpickr/flatpickr.min.js"></script>
     <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-    <script src="js/active-case.js?v=18"></script>
+    <script src="js/active-case.js?v=19"></script>
+    <!-- Role-based hiding + the 403 toast / re-auth prompt the fetch hook uses -->
+    <script src="js/access.js?v=1"></script>
 </head>
 <body class="bg-gray-900 text-white" x-data x-cloak>
     <!-- Load splash — covers the brief window while partials inject + Alpine
@@ -126,7 +128,7 @@
                 <!-- Automation (collapsible parent) — hides entirely when
                      ALL its sub-modules are not_installed. Without this the
                      header would float over an empty space on a bare VM. -->
-                <div x-data="{ automationOpen: true, onpremOpen: true, cloudOpen: false }"
+                <div data-needs="write" x-data="{ automationOpen: true, onpremOpen: true, cloudOpen: false }"
                      x-show="$store.services.statuses['velociraptor'] !== 'not_installed' ||
                              $store.services.statuses['timesketch'] !== 'not_installed' ||
                              $store.services.statuses['volweb'] !== 'not_installed' ||
@@ -295,7 +297,7 @@
                     <span x-show="!$store.app.sidebarCollapsed">Case Management</span>
                 </div>
 
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'settings', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('settings')" :title="$store.app.sidebarCollapsed ? 'Settings' : ''">
+                <div data-needs="settings" class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'settings', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('settings')" :title="$store.app.sidebarCollapsed ? 'Settings' : ''">
                     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
@@ -303,6 +305,33 @@
                     <span x-show="!$store.app.sidebarCollapsed">Settings</span>
                 </div>
             </nav>
+
+            <!-- Who is signed in, and the way out. Menu opens upwards. -->
+            <div x-data="{ me: null, open: false }"
+                 x-init="IntactAccess.ready.then(s => { me = (s && s.user) ? s : null })"
+                 x-show="me" x-cloak @click.outside="open = false" @keydown.escape="open = false"
+                 class="relative px-4 py-2 border-t border-gray-800" :class="{ 'px-1': $store.app.sidebarCollapsed }">
+                <button type="button" @click="open = !open" aria-haspopup="menu" :aria-expanded="open"
+                        class="nav-item flex items-center gap-3 w-full text-left"
+                        :class="{ 'justify-center': $store.app.sidebarCollapsed }"
+                        :title="me ? me.user + ' (' + me.role_label + ')' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+                    </svg>
+                    <span x-show="!$store.app.sidebarCollapsed" class="min-w-0">
+                        <span class="block text-sm text-white truncate" x-text="me && me.user"></span>
+                        <span class="block text-xs text-gray-400" x-text="me && me.role_label"></span>
+                    </span>
+                </button>
+                <div x-show="open" x-cloak role="menu"
+                     class="absolute z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-lg py-1"
+                     style="bottom:100%;left:8px;min-width:11rem">
+                    <a role="menuitem" href="/login.html?change=1"
+                       class="block px-3 py-2 text-sm text-gray-200 hover:bg-gray-700">Change password</a>
+                    <button type="button" role="menuitem" @click="IntactAccess.logout()"
+                            class="block w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-700">Log out</button>
+                </div>
+            </div>
 
             <!-- Platform version + AGPL-3.0 source-availability notice (AGPL §13).
                  Required because Intact.AI runs as a network service:
@@ -678,7 +707,7 @@
     <script src="js/stores/settings.js?v=76"></script>
     <script src="js/legacy/handlers.js?v=1"></script>
     <script src="js/velociraptor.js?v=11"></script>
-    <script src="js/blueprints.js?v=5"></script>
+    <script src="js/blueprints.js?v=6"></script>
     <!-- Shared client picker — must load BEFORE any module that instantiates
          ClientManager at script scope (blueprints-forensics, scheduler, ...). -->
     <script src="js/utils/client-manager.js?v=12"></script>
@@ -690,14 +719,15 @@
     <!-- Must load before the stores/partials that call TabReset.arm(). -->
     <script src="js/components/tab-reset.js?v=1"></script>
     <script src="js/memory.js?v=28"></script>
-    <script src="js/scheduler.js?v=14"></script>
+    <script src="js/scheduler.js?v=15"></script>
     <!-- Extracted inline helpers (Phase C): downloads copy/availability,
          active-case bar, AWS/Azure flatpickr pickers. -->
     <script src="js/components/downloads.js?v=1"></script>
     <script src="js/components/workspace-bar.js?v=7"></script>
     <script src="js/components/cloud-datepickers.js?v=8"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=306"></script>
+    <script src="js/components/users-card.js?v=1"></script>
+    <script src="js/bootstrap/partial-loader.js?v=308"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

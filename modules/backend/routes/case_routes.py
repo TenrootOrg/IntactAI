@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from flask import Blueprint, g as flask_g, jsonify, request, Response, send_file
+from flask import Blueprint, g as flask_g, jsonify, request, Response, send_file, session
 
 from services.fusion import store, render
 from services.fusion import case_files as _case_files
@@ -18,6 +18,12 @@ from services.fusion import report_history as _report_history
 from services.fusion.schema import FusionGraph
 
 case_bp = Blueprint("case", __name__)
+
+
+def _caller_name():
+    """Who did it, for records kept on the case (dispositions)."""
+    from services import users
+    return users.caller_name(session)
 
 
 def _report_filename(d, ext):
@@ -1752,7 +1758,7 @@ def disposition(case_id):
     disp = store.set_disposition(
         case_id, target, verdict=(d.get("verdict") or "benign"),
         attribution=(d.get("attribution") or "it_admin"), reason=(d.get("reason") or ""),
-        scope=(d.get("scope") or "case"))
+        scope=(d.get("scope") or "case"), by=_caller_name())
     return jsonify({"case_id": case_id, "disposition": disp})
 
 

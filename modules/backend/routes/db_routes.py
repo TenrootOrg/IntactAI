@@ -28,6 +28,10 @@ def _make_redacted_backup_copy(src_path: str) -> str:
     conn = sqlite3.connect(tmp_path)
     try:
         conn.execute("UPDATE secrets SET value = '[REDACTED]'")
+        # Dashboard users: names and roles stay, no password hash leaves the box
+        # (a restored box resets the Super-admin with reset-login.sh, then the rest).
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone():
+            conn.execute("UPDATE users SET pw_hash = '[REDACTED]'")
 
         rows = conn.execute(
             "SELECT key, value FROM frontend_config WHERE key IN ('cloud', 'agentic')"

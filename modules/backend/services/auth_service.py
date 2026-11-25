@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-user dashboard authentication.
+"""Dashboard authentication: users, roles, sessions, the request gate.
 
 Replaces the nginx server-level HTTP Basic Auth gate that used to be the
 platform's ONLY authentication (see modules/nginx/config/nginx.conf). That gate
@@ -9,7 +9,8 @@ also did nothing for audit finding F-010: the Flask backend performed no auth of
 its own, so any peer container on intact_network could reach intact_backend:5001
 and bypass nginx entirely. The `require_auth` gate below closes that too.
 
-Deliberately single-user, no roles — this is an appliance with one operator.
+Several users, four roles (services/users.py). Who may call which route is
+services/access_policy.py; gate_decision() below enforces it on every request.
 
 Three things in here are load-bearing and easy to "simplify" into a security
 hole. Each is commented at its implementation:
@@ -21,6 +22,7 @@ hole. Each is commented at its implementation:
 """
 
 import collections
+import hashlib
 import hmac
 import json
 import os
@@ -35,6 +37,7 @@ from typing import Optional, Tuple
 import yaml
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from services import access_policy, users
 from services.storage.base import STORAGE_BASE
 from services.storage.secret_store import get_secret, set_secret
 
@@ -71,12 +74,18 @@ _K_GENERATION = "auth_credential_generation"
 # signed payload — the stale cookie still arrives, so we can answer
 # reason=expired instead of showing a bare login form.
 SESSION_MAX_AGE_DAYS = 30          # cookie max-age
-SESSION_IDLE_LIMIT_SECONDS = 7 * 24 * 60 * 60   # real sliding window
+# NIST SP 800-63B-4 AAL2: at most 1 h idle and 24 h in all; 12 h is the
+# decided default (one working day). Several people share the box now, so a
+# forgotten browser must not stay signed in for the week the old value allowed.
+SESSION_IDLE_LIMIT_SECONDS = 60 * 60            # real sliding window
+SESSION_ABSOLUTE_LIMIT_SECONDS = 12 * 60 * 60   # from login, however active
 # Only re-stamp `seen` (and therefore re-sign the cookie) this often, rather
 # than on literally every request. nginx's auth_request fires a subrequest per
 # tus PATCH — ~2000 of them for a 10 GB upload — and re-signing each one is
-# pure overhead.
-SESSION_TOUCH_INTERVAL_SECONDS = 60 * 60
+# pure overhead. Well inside the idle limit, so an active user never expires.
+SESSION_TOUCH_INTERVAL_SECONDS = 5 * 60
+# User management needs a password typed this recently (ASVS 7.5.3 step-up).
+REAUTH_SECONDS = 15 * 60
 
 # --- lockout policy ----------------------------------------------------------
 #
@@ -136,7 +145,8 @@ AUDIT_LOG = os.path.join(AUTH_DIR, "audit.jsonl")
 # hammering it would otherwise write unbounded lines into a host bind mount and
 # fill the operator's disk.
 AUDIT_MAX_BYTES = 5 * 1024 * 1024
-AUDIT_KEEP = 2
+# Every write by every user lands here now, not only logins: keep 50 MB.
+AUDIT_KEEP = 10
 
 _audit_lock = threading.Lock()
 
@@ -299,48 +309,157 @@ def _int_secret(key: str, default: int = 0) -> int:
 
 
 def credential_generation() -> int:
-    """Bumped on every credential change. Embedded in issued sessions so a
-    password change invalidates every existing one and the login page can say
-    WHY rather than showing a bare form."""
+    """The pre-users scheme's generation (one box-wide counter). Still bumped
+    by _sync_legacy() so that a box rolled back to an older release drops every
+    session issued by this one."""
     return _int_secret(_K_GENERATION, 0)
 
 
+# The legacy generation _sync_legacy() last wrote. A different value at boot
+# means the box ran the older release since (a rollback) and someone changed
+# the password or ran setup there: that credential is the current one.
+_K_LEGACY_SYNCED = "auth_legacy_synced_generation"
+
+
+def migrate_legacy_credential() -> bool:
+    """The single pre-users login becomes the Super-admin, same name and same
+    hash, so nobody types anything new after the upgrade. Runs on every boot.
+    True when it created or refreshed the Super-admin."""
+    stored_hash, stored_user = get_secret(_K_HASH), get_secret(_K_USER)
+    if not stored_hash or not stored_user:
+        return False
+    sa = users.superadmin()
+    if sa is None and not users.count():
+        # Kept even if the name fails users.name_problem() (it only governs NEW
+        # names): refusing it here would lock the operator out of their own box.
+        users.create(stored_user, stored_hash, users.SUPERADMIN, "migration", False)
+    elif sa is not None and get_secret(_K_LEGACY_SYNCED) not in (None, str(credential_generation())):
+        users.set_password(sa["id"], stored_hash) if stored_hash != sa["pw_hash"] else None
+        other = users.by_name(stored_user)
+        if stored_user.strip().lower() != sa["username"] and other is None:
+            users.rename(sa["id"], stored_user)
+    else:
+        if get_secret(_K_LEGACY_SYNCED) is None:
+            _sync_legacy()
+        return False
+    # Moves the legacy generation, so no cookie the older release issued, and
+    # none this one issues, is valid in the other after a rollback.
+    _sync_legacy()
+    return True
+
+
+def _sync_legacy() -> None:
+    """Keep the old single-credential rows equal to the Super-admin.
+
+    The release before this one reads only those rows. Mirroring them means a
+    rollback still signs the Super-admin in (with their current password) and
+    no one else -- never a stale credential nobody remembers."""
+    sa = users.superadmin()
+    if not sa:
+        return
+    gen = str(credential_generation() + 1)
+    set_secret(_K_HASH, sa["pw_hash"])
+    set_secret(_K_USER, sa["username"])
+    set_secret(_K_GENERATION, gen)
+    set_secret(_K_LEGACY_SYNCED, gen)
+
+
 def has_credential() -> bool:
-    return bool(get_secret(_K_HASH))
+    return users.superadmin() is not None
 
 
 def username() -> Optional[str]:
-    return get_secret(_K_USER)
+    sa = users.superadmin()
+    return sa["username"] if sa else None
 
 
 def set_credential(user: str, password: str) -> bool:
-    """Store the single user's id + password hash and bump the generation.
-
-    pbkdf2 via werkzeug.security — already a dependency, no new packages.
-    """
+    """Set the Super-admin's name and password (setup, and the config.yaml
+    carry-over in auth_migrate). Creates the Super-admin on a box with none.
+    Other users are never touched: a reset-login.sh recovery resets only the
+    top account. pbkdf2 via werkzeug.security — no new packages."""
     if not user or not password:
         return False
-    ok = set_secret(_K_HASH, generate_password_hash(password))
-    ok = set_secret(_K_USER, user) and ok
-    ok = set_secret(_K_GENERATION, str(credential_generation() + 1)) and ok
+    sa = users.superadmin()
+    # A recovery keeps the Super-admin's name: renaming would free it for a new
+    # user, and names are never reused (they key audit lines and records).
+    name = sa["username"] if sa else user.strip().lower()
+    other = users.by_name(name)
+    if other and other["role"] != users.SUPERADMIN:
+        return False                    # would hijack an existing account
+    pw_hash = generate_password_hash(password)
+    try:
+        if sa:
+            users.set_password(sa["id"], pw_hash)
+            if not sa["enabled"]:
+                users.set_enabled(sa["id"], True)
+        else:
+            users.create(name, pw_hash, users.SUPERADMIN, "setup", False)
+    except Exception as exc:
+        print(f"[AUTH] Could not store the Super-admin: {exc}", flush=True)
+        return False
+    _sync_legacy()
     reset_lockout()
-    return ok
+    return True
+
+
+# A real hash to burn time on when the name is unknown, so a wrong username is
+# not measurably faster to reject than a wrong password.
+_DUMMY_HASH = None
+
+
+def authenticate(user: str, password: str) -> Optional[dict]:
+    """The user row when `user`/`password` are right, the account is enabled
+    and a temporary password has not expired; else None. Fails CLOSED when no
+    user exists (reachable after a DB export/import, since the users table is
+    not in export_db) — never "nothing configured" as "anything goes"."""
+    global _DUMMY_HASH
+    row = users.by_name(user)
+    if not row:
+        if _DUMMY_HASH is None:
+            _DUMMY_HASH = generate_password_hash(os.urandom(8).hex())
+        check_password_hash(_DUMMY_HASH, password or "")
+        return None
+    try:
+        ok = check_password_hash(row["pw_hash"], password or "")
+    except (ValueError, TypeError):
+        ok = False          # a redacted or foreign hash: refuse, never crash
+    if not ok:
+        return None
+    if not row["enabled"]:
+        return None
+    if row.get("temp_expires") and time.time() > row["temp_expires"]:
+        return None
+    return row
 
 
 def verify_password(user: str, password: str) -> bool:
-    """Constant-ish-time credential check. Fails CLOSED when no credential is
-    stored (reachable after a DB export/import, since secret_store is excluded
-    from export_db) — never treat "nothing configured" as "anything goes"."""
-    stored_hash = get_secret(_K_HASH)
-    stored_user = get_secret(_K_USER)
-    if not stored_hash or not stored_user:
-        return False
-    if not user or user.strip().lower() != stored_user.strip().lower():
-        # Still run the hash comparison so a wrong username isn't measurably
-        # faster to reject than a wrong password.
-        check_password_hash(stored_hash, password or "")
-        return False
-    return check_password_hash(stored_hash, password or "")
+    return authenticate(user, password) is not None
+
+
+def set_user_password(row: dict, password: str, temporary: bool = False) -> None:
+    users.set_password(row["id"], generate_password_hash(password), temporary)
+    if row["role"] == users.SUPERADMIN:
+        _sync_legacy()
+
+
+def create_user(username_value: str, role: str, created_by: str) -> str:
+    """Create a user with a one-time temporary password and return it. The
+    caller shows it ONCE; only its hash is stored."""
+    temp = users.new_temp_password()
+    users.create(username_value, generate_password_hash(temp), role, created_by, True)
+    return temp
+
+
+def reset_user_password(row: dict) -> str:
+    temp = users.new_temp_password()
+    set_user_password(row, temp, temporary=True)
+    return temp
+
+
+def transfer_superadmin(from_row: dict, to_row: dict) -> None:
+    users.transfer_superadmin(from_row["id"], to_row["id"])
+    _sync_legacy()
 
 
 def session_secret_key() -> str:
@@ -444,6 +563,28 @@ def reset_lockout(client: Optional[str] = None) -> None:
             _recent_failures.clear()
         else:
             _clients.pop(client or "unknown", None)
+
+
+def password_guess_refusal(client: str) -> Optional[Tuple[dict, int]]:
+    """None to go on, else (body, 429). Every route that checks a password
+    typed by a signed-in user (re-auth, change-password, Super-admin transfer)
+    counts its misses against the same per-address lockout as login, or a
+    stolen cookie could guess the password online at hash speed."""
+    locked = lock_remaining_seconds(client)
+    if locked > 0:
+        return ({'success': False, 'error': 'locked', 'lock_remaining_seconds': locked,
+                 'message': f'Too many failed attempts. Try again in {max(1, round(locked / 60))} minute(s).'},
+                429)
+    if not throttle_ok(client):
+        return {'success': False, 'error': 'too_fast', 'message': 'Slow down and try again.'}, 429
+    return None
+
+
+def password_guess_result(client: str, ok: bool) -> None:
+    if ok:
+        reset_lockout(client)
+    else:
+        register_failure(client)
 
 
 def lock_duration_minutes(strikes: int) -> int:
@@ -581,14 +722,17 @@ def consume_setup_token() -> bool:
 # endpoint. Applied only when a password is SET -- never at login, so a box
 # whose operator set a short password before this rule keeps signing in.
 KNOWN_DEFAULT_PASSWORDS = frozenset({"123123", "Ch4nge-Me!Intact2026", "1234qwer!@#$", "changeme"})
-PASSWORD_RULE = ("12+ characters with an uppercase letter, a lowercase letter, a digit "
-                 "and a symbol (such as ! @ # % ^ & * + = ? ~); no spaces, quotes "
-                 "(' \" `), \\ or $; starting with a letter or digit")
-# Printable ASCII without space ' " ` \ $ (why: lib/secrets.sh above
-# INTACT_PASSWORD_RULE), starting with a letter or digit.
-_PASSWORD_CHARS = re.compile(r"[A-Za-z0-9][!#%&()*+,\-./:;<=>?@\[\]^_{|}~A-Za-z0-9]*")
-_PASSWORD_CHARS_PROBLEM = ("it may not hold spaces, quotes (' \" `), \\ or $, "
-                           "and must start with a letter or digit")
+# NIST SP 800-63B-4 (single-factor): 15+ characters, any characters including
+# spaces, NO composition rules, checked against known and trivial values. It
+# no longer matches lib/secrets.sh's module-password rule on purpose: a
+# dashboard password is only ever hashed, never written into a shell file.
+PASSWORD_MIN, PASSWORD_MAX = 15, 256
+PASSWORD_RULE = (f"at least {PASSWORD_MIN} characters; any characters, spaces "
+                 f"included. A passphrase of a few words works well")
+# shortcut: a short built-in list, not a breached-password corpus (air-gapped
+# boxes cannot fetch one); ship a bundled list if customers ask for it.
+_COMMON_PREFIXES = ("password", "123456789", "qwertyuiop", "abcdefghij", "letmein",
+                    "welcome", "iloveyou", "admin", "intact")
 
 
 def weak_passwords_allowed() -> bool:
@@ -616,46 +760,51 @@ def weak_passwords_allowed() -> bool:
             and re.search(r"^allow_weak_passwords:[ \t]*(true|True|TRUE)[ \t]*(#.*)?$", text, re.M) is not None)
 
 
-def password_problem(password: str, existing: bool = False) -> Optional[str]:
-    """None when `password` meets the rule, else the reason (never the value).
-
-    `existing`: one already in use (a login) is not refused for lacking a
-    symbol -- only a password being SET needs one (2026-11-22), or every
-    dashboard user would be sent to change-password at the next sign-in.
-    """
+def password_problem(password: str, username_value: str = "") -> Optional[str]:
+    """None when a password being SET meets the rule, else the reason (never
+    the value). Applied only when a password is set, never at login."""
     if not password:
         return "it is empty"
+    if not password.isprintable():
+        return "it has control characters"
     if weak_passwords_allowed():
-        # Lab box: anything non-empty that cannot break a header or a log line.
-        return None if password.isprintable() else "it has control characters"
+        return None                     # lab box: anything printable
     if password in KNOWN_DEFAULT_PASSWORDS:
         return "it is a publicly known default"
-    if len(password) < 12:
-        return "it is shorter than 12 characters"
-    if not _PASSWORD_CHARS.fullmatch(password):
-        return _PASSWORD_CHARS_PROBLEM
-    if not (re.search(r"[A-Z]", password) and re.search(r"[a-z]", password)
-            and re.search(r"[0-9]", password)):
-        return "it needs an uppercase letter, a lowercase letter and a digit"
-    if not existing and re.fullmatch(r"[A-Za-z0-9]+", password):
-        return "it needs a symbol (such as ! @ # % ^ & * + = ? ~)"
+    if len(password) < PASSWORD_MIN:
+        return f"it is shorter than {PASSWORD_MIN} characters"
+    if len(password) > PASSWORD_MAX:
+        return f"it is longer than {PASSWORD_MAX} characters"
+    low = password.lower()
+    if len(set(low)) < 5 or low.startswith(_COMMON_PREFIXES):
+        return "it is too easy to guess"
+    if username_value and username_value.strip().lower() in low:
+        return "it contains the user name"
     return None
 
 
 def needs_change(password: str) -> bool:
     """True when a password that just LOGGED IN must be replaced before the
-    session may do anything else: a public default, or one that fails the rule.
-    Login still accepts it (old boxes must get in); the gate then holds the
-    session to change-password. Never on a lab box."""
+    session may do anything else: a publicly known default. A password set
+    under an older, shorter rule keeps working (decided: the new rule applies
+    at the next change). Never on a lab box."""
     if weak_passwords_allowed():
         return False
-    return password in KNOWN_DEFAULT_PASSWORDS or password_problem(password, existing=True) is not None
+    return password in KNOWN_DEFAULT_PASSWORDS
+
+
+MUST_CHANGE_TEMP = "temp"
 
 
 def must_change(session) -> bool:
-    """The session logged in with a password that needs_change(). Flipping the
-    lab switch on lifts it without a re-login."""
-    return bool(session and session.get("must_change")) and not weak_passwords_allowed()
+    """The session logged in with a password that needs_change(), or with a
+    one-time password. The lab switch lifts the first without a re-login,
+    never the second: a one-time password expires, and its user must have
+    chosen their own by then."""
+    flag = session.get("must_change") if session else None
+    if flag == MUST_CHANGE_TEMP:
+        return True
+    return bool(flag) and not weak_passwords_allowed()
 
 
 # =============================================================================
@@ -666,54 +815,107 @@ SESSION_OK = "ok"
 SESSION_NONE = "none"
 SESSION_EXPIRED = "expired"
 SESSION_CREDENTIALS_CHANGED = "credentials_changed"
-# Not a session state: gate_decision's answer for a valid session that must
-# change its password first (403, not 401 -- the session is fine).
+# The account was disabled (or removed) since the session was issued.
+SESSION_DISABLED = "disabled"
+# Not session states: gate_decision's answers for a valid session that must
+# change its password first, lacks the role, or must re-enter its password
+# (403, not 401 -- the session itself is fine).
 PASSWORD_CHANGE_REQUIRED = "password_change_required"
-
-# Cached so the hot path (every gated request, plus one nginx auth_request
-# subrequest per tus PATCH) is a pure signed-cookie check with no SQLite hit.
-# The backend is single-process, and every write goes through
-# bump_generation_cache(), so this cannot drift.
-_generation_cache: Optional[int] = None
+FORBIDDEN = "forbidden"
+REAUTH_REQUIRED = "reauth_required"
+CSRF_REJECTED = "csrf_rejected"
 
 
-def generation_cached() -> int:
-    global _generation_cache
-    if _generation_cache is None:
-        _generation_cache = credential_generation()
-    return _generation_cache
+# Last activity per session, in memory. Someone working only inside a tool
+# (Kibana in its own window) reaches the backend only through nginx's per-tool
+# auth_request, and nginx drops a subrequest's Set-Cookie, so the cookie's
+# `seen` never moves for them and the 1-hour idle limit would sign them out
+# mid-work. Every allowed request -- the tool check included -- stamps this.
+# A backend restart forgets it; the cookie's own `seen` is the floor.
+_last_active = {}
+_ACTIVE_MAX = 10000
 
 
-def bump_generation_cache() -> None:
-    global _generation_cache
-    _generation_cache = credential_generation()
+def note_activity(session) -> None:
+    key = (session.get("uid"), session.get("iat"))
+    if key[0] is None:
+        return
+    now = time.time()
+    if len(_last_active) >= _ACTIVE_MAX:
+        for k in [k for k, t in _last_active.items() if now - t > SESSION_IDLE_LIMIT_SECONDS]:
+            del _last_active[k]
+        if len(_last_active) >= _ACTIVE_MAX:
+            _last_active.clear()
+    _last_active[key] = now
+
+
+def _num(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def evaluate_session(session) -> str:
     """Classify a Flask session dict: SESSION_OK / NONE / EXPIRED /
-    CREDENTIALS_CHANGED. Pure — no DB, no mutation."""
+    CREDENTIALS_CHANGED / DISABLED. No mutation, and no SQLite on the hot path:
+    users.get() reads the in-process snapshot.
+
+    A cookie from before users existed carries no `uid`: CREDENTIALS_CHANGED,
+    so the upgrade signs everyone in once more."""
     if not session or not session.get("user"):
         return SESSION_NONE
-    if session.get("gen") != generation_cached():
+    row = users.get(session.get("uid"))
+    if row is None:
         return SESSION_CREDENTIALS_CHANGED
-    seen = session.get("seen") or 0
-    try:
-        seen = float(seen)
-    except (TypeError, ValueError):
+    if not row["enabled"]:
+        return SESSION_DISABLED
+    if session.get("gen") != _session_gen(row):
+        return SESSION_CREDENTIALS_CHANGED
+    now = time.time()
+    seen = max(_num(session.get("seen")),
+               _last_active.get((session.get("uid"), session.get("iat")), 0.0))
+    if now - seen > SESSION_IDLE_LIMIT_SECONDS:
         return SESSION_EXPIRED
-    if time.time() - seen > SESSION_IDLE_LIMIT_SECONDS:
+    if now - _num(session.get("iat")) > SESSION_ABSOLUTE_LIMIT_SECONDS:
         return SESSION_EXPIRED
     return SESSION_OK
 
 
-def start_session(session, user: str) -> None:
+def session_user(session) -> Optional[dict]:
+    """The signed-in user's row, or None. The ROLE always comes from here (the
+    table), never from the cookie, so a demotion applies on the next request."""
+    if evaluate_session(session) != SESSION_OK:
+        return None
+    return users.get(session.get("uid"))
+
+
+def _session_gen(row: dict) -> str:
+    """A string, never an int. The release before users accepts any cookie
+    whose `gen` equals its box-wide integer counter (same signing key, same
+    cookie name), and a new user's generation starts at 1 too: a Read-only
+    user's cookie would be the all-powerful single user after a rollback."""
+    return f"u{row['generation']}"
+
+
+def start_session(session, row: dict) -> None:
+    session.clear()
     session.permanent = True
-    # A fresh login or a completed change decides must_change anew.
-    session.pop("must_change", None)
-    session["user"] = user
-    session["gen"] = generation_cached()
-    session["iat"] = time.time()
-    session["seen"] = time.time()
+    now = time.time()
+    session["uid"] = row["id"]
+    session["user"] = row["username"]
+    session["gen"] = _session_gen(row)
+    session["iat"] = now
+    session["seen"] = now
+    session["auth_at"] = now
+
+
+def mark_reauthenticated(session) -> None:
+    session["auth_at"] = time.time()
+
+
+def recently_authenticated(session) -> bool:
+    return time.time() - _num(session.get("auth_at")) <= REAUTH_SECONDS
 
 
 # --- the request gate -------------------------------------------------------
@@ -755,13 +957,43 @@ LOOPBACK_ADDRS = frozenset({'127.0.0.1', '::1'})
 CHANGE_PASSWORD_PATH = '/api/auth/change-password'
 
 
-def gate_decision(path: str, method: str, remote_addr: str, session) -> Optional[str]:
-    """None to allow the request; otherwise the reason to report in the 401
-    (one of SESSION_NONE / SESSION_EXPIRED / SESSION_CREDENTIALS_CHANGED), or
-    PASSWORD_CHANGE_REQUIRED for the 403 a must_change session gets.
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def csrf_problem(method: str, headers) -> bool:
+    """True when a state-changing request came from another ORIGIN.
+
+    SameSite=Lax is not enough here: Kibana (5602), Timesketch (5443) and VolWeb
+    (8002) are on the same host, and "same-site" ignores the port (RFC 6265
+    §8.5), so a script bug in any of them could POST to this API with the
+    user's cookie -- for example to create an Admin. Sec-Fetch-Site does tell
+    origins apart. A request without browser headers (curl, a script with its
+    own cookie) is no CSRF vector and passes."""
+    if method not in _UNSAFE_METHODS:
+        return False
+    site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if site:
+        return site not in ("same-origin", "none")
+    origin = (headers.get("Origin") or "").strip()
+    if not origin or origin == "null":
+        return bool(origin)             # "null" is an opaque, foreign origin
+    # nginx passes $host (no port). shortcut: a browser without Sec-Fetch-Site
+    # on a non-443 dashboard port is refused; every current browser sends it.
+    host = (headers.get("Host") or "").strip()
+    return origin.split("://", 1)[-1] != host
+
+
+def gate_decision(path: str, method: str, remote_addr: str, session,
+                  endpoint: Optional[str] = None, headers=None) -> Optional[str]:
+    """None to allow the request; otherwise the reason: for the 401 one of
+    SESSION_NONE / EXPIRED / CREDENTIALS_CHANGED / DISABLED; for a 403
+    PASSWORD_CHANGE_REQUIRED, FORBIDDEN (the role may not), REAUTH_REQUIRED
+    (step-up) or CSRF_REJECTED.
 
     Pure and side-effect free so it can be tested directly rather than through a
     live Flask app — app.py's before_request hook is a thin wrapper over this.
+    `endpoint` is Flask's request.endpoint ("blueprint.function"), the key of
+    services/access_policy.POLICY.
     """
     # Browsers send a credential-less preflight; CORS handles it.
     if method == 'OPTIONS':
@@ -770,16 +1002,35 @@ def gate_decision(path: str, method: str, remote_addr: str, session) -> Optional
     # practice everything here is /api/*, but be explicit rather than assume.
     if not (path or '').startswith('/api/'):
         return None
-    if path in EXEMPT_PATHS:
-        return None
     if remote_addr in LOOPBACK_ADDRS:
+        return None
+    # Before the exemptions: login and setup are state changes too (login CSRF).
+    if headers is not None and csrf_problem(method, headers):
+        return CSRF_REJECTED
+    if path in EXEMPT_PATHS:
         return None
     state = evaluate_session(session)
     if state != SESSION_OK:
         return state
     if path != CHANGE_PASSWORD_PATH and must_change(session):
         return PASSWORD_CHANGE_REQUIRED
+    row = users.get(session.get("uid"))
+    rule = access_policy.rule_for(endpoint, method)
+    if users.rank(row["role"]) < users.rank(rule.role):
+        return FORBIDDEN
+    if rule.step_up and not recently_authenticated(session):
+        return REAUTH_REQUIRED
     return None
+
+
+def tool_allowed(session, tool: str) -> bool:
+    """nginx's per-tool auth_request: a valid session whose role may open
+    `tool` (access_policy.TOOLS). An unknown tool name is refused."""
+    if evaluate_session(session) != SESSION_OK or must_change(session):
+        return False
+    need = access_policy.TOOLS.get(tool or "")
+    row = users.get(session.get("uid"))
+    return need is not None and users.rank(row["role"]) >= users.rank(need)
 
 
 def touch_session(session) -> bool:
@@ -816,11 +1067,65 @@ def _rotate_if_needed() -> None:
                 pass
 
 
+# Hash chain (NIST SP 800-53 AU-9(3)): every line carries the hash of the line
+# before it, across rotations, so an edited, inserted or deleted line breaks
+# the chain where it happened (verify_audit_chain). It cannot stop root on the
+# host from rewriting the whole file; an off-box copy is what does that.
+_last_hash: Optional[str] = None
+
+
+def _entry_hash(prev: str, body: dict) -> str:
+    return hashlib.sha256((prev + json.dumps(body, sort_keys=True, default=str))
+                          .encode("utf-8")).hexdigest()
+
+
+def _tail_hash() -> str:
+    """The last line's hash, read once after a restart."""
+    for path in [AUDIT_LOG] + [f"{AUDIT_LOG}.{i}" for i in range(1, AUDIT_KEEP + 1)]:
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, handle.tell() - 65536))
+                lines = handle.read().splitlines()
+        except OSError:
+            continue
+        for raw in reversed(lines):
+            try:
+                found = json.loads(raw).get("hash")
+            except (ValueError, AttributeError):
+                found = None
+            if found:
+                return found
+    return ""
+
+
+def verify_audit_chain(paths) -> Optional[int]:
+    """None when the lines in `paths` (oldest first) chain correctly, else the
+    1-based line number where the chain breaks. Lines from before the chain
+    existed (no "hash") are skipped."""
+    prev, n = None, 0
+    for path in paths:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                n += 1
+                entry = json.loads(line)
+                got = entry.pop("hash", None)
+                if got is None:
+                    continue
+                if prev is not None and entry.get("prev") != prev:
+                    return n
+                if _entry_hash(entry.get("prev", ""), entry) != got:
+                    return n
+                prev = got
+    return None
+
+
 def audit(event: str, request=None, username_value: str = None, **extra) -> None:
     """Append one JSON object to the auth audit log.
 
     Never raises — an unwritable log must not be able to break login.
     """
+    global _last_hash
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": event,
@@ -838,8 +1143,13 @@ def audit(event: str, request=None, username_value: str = None, **extra) -> None
         with _audit_lock:
             os.makedirs(AUTH_DIR, exist_ok=True)
             _rotate_if_needed()
+            if _last_hash is None:
+                _last_hash = _tail_hash()
+            entry["prev"] = _last_hash
+            entry["hash"] = _entry_hash(_last_hash, entry)
             with _open_audit_append() as handle:
                 handle.write(json.dumps(entry, default=str) + "\n")
+            _last_hash = entry["hash"]
     except Exception as exc:
         print(f"[AUTH] Could not write audit log: {exc}", flush=True)
 
@@ -908,6 +1218,8 @@ def recovery_hint() -> str:
     reset-login.sh writes both. No restart: read_first_login() and
     read_setup_token() re-read the files on every call.
     """
-    return ("Locked out, or forgotten the password? On the appliance, run "
+    return ("Forgotten your password? Ask an Admin for a one-time password. "
+            "Super-admin locked out? On the appliance, run "
             "sudo scripts/reset-login.sh, then open the setup page and enter "
-            "the setup token it prints. No restart needed.")
+            "the setup token it prints. It resets only the Super-admin. "
+            "No restart needed.")

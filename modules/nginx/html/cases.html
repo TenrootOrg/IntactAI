@@ -321,7 +321,9 @@
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-<script src="js/active-case.js?v=18"></script>
+<script src="js/active-case.js?v=19"></script>
+<!-- Role-based hiding (data-needs) + the 403 toast / re-auth prompt -->
+<script src="js/access.js?v=1"></script>
 <!-- set embed + view mode before body renders (no flash) -->
 <script>(function(){var q=new URLSearchParams(location.search);
   if(q.get('embed')==='1')document.documentElement.classList.add('embed');
@@ -343,8 +345,8 @@
 </header>
 <div class="wrap">
   <div class="side">
-    <h2>New Case</h2>
-    <div class="row" style="margin-top:10px">
+    <h2 data-needs="write">New Case</h2>
+    <div class="row" data-needs="write" style="margin-top:10px">
       <button id="ncopen" onclick="openNewCase()">＋ New case</button>
     </div>
     <dialog id="ncdlg">
@@ -364,9 +366,9 @@
         </div>
       </form>
     </dialog>
-    <p style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Volatile Memory, cloud…) while this case is active are tagged to it automatically. Open it any time to fuse them.</p>
+    <p data-needs="write" style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Volatile Memory, cloud…) while this case is active are tagged to it automatically. Open it any time to fuse them.</p>
     <h2 style="display:flex;align-items:center;justify-content:space-between">Cases
-      <button class="ghost" style="font-size:11px;padding:4px 10px" onclick="document.getElementById('case-import-file').click()" title="Import a case exported from another Intact appliance — runs as a System action, watch it in Settings → Actions">⬆ Import</button>
+      <button data-needs="settings" class="ghost" style="font-size:11px;padding:4px 10px" onclick="document.getElementById('case-import-file').click()" title="Import a case exported from another Intact appliance — runs as a System action, watch it in Settings → Actions">⬆ Import</button>
     </h2>
     <input id="case-import-file" type="file" accept=".zip" style="display:none" onchange="importWorkspace(event)"/>
     <div id="caselist"></div>
@@ -457,7 +459,7 @@ function activateWorkspace(id, ev){ if(ev) ev.stopPropagation();
 // Cases page meant a second, worse copy of it, and one that lost its state on
 // every list refresh.
 function expBtn(id){
-  return `<button class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${id}',event)" title="Export this case as a portable bundle — runs as a System action, download it there when it finishes">Export</button>`;
+  return `<button data-needs="settings" class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${id}',event)" title="Export this case as a portable bundle — runs as a System action, download it there when it finishes">Export</button>`;
 }
 
 function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
@@ -505,11 +507,11 @@ function loadCases(cb){
       return `<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="rowClick('${c.case_id}')">
       <div class="casehead"><span class="nm">${isAct?'● ':''}${esc(c.name||c.case_id)}</span>
         <div class="row" style="gap:6px">
-          <button class="ghost" style="font-size:11px;padding:3px 8px" onclick="event.stopPropagation();cdEdit('${c.case_id}')" title="Status, owner, description, name">${_cdEdit===c.case_id?'close':'edit'}</button>
+          <button data-needs="write" class="ghost" style="font-size:11px;padding:3px 8px" onclick="event.stopPropagation();cdEdit('${c.case_id}')" title="Status, owner, description, name">${_cdEdit===c.case_id?'close':'edit'}</button>
           ${expBtn(c.case_id)}
           ${c.is_default?'<span class="defbadge">default</span>'
             :c.is_system?'<span class="defbadge">system</span>'
-                       :`<button class="del" onclick="delWorkspace('${c.case_id}','${nm}',event)">delete</button>`}
+                       :`<button data-needs="write" class="del" onclick="delWorkspace('${c.case_id}','${nm}',event)">delete</button>`}
         </div></div>
       <div class="meta">${c.members} run(s)</div>${caseMetaHtml(c)}${_cdEdit===c.case_id?caseEditForm(c):''}</div>`;}).join('')||'<i style="color:var(--muted)">no cases yet</i>';
     if(cb)cb();
@@ -1050,7 +1052,7 @@ function renderConfig(info){
         <button class="ghost" style="font-size:11px;align-self:flex-start" onclick="synthFromChat('${info.case_id}')">⤵ Draft from chat</button>
       </div>
     </div>
-    <div class="cfgactions">
+    <div class="cfgactions" data-needs="write">
       <button id="cf-refusion" onclick="doRefusion('${info.case_id}')" style="background:var(--info);border-color:var(--info);color:#0d1117" title="Saves your configuration first, then re-fuses the deterministic graph (hosts, entities, links, findings, risk &amp; timeline). Fast — no LLM, no tokens.">🔄 Refusion</button>
       <div id="cf-refusion-hint" style="color:var(--med);font-size:12px;margin-top:6px;display:none">Select at least one host to run Refusion.</div>
       <div id="cf-refusion-pending" style="color:var(--med);font-size:12px;margin-top:6px;display:${info.refusion_needed?'':'none'}">Saved settings are not applied yet. Click Refusion to apply them.</div>
@@ -1200,7 +1202,7 @@ function regenButtonHtml(info){
   const id=info.case_id;
   return info.report_generating
     ? `<button class="dlbtn" disabled title="A report is already being generated">⏳ Generating…</button>`
-    : `<button class="dlbtn" onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here.">↻ Regenerate report</button>`;
+    : `<button data-needs="write" class="dlbtn" onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here.">↻ Regenerate report</button>`;
 }
 // Overwrite both slots from `info`. Cheap (two small blocks), so it runs on every
 // poll tick rather than only on transitions that might be missed.
@@ -1346,7 +1348,7 @@ function renderData(info){
   const o=(k,l)=>`<option value="${k}">${l}</option>`;
   $('#tabc').innerHTML=`<p class="ent-cap">What the analysis reads besides the collections. <b>Log data</b> — a SIEM, firewall, EDR, identity-provider or proxy export, any vendor and format — is read into the case: only its detections reach the Timeline, the hosts, accounts and addresses it shares with the case are joined, and chat can search every row; run <b>Refusion</b> after adding one.
     <b>Incident notes</b> — the customer's own account: a chat with them, interview notes, an e-mail thread — are condensed by the case's model into short facts (impact, what they did, what they saw), each tied to its line, and chat and the report read those as <i>reported, not verified</i>; never a detection. Both are listed in the report under <b>External data</b>.</p>
-    <div class="row" style="gap:8px;margin:6px 0"><button onclick="window._dtAdd=!window._dtAdd;renderData(curInfo)">${window._dtAdd?'Close':'+ Add external data'}</button>
+    <div class="row" data-needs="write" style="gap:8px;margin:6px 0"><button onclick="window._dtAdd=!window._dtAdd;renderData(curInfo)">${window._dtAdd?'Close':'+ Add external data'}</button>
       <span style="color:var(--muted);font-size:12px">${L.length} file(s) · over 100 MB is sent in chunks</span></div>
     ${_dtWindow(info)}
     <div id="dt-upload">${_dtUpHtml()}</div>
@@ -1377,7 +1379,7 @@ function renderEvidence(info){
     <p class="ent-cap">Evidence for this case — screenshots, e-mails, logs, exports from TimeSketch, Kibana or IRIS. Attach from a Timeline event (open it → <b>📎 Attach evidence</b>) and it is linked to that event and its host; or add it here. It goes into the report (with its pictures, also in the PDF and HTML) only when <b>Include evidence in the report</b> is on — on the Analysis tab${info.include_evidence?' (<span style="color:#3fb950">on</span>)':' (off)'}.
     Log exports and the customer's own account (a chat, interview notes) are not evidence — add them on the <span class="elink" onclick="setTab('data')">External data</span> tab.</p>
     ${f?`<div class="agnote">Evidence for: <b>${esc(fl)}</b> · <span class="elink" onclick="window._evFilter='';renderEvidence(curInfo)">show all</span></div>`:''}
-    <div class="row" style="gap:8px;margin:6px 0"><button onclick="window._evAdd=!window._evAdd;renderEvidence(curInfo)">${window._evAdd?'Close':'+ Add evidence'}</button>
+    <div class="row" data-needs="write" style="gap:8px;margin:6px 0"><button onclick="window._evAdd=!window._evAdd;renderEvidence(curInfo)">${window._evAdd?'Close':'+ Add evidence'}</button>
       <span style="color:var(--muted);font-size:12px">${all.length} item(s) · over 100 MB is sent in chunks</span></div>
     <div id="dt-upload">${_dtUpHtml()}</div>
     ${window._evAdd?`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:640px">${_evFields('evn',{},true,false)}
@@ -2310,7 +2312,7 @@ function tlBuild(){
         <option value="severity" ${f.order==='severity'?'selected':''}>order: severity</option>
       </select>
       <span class="grow"></span>
-      <button class="ghost" onclick="tlAddToggle()">+ Add event</button>
+      <button data-needs="write" class="ghost" onclick="tlAddToggle()">+ Add event</button>
     </div>
     <div id="tladd" class="tladd">
       <label>Time<input id="tla-ts" type="text" placeholder="2026-06-20T14:05" size="18"></label>
@@ -2972,9 +2974,9 @@ const SHOW_INVESTIGATE = false;
 function renderChat(id){
   _chatCase=id;
   $('#tabc').innerHTML=`<div id="chatwrap">
-    <div class="chathead"><button class="ghost chatfs" onclick="clearChat('${id}')" title="Clear the conversation">Clear</button><button class="ghost chatfs" id="chatfsbtn" onclick="toggleChatFull()" title="Full screen (Esc to exit)">⛶ Full screen</button></div>
+    <div class="chathead"><button data-needs="write" class="ghost chatfs" onclick="clearChat('${id}')" title="Clear the conversation">Clear</button><button class="ghost chatfs" id="chatfsbtn" onclick="toggleChatFull()" title="Full screen (Esc to exit)">⛶ Full screen</button></div>
     <div class="chat"><div class="msgs" id="msgs"></div>
-    <div class="chatbar"><div class="qwrap"><input id="q" autocomplete="off" placeholder="ask anything about this case — risk, attack path, a host/account/IP, what to do next…"/><div id="qghost" aria-hidden="true"></div></div>
+    <div class="chatbar" data-needs="write"><div class="qwrap"><input id="q" autocomplete="off" placeholder="ask anything about this case — risk, attack path, a host/account/IP, what to do next…"/><div id="qghost" aria-hidden="true"></div></div>
     <button id="askbtn" onclick="ask('${id}')">Ask</button>
     ${SHOW_INVESTIGATE ? `<button id="invbtn" class="ghost" onclick="investigateAsk('${id}')" title="Agentic deep-dive: the model looks up the RAW evidence to answer, grounding every claim (slower — a few model calls)">🔬 Investigate</button>` : ''}</div></div></div>`;
   $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask(id);});
