@@ -91,7 +91,7 @@ each tool gets its own way in:
 | Timesketch | trusted user header set by nginx (`SSO_ENABLED`) | no |
 | Kibana / Elasticsearch (Basic licence) | per-user native user, nginx injects `Authorization: Basic` | yes |
 | Velociraptor | per-user user via VQL `user_create`/`user_grant`, injected Basic; OIDC fallback | yes |
-| VolWeb | per-user Django user, token handed to the browser on VolWeb's origin | yes |
+| VolWeb | per-user Django user, nginx replaces the Bearer token per request | yes |
 | Portainer | Super-admin only, keeps its own login (CE ends Aug 2027) | — |
 
 Read-only users get no tool accounts: Kibana's and Velociraptor's read roles
@@ -103,11 +103,40 @@ reconciler keeps every tool account in its desired state (boot, user change,
 nightly) and reverts drift. No human gets Elasticsearch `superuser`, Velociraptor
 `administrator` (except the Super-admin) or VolWeb's `/admin/`.
 
-## 6. Phases
+## 6. Phase 0 results (2026-11-25, on the dev box, nothing reconfigured)
 
-0. Lab tests: Velociraptor with an injected Basic header; Kibana when the
-   injected user changes in one browser; Timesketch's API client with
-   `SSO_ENABLED`; VolWeb's token hand-over.
+Each tool was tried with throwaway users that were deleted afterwards, or by
+reading the code installed on the box.
+
+- **Velociraptor 0.77.4**: a user made at runtime with VQL `user_create`
+  works at once (no restart). A request carrying `Authorization: Basic` for
+  that user gets the GUI and API as that user with no login prompt; POSTs need
+  no CSRF token; a wrong password is 401. Basic is stateless, so switching
+  users in one browser just follows the header. **Way in: confirmed.**
+- **Kibana 9.5.6 (Basic)**: an injected `Authorization: Basic` for a native
+  user is accepted and creates no Kibana session (`sid`). The header wins
+  even over another user's own form-login `sid`, so a user switch in one
+  browser is safe. **Way in: confirmed.**
+- **Timesketch 20261014**: the local username/password POST is handled before
+  the SSO branch, so the backend's API client keeps logging in with
+  `SSO_ENABLED`. Header SSO runs only on `/login/` and then Timesketch keeps
+  its own session (`timesketch_session`, `remember_token` for 7 days): the
+  dashboard's login and logout must expire both (cookies are not isolated by
+  port, so the dashboard can). Header name: `SSO_USER_ENV_VARIABLE =
+  'HTTP_X_INTACT_USER'`. **Way in: confirmed, with the cookie reset.**
+- **VolWeb 3.16.0**: the SPA keeps `access_token`, `refresh_token` and
+  `username` in localStorage and sends `Authorization: Bearer` on every API
+  call (access 10 min, refresh 1 day, rotation + blacklist on). nginx can
+  replace that header with a fresh token for the signed-in user, exactly like
+  Kibana, so whatever an earlier user left in localStorage is never used; a
+  bootstrap page on port 8002 only has to put placeholder values there.
+  VolWeb's WebSockets (`/ws/...`) check no user at all: only the nginx gate
+  protects them. **Way in: header replacement (better than the token
+  hand-over planned).**
+
+## 7. Phases
+
+0. Done 2026-11-25 (section 6): every tool has a confirmed way in.
 1. **Dashboard users, roles, gate, CSRF/CORS, cookie strip, audit chain,
    screens.** Tools keep their shared logins.
 2. Timesketch header login, Kibana per-user accounts, the password vault and
