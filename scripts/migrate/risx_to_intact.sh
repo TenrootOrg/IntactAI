@@ -483,17 +483,26 @@ pause_for_copy() {
     step copied "6. Copy the backup off this box (optional)" || return 0
     local ip; ip="$(box_ip)"
     local src; src="$(id -un)@${ip:-<this-box-ip>}:${BACKUP_DIR}"
-    local what line
+    local what line shells="PowerShell or Linux/macOS. "
     if [[ "$(backup_mode)" == data ]]; then
-        what="configuration + data, $(_gb "$(state_val dskb)") GB"; line="scp -r \"${src}\" ."
+        # One .tar streamed over ssh, not `scp -r`: that unpacked hundreds of
+        # thousands of datastore files loose into the laptop's Downloads
+        # (risksrv, 2026-11-25), one round trip each. Nothing extra is written
+        # on this box. cmd's `>` is byte-exact; Windows PowerShell's re-encodes
+        # binary output, hence its own line through cmd /c.
+        local tarcmd
+        tarcmd="ssh $(id -un)@${ip:-<this-box-ip>} tar -cf - -C $(dirname "$BACKUP_DIR") $(basename "$BACKUP_DIR") > velociraptor_backup.tar"
+        what="configuration + data, $(_gb "$(state_val dskb)") GB, as one file"
+        line="cmd, Linux or macOS:"$'\n'"       ${tarcmd}"$'\n'"     PowerShell:"$'\n'"       cmd /c '${tarcmd}'"
+        shells=""
     else
         # the two config files only: the datastore next to them is root's and large
         what="configuration only, a few KB"; line="scp \"${src}/*.config.yaml\" ."
     fi
     # The one thing to do here: framed and highlighted (QA: lost in the text).
     local b=$'\e[1;33m' o=$'\e[0m' bar="  ═══════════════════════════════════════════════════════════════════════"
-    printf '\n%s%s\n   COPY THE BACKUP TO YOUR LAPTOP NOW (%s):\n\n     %s\n\n   PowerShell or Linux/macOS. It holds the fleet'"'"'s CA key: keep it safe.\n%s%s\n\n' \
-        "$b" "$bar" "$what" "$line" "$bar" "$o"
+    printf '\n%s%s\n   COPY THE BACKUP TO YOUR LAPTOP NOW (%s):\n\n     %s\n\n   %sIt holds the fleet'"'"'s CA key: keep it safe.\n%s%s\n\n' \
+        "$b" "$bar" "$what" "$line" "$shells" "$bar" "$o"
     # Named here, before the r: nothing asks about it later. The full list and
     # how to start risx again after a Ctrl+C go to the log.
     risx_inventory

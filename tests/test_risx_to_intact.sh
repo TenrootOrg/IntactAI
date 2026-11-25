@@ -291,7 +291,11 @@ test_data_mode_moves_the_datastore_instead_of_archiving_it() {
     assert_eq "$(stat -c %a "$W/backup/datastore")" "700" "the datastore holds the CA key"
     assert_eq "$(stat -c %U "$W/backup/datastore/clients/C.1234/collections/flow.json")" "$(id -un)" "yours, so scp can read it"
     assert_true grep -qx backup_mode=data "$(_state)"
-    assert_contains "$OUT" "scp -r \"$(id -un)@" "the whole backup, datastore included"
+    # one .tar over ssh, not scp -r (that unpacked every datastore file loose)
+    assert_contains "$OUT" "ssh $(id -un)@"
+    assert_contains "$OUT" " tar -cf - -C $(dirname "$W/backup") backup > velociraptor_backup.tar"
+    assert_contains "$OUT" "cmd /c 'ssh $(id -un)@"
+    assert_not_contains "$OUT" "scp -r"
 }
 
 test_configuration_only_still_brings_the_history_and_copies_only_the_configs() {
