@@ -2,6 +2,13 @@
 
 ## Velociraptor: legacy version disabled after upgrade/offline-install
 
+**PROBABLY FIXED (2026-11-26 check, not re-tested on an upgrade run):** since
+631bfa34 (2026-08-09) `lib/upgrade/velo_refresh.sh` keeps both the current pin
+and `versions.velociraptor_legacy` when it prunes `downloads/`, and the dev box
+still has the 0.7.1 binaries after several package upgrades. Confirm on the next
+lab upgrade: `ls modules/nginx/html/downloads/ | grep 0.7.1` afterwards, and
+build a legacy offline collector once.
+
 **Symptom**
 After running an upgrade (or offline install) of the Velociraptor
 module, the LEGACY Velociraptor binary support gets disabled —
