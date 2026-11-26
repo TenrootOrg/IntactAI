@@ -71,6 +71,30 @@
     } catch (e) { go(''); }
   }
 
+  // --- GETs the role may not make ---------------------------------------------
+  // /api/auth/status lists the GET routes closed to this role (routes/
+  // auth_routes._get_rules). Pages and stores load a few of those in the
+  // background; answering them here with the server's own 403 keeps them out
+  // of the audit log as "denied". A path an open route also matches is sent:
+  // the server decides, so this can only ever skip a request it would refuse.
+  let _roleWaited = false;
+  function _closedGet(input, init) {
+    const st = window.IntactAccess && window.IntactAccess.status;
+    const g = st && st.gets;
+    if (!g) return false;
+    const method = ((init && init.method) || (typeof input !== 'string' && input && input.method) || 'GET').toUpperCase();
+    if (method !== 'GET') return false;
+    let path;
+    try { path = new URL((typeof input === 'string') ? input : input.url, location.href).pathname; }
+    catch (e) { return false; }
+    if (!g._re) g._re = { closed: g.closed.map(s => new RegExp(s)), open: g.open.map(s => new RegExp(s)) };
+    return g._re.closed.some(r => r.test(path)) && !g._re.open.some(r => r.test(path));
+  }
+  function _forbidden() {
+    return Promise.resolve(new Response(JSON.stringify({ error: 'forbidden', message: 'Your role does not allow this.' }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } }));
+  }
+
   // --- the tagging hook -----------------------------------------------------
   window.fetch = function (input, init) {
     let isApi = false;
@@ -86,6 +110,17 @@
       }
     } catch (e) { /* never let tagging break a request */ }
 
+    if (isApi) {
+      const acc = window.IntactAccess;
+      const url = (typeof input === 'string') ? input : (input && input.url) || '';
+      // Before the role is known, wait for it once (the status call itself
+      // excepted; a failed status call must not hold requests back for ever).
+      if (!_roleWaited && acc && !acc.status && acc.ready && url.indexOf('/api/auth/') === -1) {
+        const again = () => { _roleWaited = true; return window.fetch(input, init); };
+        return acc.ready.then(again, again);
+      }
+      if (_closedGet(input, init)) return _forbidden();
+    }
     const p = _fetch(input, init);
     if (!isApi) return p;
     // Globally auto-recover from the System-workspace guard for EVERY module

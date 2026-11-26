@@ -732,6 +732,35 @@ import time as _time  # noqa: E402
 from services import mfa  # noqa: E402
 
 
+class ClosedGets(unittest.TestCase):
+    """/api/auth/status lists the GET routes closed to the caller's role, so the
+    dashboard stops sending background loads the server would refuse."""
+
+    def test_routes_split_by_the_real_policy(self):
+        import re as _re
+        rule = lambda path, ep, methods=("GET", "HEAD"): types.SimpleNamespace(rule=path, endpoint=ep, methods=set(methods))
+        rules = [rule("/api/system/data-location", "system.data_location_get"),
+                 rule("/api/cases", "case.list_cases"),
+                 rule("/api/cases/<case_id>/files/<file_id>", "case.download_case_file"),
+                 rule("/api/security/alerts/<int:alert_id>/ack", "security.ack_security_alert", ("POST",)),
+                 rule("/static/<path:f>", "static")]
+        _flask.current_app = types.SimpleNamespace(url_map=types.SimpleNamespace(iter_rules=lambda: rules))
+        routes._GET_RULES.clear()
+        try:
+            ro = routes._get_rules(users.READONLY)
+            adm = routes._get_rules(users.ADMIN)
+        finally:
+            routes._GET_RULES.clear()
+            del _flask.current_app
+        hit = lambda srcs, path: any(_re.match(x, path) for x in srcs)
+        self.assertTrue(hit(ro["closed"], "/api/system/data-location"))
+        self.assertTrue(hit(ro["open"], "/api/cases"))
+        self.assertTrue(hit(ro["open"], "/api/cases/c1/files/f1"), "pictures: the route decides")
+        self.assertFalse(hit(ro["closed"] + ro["open"], "/api/security/alerts/1/ack"), "GET routes only")
+        self.assertFalse(hit(ro["closed"] + ro["open"], "/static/x.js"), "/api only")
+        self.assertTrue(hit(adm["closed"], "/api/system/data-location"), "Super-admin only")
+
+
 class TwoStep(Base):
     """Two-step login (services/mfa.py), with the real rule: Admins and the
     Super-admin must set it up; codes work once; recovery codes once each."""

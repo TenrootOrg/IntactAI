@@ -257,6 +257,7 @@ const unauth = skew => [200, { mode: 'login', authenticated: false, server_time:
     const dom = new JSDOM(`<!DOCTYPE html><html><head></head><body>${menu}</body></html>`,
                           { url: 'https://intact.local/', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: quiet() });
     const w = dom.window, calls = [], nav = [];
+    w.Response = Response;          // jsdom has none; every browser does
     w.__nav = u => nav.push(u === undefined ? 'reload' : u);
     w.fetch = async (url, init) => {
       const method = (init && init.method) || 'GET';
@@ -276,13 +277,28 @@ const unauth = skew => [200, { mode: 'login', authenticated: false, server_time:
   }
 
   {
+    // GETs closed to the role (status.gets) are answered here, never sent:
+    // background loads a role cannot see stay out of the audit log.
+    const gets = { closed: ['^/api/system/data\\-location$', '^/api/cases/[^/]+$'], open: ['^/api/cases/export$'] };
+    const g = await dash({ user: 'rita', role: 'readonly', role_label: 'Read-only', gets },
+                         (url, method) => [200, { url, method }]);
+    let r = await g.w.fetch('/api/system/data-location?x=1');
+    assert.strictEqual(r.status, 403, 'a closed GET gets the same 403 the server sends');
+    assert.strictEqual((await r.json()).error, 'forbidden');
+    assert.strictEqual((await g.w.fetch('/api/system/data-location', { method: 'POST' })).status, 200, 'writes are sent');
+    assert.strictEqual((await g.w.fetch('/api/cases/export')).status, 200, 'an open route matching too: sent');
+    assert.strictEqual((await g.w.fetch('/api/memory/dumps')).status, 200, 'unlisted paths are sent');
+    assert.deepStrictEqual(g.calls.filter(c => c.url !== '/api/auth/status').map(c => c.url + ' ' + c.method),
+      ['/api/system/data-location POST', '/api/cases/export GET', '/api/memory/dumps GET']);
+  }
+  {
     const g = await dash({ user: 'alice', role: 'admin', role_label: 'Admin', mfa_enabled: false, mfa_required: true, must_enroll: true });
     assert.deepStrictEqual(g.nav, ['/login.html?mfa=setup'], 'status must_enroll goes to the setup screen');
   }
   {
     const g = await dash({ user: 'olga', role: 'operator', role_label: 'Operator', mfa_enabled: false, mfa_required: false },
                          () => [403, { error: 'mfa_enroll_required', message: 'Set up two-step login first.' }]);
-    assert.deepStrictEqual(g.items(), ['Change password', 'Two-step login', 'Log out'], 'off: the setup link');
+    assert.deepStrictEqual(g.items(), ['Change password', 'Two-step login', 'API tokens', 'Log out'], 'off: the setup link');
     assert.strictEqual(g.d.querySelector('a[href="/login.html?mfa=setup"]').textContent, 'Two-step login');
     await g.w.fetch('/api/cases');
     await sleep(30);
@@ -290,7 +306,7 @@ const unauth = skew => [200, { mode: 'login', authenticated: false, server_time:
   }
   {
     const g = await dash({ user: 'root', role: 'superadmin', role_label: 'Super-admin', mfa_enabled: true, mfa_required: true });
-    assert.deepStrictEqual(g.items(), ['Change password', 'Two-step login: on', 'Log out'], 'required: no Turn off');
+    assert.deepStrictEqual(g.items(), ['Change password', 'Two-step login: on', 'API tokens', 'Log out'], 'required: no Turn off');
   }
   {
     let reauthed = false;
@@ -306,7 +322,7 @@ const unauth = skew => [200, { mode: 'login', authenticated: false, server_time:
         if (url === '/api/auth/mfa/disable') return b.code === '222222' ? [200, { success: true }] : [401, { error: 'invalid_code' }];
         return [404, {}];
       });
-    assert.deepStrictEqual(g.items(), ['Change password', 'Two-step login: on', 'Turn off two-step login', 'Log out']);
+    assert.deepStrictEqual(g.items(), ['Change password', 'Two-step login: on', 'Turn off two-step login', 'API tokens', 'Log out']);
 
     const done = g.w.fetch('/api/thing', { method: 'POST' });
     await sleep(30);

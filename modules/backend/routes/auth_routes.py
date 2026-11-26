@@ -41,6 +41,32 @@ def _client_ip():
     return auth.client_address(request)
 
 
+_GET_RULES = {}       # role -> {"closed": [...], "open": [...]}; the url map is fixed after start
+
+
+def _get_rules(role):
+    """The /api GET routes, as anchored regex sources, split into those `role`
+    may not read and those it may. The dashboard answers a GET to a closed one
+    itself (js/active-case.js) instead of sending it: pages and stores load a
+    few things in the background that a role cannot see (the disk banner, model
+    lists), and each refusal was a 'denied' line in the audit log. The server
+    still refuses them; this only stops asking."""
+    if role not in _GET_RULES:
+        from flask import current_app
+        rank = users.rank(role)
+        out = {"closed": [], "open": []}
+        for rule in current_app.url_map.iter_rules():
+            if not rule.rule.startswith('/api/') or 'GET' not in (rule.methods or ()):
+                continue
+            src = '^' + re.sub(r'<(?:(\w+)(?:\([^)]*\))?:)?\w+>',
+                               lambda m: '.+' if m.group(1) == 'path' else '[^/]+',
+                               re.escape(rule.rule).replace('\\<', '<').replace('\\>', '>')) + '$'
+            need = auth.access_policy.rule_for(rule.endpoint, 'GET').role
+            out["closed" if users.rank(need) > rank else "open"].append(src)
+        _GET_RULES[role] = out
+    return _GET_RULES[role]
+
+
 @auth_bp.route('/api/auth/status', methods=['GET'])
 def auth_status():
     """Drives both login.html and setup.html, and the frontend's decision to
@@ -85,6 +111,8 @@ def auth_status():
             'tools': sorted(t for t, need in auth.access_policy.TOOLS.items()
                             if rank >= users.rank(need)),
         }
+        if row['role'] != users.SUPERADMIN:          # nothing is closed to the Super-admin
+            body['gets'] = _get_rules(row['role'])
     return jsonify(body)
 
 
