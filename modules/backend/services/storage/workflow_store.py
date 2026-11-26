@@ -171,8 +171,9 @@ def list_workflow_summaries(case_id: Optional[str] = None, automation_type: Opti
 
     linked_types: run types that live in the System workspace but are about one
     case (details.case_id: export, relevance) -- listed in that case, and in the
-    one it was started from (details.started_in); an import makes a NEW case, so
-    it is listed in every case. hidden_case_ids:
+    one it was started from (details.started_in); an import likewise, and in the
+    case it made once done (it used to be listed in every case, with a possibly
+    restricted bundle's file name and log). hidden_case_ids:
     restricted cases the caller may not see -- their runs, and the runs about
     them, are left out. Both in SQL, so paging and `total` stay exact."""
     where, params = [], []
@@ -180,7 +181,7 @@ def list_workflow_summaries(case_id: Optional[str] = None, automation_type: Opti
     lph = ",".join("?" * len(linked))
     if case_id:
         if linked:
-            where.append(f"(case_id = ? OR automation_type = 'case_import' OR (automation_type IN ({lph}) "
+            where.append(f"(case_id = ? OR (automation_type IN ({lph}) "
                          f"AND json_valid(details) AND ? IN (json_extract(details, '$.case_id'), "
                          f"json_extract(details, '$.started_in'))))")
             params += [case_id, *linked, case_id]

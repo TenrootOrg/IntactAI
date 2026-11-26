@@ -1188,7 +1188,8 @@ def import_case():
         f.save(tmp)
         run_id = ws.create_automation_run(
             "case_import", f"Import case: {f.filename or 'bundle'}",
-            details={"filename": f.filename or "bundle"})
+            details={"filename": f.filename or "bundle",
+                     "started_in": getattr(flask_g, "case_id", None)})
         from services import case_access
         res = case_bundle.import_case_bundle(tmp, run_id=run_id,
                                              name=request.form.get("name") or None,

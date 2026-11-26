@@ -667,6 +667,10 @@ def handle_tus_hook():
                     "size_mb": round(size_mb, 2),
                     "sketch_name": metadata.get('sketch_name', ''),
                     "plaso_parser": metadata.get('plaso_parser', ''),
+                    # An import runs in System; it is listed on the Workflows page
+                    # of the case it was started from (and of the case it makes),
+                    # not of every case -- the bundle may be a restricted case.
+                    **({"started_in": case_id} if purpose == 'case_import' and case_id else {}),
                 },
                 case_id=case_id,
             )

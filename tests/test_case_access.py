@@ -235,6 +235,21 @@ class Listings(Fixture):
         self.assertEqual(got, {self.open_run, self.open_export})
         self.assertEqual(self.ids(case_id=self.open), {self.open_run}, "unchanged without linked_types")
 
+    def test_an_import_is_listed_where_it_started_not_in_every_case(self):
+        # The bundle may be a restricted case: its file name and log are not for
+        # the Workflows page of every case.
+        imp = ws.create_automation_run("case_import", "Import case: secret.intactcase.zip",
+                                       details={"filename": "secret.intactcase.zip", "started_in": self.open})
+        try:
+            linked = case_access.CASE_RUN_TYPES
+            self.assertIn(imp, self.ids(case_id=self.open, linked_types=linked))
+            self.assertNotIn(imp, self.ids(case_id=self.secret, linked_types=linked))
+            ws.update_run_status(imp, "completed", details={"case_id": self.secret})
+            self.assertIn(imp, self.ids(case_id=self.secret, linked_types=linked), "then in the case it made")
+        finally:
+            from services.file_storage_service import delete_workflow
+            delete_workflow(imp)
+
     def _automations(self, uid, case_id=None):
         with mock.patch.object(F, "g", types.SimpleNamespace(case_id=case_id)), \
                 mock.patch.object(F, "request", types.SimpleNamespace(args={})), \
