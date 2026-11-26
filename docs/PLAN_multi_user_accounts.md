@@ -75,7 +75,10 @@ Code: `modules/backend/services/users.py` (table, ranks),
   (`/api/auth/verify?tool=`), so a role that may not open a tool gets 403.
 - Audit log: every login event and every state-changing request, under the
   user's name, hash-chained so an edited or removed line is detectable
-  (`auth_service.verify_audit_chain`). An off-box copy is a later phase.
+  (`auth_service.verify_audit_chain`). An off-box copy goes to the customer's
+  syslog server (Settings -> Security, `services/audit_forward.py`, RFC 5424 over
+  UDP or TCP), and security alerts are raised from the same entries
+  (`services/security_alerts.py`; dashboard banner for Admins and up).
 
 ## 4. Case chat
 
@@ -151,6 +154,18 @@ reading the code installed on the box.
   (docs/UPGRADE_CONTRACT.md, "Dashboard users and rollback").
 - **Portainer** stays the Super-admin's, on its own default login (decided
   2026-11-26): it controls Docker, i.e. the whole host.
+- **Restricted cases** need a Velociraptor org of their own: restricting a case
+  whose org another case shares is refused, and a case cannot be moved into a
+  restricted case's org. Kibana and VolWeb cannot be restricted per case;
+  Timesketch Admins still see a restricted sketch's name (not its events).
+- **API tokens** (user menu): read or write, at most the user's own role, never
+  for Super-admin-only or password-again actions; they stop working when the
+  user's role, password or two-step login changes.
+- **Windows.EventLogs.CondensedAccountUsage** now returns one row per logon
+  shape (account, source, logon type, logon process) with Count, EventTime
+  (first) and LastSeen, and leaves logoff and lock/unlock events out. A
+  collection is hundreds of times smaller; set Aggregate=N (and EventIDRegex)
+  on a manual collection for the old one-row-per-event output.
 
 ## 8. Phases
 
@@ -159,7 +174,10 @@ reading the code installed on the box.
    screens.** Tools keep their shared logins.
 2. Done: Timesketch header login, Kibana per-user accounts, the password
    vault and reconciler (services/tool_accounts).
-3. Done: Velociraptor and VolWeb per-user accounts. Next: MFA (TOTP, then
-   WebAuthn) for Admins and up, with recovery codes.
-4. Restricted cases, per-user API tokens, off-box audit, Portainer replacement,
-   IRIS removal.
+3. Done: Velociraptor and VolWeb per-user accounts, then two-step login (TOTP,
+   air-gapped, required for Admins and up, 10 recovery codes).
+4. Done 2026-11-26: restricted cases, Operator case export/import, Read-only
+   report pictures, per-user API tokens, off-box audit (syslog) and security
+   alerts. Portainer stays the Super-admin's default login (no replacement).
+   Still open: WebAuthn (needs a hostname, browsers refuse it on an IP), IRIS
+   removal, private per-user chat threads.
