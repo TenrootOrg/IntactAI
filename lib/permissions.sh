@@ -183,11 +183,9 @@ fix_source_permissions() {
     #   auth/audit.jsonl    - login/lockout history
     #
     # Safe at 600: every consuming container runs as root (verified with
-    # `docker top`, not Config.User) and root ignores mode bits. Keep this list
-    # in sync with _SECRET_PATHS_0600 in
-    # modules/backend/services/upgrade/base.py — the in-UI upgrade never runs
-    # install.sh, so both paths must harden the same files. A parity test
-    # enforces it (tests/test_secret_files_are_not_world_readable.py).
+    # `docker top`, not Config.User) and root ignores mode bits. install.sh and
+    # scripts/upgrade.sh both run this function (the old in-UI engine with its
+    # own copy of the list is gone).
     #
     # IRIS secrets are deliberately NOT here: install.sh and the upgrade path
     # disagree on their mode (600 vs 644) for a documented reason — see
@@ -209,6 +207,13 @@ fix_source_permissions() {
     chmod 600 "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf" 2>/dev/null || true
     chmod 600 "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf" 2>/dev/null || true
     chmod 600 "${SCRIPT_DIR}/data/auth/audit.jsonl" 2>/dev/null || true
+    # Per-box nginx snippets (lib/modules/timesketch.sh _ts_render_sso): the
+    # Timesketch SSO include names the secret header that signs a user in, so
+    # world-readable = any local account can be any Timesketch user. Written
+    # 0600, then the 644 sweep above loosened it on every install and upgrade.
+    for _f in "${SCRIPT_DIR}"/modules/nginx/config/local/*.conf; do
+        [[ -f "$_f" ]] && chmod 600 "$_f" 2>/dev/null
+    done
     # END shared-secret-hardening
 
     # Secrets dirs: 0700. Their files keep the modes set above -- including

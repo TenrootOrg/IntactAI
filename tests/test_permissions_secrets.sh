@@ -38,6 +38,9 @@ test_sweep_keeps_secrets_private() {
     echo x > "$WORK/data/tmp/intact-rollback-1/modules/elk/.env"
     echo x > "$WORK/data/tmp/intact-rollback-1/config.yaml"
     echo x > "$WORK/lib/ordinary.sh"
+    # The Timesketch SSO include: its header name signs a user in.
+    mkdir -p "$WORK/modules/nginx/config/local"
+    echo x > "$WORK/modules/nginx/config/local/timesketch-sso.conf"
     chmod -R a+rwX "$WORK/modules" "$WORK/data/tmp"
     chmod 666 "$WORK"/config.yaml.pre-* "$WORK/data/state/default-passwords.json"
     chmod 777 "$WORK/data/state/backend"
@@ -65,6 +68,7 @@ test_sweep_keeps_secrets_private() {
     assert_eq "$(_mode data/tmp/intact-rollback-1/modules/elk/.env)" "600" "snapshot .env"
     assert_eq "$(_mode data/tmp/intact-rollback-1/config.yaml)" "600" "snapshot config.yaml"
     assert_eq "$(_mode lib/ordinary.sh)" "755" "ordinary code still normalised (+x restored)"
+    assert_eq "$(_mode modules/nginx/config/local/timesketch-sso.conf)" "600" "Timesketch SSO include private"
 }
 
 # The same backups must never reach git.
