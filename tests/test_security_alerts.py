@@ -132,20 +132,25 @@ class BurstRules(Base):
     def test_forbidden_burst_per_user(self):
         out = []
         for i in range(12):
-            out += kinds({"event": "denied", "reason": "forbidden", "user": "op", "ip": "x"}, T0 + i)
+            out += kinds({"event": "denied", "reason": "forbidden", "method": "POST", "user": "op", "ip": "x"}, T0 + i)
         for i in range(9):
-            out += kinds({"event": "denied", "reason": "forbidden", "user": "ro", "ip": "x"}, T0 + i)
+            out += kinds({"event": "denied", "reason": "forbidden", "method": "POST", "user": "ro", "ip": "x"}, T0 + i)
         self.assertEqual(out, ["forbidden_burst"])
         # A token probing routes it may never use counts like a forbidden burst.
         out = []
         for i in range(10):
-            out += kinds({"event": "token_denied", "reason": "token_refused", "user": "tk", "ip": "y"}, T0 + i)
+            out += kinds({"event": "token_denied", "reason": "token_refused", "method": "POST", "user": "tk", "ip": "y"}, T0 + i)
         self.assertEqual(out, ["forbidden_burst"])
         # Dead tokens from one address count like failed sign-ins.
         out = []
         for i in range(10):
             out += kinds({"event": "token_denied", "reason": "token_invalid", "ip": "z"}, T0 + i)
         self.assertEqual(out, ["failed_login_burst"])
+        # Refused reads are the dashboard asking for what a role cannot see: no alert.
+        out = []
+        for i in range(12):
+            out += kinds({"event": "denied", "reason": "forbidden", "method": "GET", "user": "ro2", "ip": "x"}, T0 + i)
+        self.assertEqual(out, [])
         # reauth_required is the normal step-up prompt, not an attack.
         self.assertEqual(kinds({"event": "denied", "reason": "reauth_required", "user": "op"}, T0), [])
 

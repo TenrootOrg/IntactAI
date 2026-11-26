@@ -17,7 +17,7 @@ Security) and, when audit forwarding is on, sent to syslog too.
     mfa_removed            user_mfa_reset or mfa_disabled                     medium
     csrf_rejected          denied, reason csrf_rejected (one per user+IP
                            per 10 min)                                        medium
-    forbidden_burst        >= 10 denied/forbidden for one user in 10 min      medium
+    forbidden_burst        >= 10 refused WRITES for one user in 10 min        medium
 
 A burst raises ONE alert per window: after it fires, the same key stays quiet
 for 10 minutes, then a burst still going on raises the next one. Failed codes
@@ -148,7 +148,11 @@ def evaluate(entry, now=None):
             if reason == "csrf_rejected" and _once(("csrf", user, ip), now):
                 out.append(("csrf_rejected", "medium", user,
                             dict(base, endpoint=entry.get("endpoint"))))
-            elif (reason == "forbidden"
+            # Writes only: the dashboard itself asks for some things a role
+            # may not read (a page load is several refused GETs), so counting
+            # those raised an alert every second page load. Refused writes are
+            # someone trying to change what they may not.
+            elif (reason == "forbidden" and entry.get("method") not in ("GET", "HEAD", "OPTIONS")
                   and _burst(("forbidden", user), USER_FORBIDDEN, now)
                   and _once(("forbidden", user), now)):
                 out.append(("forbidden_burst", "medium", user,
