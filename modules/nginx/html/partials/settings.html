@@ -171,6 +171,7 @@
                                         <th class="py-2 px-2">Name</th>
                                         <th class="py-2 px-2">Role</th>
                                         <th class="py-2 px-2">Status</th>
+                                        <th class="py-2 px-2">MFA</th>
                                         <th class="py-2 px-2">Last login</th>
                                         <th class="py-2 px-2"></th>
                                     </tr>
@@ -200,6 +201,11 @@
                                                 <span x-show="u.temp_password_pending" class="text-xs text-yellow-300 whitespace-nowrap"
                                                       title="A one-time password was issued and not used yet">· one-time password pending</span>
                                             </td>
+                                            <td class="py-2 px-2 whitespace-nowrap">
+                                                <span :class="u.mfa_enabled ? 'text-green-400' : 'text-gray-400'" x-text="u.mfa_enabled ? 'On' : 'Off'"></span>
+                                                <span x-show="!u.mfa_enabled && mfaRequired(u)" class="text-xs text-yellow-300"
+                                                      title="This role must set up two-step login at its next sign-in">· required</span>
+                                            </td>
                                             <td class="py-2 px-2 text-gray-400 whitespace-nowrap" x-text="when(u.last_login)"></td>
                                             <td class="py-2 px-2 text-right whitespace-nowrap">
                                                 <template x-if="canManage(u)">
@@ -209,6 +215,10 @@
                                                                 x-text="u.enabled ? 'Disable' : 'Enable'"></button>
                                                         <button type="button" @click="reset(u)" :disabled="busy"
                                                                 class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1 rounded text-xs">Reset password</button>
+                                                        <template x-if="u.mfa_enabled">
+                                                            <button type="button" @click="resetMfa(u)" :disabled="busy"
+                                                                    class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1 rounded text-xs">Reset 2-step</button>
+                                                        </template>
                                                     </span>
                                                 </template>
                                             </td>

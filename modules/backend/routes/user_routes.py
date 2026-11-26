@@ -94,6 +94,21 @@ def reset_password(username):
                     'temporary_password': temp, 'expires_hours': users.TEMP_PASSWORD_HOURS})
 
 
+@users_bp.route('/api/users/<username>/reset-mfa', methods=['POST'])
+def reset_mfa(username):
+    """A lost authenticator: the user sets two-step login up again at their
+    next login (straight away if their role requires it). Ends their sessions."""
+    actor = _actor()
+    target = users.by_name(username)
+    if target is None:
+        return _refuse('No such user.', 404)
+    if not users.may_manage(actor, target):
+        return _refuse('You can only reset users with a role below your own.')
+    users.clear_mfa(target['id'])
+    auth.audit('user_mfa_reset', request, username_value=actor['username'], target=target['username'])
+    return jsonify({'success': True})
+
+
 @users_bp.route('/api/users/transfer-superadmin', methods=['POST'])
 def transfer_superadmin():
     """The Super-admin hands the role to an enabled Admin and becomes an Admin.

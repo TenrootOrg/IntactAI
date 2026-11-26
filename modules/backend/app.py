@@ -177,6 +177,14 @@ def _auth_gate():
                        'password. Choose your own password to continue.',
         }), 403
 
+    if reason == auth_service.MFA_ENROLL_REQUIRED:
+        # The role requires two-step login and it is not set up yet: only the
+        # setup routes until it is (login.html?mfa=setup).
+        return jsonify({
+            'error': reason,
+            'message': 'Your role requires two-step login. Set it up to continue.',
+        }), 403
+
     if reason in (auth_service.FORBIDDEN, auth_service.REAUTH_REQUIRED,
                   auth_service.CSRF_REJECTED):
         messages = {

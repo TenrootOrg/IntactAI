@@ -114,13 +114,15 @@
       if (resp.status === 403) {
         return resp.clone().json().then(function (d) {
           var err = d && d.error;
-          // Signed in with a one-time or publicly known password: the backend
-          // refuses everything but change-password until it is replaced.
-          if (err === 'password_change_required') {
+          // Signed in with a one-time or publicly known password, or a role
+          // that requires two-step login without it set up: the backend
+          // refuses everything but change-password / the setup until done.
+          if (err === 'password_change_required' || err === 'mfa_enroll_required') {
             if (!_redirecting) {
               _redirecting = true;
               // top: from the Case Analysis iframe the whole dashboard must go.
-              var u = '/login.html?reason=password_change_required';
+              var u = err === 'mfa_enroll_required' ? '/login.html?mfa=setup'
+                                                    : '/login.html?reason=password_change_required';
               try { window.top.location.replace(u); } catch (e) { location.replace(u); }
             }
             return resp;

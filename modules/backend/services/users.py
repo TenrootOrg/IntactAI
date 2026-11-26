@@ -35,6 +35,10 @@ RANK = {r: i for i, r in enumerate(ROLES)}
 ROLE_LABELS = {READONLY: "Read-only", OPERATOR: "Operator", ADMIN: "Admin",
                SUPERADMIN: "Super-admin"}
 
+# Two-step login (services/mfa.py) is required for these roles: they can
+# change who may do what, so a stolen password alone must not be enough.
+MFA_REQUIRED_ROLES = frozenset({"admin", "superadmin"})
+
 # A temporary password (new user, or a reset) works for this long, and
 # only to choose a real one (ASVS 6.4.1). The admin who hands it over never
 # learns the password the user ends up with (ASVS 6.4.6).
@@ -71,6 +75,14 @@ def ensure_table() -> None:
             last_login REAL
         );
     """)
+    # Two-step login, added after the table shipped. Secrets are Fernet tokens
+    # (encrypted by auth_service), recovery codes only their hashes (JSON list).
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    for col, decl in (("mfa_enabled", "INTEGER NOT NULL DEFAULT 0"), ("mfa_secret", "TEXT"),
+                      ("mfa_pending", "TEXT"), ("mfa_last_step", "INTEGER NOT NULL DEFAULT -1"),
+                      ("mfa_recovery", "TEXT")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
     conn.commit()
 
 
@@ -136,6 +148,8 @@ def public(u: dict) -> dict:
     """What the Users page may show. Never the hash."""
     return {"username": u["username"], "role": u["role"], "enabled": bool(u["enabled"]),
             "temp_password_pending": bool(u.get("temp_expires")),
+            "mfa_enabled": bool(u.get("mfa_enabled")),
+            "mfa_required": u["role"] in MFA_REQUIRED_ROLES,
             "created_at": u.get("created_at"), "created_by": u.get("created_by"),
             "last_login": u.get("last_login")}
 
@@ -241,3 +255,30 @@ def caller_has(session, role: str) -> bool:
 
 def caller_name(session) -> str:
     return (session or {}).get("user") or "system"
+
+
+# --- two-step login ---------------------------------------------------------------
+
+def set_mfa_pending(uid: int, secret_token: Optional[str]) -> None:
+    _write("UPDATE users SET mfa_pending = ? WHERE id = ?", (secret_token, uid), notify=False)
+
+
+def enable_mfa(uid: int, secret_token: str, step: int, recovery_json: str) -> None:
+    _write("UPDATE users SET mfa_enabled = 1, mfa_secret = ?, mfa_pending = NULL, "
+           "mfa_last_step = ?, mfa_recovery = ? WHERE id = ?",
+           (secret_token, step, recovery_json, uid), notify=False)
+
+
+def clear_mfa(uid: int) -> None:
+    """Turned off or reset by an Admin: a new generation ends every session, so
+    a session opened with the old factor does not outlive it."""
+    _write("UPDATE users SET mfa_enabled = 0, mfa_secret = NULL, mfa_pending = NULL, "
+           "mfa_last_step = -1, mfa_recovery = NULL, generation = generation + 1 WHERE id = ?",
+           (uid,), notify=False)
+
+
+def mfa_used(uid: int, step: Optional[int] = None, recovery_json: Optional[str] = None) -> None:
+    if step is not None:
+        _write("UPDATE users SET mfa_last_step = ? WHERE id = ?", (step, uid), notify=False)
+    if recovery_json is not None:
+        _write("UPDATE users SET mfa_recovery = ? WHERE id = ?", (recovery_json, uid), notify=False)

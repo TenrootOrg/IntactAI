@@ -28,6 +28,11 @@
     <div id="lockbox" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:8px;
          background:#3b1d1d;border:1px solid #7f1d1d;font-size:13px;line-height:1.5"></div>
 
+    <!-- Air-gapped appliances drift with no NTP to correct them, and an
+         authenticator code is only accepted near the appliance's own time. -->
+    <div id="clockWarn" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:8px;
+         background:#3b2f12;border:1px solid #92400e;font-size:13px;line-height:1.5"></div>
+
     <form id="loginForm" style="background:#111827;border:1px solid #1f2937;border-radius:10px;padding:20px">
       <label for="username" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Username</label>
       <input id="username" name="username" type="text" autocomplete="username" autofocus
@@ -77,6 +82,84 @@
       <a id="changeCancel" href="/" style="display:none;margin-top:12px;text-align:center;font-size:13px;color:#93c5fd">Cancel</a>
     </form>
 
+    <!-- Two-step login, second step. The password was right, but the session
+         is not signed in yet: the backend keeps a pending state in the cookie
+         for 5 minutes (mfa_expired after that: back to the password). -->
+    <form id="mfaForm" style="display:none;background:#111827;border:1px solid #1f2937;border-radius:10px;padding:20px">
+      <div id="mfaCodeBox">
+        <label for="mfaCode" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">6-digit code from your authenticator app</label>
+        <input id="mfaCode" type="text" inputmode="numeric" autocomplete="one-time-code"
+               style="width:100%;padding:10px 12px;margin-bottom:6px;border-radius:6px;letter-spacing:4px;
+                      background:#0d1117;border:1px solid #374151;color:#fff">
+      </div>
+      <div id="mfaRecBox" style="display:none">
+        <label for="recoveryCode" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Recovery code (each one works once)</label>
+        <input id="recoveryCode" type="text" autocomplete="off" spellcheck="false"
+               style="width:100%;padding:10px 12px;margin-bottom:6px;border-radius:6px;
+                      background:#0d1117;border:1px solid #374151;color:#fff">
+      </div>
+      <div id="mfaError" style="display:none;color:#f87171;font-size:13px;margin:10px 0"></div>
+      <button id="mfaBtn" type="submit"
+              style="width:100%;margin-top:14px;padding:11px;border-radius:6px;border:none;
+                     background:#2563eb;color:#fff;font-weight:600;cursor:pointer">Verify</button>
+      <a id="mfaToggle" href="#" style="display:block;margin-top:12px;text-align:center;font-size:13px;color:#93c5fd">Use a recovery code instead</a>
+      <a href="/login.html" style="display:block;margin-top:8px;text-align:center;font-size:13px;color:#93c5fd">Back to sign in</a>
+    </form>
+
+    <!-- Two-step login setup (?mfa=setup, the user menu, or forced: a role that
+         requires it gets 403 mfa_enroll_required everywhere else until done). -->
+    <div id="setupBox" style="display:none;background:#111827;border:1px solid #1f2937;border-radius:10px;padding:20px;font-size:13px;line-height:1.5">
+      <div id="mustEnroll" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:6px;background:#3b1d1d;
+                  border:1px solid #7f1d1d">
+        Your role requires two-step login. Set it up to continue.
+      </div>
+      <div id="setupStep">
+        <p style="color:#d1d5db;margin-bottom:12px">Scan this code with an authenticator app, then type the 6-digit
+          code it shows. Any authenticator app works, fully offline: Google Authenticator, Microsoft Authenticator,
+          FreeOTP, Aegis. Hardware keys and desktop TOTP tools work too.</p>
+        <div id="qr" style="display:flex;justify-content:center;margin-bottom:12px"></div>
+        <div style="color:#9ca3af">Account: <span id="mfaAccount" style="color:#d1d5db"></span></div>
+        <div style="color:#9ca3af;margin-top:8px">Cannot scan? Enter this key by hand (time-based):</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <code id="mfaSecret" style="flex:1;color:#93c5fd;font-size:14px;word-break:break-all"></code>
+          <button id="copySecret" type="button"
+                  style="padding:5px 10px;border-radius:6px;background:#374151;color:#fff;border:none;cursor:pointer">Copy</button>
+        </div>
+        <form id="confirmForm" style="margin-top:16px">
+          <label for="confirmCode" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">6-digit code from the app</label>
+          <input id="confirmCode" type="text" inputmode="numeric" autocomplete="one-time-code"
+                 style="width:100%;padding:10px 12px;margin-bottom:6px;border-radius:6px;letter-spacing:4px;
+                        background:#0d1117;border:1px solid #374151;color:#fff">
+          <div id="setupError" style="display:none;color:#f87171;font-size:13px;margin:10px 0"></div>
+          <button id="confirmBtn" type="submit"
+                  style="width:100%;margin-top:14px;padding:11px;border-radius:6px;border:none;
+                         background:#2563eb;color:#fff;font-weight:600;cursor:pointer">Turn on two-step login</button>
+        </form>
+      </div>
+      <!-- Shown once, right after confirm: the backend keeps only hashes. -->
+      <div id="codesStep" style="display:none">
+        <strong style="color:#d1d5db">Two-step login is on. Save your recovery codes.</strong>
+        <p style="color:#9ca3af;margin:6px 0 10px">If you lose your authenticator, each code signs you in once.
+          They are shown only now.</p>
+        <pre id="recoveryCodes" style="padding:10px 12px;border-radius:6px;background:#0d1117;border:1px solid #374151;
+             color:#93c5fd;font-size:14px;line-height:1.7;white-space:pre-wrap"></pre>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button id="copyCodes" type="button"
+                  style="padding:5px 10px;border-radius:6px;background:#374151;color:#fff;border:none;cursor:pointer">Copy</button>
+          <button id="downloadCodes" type="button"
+                  style="padding:5px 10px;border-radius:6px;background:#374151;color:#fff;border:none;cursor:pointer">Download as .txt</button>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:14px;color:#d1d5db">
+          <input id="savedCodes" type="checkbox"> I have saved these codes
+        </label>
+        <button id="codesDone" type="button" disabled
+                style="width:100%;margin-top:14px;padding:11px;border-radius:6px;border:none;
+                       background:#2563eb;color:#fff;font-weight:600;cursor:pointer;opacity:.5">Continue</button>
+      </div>
+      <a id="setupCancel" href="/" style="display:none;margin-top:12px;text-align:center;font-size:13px;color:#93c5fd">Cancel</a>
+      <a id="setupLogout" href="#" style="display:none;margin-top:12px;text-align:center;font-size:13px;color:#93c5fd">Log out</a>
+    </div>
+
     <!-- Shown ALWAYS, not only while locked out. Passwords are only stored as
          hashes, so the way out has to be visible before you need it. -->
     <div style="margin-top:18px;padding:12px 14px;border-radius:8px;background:#111827;
@@ -92,6 +175,7 @@
 </div>
 
 <script src="js/show-password.js?v=1"></script>
+<script src="js/vendor/qrcode.js?v=1"></script>
 <script>
 (function () {
   var notice   = document.getElementById('notice');
@@ -103,17 +187,35 @@
 
   function show(el, html) { el.innerHTML = html; el.style.display = 'block'; }
   function hide(el) { el.style.display = 'none'; }
+  function status() {
+    return fetch('/api/auth/status', { credentials: 'same-origin' }).then(function (r) { return r.json(); });
+  }
+  function post(url, body) {
+    return fetch(url, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    }).then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b || {} }; }); });
+  }
+  var h1 = document.querySelector('h1');
+  var mfaForm  = document.getElementById('mfaForm');
+  var setupBox = document.getElementById('setupBox');
+  // One card at a time: password, change password, code, or setup.
+  function screen(el, title) {
+    [form, document.getElementById('changeForm'), mfaForm, setupBox].forEach(hide);
+    hide(notice); hide(lockbox);
+    el.style.display = 'block';
+    if (title) h1.textContent = title;
+  }
 
   var changeForm = document.getElementById('changeForm');
   var changeErr  = document.getElementById('changeError');
   // must: signed in with a one-time or known password (no way back to the
   // dashboard until it is changed). Otherwise the user chose to change it.
   function showChange(current, must) {
-    hide(form); hide(notice); hide(lockbox);
-    document.querySelector('h1').textContent = 'Change your password';
+    screen(changeForm, 'Change your password');
     document.getElementById('mustChange').style.display = must ? 'block' : 'none';
     document.getElementById('changeCancel').style.display = must ? 'none' : 'block';
-    changeForm.style.display = 'block';
     // The rule comes from the backend once signed in; keep the default otherwise.
     fetch('/api/auth/status', { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
@@ -147,7 +249,7 @@
       .then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b }; }); })
       .then(function (res) {
         cbtn.disabled = false;
-        if (res.status === 200 && res.body.success) { location.replace('/'); return; }
+        if (res.status === 200 && res.body.success) { finish(); return; }
         if (res.status === 401 && res.body.error === 'unauthenticated') { location.replace('/login.html'); return; }
         show(changeErr, res.body.message || 'The password was not changed.');
       })
@@ -205,25 +307,219 @@
     lockTimer = setInterval(paint, 1000);
   }
 
-  // Ask the backend where we stand: already signed in, needs setup, or locked.
-  fetch('/api/auth/status', { credentials: 'same-origin' })
-    .then(function (r) { return r.json(); })
-    .then(function (s) {
-      if (s.mode === 'setup') { location.replace('/setup.html'); return; }
-      if (s.authenticated && s.must_change) { showChange('', true); return; }
-      if (s.authenticated && /[?&]change=1(&|$)/.test(location.search)) { showChange('', false); return; }
-      if (s.authenticated)    { location.replace('/'); return; }
-      if (s.mode === 'error') {
-        show(notice, s.message || 'config.yaml could not be read on the appliance.');
-        return;
-      }
-      var reason = reasonFromQuery() || s.session_state || '';
-      if (REASONS[reason]) show(notice, REASONS[reason]);
-      if (s.locked) renderLock(s.lock_remaining_seconds);
-    })
+  // Where we stand: already signed in, needs setup, or locked. afterSignIn:
+  // just signed in or changed the password, so ?change=1 / ?mfa=setup (the
+  // user's own pick from the menu) no longer apply; only what is forced does.
+  function route(s, afterSignIn) {
+    if (s.mode === 'setup') { location.replace('/setup.html'); return; }
+    if (s.authenticated && s.must_change) { showChange('', true); return; }
+    if (s.authenticated && s.must_enroll) { showSetup(s, true); return; }
+    if (s.authenticated && !afterSignIn && /[?&]change=1(&|$)/.test(location.search)) { showChange('', false); return; }
+    if (s.authenticated && !afterSignIn && !s.mfa_enabled && /[?&]mfa=setup(&|$)/.test(location.search)) { showSetup(s, false); return; }
+    if (s.authenticated)    { location.replace('/'); return; }
+    if (s.mode === 'error') {
+      show(notice, s.message || 'config.yaml could not be read on the appliance.');
+      return;
+    }
+    var reason = reasonFromQuery() || s.session_state || '';
+    if (REASONS[reason]) show(notice, REASONS[reason]);
+    if (s.locked) renderLock(s.lock_remaining_seconds);
+  }
+  // Signed in: the dashboard, unless something must be done first. A full
+  // navigation, not history.pushState: the dashboard needs a clean load with
+  // the new cookie in place.
+  function finish() {
+    status().then(function (s) { route(s, true); }, function () { location.replace('/'); });
+  }
+
+  status().then(function (s) { route(s, false); })
     .catch(function () {
       show(notice, 'Cannot reach the Intact.AI backend. It may still be starting up.');
     });
+
+  var clockBox = document.getElementById('clockWarn');
+  // server_time comes with every status answer. Compared at once, so the
+  // round trip (well under a second) does not matter against a 60 s limit.
+  function clockCheck(s) {
+    if (!s || typeof s.server_time !== 'number') return;
+    var skew = Math.abs(Date.now() / 1000 - s.server_time);
+    if (skew <= 60) { hide(clockBox); return; }
+    var mins = Math.max(1, Math.round(skew / 60));
+    clockBox.textContent = "This computer's clock and the appliance's clock differ by " + mins +
+      (mins === 1 ? ' minute' : ' minutes') + " \u2014 codes may be refused. Ask an administrator to check " +
+      "the appliance's time. Appliance time: " + new Date(s.server_time * 1000).toLocaleString() + '.';
+    clockBox.style.display = 'block';
+  }
+
+  // Plain http or an old browser has no clipboard API: select the text, so Ctrl+C works.
+  function copyText(text, el, button) {
+    var said = function () { button.textContent = 'Copied'; };
+    var select = function () {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      try { document.execCommand('copy'); } catch (e) { /* selected; Ctrl+C works */ }
+      said();
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(said, select);
+    else select();
+  }
+
+  // --- code step -----------------------------------------------------------
+  var mfaErr = document.getElementById('mfaError');
+  var mfaCode = document.getElementById('mfaCode');
+  var recCode = document.getElementById('recoveryCode');
+  var mfaToggle = document.getElementById('mfaToggle');
+  var useRecovery = false;
+  function setRecovery(on) {
+    useRecovery = on;
+    document.getElementById('mfaCodeBox').style.display = on ? 'none' : 'block';
+    document.getElementById('mfaRecBox').style.display = on ? 'block' : 'none';
+    mfaToggle.textContent = on ? 'Use a code from the app instead' : 'Use a recovery code instead';
+    hide(mfaErr);
+    var input = on ? recCode : mfaCode;
+    input.value = '';
+    input.focus();
+  }
+  function showMfa() {
+    screen(mfaForm, 'Two-step login');
+    hide(errorBox);
+    setRecovery(false);
+    status().then(clockCheck, function () { /* no warning without the time */ });
+  }
+  mfaToggle.addEventListener('click', function (ev) { ev.preventDefault(); setRecovery(!useRecovery); });
+  mfaForm.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    hide(mfaErr);
+    var mbtn = document.getElementById('mfaBtn');
+    mbtn.disabled = true;
+    post('/api/auth/mfa', useRecovery ? { recovery_code: recCode.value.trim() }
+                                      : { code: mfaCode.value.replace(/\s+/g, '') })
+      .then(function (res) {
+        mbtn.disabled = false;
+        if (res.status === 200 && res.body.success) {
+          if (res.body.must_change) showChange(document.getElementById('password').value, true);
+          else finish();
+          return;
+        }
+        if (res.body.error === 'mfa_expired') {
+          screen(form, 'Sign in to Intact.AI');
+          hide(clockBox);
+          btn.disabled = false;
+          show(errorBox, res.body.message || 'That took too long. Sign in again.');
+          document.getElementById('password').value = '';
+          document.getElementById('password').focus();
+          return;
+        }
+        // invalid_code, locked, too_fast: stay on this step and say why.
+        show(mfaErr, res.body.message || 'That code was not accepted.');
+        var input = useRecovery ? recCode : mfaCode;
+        input.value = '';
+        input.focus();
+      })
+      .catch(function () {
+        mbtn.disabled = false;
+        show(mfaErr, 'Could not reach the backend. Try again in a moment.');
+      });
+  });
+
+  // --- setup -----------------------------------------------------------------
+  var setupErr = document.getElementById('setupError');
+  var secretEl = document.getElementById('mfaSecret');
+  var codesEl = document.getElementById('recoveryCodes');
+  var secret = '', account = '', codes = [];
+  function showSetup(s, must) {
+    screen(setupBox, 'Set up two-step login');
+    document.getElementById('mustEnroll').style.display = must ? 'block' : 'none';
+    document.getElementById('setupCancel').style.display = must ? 'none' : 'block';
+    document.getElementById('setupLogout').style.display = must ? 'block' : 'none';
+    clockCheck(s);
+    post('/api/auth/mfa/setup', {}).then(function (res) {
+      if (!(res.status === 200 && res.body.success)) {
+        show(setupErr, res.body.message || 'Two-step login could not be set up. Reload the page to try again.');
+        return;
+      }
+      secret = String(res.body.secret || '');
+      account = res.body.account || s.user || '';
+      secretEl.textContent = secret.replace(/(.{4})/g, '$1 ').trim();
+      document.getElementById('mfaAccount').textContent = account;
+      var qrEl = document.getElementById('qr');
+      try {
+        qrcode.stringToBytes = qrcode.stringToBytesFuncs['UTF-8'];
+        var q = qrcode(0, 'M');
+        q.addData(String(res.body.otpauth_uri || ''));
+        q.make();
+        // createSvgTag paints its own white background and 4-module quiet zone.
+        qrEl.innerHTML = q.createSvgTag({ cellSize: 4, margin: 16, title: 'QR code for your authenticator app' });
+      } catch (e) {
+        qrEl.textContent = 'The QR code could not be drawn. Enter the key below by hand.';
+      }
+      document.getElementById('confirmCode').focus();
+    }).catch(function () {
+      show(setupErr, 'Could not reach the backend. Try again in a moment.');
+    });
+  }
+  document.getElementById('copySecret').addEventListener('click', function () {
+    copyText(secret, secretEl, this);
+  });
+  document.getElementById('confirmForm').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    hide(setupErr);
+    var cbtn = document.getElementById('confirmBtn'), input = document.getElementById('confirmCode');
+    cbtn.disabled = true;
+    post('/api/auth/mfa/confirm', { code: input.value.replace(/\s+/g, '') })
+      .then(function (res) {
+        cbtn.disabled = false;
+        if (res.status === 200 && res.body.success) { showCodes(res.body.recovery_codes || []); return; }
+        show(setupErr, res.body.message || 'That code was not accepted. Wait for the next one and try again.');
+        input.value = '';
+        input.focus();
+      })
+      .catch(function () {
+        cbtn.disabled = false;
+        show(setupErr, 'Could not reach the backend. Try again in a moment.');
+      });
+  });
+  function showCodes(list) {
+    codes = list;
+    hide(document.getElementById('setupStep'));
+    hide(document.getElementById('mustEnroll'));
+    hide(document.getElementById('setupCancel'));
+    hide(document.getElementById('setupLogout'));
+    hide(clockBox);
+    codesEl.textContent = codes.join('\n');
+    document.getElementById('codesStep').style.display = 'block';
+  }
+  document.getElementById('copyCodes').addEventListener('click', function () {
+    copyText(codes.join('\n'), codesEl, this);
+  });
+  document.getElementById('downloadCodes').addEventListener('click', function () {
+    var text = 'Intact.AI recovery codes for ' + account + '\nCreated ' + new Date().toLocaleString() +
+               '\nEach code signs you in once, instead of a code from the app.\n\n' + codes.join('\n') + '\n';
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    a.download = 'intact-recovery-codes.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  });
+  var saved = document.getElementById('savedCodes'), codesDone = document.getElementById('codesDone');
+  saved.addEventListener('change', function () {
+    codesDone.disabled = !saved.checked;
+    codesDone.style.opacity = saved.checked ? '1' : '.5';
+  });
+  codesDone.addEventListener('click', function () {
+    codesEl.textContent = '';
+    codes = [];
+    location.replace('/');
+  });
+  document.getElementById('setupLogout').addEventListener('click', function (ev) {
+    ev.preventDefault();
+    var go = function () { location.replace('/login.html?reason=logged_out'); };
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).then(go, go);
+  });
 
   form.addEventListener('submit', function (ev) {
     ev.preventDefault();
@@ -243,16 +539,12 @@
       .then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b }; }); })
       .then(function (res) {
         btn.textContent = 'Sign in';
+        if (res.status === 200 && res.body.success && res.body.mfa_required) { showMfa(); return; }
         if (res.status === 200 && res.body.success && res.body.must_change) {
           showChange(document.getElementById('password').value, true);
           return;
         }
-        if (res.status === 200 && res.body.success) {
-          // Full navigation, not history.pushState — the dashboard needs a
-          // clean load with the new cookie in place.
-          location.replace('/');
-          return;
-        }
+        if (res.status === 200 && res.body.success) { finish(); return; }
         btn.disabled = false;
         hide(notice);
         if (res.body.error === 'locked') {

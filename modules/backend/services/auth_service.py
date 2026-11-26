@@ -391,6 +391,10 @@ def set_credential(user: str, password: str) -> bool:
     try:
         if sa:
             users.set_password(sa["id"], pw_hash)
+            # reset-login.sh is also the way back from a lost authenticator:
+            # the recovered Super-admin sets two-step login up again.
+            if sa.get("mfa_enabled") or sa.get("mfa_secret"):
+                users.clear_mfa(sa["id"])
             if not sa["enabled"]:
                 users.set_enabled(sa["id"], True)
         else:
@@ -821,6 +825,7 @@ SESSION_DISABLED = "disabled"
 # change its password first, lacks the role, or must re-enter its password
 # (403, not 401 -- the session itself is fine).
 PASSWORD_CHANGE_REQUIRED = "password_change_required"
+MFA_ENROLL_REQUIRED = "mfa_enroll_required"
 FORBIDDEN = "forbidden"
 REAUTH_REQUIRED = "reauth_required"
 CSRF_REJECTED = "csrf_rejected"
@@ -918,6 +923,103 @@ def recently_authenticated(session) -> bool:
     return time.time() - _num(session.get("auth_at")) <= REAUTH_SECONDS
 
 
+# =============================================================================
+# Two-step login (services/mfa.py)
+# =============================================================================
+
+# How long the password step stays valid while the code is typed.
+MFA_PENDING_SECONDS = 5 * 60
+
+
+def mfa_required(row: Optional[dict]) -> bool:
+    return bool(row) and row["role"] in users.MFA_REQUIRED_ROLES
+
+
+def must_enroll(row: Optional[dict]) -> bool:
+    """The role requires two-step login and the user has not set it up: the
+    session may only set it up (gate_decision) and opens no tool."""
+    return mfa_required(row) and not row.get("mfa_enabled")
+
+
+def _seal(value: str) -> str:
+    from services.storage.cloud_secrets import _fernet
+    return _fernet().encrypt(value.encode()).decode()
+
+
+def _unseal(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    try:
+        from services.storage.cloud_secrets import _fernet
+        return _fernet().decrypt(token.encode()).decode()
+    except Exception:                       # noqa: BLE001 -- a new key file, a blanked backup
+        return None
+
+
+def mfa_begin_setup(row: dict) -> dict:
+    from services import mfa
+    secret = mfa.new_secret()
+    users.set_mfa_pending(row["id"], _seal(secret))
+    return {"secret": secret, "otpauth_uri": mfa.otpauth_uri(secret, row["username"]),
+            "issuer": mfa.ISSUER, "account": row["username"]}
+
+
+def mfa_confirm_setup(row: dict, code: str) -> Optional[list]:
+    """The recovery codes (shown once) when `code` matches the pending secret,
+    else None. Raises LookupError when no setup was started."""
+    from services import mfa
+    secret = _unseal(row.get("mfa_pending"))
+    if not secret:
+        raise LookupError("no pending setup")
+    step = mfa.verify(secret, code)
+    if step is None:
+        return None
+    codes, hashes = mfa.new_recovery_codes()
+    users.enable_mfa(row["id"], _seal(secret), step, json.dumps(hashes))
+    return codes
+
+
+def mfa_check(row: dict, code: str = "", recovery_code: str = "") -> Optional[str]:
+    """"totp" or "recovery" when the user's second factor is right, else None.
+    A TOTP step is accepted once; a recovery code is spent."""
+    from services import mfa
+    if code:
+        secret = _unseal(row.get("mfa_secret"))
+        last = row.get("mfa_last_step")
+        step = mfa.verify(secret, code, -1 if last is None else int(last)) if secret else None
+        if step is not None:
+            users.mfa_used(row["id"], step=step)
+            return "totp"
+    if recovery_code:
+        try:
+            hashes = json.loads(row.get("mfa_recovery") or "[]")
+        except ValueError:
+            hashes = []
+        left = mfa.use_recovery(recovery_code, hashes)
+        if left is not None:
+            users.mfa_used(row["id"], recovery_json=json.dumps(left))
+            return "recovery"
+    return None
+
+
+def mfa_pending_start(session, row: dict, must_change_flag) -> None:
+    """Password right, code still due: nothing signed in, only who and when."""
+    session.clear()
+    session.permanent = True
+    session["mfa_pending"] = {"uid": row["id"], "gen": _session_gen(row), "at": time.time(),
+                              "must_change": must_change_flag or None}
+
+
+def mfa_pending_row(session) -> Optional[dict]:
+    p = (session or {}).get("mfa_pending") or {}
+    if not p or time.time() - _num(p.get("at")) > MFA_PENDING_SECONDS:
+        return None
+    row = users.get(p.get("uid"))
+    if row is None or not row["enabled"] or p.get("gen") != _session_gen(row):
+        return None
+    return row
+
+
 # --- the request gate -------------------------------------------------------
 #
 # Reachable without a session. Everything else under /api/ requires one.
@@ -925,6 +1027,8 @@ def recently_authenticated(session) -> bool:
 EXEMPT_PATHS = frozenset({
     '/api/auth/status',
     '/api/auth/login',
+    # The code step after the password: the session is not signed in yet.
+    '/api/auth/mfa',
     '/api/auth/setup',
     '/api/auth/logout',
     '/api/auth/verify',
@@ -955,6 +1059,9 @@ LOOPBACK_ADDRS = frozenset({'127.0.0.1', '::1'})
 
 # The one gated route a must_change session may call.
 CHANGE_PASSWORD_PATH = '/api/auth/change-password'
+# What a session that must still set up two-step login may call (status and
+# logout are exempt anyway); change-password first, if both are due.
+MFA_ENROLL_PATHS = frozenset({CHANGE_PASSWORD_PATH, '/api/auth/mfa/setup', '/api/auth/mfa/confirm'})
 
 
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -1015,6 +1122,8 @@ def gate_decision(path: str, method: str, remote_addr: str, session,
     if path != CHANGE_PASSWORD_PATH and must_change(session):
         return PASSWORD_CHANGE_REQUIRED
     row = users.get(session.get("uid"))
+    if path not in MFA_ENROLL_PATHS and must_enroll(row):
+        return MFA_ENROLL_REQUIRED
     rule = access_policy.rule_for(endpoint, method)
     if users.rank(row["role"]) < users.rank(rule.role):
         return FORBIDDEN
@@ -1030,6 +1139,8 @@ def tool_allowed(session, tool: str) -> bool:
         return False
     need = access_policy.TOOLS.get(tool or "")
     row = users.get(session.get("uid"))
+    if must_enroll(row):
+        return False
     return need is not None and users.rank(row["role"]) >= users.rank(need)
 
 

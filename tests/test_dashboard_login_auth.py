@@ -36,6 +36,7 @@ CFG = os.path.join(_BASE, "config.yaml")
 TOKEN = os.path.join(_BASE, "state", "backend", "setup_token")
 os.environ["INTACT_CONFIG_PATH"] = CFG
 os.environ["INTACT_SETUP_TOKEN_PATH"] = TOKEN
+os.environ["INTACT_CLOUD_KEY_PATH"] = os.path.join(_BASE, "state", "backend", "cloud_secrets.key")
 import atexit  # noqa: E402
 atexit.register(shutil.rmtree, _BASE, True)
 
@@ -136,6 +137,14 @@ class Base(unittest.TestCase):
         auth._nginx.update(addrs=frozenset(), at=None)
         os.environ.pop("INTACT_ALLOW_WEAK_PASSWORDS", None)
         SESSION.clear()
+        # These classes test other things; the MFA class below keeps the real rule.
+        self._mfa_roles = users.MFA_REQUIRED_ROLES
+        users.MFA_REQUIRED_ROLES = frozenset() if self.MFA_OFF else self._mfa_roles
+
+    MFA_OFF = True
+
+    def tearDown(self):
+        users.MFA_REQUIRED_ROLES = self._mfa_roles
 
     def claim(self):
         tok = write_token()
@@ -716,6 +725,132 @@ class AuditChain(Base):
         with open(auth.AUDIT_LOG, "w") as fh:
             fh.writelines(lines[:1] + [lines[1].replace("u1", "uX")] + lines[2:])
         self.assertEqual(auth.verify_audit_chain([auth.AUDIT_LOG]), 2)
+
+
+import json  # noqa: E402
+import time as _time  # noqa: E402
+from services import mfa  # noqa: E402
+
+
+class TwoStep(Base):
+    """Two-step login (services/mfa.py), with the real rule: Admins and the
+    Super-admin must set it up; codes work once; recovery codes once each."""
+    MFA_OFF = False
+
+    def setUp(self):
+        super().setUp()
+        auth.write_first_login(False)
+        auth.set_credential("boss", GOOD)
+
+    def login(self, name, password):
+        SESSION.clear()
+        return call(routes.auth_login, {"username": name, "password": password})
+
+    def enroll(self, name):
+        """Set up two-step login the way the screens do; returns (secret, recovery codes)."""
+        body, _ = call(routes.auth_mfa_setup)
+        secret = body["secret"]
+        self.assertTrue(body["otpauth_uri"].startswith("otpauth://totp/Intact.AI:" + name))
+        body, status = call(routes.auth_mfa_confirm, {"code": mfa.code_at(secret, mfa.current_step())})
+        self.assertEqual(status, 200, body)
+        return secret, body["recovery_codes"]
+
+    def gate(self, endpoint="case.list_cases", path="/api/x"):
+        return auth.gate_decision(path, "GET", NGINX, SESSION, endpoint=endpoint, headers={})
+
+    def test_rfc6238_vector(self):
+        # RFC 6238 appendix B, SHA1, T=59 s: 94287082 -> the last 6 digits.
+        # Its published key is the ASCII "12345678901234567890", base32-encoded.
+        import base64
+        secret = base64.b32encode(b"12345678901234567890").decode()
+        self.assertEqual(mfa.code_at(secret, 59 // 30), "287082")
+        self.assertEqual(mfa.verify(secret, "287082", now=59), 1)
+        self.assertIsNone(mfa.verify(secret, "287082", now=59 + 90), "outside the window")
+        self.assertIsNone(mfa.verify(secret, "287082", last_step=1, now=59), "replay refused")
+
+    def test_admin_must_enroll_before_anything_else(self):
+        body, status = self.login("boss", GOOD)
+        self.assertEqual(status, 200)
+        self.assertFalse(body.get("mfa_required"), "not set up yet: the password signs in")
+        self.assertEqual(self.gate(), auth.MFA_ENROLL_REQUIRED)
+        self.assertIsNone(self.gate(path="/api/auth/mfa/setup"))
+        st, _ = call(routes.auth_status)
+        self.assertTrue(st["must_enroll"] and st["mfa_required"] and not st["mfa_enabled"])
+        REQUEST.args = {"tool": "kibana"}
+        self.assertEqual(call(routes.auth_verify)[1], 401, "no tool until it is set up")
+        REQUEST.args = {}
+        self.enroll("boss")
+        self.assertIsNone(self.gate())
+        self.assertNotIn(mfa.new_secret()[:4], json.dumps(users.by_name("boss").get("mfa_secret") or ""),
+                         "stored encrypted")
+
+    def test_login_with_code_then_recovery_code_once(self):
+        self.login("boss", GOOD)
+        secret, codes = self.enroll("boss")
+        self.assertEqual(len(codes), 10)
+        body, _ = self.login("boss", GOOD)
+        self.assertTrue(body["mfa_required"])
+        self.assertEqual(auth.evaluate_session(SESSION), auth.SESSION_NONE, "not signed in yet")
+        self.assertEqual(call(routes.auth_mfa, {"code": "000000"})[1], 401)
+        nxt = mfa.current_step() + 1         # the setup used this step: a fresh one
+        body, status = call(routes.auth_mfa, {"code": mfa.code_at(secret, nxt)})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(auth.evaluate_session(SESSION), auth.SESSION_OK)
+        self.login("boss", GOOD)
+        self.assertEqual(call(routes.auth_mfa, {"code": mfa.code_at(secret, nxt)})[1], 401, "a code works once")
+        self.assertEqual(call(routes.auth_mfa, {"recovery_code": codes[0].upper()})[1], 200)
+        self.login("boss", GOOD)
+        self.assertEqual(call(routes.auth_mfa, {"recovery_code": codes[0]})[1], 401, "a recovery code works once")
+
+    def test_pending_step_expires(self):
+        self.login("boss", GOOD)
+        secret, _ = self.enroll("boss")
+        self.login("boss", GOOD)
+        SESSION["mfa_pending"]["at"] -= auth.MFA_PENDING_SECONDS + 1
+        body, status = call(routes.auth_mfa, {"code": mfa.code_at(secret, mfa.current_step() + 1)})
+        self.assertEqual((status, body["error"]), (401, "mfa_expired"))
+
+    def test_reauth_needs_the_code_too(self):
+        self.login("boss", GOOD)
+        secret, _ = self.enroll("boss")
+        self.assertEqual(call(routes.auth_reauth, {"password": GOOD})[1], 401)
+        body, status = call(routes.auth_reauth, {"password": GOOD, "code": mfa.code_at(secret, mfa.current_step() + 1)})
+        self.assertEqual(status, 200, body)
+
+    def test_disable_only_when_not_required_and_admin_reset(self):
+        self.login("boss", GOOD)
+        secret, _ = self.enroll("boss")
+        self.assertEqual(call(routes.auth_mfa_disable, {"password": GOOD})[1], 403, "required for the role")
+        body, _ = call(uroutes.create_user, {"username": "opx", "role": users.OPERATOR})
+        boss = dict(SESSION)
+        self.login("opx", body["temporary_password"])
+        call(routes.auth_change_password, {"current_password": body["temporary_password"],
+                                           "new_password": STRONG_PW, "confirm": STRONG_PW})
+        self.assertIsNone(self.gate(), "optional for an Operator")
+        osec, _ = self.enroll("opx")
+        self.assertEqual(call(routes.auth_mfa_disable, {"password": STRONG_PW, "code": "000000"})[1], 401)
+        body, status = call(routes.auth_mfa_disable, {"password": STRONG_PW,
+                                                      "code": mfa.code_at(osec, mfa.current_step() + 1)})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(auth.evaluate_session(SESSION), auth.SESSION_OK, "re-issued")
+        self.enroll("opx")
+        op = dict(SESSION)
+        SESSION.clear(); SESSION.update(boss)
+        self.assertEqual(call(lambda: uroutes.reset_mfa("opx"))[1], 200)
+        self.assertFalse(users.by_name("opx")["mfa_enabled"])
+        self.assertEqual(auth.evaluate_session(op), auth.SESSION_CREDENTIALS_CHANGED, "their sessions end")
+        self.assertEqual(call(lambda: uroutes.reset_mfa("boss"))[1], 403, "not your own / above")
+
+    def test_reset_login_recovery_clears_the_superadmins_factor(self):
+        self.login("boss", GOOD)
+        self.enroll("boss")
+        auth.write_first_login(True)
+        tok = write_token()
+        self.assertEqual(call(routes.auth_setup, setup_body(tok, user="boss"))[1], 200)
+        self.assertFalse(users.by_name("boss")["mfa_enabled"], "lost phone: set it up again")
+
+
+STRONG_PW = "another long passphrase"
 
 if __name__ == "__main__":
     unittest.main()

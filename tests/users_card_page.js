@@ -7,7 +7,9 @@
 //   - Add user goes through the 403 reauth_required -> password prompt ->
 //     /api/auth/reauth -> one retry, then shows the one-time password ONCE;
 //   - a 403 forbidden on a change becomes a toast;
-//   - only the Super-admin sees Transfer Super-admin.
+//   - only the Super-admin sees Transfer Super-admin;
+//   - the MFA column (On/Off, "required" for an Admin row that is off) and
+//     Reset 2-step only on rows you may manage that have it on.
 // `node <file> <root>`; exit 77 = no jsdom.
 const fs = require('fs'), path = require('path'), assert = require('assert');
 let JSDOM;
@@ -23,11 +25,11 @@ assert.ok(panel.includes('usersCard()'), 'Users panel found in settings.html');
 const ROLES = [['readonly', 'Read-only'], ['operator', 'Operator'], ['admin', 'Admin'], ['superadmin', 'Super-admin']];
 const RANK = { readonly: 0, operator: 1, admin: 2, superadmin: 3 };
 const USERS = [
-  { username: 'root', role: 'superadmin', enabled: true, temp_password_pending: false, last_login: 1764000000 },
-  { username: 'alice', role: 'admin', enabled: true, temp_password_pending: false, last_login: 1764000000 },
-  { username: 'bob', role: 'admin', enabled: true, temp_password_pending: false, last_login: null },
-  { username: 'carol', role: 'operator', enabled: true, temp_password_pending: true, last_login: null },
-  { username: 'dave', role: 'readonly', enabled: false, temp_password_pending: false, last_login: null },
+  { username: 'root', role: 'superadmin', enabled: true, temp_password_pending: false, last_login: 1764000000, mfa_enabled: true },
+  { username: 'alice', role: 'admin', enabled: true, temp_password_pending: false, last_login: 1764000000, mfa_enabled: true },
+  { username: 'bob', role: 'admin', enabled: true, temp_password_pending: false, last_login: null, mfa_enabled: false },
+  { username: 'carol', role: 'operator', enabled: true, temp_password_pending: true, last_login: null, mfa_enabled: true },
+  { username: 'dave', role: 'readonly', enabled: false, temp_password_pending: false, last_login: null, mfa_enabled: false },
 ];
 const TEMP = 'Xq7-temp-pw-ONCE-abcdef12';
 
@@ -57,6 +59,7 @@ async function page(me, role) {
       if (!reauthed) return reply(403, { error: 'reauth_required', message: 'Enter your password again to continue.' });
       return reply(200, { success: true, username: JSON.parse(init.body).username, temporary_password: TEMP, expires_hours: 24 });
     }
+    if (url.endsWith('/reset-mfa') && method === 'POST') return reply(200, { success: true });
     if (url.startsWith('/api/users/') && method === 'PATCH')
       return reply(403, { error: 'forbidden', message: 'You can only change users with a role below your own.' });
     return reply(404, {});
@@ -72,7 +75,10 @@ async function page(me, role) {
   const row = name => d.querySelector(`tr[data-user="${name}"]`);
   const buttons = name => [...row(name).querySelectorAll('button')].map(b => b.textContent.trim());
   const shown = el => w.getComputedStyle(el).display !== 'none';
-  return { w, d, card, row, buttons, shown, calls, toasts };
+  // The MFA cell: the visible text only (the "required" hint is x-show).
+  const mfa = name => [...row(name).querySelectorAll('td')[3].querySelectorAll('span')]
+    .filter(shown).map(s => s.textContent.trim()).join(' ');
+  return { w, d, card, row, buttons, shown, calls, toasts, mfa };
 }
 
 const type = (w, el, value) => { el.value = value; el.dispatchEvent(new w.Event('input', { bubbles: true })); };
@@ -91,11 +97,17 @@ const type = (w, el, value) => { el.value = value; el.dispatchEvent(new w.Event(
   for (const name of ['root', 'alice', 'bob'])
     assert.deepStrictEqual(ad.buttons(name), [], `${name}: no actions on this row`);
   assert.ok(!ad.row('root').querySelector('select') && !ad.row('alice').querySelector('select'), 'no role select on own/Super-admin rows');
-  assert.deepStrictEqual(ad.buttons('carol'), ['Disable', 'Reset password']);
+  assert.deepStrictEqual(ad.buttons('carol'), ['Disable', 'Reset password', 'Reset 2-step'], 'Reset 2-step: managed and on');
   assert.deepStrictEqual(ad.buttons('dave'), ['Enable', 'Reset password']);
   assert.deepStrictEqual([...ad.row('carol').querySelectorAll('select option')].map(o => o.value), ['readonly', 'operator'],
                          'role change offers only grantable roles');
   assert.ok(/one-time password pending/.test(ad.row('carol').textContent));
+  assert.deepStrictEqual([...ad.card.querySelectorAll('thead th')].map(t => t.textContent.trim()),
+                         ['Name', 'Role', 'Status', 'MFA', 'Last login', '']);
+  assert.strictEqual(ad.mfa('root'), 'On');
+  assert.strictEqual(ad.mfa('bob'), 'Off · required', 'an Admin without two-step login: required');
+  assert.strictEqual(ad.mfa('carol'), 'On');
+  assert.strictEqual(ad.mfa('dave'), 'Off', 'a Read-only user: no hint');
   assert.ok(/Disabled/.test(ad.row('dave').textContent));
   assert.ok(!ad.shown(ad.d.querySelector('#users-card h4').parentNode), 'an Admin sees no Transfer Super-admin');
   assert.deepStrictEqual([...ad.card.querySelector('form select').options].map(o => o.value), ['readonly', 'operator'],
@@ -135,11 +147,20 @@ const type = (w, el, value) => { el.value = value; el.dispatchEvent(new w.Event(
   await sleep(80);
   assert.deepStrictEqual(ad.toasts.map(t => t.message), ['You can only change users with a role below your own.']);
 
+  // Reset 2-step: a confirm that says what happens, then the POST.
+  let asked = '';
+  ad.w.confirm = m => { asked = m; return true; };
+  [...ad.row('carol').querySelectorAll('button')].find(b => b.textContent.trim() === 'Reset 2-step').click();
+  await sleep(80);
+  assert.ok(/set it up again at their next sign-in/.test(asked), asked);
+  assert.ok(ad.calls.includes('POST /api/users/carol/reset-mfa'), ad.calls);
+
   // --- Super-admin ----------------------------------------------------------
   const sa = await page('root', 'superadmin');
   assert.ok(sa.shown(sa.d.querySelector('#users-card h4').parentNode), 'the Super-admin sees Transfer Super-admin');
   assert.deepStrictEqual(sa.buttons('root'), [], 'no actions on your own row');
-  assert.deepStrictEqual(sa.buttons('alice'), ['Disable', 'Reset password'], 'a Super-admin manages Admins');
+  assert.deepStrictEqual(sa.buttons('alice'), ['Disable', 'Reset password', 'Reset 2-step'], 'a Super-admin manages Admins');
+  assert.deepStrictEqual(sa.buttons('bob'), ['Disable', 'Reset password'], 'no Reset 2-step while it is off');
   assert.deepStrictEqual([...sa.d.querySelectorAll('#users-card h4 ~ form select option')].map(o => o.value).filter(Boolean),
                          ['alice', 'bob'], 'transfer targets: enabled Admins only');
   console.log('ok');

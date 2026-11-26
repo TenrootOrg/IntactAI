@@ -12,7 +12,9 @@
  * ([data-automation-tab]) go too: they are launch consoles, nothing to read.
  *
  * Also the shared helpers the fetch hook in active-case.js calls: toast() for a
- * 403 forbidden, reauth() for a 403 reauth_required, and logout().
+ * 403 forbidden, reauth() for a 403 reauth_required, and logout(); mfaOff()
+ * for the user menu. A role that requires two-step login and has not set it up
+ * (status must_enroll) is sent to the setup screen from any page.
  * Load right after active-case.js, in <head>.
  */
 (function () {
@@ -39,7 +41,17 @@
   var A = { status: null };
   A.ready = fetch('/api/auth/status', { credentials: 'same-origin' })
     .then(function (r) { return r.json(); })
-    .then(function (s) { A.status = s || {}; apply(A.status); return A.status; })
+    .then(function (s) {
+      A.status = s || {};
+      apply(A.status);
+      // The backend answers 403 mfa_enroll_required to everything else meanwhile.
+      // top: from the Case Analysis iframe the whole dashboard must go.
+      if (A.status.must_enroll) {
+        var u = '/login.html?mfa=setup';
+        try { window.top.location.replace(u); } catch (e) { location.replace(u); }
+      }
+      return A.status;
+    })
     .catch(function () { return {}; });
 
   // From the Case Analysis iframe the toast stack lives in the dashboard.
@@ -61,47 +73,56 @@
     } catch (e) { /* headless */ }
   };
 
-  // One prompt for every request that needs it at the same moment.
-  var _pending = null;
-  A.reauth = function () {
-    if (_pending) return _pending;
-    _pending = new Promise(function (resolve) {
+  // A password (and, with two-step login on, a code) dialog that POSTs them to
+  // o.url; resolves true on success, false on Cancel. A wrong entry keeps it open.
+  function ask(o) {
+    return new Promise(function (resolve) {
       var box = document.createElement('div');
-      box.id = 'reauth-dialog';
+      box.id = o.id;
       box.setAttribute('role', 'dialog');
       box.setAttribute('aria-modal', 'true');
-      box.setAttribute('aria-labelledby', 'reauth-title');
+      box.setAttribute('aria-labelledby', o.id + '-title');
       box.style.cssText = 'position:fixed;inset:0;z-index:10000;display:flex;align-items:center;' +
         'justify-content:center;background:rgba(0,0,0,.6);padding:16px';
+      var field = 'width:100%;padding:9px 11px;border-radius:6px;background:#0d1117;border:1px solid #374151;color:#fff';
       box.innerHTML =
         '<form style="width:100%;max-width:360px;background:#161b22;border:1px solid #374151;border-radius:10px;padding:20px;color:#fff;font-size:14px">' +
-        '<div id="reauth-title" style="font-weight:600;margin-bottom:6px">Confirm your password</div>' +
-        '<div style="color:#9ca3af;font-size:13px;margin-bottom:12px">Enter your password again to continue.</div>' +
-        '<input type="password" autocomplete="current-password" aria-label="Password" ' +
-        'style="width:100%;padding:9px 11px;border-radius:6px;background:#0d1117;border:1px solid #374151;color:#fff">' +
+        '<div id="' + o.id + '-title" style="font-weight:600;margin-bottom:6px"></div>' +
+        '<div class="reauth-text" style="color:#9ca3af;font-size:13px;margin-bottom:12px"></div>' +
+        '<input type="password" autocomplete="current-password" aria-label="Password" style="' + field + '">' +
+        (o.code ? '<input type="text" class="reauth-code" inputmode="numeric" autocomplete="one-time-code" ' +
+                  'placeholder="6-digit code" aria-label="6-digit code from your authenticator app" style="' + field + ';margin-top:8px">' : '') +
         '<div class="reauth-err" style="display:none;color:#f87171;font-size:13px;margin-top:8px"></div>' +
         '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">' +
         '<button type="button" class="reauth-cancel" style="padding:7px 14px;border-radius:6px;background:#374151;color:#fff;border:none;cursor:pointer">Cancel</button>' +
-        '<button type="submit" style="padding:7px 14px;border-radius:6px;background:#2563eb;color:#fff;border:none;cursor:pointer;font-weight:600">Continue</button>' +
+        '<button type="submit" style="padding:7px 14px;border-radius:6px;background:#2563eb;color:#fff;border:none;cursor:pointer;font-weight:600"></button>' +
         '</div></form>';
-      var form = box.querySelector('form'), input = box.querySelector('input'), err = box.querySelector('.reauth-err');
+      box.querySelector('#' + o.id + '-title').textContent = o.title;
+      box.querySelector('.reauth-text').textContent = o.text;
+      box.querySelector('button[type=submit]').textContent = o.button || 'Continue';
+      var form = box.querySelector('form'), input = box.querySelector('input[type=password]'),
+          code = box.querySelector('.reauth-code'), err = box.querySelector('.reauth-err');
       function done(ok) { box.remove(); resolve(ok); }
       box.querySelector('.reauth-cancel').addEventListener('click', function () { done(false); });
       box.addEventListener('keydown', function (e) { if (e.key === 'Escape') done(false); });
       form.addEventListener('submit', function (e) {
         e.preventDefault();
         err.style.display = 'none';
-        fetch('/api/auth/reauth', {
+        var body = { password: input.value };
+        if (code) body.code = code.value.replace(/\s+/g, '');
+        fetch(o.url, {
           method: 'POST', credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: input.value })
+          body: JSON.stringify(body)
         }).then(function (r) {
           return r.json().catch(function () { return {}; }).then(function (b) {
             if (r.ok && b.success) { done(true); return; }
-            err.textContent = b.message || 'Password is incorrect.';
+            var wrongCode = b.error === 'invalid_code' && code;
+            err.textContent = b.message || (wrongCode ? 'The code is not right.' : 'Password is incorrect.');
             err.style.display = 'block';
-            input.value = '';
-            input.focus();
+            var again = wrongCode ? code : input;
+            again.value = '';
+            again.focus();
           });
         }).catch(function () {
           err.textContent = 'Could not reach the backend. Try again in a moment.';
@@ -110,8 +131,30 @@
       });
       document.body.appendChild(box);
       input.focus();
+    });
+  }
+
+  // One prompt for every request that needs it at the same moment.
+  var _pending = null;
+  A.reauth = function () {
+    if (_pending) return _pending;
+    var mfa = !!(A.status && A.status.mfa_enabled);
+    _pending = ask({
+      id: 'reauth-dialog', url: '/api/auth/reauth', code: mfa, title: 'Confirm your password',
+      text: mfa ? 'Enter your password and a code from your authenticator app to continue.'
+                : 'Enter your password again to continue.'
     }).then(function (ok) { _pending = null; return ok; });
     return _pending;
+  };
+
+  // User menu. The backend refuses (403 mfa_required_for_role) for a role that
+  // requires it; the menu hides the action for those already.
+  A.mfaOff = function () {
+    return ask({
+      id: 'mfa-off-dialog', url: '/api/auth/mfa/disable', code: true, button: 'Turn off',
+      title: 'Turn off two-step login',
+      text: 'Enter your password and a code from your authenticator app. After this, signing in needs only your password.'
+    }).then(function (ok) { if (ok) location.reload(); return ok; });
   };
 
   A.logout = function () {

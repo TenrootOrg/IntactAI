@@ -15,9 +15,9 @@
     <link rel="stylesheet" href="vendor/flatpickr/dark.css">
     <script src="vendor/flatpickr/flatpickr.min.js"></script>
     <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-    <script src="js/active-case.js?v=19"></script>
+    <script src="js/active-case.js?v=20"></script>
     <!-- Role-based hiding + the 403 toast / re-auth prompt the fetch hook uses -->
-    <script src="js/access.js?v=1"></script>
+    <script src="js/access.js?v=2"></script>
 </head>
 <body class="bg-gray-900 text-white" x-data x-cloak>
     <!-- Load splash — covers the brief window while partials inject + Alpine
@@ -328,6 +328,15 @@
                      style="bottom:100%;left:8px;min-width:11rem">
                     <a role="menuitem" href="/login.html?change=1"
                        class="block px-3 py-2 text-sm text-gray-200 hover:bg-gray-700">Change password</a>
+                    <!-- Two-step login. mfa_enabled === false, not falsy: a backend without
+                         two-step login sends no field, and must not get a dead link. -->
+                    <a x-show="me && me.mfa_enabled === false" role="menuitem" href="/login.html?mfa=setup"
+                       class="block px-3 py-2 text-sm text-gray-200 hover:bg-gray-700">Two-step login</a>
+                    <div x-show="me && me.mfa_enabled" class="px-3 py-2 text-sm text-gray-400">Two-step login: on</div>
+                    <!-- Not for a role that requires it (mfa_required): the backend refuses that. -->
+                    <button x-show="me && me.mfa_enabled && !me.mfa_required" type="button" role="menuitem"
+                            @click="open = false; IntactAccess.mfaOff()"
+                            class="block w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-700">Turn off two-step login</button>
                     <button type="button" role="menuitem" @click="IntactAccess.logout()"
                             class="block w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-700">Log out</button>
                 </div>
@@ -726,8 +735,8 @@
     <script src="js/components/workspace-bar.js?v=7"></script>
     <script src="js/components/cloud-datepickers.js?v=8"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/components/users-card.js?v=1"></script>
-    <script src="js/bootstrap/partial-loader.js?v=309"></script>
+    <script src="js/components/users-card.js?v=2"></script>
+    <script src="js/bootstrap/partial-loader.js?v=310"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

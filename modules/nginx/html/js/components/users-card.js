@@ -50,6 +50,9 @@ window.usersCard = function () {
     canManage(u) {
       return u.username !== this.me && u.role !== 'superadmin' && this.grantable().some(r => r.role === u.role);
     },
+    // Mirrors the backend's rule (admin and up must use two-step login) for the hint only.
+    // The backend says (users.MFA_REQUIRED_ROLES); the role list is the fallback for an older one.
+    mfaRequired(u) { return 'mfa_required' in u ? !!u.mfa_required : (u.role === 'admin' || u.role === 'superadmin'); },
     admins() { return this.users.filter(u => u.role === 'admin' && u.enabled && u.username !== this.me); },
     when(ts) { return ts ? new Date(ts * 1000).toLocaleString() : 'Never'; },
 
@@ -108,6 +111,12 @@ window.usersCard = function () {
       const d = await this.send('/api/users/' + encodeURIComponent(u.username) + '/reset-password', 'POST', {});
       if (!d) return;
       this.showOtp(d);
+      this.load();
+    },
+
+    async resetMfa(u) {
+      if (!confirm('Reset two-step login for ' + u.username + '?\n\nTheir authenticator app and recovery codes stop working here. If their role requires two-step login, they must set it up again at their next sign-in.')) return;
+      await this.send('/api/users/' + encodeURIComponent(u.username) + '/reset-mfa', 'POST', {});
       this.load();
     },
 

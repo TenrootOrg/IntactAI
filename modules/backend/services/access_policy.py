@@ -62,10 +62,15 @@ POLICY = {
     # reach this table)
     "auth.auth_change_password": READONLY,
     "auth.auth_reauth": READONLY,
+    # Each user's own two-step login (disable refuses roles that require it).
+    "auth.auth_mfa_setup": READONLY,
+    "auth.auth_mfa_confirm": READONLY,
+    "auth.auth_mfa_disable": READONLY,
     "users.list_users": ADMIN,
     "users.create_user": step_up(ADMIN),
     "users.update_user": step_up(ADMIN),
     "users.reset_password": step_up(ADMIN),
+    "users.reset_mfa": step_up(ADMIN),
     "users.transfer_superadmin": step_up(SUPERADMIN),
 
     # --- cases and Case Analysis: routes/case_routes.py ----------------------
