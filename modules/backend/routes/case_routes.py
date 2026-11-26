@@ -319,7 +319,7 @@ def _bind_active_case():
             print(f"[CASES] workspace bootstrap failed: {e}", flush=True)
 
 
-def _velo_org_error(d):
+def _velo_org_error(d, case_id=None):
     """Why d's velo_org cannot be saved, or None. An org Velociraptor does not
     have would fail every query of the case; when Velociraptor cannot be asked,
     only the id's form is checked."""
@@ -332,6 +332,18 @@ def _velo_org_error(d):
         return None
     if not org:
         return "not a valid Velociraptor org id"
+    from services import case_access
+    me = case_access.caller_row(session)
+    # A restricted case keeps its org to itself: another case in it would
+    # hand that case's Velociraptor data to everyone who sees the other one.
+    owners = {cid for cid, r in case_access.restricted_cases().items()
+              if velo_org.clean(r["org"]) == org and cid != case_id}
+    if owners:
+        if not all(case_access.can_see(cid, me) for cid in owners):
+            return f"Velociraptor has no org '{org}'"   # as if missing: no oracle for hidden cases
+        return f"org '{org}' belongs to a restricted case; give this case an org of its own"
+    if case_id and case_id in case_access.restricted_cases() and case_access.org_in_use(org, case_id):
+        return f"org '{org}' is used by other cases; a restricted case needs an org of its own"
     try:
         from services.velociraptor_clients import org_list
         known = {o for o, _ in org_list()}
@@ -953,7 +965,7 @@ def update_case(case_id):
     """Case details: name, case_status, case_owner, case_description, velo_org.
     Labels only — no re-fuse."""
     b = request.get_json(silent=True) or {}
-    bad_org = _velo_org_error(b)
+    bad_org = _velo_org_error(b, case_id)
     if bad_org:
         return jsonify({"error": bad_org}), 400
     old_name = (store.get_case(case_id) or {}).get("name")
@@ -1177,8 +1189,10 @@ def import_case():
         run_id = ws.create_automation_run(
             "case_import", f"Import case: {f.filename or 'bundle'}",
             details={"filename": f.filename or "bundle"})
+        from services import case_access
         res = case_bundle.import_case_bundle(tmp, run_id=run_id,
-                                             name=request.form.get("name") or None)
+                                             name=request.form.get("name") or None,
+                                             importer=(case_access.caller_row(session) or {}).get("username") or None)
         ws.update_run_status(run_id, "completed", progress=100, details=res)
         return jsonify(res)
     except Exception as e:                                # noqa: BLE001
@@ -1209,7 +1223,11 @@ def attach(case_id):
     members, rejected = store.attach_runs(case_id, rids)
     resp = {"case_id": case_id, "member_run_ids": members}
     if rejected:
-        resp["rejected"] = rejected
+        from services import case_access
+        hidden = case_access.hidden_case_ids(case_access.caller_row(session))
+        # A restricted case's id is need-to-know: the run is named, its owner not.
+        resp["rejected"] = [dict(r, owner_case_id=None) if r.get("owner_case_id") in hidden else r
+                            for r in rejected]
         resp["warning"] = (
             f"{len(rejected)} run(s) already belong to a different case and were "
             f"NOT attached (a run may only belong to one case at a time)."

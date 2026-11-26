@@ -937,7 +937,7 @@ function caseAccessHtml(a){                          // pure (tested)
   const rootOrg=(a.velo_org||'root')==='root';
   return `<label style="display:flex;gap:6px;align-items:center;font-weight:600">`
     +`<input type="checkbox" id="cdf-restricted" ${on?'checked':''} ${ro?'disabled':''} onchange="cdAccToggle(this)"/> 🔒 Restricted</label>`
-    +`<div class="cfghint">Only the people ticked below and the Super-admin see this case, its runs, report and files — here, in Velociraptor (the case's org) and in Timesketch (the case's sketch). <b>Also visible to everyone in Kibana and VolWeb</b>: those tools cannot be restricted per case.`
+    +`<div class="cfghint">Only the people ticked below and the Super-admin see this case, its runs, report and files — here, in Velociraptor (the case's org) and in Timesketch (the case's sketch; Admins still see its name there, not its events). <b>Also visible to everyone in Kibana and VolWeb</b>: those tools cannot be restricted per case.`
     +(rootOrg?` This case uses the root Velociraptor org, which every case shares, so Velociraptor cannot restrict it: give the case an org of its own.`:'')+`</div>`
     +`<div id="cdf-acc-list" style="${on?'':'display:none'};max-height:180px;overflow:auto">${people}</div>`
     +(ro?`<div class="cfghint">Only the Super-admin or someone on this case's list can change who sees it.</div>`

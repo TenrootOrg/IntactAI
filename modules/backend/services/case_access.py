@@ -59,9 +59,16 @@ def _load() -> dict:
                     "FROM workflows WHERE automation_type = 'case' AND json_valid(details) "
                     "AND json_extract(details, '$.restricted') = 1").fetchall()
             except sqlite3.OperationalError as exc:
-                if "no such table" not in str(exc):
+                if "no such table" in str(exc):
+                    rows = []               # a fresh DB: no case yet
+                elif _snapshot is not None:
+                    # "database is locked" during a big import: the last known
+                    # list, not a 500 on every route (login included).
+                    print(f"[CASE-ACCESS] kept the previous list: {exc}", flush=True)
+                    _snapshot_at = time.monotonic()
+                    return _snapshot
+                else:
                     raise                   # never "nothing is restricted" on a DB error
-                rows = []                   # a fresh DB: no case yet
             snap = {}
             for cid, allowed, org, name in rows:
                 try:
@@ -136,7 +143,9 @@ def run_case_ids(run) -> set:
     """Every case a run belongs to: its tag, the case it is about (export,
     relevance, import), and itself for a case row."""
     run = run or {}
-    out = {run.get("case_id"), (run.get("details") or {}).get("case_id")}
+    det = run.get("details") or {}
+    # source_case: a baseline row (its case_id is None) holds the case's findings.
+    out = {run.get("case_id"), det.get("case_id"), det.get("source_case")}
     if run.get("automation_type") == "case":
         out.add(run.get("run_id"))
     out.discard(None)
@@ -223,6 +232,16 @@ def set_access(case_id, restricted, allowed, actor) -> dict:
     for keep in (d.get("created_by"), (actor or {}).get("username")):
         if keep and users.by_name(keep) is not None:
             names.add(keep)
+    if restricted:
+        from services import velo_org
+        org = velo_org.clean(store.case_info(d).get("velo_org") or "")
+        others = org_in_use(org, case_id) if org and org != "root" else []
+        if others:
+            # Everyone on those cases keeps the org, and with it this case's
+            # Velociraptor data: restricting would only look safe.
+            return {"error": f"Velociraptor org {org} is shared with {', '.join(map(str, others[:3]))}"
+                             f"{' and more' if len(others) > 3 else ''}. Give this case its own "
+                             "org first, then restrict it."}
     before = (bool(d.get("restricted")), sorted(d.get("allowed_users") or []))
     patch = {"restricted": bool(restricted), "allowed_users": sorted(names)}
     store._merge_case_details(case_id, patch)            # noqa: SLF001 -- the case row's one writer
@@ -237,6 +256,15 @@ def set_access(case_id, restricted, allowed, actor) -> dict:
         except Exception as exc:                         # noqa: BLE001 -- the save stands
             print(f"[CASE-ACCESS] reconcile request failed: {exc}", flush=True)
     return {"case_id": case_id, **patch, "changed": before != (patch["restricted"], patch["allowed_users"])}
+
+
+def org_in_use(org, except_case_id) -> list:
+    """Names of the other cases whose Velociraptor org is `org`."""
+    from services.storage.base import get_connection
+    return [r[0] for r in get_connection().execute(
+        "SELECT json_extract(details, '$.name') FROM workflows WHERE automation_type = 'case' "
+        "AND run_id != ? AND json_valid(details) AND json_extract(details, '$.velo_org') = ?",
+        (except_case_id, org)).fetchall()]
 
 
 def touched(case_id) -> None:

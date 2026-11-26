@@ -587,6 +587,10 @@ def analyze_offline():
     try:
         data = request.json or {}
         run_id = data.get('run_id')
+        from flask import session
+        from services import case_access
+        if run_id and case_access.request_refusal(None, session, run_id=run_id):
+            return jsonify({'error': 'Invalid or missing run_id'}), 400     # a restricted case's run
 
         if not run_id or run_id not in _azure_runs:
             return jsonify({'error': 'Invalid or missing run_id'}), 400

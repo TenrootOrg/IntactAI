@@ -946,6 +946,10 @@ def _adopt_from_workflow(source_run_id):
         return jsonify({"error": "No active case to adopt into."}), 400
 
     source = get_workflow(source_run_id)
+    from flask import session
+    from services import case_access
+    if source and not case_access.run_visible(source, case_access.caller_row(session)):
+        source = None       # a restricted case's run: "no such workflow", like any other
     if not source:
         return jsonify({"error": f"No workflow with id {source_run_id}. "
                                  f"Copy it from the Workflows page."}), 404

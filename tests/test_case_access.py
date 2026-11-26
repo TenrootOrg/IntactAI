@@ -186,6 +186,35 @@ class Visibility(Fixture):
             self.assertEqual(rec.call_count, 2, "no change, no reconcile")
 
 
+class OrgOfItsOwn(Fixture):
+    """A restricted case's Velociraptor org is its own: no other case may sit in
+    it, or everyone who sees that case reads this one's Velociraptor data."""
+
+    def test_restricting_a_case_in_a_shared_org_is_refused(self):
+        a = store.create_case("Shared A")
+        b = store.create_case("Shared B")
+        for cid in (a, b):
+            store.update_case_info(cid, {"velo_org": "OSHAR"})
+        res = case_access.set_access(a, True, [], users.get(self.otto))
+        self.assertIn("shared with Shared B", res.get("error", ""))
+        self.assertNotIn(a, case_access.restricted_cases())
+
+    def test_baseline_rows_follow_their_source_case(self):
+        base = {"run_id": "b1", "automation_type": "baseline", "case_id": None,
+                "details": {"source_case": self.secret}}
+        self.assertFalse(case_access.run_visible(base, users.get(self.otto)))
+        self.assertTrue(case_access.run_visible(base, users.get(self.rita)))
+
+    def test_a_db_lock_keeps_the_last_list(self):
+        import sqlite3
+        case_access.restricted_cases()                          # a snapshot exists
+        case_access._snapshot_at = 0                             # noqa: SLF001 -- due for refresh
+        locked = mock.Mock()
+        locked.execute.side_effect = sqlite3.OperationalError("database is locked")
+        with mock.patch("services.storage.base.get_connection", lambda: locked):
+            self.assertIn(self.secret, case_access.restricted_cases())
+
+
 class Listings(Fixture):
     def ids(self, **kw):
         return {r["run_id"] for r in list_workflow_summaries(**kw)[0]}

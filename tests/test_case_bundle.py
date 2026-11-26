@@ -411,6 +411,30 @@ class TestWhatMustNotTravel(BundleTestBase):
         self.assertNotIn("is_default", d)
         self.assertNotIn("is_system", d)
 
+    def test_a_crafted_export_row_is_never_imported(self):
+        # A "case_export" row pointing at another case's bundle_path would let
+        # the importer download that case's export from here.
+        case_id, members = self.make_case(runs=2)
+        self.ws.rows[members[0]]["automation_type"] = "case_export"
+        self.ws.rows[members[0]]["details"]["bundle_path"] = "/data/downloads/case_exports/other.zip"
+        path, _ = self.export(case_id)
+        res = cb.import_case_bundle(path)
+        types_now = [r.get("automation_type") for r in self.ws.rows.values()
+                     if r.get("case_id") == res["case_id"]]
+        self.assertNotIn("case_export", types_now)
+
+    def test_a_restricted_case_keeps_only_this_boxs_people_and_the_importer(self):
+        case_id, _ = self.make_case()
+        self.ws.rows[case_id]["details"].update(restricted=True, allowed_users=["ghost"],
+                                                created_by="ghost")
+        path, _ = self.export(case_id)
+        from unittest import mock
+        with mock.patch("services.users.by_name", lambda n: None):    # "ghost" is not on this box
+            res = cb.import_case_bundle(path, importer="olga")
+        d = self.ws.rows[res["case_id"]]["details"]
+        self.assertTrue(d["restricted"])
+        self.assertEqual((d["allowed_users"], d["created_by"]), (["olga"], "olga"))
+
     def test_the_system_workspace_cannot_be_exported(self):
         case_id = self.ws.create_automation_run("case", "Case — System",
                                                 details={"name": "System",

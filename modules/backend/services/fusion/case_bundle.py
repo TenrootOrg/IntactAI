@@ -114,6 +114,11 @@ _STRIP_FROM_CASE = ("fusion_graph", "activity_log", "is_default", "is_system",
                     "auto_fuse_incomplete", "velo_org")
 
 
+def _system_types():
+    from services.workflow_service import SYSTEM_TYPES
+    return SYSTEM_TYPES
+
+
 class BundleError(Exception):
     """Operator-facing: says what is wrong with the bundle and what to do."""
 
@@ -759,7 +764,7 @@ def _unique_case_name(name) -> str:
     return cand
 
 
-def import_case_bundle(zip_path, *, run_id=None, name=None, cancel=None) -> dict:
+def import_case_bundle(zip_path, *, run_id=None, name=None, cancel=None, importer=None) -> dict:
     """Recreate a case from a bundle. Always a NEW case; never a merge.
 
     Nothing is written until the whole archive has been verified, and everything
@@ -863,6 +868,12 @@ def import_case_bundle(zip_path, *, run_id=None, name=None, cancel=None) -> dict
                 old = doc.get("run_id")
                 if old not in id_map:
                     continue
+                if doc.get("automation_type") == "case" or doc.get("automation_type") in _system_types():
+                    # An export carries analysis runs and baselines only. A
+                    # crafted "case_export" row could point its bundle_path at
+                    # another case's export and have it downloaded from here.
+                    prog.log(f"Skipped {old}: a {doc.get('automation_type')} row is never imported", "warning")
+                    continue
                 row = json.loads(_remap(json.dumps(doc, default=str), id_map))
                 row["run_id"] = id_map[old]
                 det = row.get("details") or {}
@@ -936,6 +947,20 @@ def import_case_bundle(zip_path, *, run_id=None, name=None, cancel=None) -> dict
                 new_det.pop(k, None)
             new_det["name"] = disp
             new_det["member_run_ids"] = new_members
+            # User names on the list are the SOURCE box's people; here the same
+            # name can be someone else. Keep only names this box has, plus the
+            # importer, who is the creator here (always kept on the list).
+            from services import users as _users
+            new_det.pop("created_by", None)
+            if importer:
+                new_det["created_by"] = importer
+            if new_det.get("restricted"):
+                kept = sorted({n for n in (new_det.get("allowed_users") or [])
+                               if isinstance(n, str) and _users.by_name(n)} | ({importer} if importer else set()))
+                dropped = sorted(set(new_det.get("allowed_users") or []) - set(kept))
+                new_det["allowed_users"] = kept
+                prog.log("Restricted case: kept " + (", ".join(kept) or "nobody but the Super-admin")
+                         + (f"; not on this box: {', '.join(map(str, dropped))}" if dropped else ""))
             new_det["imported"] = {
                 "at": _now_iso(),
                 "from_version": man.get("product_version"),

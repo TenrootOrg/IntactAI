@@ -937,6 +937,11 @@ def remove_memory_dump(name):
     import os
     from services.memory import raw_store
     target = os.path.realpath(os.path.join(raw_store.raw_dir(_DUMPS_DIR), os.path.basename(name or "")))
+    hidden = _hidden_cases()
+    # By file name: the origins are keyed on the path the run recorded.
+    if hidden and any(os.path.basename(p) == os.path.basename(target) and o.get("case_id") in hidden
+                      for p, o in _dump_origins().items()):
+        return jsonify({"error": "no such memory image on the appliance"}), 404   # listing hides it too
     if any(p and os.path.realpath(p) == target for p in map(_run_image, _memory_runs_in_flight())):
         return jsonify({"error": "A memory run is using this image — wait for it to finish, "
                                  "or stop it, then remove the image."}), 409

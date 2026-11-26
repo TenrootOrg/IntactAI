@@ -601,6 +601,10 @@ def analyze_offline():
     try:
         data = request.json or {}
         run_id = data.get('run_id')
+        from flask import session
+        from services import case_access
+        if run_id and case_access.request_refusal(None, session, run_id=run_id):
+            return jsonify({'error': 'Invalid or missing run_id'}), 400     # a restricted case's run
         # _load_run, not _aws_runs: the upload survives a restart on disk.
         run_data = _load_run(run_id) if run_id else None
         if not run_data:

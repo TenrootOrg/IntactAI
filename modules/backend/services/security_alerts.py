@@ -130,11 +130,13 @@ def evaluate(entry, now=None):
                 out.append(("mfa_removed", "medium", user, dict(base, target=target)))
         elif ev == "audit_forward_changed":
             old, new = entry.get("old") or {}, entry.get("new") or {}
-            if old.get("enabled") and (not new.get("enabled") or
-                                       (old.get("host"), old.get("port")) != (new.get("host"), new.get("port"))):
+            moved = tuple(old.get(k) for k in ("protocol", "host", "port")) != \
+                tuple(new.get(k) for k in ("protocol", "host", "port"))
+            if old.get("enabled") and (not new.get("enabled") or moved):
                 out.append(("audit_forward_changed", "high", user,
                             dict(base, old_host=old.get("host"), new_host=new.get("host") if new.get("enabled") else None)))
-        elif ev == "token_denied" and entry.get("reason") in ("token_invalid", "token_expired"):
+        elif ev == "token_denied" and entry.get("reason") in ("token_invalid", "token_expired",
+                                                              "disabled", "credentials_changed"):
             # A dead token still being tried (a leaked one?): counted like failed sign-ins.
             if _burst(("fail_ip", ip), IP_FAILS, now) and _once(("fail_ip", ip), now):
                 out.append(("failed_login_burst", "high", None,

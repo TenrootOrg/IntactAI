@@ -192,12 +192,13 @@ class CreateAsksForTheDetails(unittest.TestCase):
         fn = re.search(r'@case_bp.route\("/api/cases", methods=\["POST"\]\)\ndef create_case\(\):.*?(?=\n\n\n)', self.SRC, re.S).group(0)
         fn = fn.split("\n", 1)[1]                                   # drop the decorator
         made, saved = [], []
-        helper = re.search(r'\ndef _velo_org_error\(d\):.*?(?=\n\n\n)', self.SRC, re.S).group(0)
+        helper = re.search(r'\ndef _velo_org_error\(d, case_id=None\):.*?(?=\n\n\n)', self.SRC, re.S).group(0)
         ns = {"request": mock.Mock(get_json=lambda silent=True: body), "jsonify": lambda x: x, "store": store,
               "session": {}, "_visible_runs": lambda rids: rids}     # no session: the box itself
         with mock.patch.object(store, "create_case", lambda name, **kw: made.append(name) or "case_new"), \
                 mock.patch.object(store, "update_case_info", lambda cid, f: saved.append((cid, f)) or {}), \
-                mock.patch("services.velociraptor_clients.org_list", lambda: [("root", "root"), ("OFM5G", "Acme")]):
+                mock.patch("services.velociraptor_clients.org_list", lambda: [("root", "root"), ("OFM5G", "Acme")]), \
+                mock.patch("services.case_access.restricted_cases", lambda: {}):
             exec(helper, ns)
             exec(fn, ns)
             out = ns["create_case"]()

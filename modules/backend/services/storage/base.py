@@ -225,6 +225,10 @@ def create_tables():
     _ensure_column(conn, "workflows", "case_id", "TEXT")
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_workflows_case_id ON workflows(case_id)")
+        # The Workflows list ORs case_id with run types that follow a case
+        # (case_import, export/relevance runs): without this the OR is a full
+        # scan reading every row's details, case reports included.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_workflows_type ON workflows(automation_type)")
         conn.commit()
     except Exception as e:
         print(f"[STORAGE] Could not create idx_workflows_case_id: {e}", flush=True)

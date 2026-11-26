@@ -361,6 +361,44 @@ def import_offline_collection(file_path, original_filename, run_id, password=Non
             update_run_status(run_id, "failed", error=str(e))
 
 
+def _uploader_row(event_data):
+    """The user row of whoever sent the upload, from the dashboard session
+    cookie tusd forwards with the hook (nginx's auth_request already checked it
+    is valid). A cookie that cannot be read: a user who sees no restricted
+    case -- never None, which would mean the box itself."""
+    from http.cookies import SimpleCookie
+    from flask import current_app
+    from services import case_access, users
+    hdr = ((event_data.get('HTTPRequest') or {}).get('Header') or {})
+    raw = next((v for k, v in hdr.items() if k.lower() == 'cookie'), '')
+    raw = '; '.join(raw) if isinstance(raw, list) else str(raw or '')
+    try:
+        jar = SimpleCookie()
+        jar.load(raw)
+        signed = jar[current_app.config.get('SESSION_COOKIE_NAME', 'session')].value
+        sess = current_app.session_interface.get_signing_serializer(current_app).loads(signed)
+        return users.get(sess.get('uid')) or case_access._NOBODY       # noqa: SLF001
+    except Exception:                                                # noqa: BLE001
+        return case_access._NOBODY                                   # noqa: SLF001
+
+
+def _restricted_target(event_data, metadata):
+    """Why this upload's case/org is out of the uploader's reach, or None."""
+    from services import case_access, velo_org
+    if not case_access.restricted_cases():
+        return None
+    row = _uploader_row(event_data)
+    if case_access.sees_all(row):
+        return None
+    case_id = (metadata.get('case_id') or '').strip()
+    if case_id and not case_access.can_see(case_id, row):
+        return f"case {case_id} is restricted"
+    org = velo_org.clean(metadata.get('velo_org') or '')
+    if not case_id and org and org in case_access.denied_orgs(row.get('username')):
+        return f"org {org} belongs to a restricted case"
+    return None
+
+
 @upload_bp.route('/api/uploads/hook', methods=['POST'])
 def handle_tus_hook():
     """Handle tusd webhook events (pre-create, post-finish)
@@ -410,6 +448,14 @@ def handle_tus_hook():
             # Validate upload before it starts (no ID assigned yet)
             purpose = metadata.get('purpose', '')
             filename = metadata.get('filename', '')
+
+            # The case and org ride in metadata the browser chose: a restricted
+            # case the uploader is not on the list of is refused like a missing one.
+            hidden = _restricted_target(event_data, metadata)
+            if hidden:
+                print(f"[TUS HOOK] Rejected: {hidden}", flush=True)
+                return jsonify({"RejectUpload": True, "HTTPResponse": {
+                    "StatusCode": 404, "Body": json.dumps({"error": "case not found"})}}), 200
 
             if purpose not in ['velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', 'case_import', 'memory',
                                'case_file', 'memory_symbols']:
@@ -785,10 +831,12 @@ def handle_tus_hook():
                 if run_id:
                     add_log_to_run(run_id, "Reading the case bundle...")
 
+                importer = _uploader_row(event_data).get('username') or None   # needs the app context
+
                 def run_case_import():
                     try:
                         from services.fusion import case_bundle
-                        res = case_bundle.import_case_bundle(file_path, run_id=run_id)
+                        res = case_bundle.import_case_bundle(file_path, run_id=run_id, importer=importer)
                         update_run_status(run_id, "completed", progress=100,
                                           details=res)
                     except Exception as e:
