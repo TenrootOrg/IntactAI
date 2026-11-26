@@ -25,6 +25,9 @@
                      },
                      awsRegionsOpen: false,
                      async saveAwsRegions(regions) {
+                         // Blueprint defaults set the regions on open (the $watch below):
+                         // a role without write would send a refused PUT on every visit.
+                         if (document.documentElement.getAttribute('data-can-write') === '0') return;
                          try {
                              const r = await fetch('/api/aws/regions', { method: 'PUT',
                                  headers: { 'Content-Type': 'application/json' },
