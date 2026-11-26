@@ -164,13 +164,41 @@ _SUMMARY_DETAIL_KEYS = ("blueprint", "blueprint_id", "file_id", "bundle_path",
 
 
 def list_workflow_summaries(case_id: Optional[str] = None, automation_type: Optional[str] = None,
-                            limit: int = 200, offset: int = 0):
+                            limit: int = 200, offset: int = 0, exclude_types=(),
+                            linked_types=(), hidden_case_ids=()):
     """One page of runs for the Workflows list, newest first, without logs and
-    with only the details keys the list shows. Returns (runs, total)."""
+    with only the details keys the list shows. Returns (runs, total).
+
+    linked_types: run types that live in the System workspace but are about one
+    case (details.case_id: export, relevance) -- listed in that case, and in the
+    one it was started from (details.started_in); an import makes a NEW case, so
+    it is listed in every case. hidden_case_ids:
+    restricted cases the caller may not see -- their runs, and the runs about
+    them, are left out. Both in SQL, so paging and `total` stay exact."""
     where, params = [], []
+    linked = list(linked_types)
+    lph = ",".join("?" * len(linked))
     if case_id:
-        where.append("case_id = ?")
-        params.append(case_id)
+        if linked:
+            where.append(f"(case_id = ? OR automation_type = 'case_import' OR (automation_type IN ({lph}) "
+                         f"AND json_valid(details) AND ? IN (json_extract(details, '$.case_id'), "
+                         f"json_extract(details, '$.started_in'))))")
+            params += [case_id, *linked, case_id]
+        else:
+            where.append("case_id = ?")
+            params.append(case_id)
+    if exclude_types:
+        where.append(f"automation_type NOT IN ({','.join('?' * len(exclude_types))})")
+        params += list(exclude_types)
+    hidden = sorted(hidden_case_ids or ())
+    if hidden:
+        hph = ",".join("?" * len(hidden))
+        where.append(f"COALESCE(case_id, '') NOT IN ({hph}) AND NOT (automation_type = 'case' AND run_id IN ({hph}))")
+        params += hidden + hidden
+        if linked:
+            where.append(f"NOT (automation_type IN ({lph}) AND json_valid(details) "
+                         f"AND COALESCE(json_extract(details, '$.case_id'), '') IN ({hph}))")
+            params += linked + hidden
     if automation_type:
         where.append("automation_type = ?")
         params.append(automation_type)

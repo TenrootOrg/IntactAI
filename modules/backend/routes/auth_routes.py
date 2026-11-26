@@ -291,13 +291,17 @@ def auth_login():
             'recovery_hint': auth.recovery_hint(),
         }), 401
 
-    auth.reset_lockout(client)
+    # The address's lockout is cleared only when the login completes
+    # (_finish_login): with two-step login on, a right password alone must not
+    # reset the count a code guesser is accumulating.
     # A publicly known password still gets in -- old boxes must -- and so does a
     # one-time password from an Admin, but either session can do nothing except
     # choose a new password (gate_decision).
     temp = bool(row.get('temp_expires'))
     must_change = temp or auth.needs_change(password)
     flag = (auth.MUST_CHANGE_TEMP if temp else True) if must_change else None
+    if not row.get('mfa_enabled'):
+        auth.reset_lockout(client)
     if row.get('mfa_enabled'):
         # Password right; nothing is signed in until the code is (auth_mfa).
         auth.mfa_pending_start(session, row, flag)
@@ -307,6 +311,7 @@ def auth_login():
 
 
 def _finish_login(row, must_change_flag, factor=None):
+    auth.reset_lockout(_client_ip())
     auth.start_session(session, row)
     users.touch_login(row['id'])
     if must_change_flag:
@@ -327,19 +332,35 @@ def auth_mfa():
         session.pop('mfa_pending', None)
         return jsonify({'success': False, 'error': 'mfa_expired',
                         'message': 'That took too long. Sign in again.'}), 401
-    refused = password_guess_guard()
+    refused = password_guess_guard() or _mfa_lock_refusal(row)
     if refused:
         return refused
     data = request.get_json(silent=True) or {}
-    factor = auth.mfa_check(row, code=str(data.get('code') or ''),
-                            recovery_code=str(data.get('recovery_code') or ''))
+    code = str(data.get('code') or '')
+    factor = auth.mfa_check(row, code=code, recovery_code=str(data.get('recovery_code') or ''))
     password_guess_result(bool(factor))
     if not factor:
         auth.audit('login_failed', request, username_value=row['username'], reason='bad_mfa_code')
-        return jsonify({'success': False, 'error': 'invalid_code',
-                        'message': 'That code is not right. Check the time on your device.'}), 401
+        return _bad_code(row, code)
     flag = (session.get('mfa_pending') or {}).get('must_change')
     return _finish_login(users.get(row['id']), flag, factor)
+
+
+def _mfa_lock_refusal(row):
+    left = auth.mfa_locked_seconds(row['id'])
+    if not left:
+        return None
+    return jsonify({'success': False, 'error': 'locked', 'lock_remaining_seconds': left,
+                    'message': f'Too many wrong codes. Try again in {_humanize(left)}.'}), 429
+
+
+def _bad_code(row, code):
+    fresh = users.get(row['id']) or row
+    if code and auth.mfa_code_was_just_used(fresh, code):
+        msg = 'That code was just used. Wait for the next one (up to 30 seconds).'
+    else:
+        msg = 'That code is not right. Check the time on your device.'
+    return jsonify({'success': False, 'error': 'invalid_code', 'message': msg}), 401
 
 
 @auth_bp.route('/api/auth/mfa/setup', methods=['POST'])
@@ -347,7 +368,12 @@ def auth_mfa_setup():
     row = auth.session_user(session)
     if row is None:
         return jsonify({'success': False, 'error': 'unauthenticated'}), 401
-    out = auth.mfa_begin_setup(row)
+    try:
+        out = auth.mfa_begin_setup(row)
+    except auth.MfaAlreadyOn:
+        return jsonify({'success': False, 'error': 'mfa_already_on',
+                        'message': 'Two-step login is already on. Turn it off first, '
+                                   'or ask an Admin to reset it.'}), 409
     auth.audit('mfa_setup_started', request, username_value=row['username'])
     return jsonify({'success': True, **out})
 
@@ -361,6 +387,12 @@ def auth_mfa_confirm():
     if refused:
         return refused
     data = request.get_json(silent=True) or {}
+    # The password too: a stolen session alone must not be able to enrol an
+    # authenticator of its own and lock the owner out.
+    if not auth.verify_password(row['username'], data.get('password') or ''):
+        password_guess_result(False)
+        return jsonify({'success': False, 'error': 'invalid_credentials',
+                        'message': 'Password is incorrect.'}), 401
     try:
         codes = auth.mfa_confirm_setup(row, str(data.get('code') or ''))
     except LookupError:
@@ -371,6 +403,8 @@ def auth_mfa_confirm():
         return jsonify({'success': False, 'error': 'invalid_code',
                         'message': 'That code is not right. Check the time on your device.'}), 401
     auth.audit('mfa_enabled', request, username_value=row['username'])
+    # enable_mfa moved the generation (other sessions end): re-issue this one.
+    auth.start_session(session, users.get(row['id']))
     # Shown once: only their hashes are kept.
     return jsonify({'success': True, 'recovery_codes': codes})
 
@@ -485,12 +519,17 @@ def auth_reauth():
         return refused
     data = request.get_json(silent=True) or {}
     ok = auth.verify_password(row['username'], data.get('password') or '')
-    if ok and row.get('mfa_enabled') and not auth.mfa_check(row, code=str(data.get('code') or '')):
-        # Step-up asks for both factors, as the login did.
-        password_guess_result(False)
-        auth.audit('reauth_failed', request, username_value=row['username'], reason='bad_mfa_code')
-        return jsonify({'success': False, 'error': 'invalid_code',
-                        'message': 'The code is not right.'}), 401
+    if ok and row.get('mfa_enabled'):
+        # Step-up asks for both factors, as the login did (a recovery code too:
+        # an Admin who lost the phone but kept the codes still manages users).
+        locked = _mfa_lock_refusal(row)
+        if locked:
+            return locked
+        code = str(data.get('code') or '')
+        if not auth.mfa_check(row, code=code, recovery_code=str(data.get('recovery_code') or '')):
+            password_guess_result(False)
+            auth.audit('reauth_failed', request, username_value=row['username'], reason='bad_mfa_code')
+            return _bad_code(row, code)
     password_guess_result(ok)
     if not ok:
         auth.audit('reauth_failed', request, username_value=row['username'])

@@ -43,6 +43,10 @@
     .then(function (r) { return r.json(); })
     .then(function (s) {
       A.status = s || {};
+      // Appliance clock minus this browser's, in seconds, measured now: the
+      // code prompts warn when an air-gapped box has drifted (codes then fail).
+      // local-clock-ok: the skew between the two clocks IS what is measured.
+      if (A.status.server_time) A.clockSkew = A.status.server_time - Date.now() / 1000;  // local-clock-ok
       apply(A.status);
       // The backend answers 403 mfa_enroll_required to everything else meanwhile.
       // top: from the Case Analysis iframe the whole dashboard must go.
@@ -90,8 +94,9 @@
         '<div id="' + o.id + '-title" style="font-weight:600;margin-bottom:6px"></div>' +
         '<div class="reauth-text" style="color:#9ca3af;font-size:13px;margin-bottom:12px"></div>' +
         '<input type="password" autocomplete="current-password" aria-label="Password" style="' + field + '">' +
-        (o.code ? '<input type="text" class="reauth-code" inputmode="numeric" autocomplete="one-time-code" ' +
-                  'placeholder="6-digit code" aria-label="6-digit code from your authenticator app" style="' + field + ';margin-top:8px">' : '') +
+        (o.code ? '<input type="text" class="reauth-code" autocomplete="one-time-code" ' +
+                  'placeholder="6-digit code, or a recovery code" aria-label="6-digit code from your authenticator app, or a recovery code" style="' + field + ';margin-top:8px">' +
+                  '<div class="reauth-clock" style="display:none;color:#fbbf24;font-size:12px;margin-top:8px"></div>' : '') +
         '<div class="reauth-err" style="display:none;color:#f87171;font-size:13px;margin-top:8px"></div>' +
         '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">' +
         '<button type="button" class="reauth-cancel" style="padding:7px 14px;border-radius:6px;background:#374151;color:#fff;border:none;cursor:pointer">Cancel</button>' +
@@ -100,6 +105,13 @@
       box.querySelector('#' + o.id + '-title').textContent = o.title;
       box.querySelector('.reauth-text').textContent = o.text;
       box.querySelector('button[type=submit]').textContent = o.button || 'Continue';
+      var clock = box.querySelector('.reauth-clock');
+      if (clock && Math.abs(A.clockSkew || 0) > 60) {
+        clock.textContent = "This computer's clock and the appliance's clock differ by " +
+          Math.round(Math.abs(A.clockSkew) / 60) + " minute(s) - codes may be refused. " +
+          "Ask an administrator to check the appliance's time.";
+        clock.style.display = 'block';
+      }
       var form = box.querySelector('form'), input = box.querySelector('input[type=password]'),
           code = box.querySelector('.reauth-code'), err = box.querySelector('.reauth-err');
       function done(ok) { box.remove(); resolve(ok); }
@@ -109,7 +121,11 @@
         e.preventDefault();
         err.style.display = 'none';
         var body = { password: input.value };
-        if (code) body.code = code.value.replace(/\s+/g, '');
+        if (code) {
+          // Letters: a recovery code (xxxx-xxxx-xx); otherwise the app's 6 digits.
+          var v = code.value.trim();
+          if (/[a-z]/i.test(v)) body.recovery_code = v; else body.code = v.replace(/\s+/g, '');
+        }
         fetch(o.url, {
           method: 'POST', credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -141,7 +157,7 @@
     var mfa = !!(A.status && A.status.mfa_enabled);
     _pending = ask({
       id: 'reauth-dialog', url: '/api/auth/reauth', code: mfa, title: 'Confirm your password',
-      text: mfa ? 'Enter your password and a code from your authenticator app to continue.'
+      text: mfa ? 'Enter your password and a code from your authenticator app (or a recovery code) to continue.'
                 : 'Enter your password again to continue.'
     }).then(function (ok) { _pending = null; return ok; });
     return _pending;

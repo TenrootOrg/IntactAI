@@ -47,7 +47,8 @@ def _reserved():
 
 RESERVED = _reserved()
 
-# Runs inside the Timesketch container. argv: op, user, role, group.
+# Runs inside the Timesketch container. argv: op, user, role, group, and a JSON
+# {sketch name: is this user on its list} for the sketches of restricted cases.
 _SCRIPT = r'''
 import json, sys
 from timesketch.app import create_app
@@ -56,7 +57,8 @@ from timesketch.models.sketch import Sketch
 from timesketch.models.user import Group, User
 
 op, name, role, group_name = sys.argv[1:5]
-out = {"created": False, "granted": 0, "sketches": 0}
+restricted = json.loads(sys.argv[5]) if len(sys.argv) > 5 else {}
+out = {"created": False, "granted": 0, "revoked": 0, "sketches": 0}
 with create_app().app_context():
     user = User.query.filter_by(username=name).first()
     group = Group.query.filter_by(name=group_name).first()
@@ -82,10 +84,26 @@ with create_app().app_context():
         # instead of one per entry.
         for sketch in Sketch.query.all():
             out["sketches"] += 1
+            allowed = restricted.get(sketch.name)
             for perm in ("read", "write"):
-                if not sketch._get_ace(perm, group=group):
-                    sketch.acl.append(sketch.AccessControlEntry(permission=perm, group=group))
+                if allowed is None:
+                    if not sketch._get_ace(perm, group=group):
+                        sketch.acl.append(sketch.AccessControlEntry(permission=perm, group=group))
+                        out["granted"] += 1
+                    continue
+                # A restricted case's sketch: no team grant, a grant per person
+                # on its list. The owner (the backend's API user) keeps its own.
+                for ace in sketch._get_ace(perm, group=group):
+                    sketch.acl.remove(ace)
+                    out["revoked"] += 1
+                mine = sketch._get_ace(perm, user=user, check_group=False)
+                if allowed and not mine:
+                    sketch.acl.append(sketch.AccessControlEntry(permission=perm, user=user))
                     out["granted"] += 1
+                elif not allowed and sketch.user != user:
+                    for ace in mine:
+                        sketch.acl.remove(ace)
+                        out["revoked"] += 1
         db_session.commit()
     elif op == "disable" and user is not None:
         user.active = False
@@ -100,11 +118,23 @@ print("INTACT-RESULT " + json.dumps(out))
 '''
 
 
+def _restricted_for(tool_user: str) -> dict:
+    """{sketch name: True when this user is on the case's list}. The Super-admin
+    is on every list (services/case_access.py); its tool name may be
+    "<name>-intact", and Intact names never end in -intact."""
+    from services import case_access, users
+    name = tool_user[:-len("-intact")] if tool_user.endswith("-intact") else tool_user
+    boss = (users.by_name(name) or {}).get("role") == users.SUPERADMIN
+    return {sk: boss or name in allowed for sk, allowed in case_access.restricted_sketches().items()}
+
+
 def _run(op: str, tool_user: str, role: str = "") -> dict:
     if not _NAME_RE.match(tool_user or ""):
         raise ValueError(f"not a valid Timesketch user name: {tool_user!r}")
+    restricted = json.dumps(_restricted_for(tool_user)) if op == "ensure" else "{}"
     # argv list, no shell: the name reaches python3 as sys.argv, never parsed.
-    proc = subprocess.run(["docker", "exec", "-i", CONTAINER, "python3", "-", op, tool_user, role, GROUP],
+    proc = subprocess.run(["docker", "exec", "-i", CONTAINER, "python3", "-", op, tool_user, role, GROUP,
+                           restricted],
                           input=_SCRIPT, capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
     for line in reversed(proc.stdout.splitlines()):
         if line.startswith("INTACT-RESULT "):

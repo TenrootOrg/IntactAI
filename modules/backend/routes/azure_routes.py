@@ -839,12 +839,16 @@ def list_runs():
     try:
         from flask import g
         from services.file_storage_service import get_workflow
+        from flask import session
+        from services import case_access
         case_id = getattr(g, 'case_id', None)
+        hidden = case_access.hidden_case_ids(case_access.caller_row(session))
         runs = []
         for run_id, run_data in _azure_runs.items():
-            if case_id:                       # workspace isolation
+            if case_id or hidden:             # workspace isolation, restricted cases
                 wf = get_workflow(run_id)
-                if wf and wf.get('case_id') and wf.get('case_id') != case_id:
+                if wf and wf.get('case_id') and (wf.get('case_id') in hidden
+                                                 or (case_id and wf.get('case_id') != case_id)):
                     continue
             runs.append({
                 'run_id': run_id,

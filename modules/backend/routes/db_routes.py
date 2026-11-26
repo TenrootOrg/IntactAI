@@ -38,6 +38,10 @@ def _make_redacted_backup_copy(src_path: str) -> str:
             if "mfa_secret" in cols:
                 conn.execute("UPDATE users SET mfa_enabled = 0, mfa_secret = NULL, "
                              "mfa_pending = NULL, mfa_recovery = NULL")
+        # API tokens (services/api_tokens.py): only hashes, but restoring this
+        # file elsewhere must not bring the tokens back to life there.
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_tokens'").fetchone():
+            conn.execute("DELETE FROM api_tokens")
         # Generated tool passwords (services/tool_accounts/vault.py): encrypted
         # with a key that is not in the file, blanked anyway. A restored box's
         # reconciler sets fresh ones.

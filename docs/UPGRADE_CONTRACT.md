@@ -130,6 +130,22 @@ The installed backend's `upgrade_launcher.py` launches the run, and after
 named volumes. Nothing that must survive a recreate may live in the
 container's writable layer.
 
+### 5. Dashboard users and rollback
+
+Since the multi-user release, logins live in the `users` table of `intact.db`
+(roles, two-step login), and the backend mirrors the Super-admin's name and
+password hash into the old single-credential rows of the `secrets` table
+(`auth_service._sync_legacy`). What a rollback does to them:
+
+- **To the release before users:** only the Super-admin can sign in, with
+  their current password; every other user is gone until the box is upgraded
+  again (their rows stay in the table and come back).
+- **To any release before two-step login:** the `mfa_*` columns are ignored,
+  so everyone signs in with the password alone until the box is upgraded
+  again. Say so in the release notes of any rollback.
+- Sessions issued by one release are never valid in the other (the session
+  `gen` is a string here, an integer before), so a rollback signs everyone out.
+
 ## Engine rules (target code; change freely, but keep these true)
 
 - **Error model.** `set -o pipefail`, no `set -e`. A failing step aborts its

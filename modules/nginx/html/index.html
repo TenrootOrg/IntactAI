@@ -15,9 +15,9 @@
     <link rel="stylesheet" href="vendor/flatpickr/dark.css">
     <script src="vendor/flatpickr/flatpickr.min.js"></script>
     <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-    <script src="js/active-case.js?v=20"></script>
+    <script src="js/active-case.js?v=21"></script>
     <!-- Role-based hiding + the 403 toast / re-auth prompt the fetch hook uses -->
-    <script src="js/access.js?v=2"></script>
+    <script src="js/access.js?v=3"></script>
 </head>
 <body class="bg-gray-900 text-white" x-data x-cloak>
     <!-- Load splash — covers the brief window while partials inject + Alpine
@@ -337,6 +337,8 @@
                     <button x-show="me && me.mfa_enabled && !me.mfa_required" type="button" role="menuitem"
                             @click="open = false; IntactAccess.mfaOff()"
                             class="block w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-700">Turn off two-step login</button>
+                    <button type="button" role="menuitem" @click="open = false; IntactApiTokens.open()"
+                            class="block w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-700">API tokens</button>
                     <button type="button" role="menuitem" @click="IntactAccess.logout()"
                             class="block w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-700">Log out</button>
                 </div>
@@ -712,7 +714,7 @@
     <!-- App stores (split from the former monolithic app.js) -->
     <script src="js/stores/app.js?v=11"></script>
     <script src="js/stores/services.js?v=6"></script>
-    <script src="js/stores/workflows.js?v=13"></script>
+    <script src="js/stores/workflows.js?v=14"></script>
     <script src="js/stores/settings.js?v=76"></script>
     <script src="js/legacy/handlers.js?v=1"></script>
     <script src="js/velociraptor.js?v=11"></script>
@@ -732,11 +734,13 @@
     <!-- Extracted inline helpers (Phase C): downloads copy/availability,
          active-case bar, AWS/Azure flatpickr pickers. -->
     <script src="js/components/downloads.js?v=1"></script>
-    <script src="js/components/workspace-bar.js?v=7"></script>
+    <script src="js/components/workspace-bar.js?v=8"></script>
     <script src="js/components/cloud-datepickers.js?v=8"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
     <script src="js/components/users-card.js?v=2"></script>
-    <script src="js/bootstrap/partial-loader.js?v=310"></script>
+    <script src="js/components/api-tokens.js?v=1"></script>
+    <script src="js/components/security-panel.js?v=1"></script>
+    <script src="js/bootstrap/partial-loader.js?v=311"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

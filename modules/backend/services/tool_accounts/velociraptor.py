@@ -100,13 +100,32 @@ def ensure(tool_user, password, roles, set_password=True):
     if not roles or not set(roles) <= _KNOWN_ROLES:
         raise ValueError(f"invalid Velociraptor roles: {roles!r}")
     with velo_org.root():
-        orgs = json.dumps(_orgs())
+        every = _orgs()
+        # A restricted case's org only for the people on its list
+        # (services/case_access.py); an administrator (the Super-admin) sees all.
+        denied = [] if "administrator" in roles else sorted(_denied_orgs(tool_user) & set(every))
+        orgs = json.dumps([o for o in every if o not in denied])
         if set_password or not _exists(tool_user):
             _query(f"SELECT user_create(user='{tool_user}', roles={json.dumps(list(roles))}, "
                    f"password='{password}', orgs={orgs}) AS r FROM scope()", timeout=60)
         else:
             _query(f"SELECT user_grant(user='{tool_user}', roles={json.dumps(list(roles))}, "
                    f"orgs={orgs}) AS r FROM scope()", timeout=60)
+        if denied:
+            # user_create/user_grant leave orgs they do not list alone: a role
+            # held before the case was restricted has to be taken away. Every
+            # pass, so a role added by hand in Velociraptor goes too.
+            _query(f"SELECT user_grant(user='{tool_user}', policy=dict(), "
+                   f"orgs={json.dumps(denied)}) AS r FROM scope()", timeout=60)
+
+
+def _denied_orgs(tool_user):
+    """The orgs of restricted cases whose list does not name this user. The
+    tool name is the Intact name, or "<name>-intact" (tool_user_for); Intact
+    names never end in -intact, so stripping it is exact."""
+    from services import case_access
+    name = tool_user[:-len("-intact")] if tool_user.endswith("-intact") else tool_user
+    return case_access.denied_orgs(name)
 
 
 def disable(tool_user):

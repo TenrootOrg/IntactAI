@@ -757,8 +757,13 @@ def list_orgs():
         print(f"[ORGS] ✗ Error listing orgs: {e}", flush=True)
         return jsonify({"orgs": [{"id": "root", "name": "root"}], "current": velo_org.current() or "root",
                         "error": str(e)})
+    from flask import session
+    from services import case_access
+    me = case_access.caller_row(session)
+    # A restricted case's org is need-to-know too (the box and the Super-admin see all).
+    denied = set() if case_access.sees_all(me) else case_access.denied_orgs(me["username"])
     out = [{"id": o["id"], "name": "root" if o["id"] == "root" else (o.get("name") or o["id"])}
-           for o in orgs if o.get("id")]
+           for o in orgs if o.get("id") and o["id"] not in denied]
     out.sort(key=lambda o: (o["id"] != "root", o["name"].lower()))
     return jsonify({"orgs": out or [{"id": "root", "name": "root"}], "current": velo_org.current() or "root"})
 

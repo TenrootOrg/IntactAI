@@ -14,7 +14,7 @@ async function renderTopWorkspace(bar) {
     const org = (active && active.velo_org) || 'root';
     bar.innerHTML =
         `<span style="font-size:12px;color:#8b949e">Case:</span>
-         <a href="#cases" id="ws-link" style="color:#58a6ff;font-weight:600">${escWs(name)}</a>
+         <a href="#cases" id="ws-link" style="color:#58a6ff;font-weight:600">${active && active.restricted ? '<span title="Restricted: only the people on its list and the Super-admin see this case">🔒 </span>' : ''}${escWs(name)}</a>
          <span style="font-size:12px;color:#8b949e;margin-left:8px">Org:</span>
          <a href="#cases" id="ws-org-link" style="color:#58a6ff;font-weight:600" title="The case's Velociraptor org: everything this case does in Velociraptor runs there. Change it by editing the case.">${escWs(org)}</a>`;
     if (window.VeloOrg) window.VeloOrg.nameOf(org).then(n => {

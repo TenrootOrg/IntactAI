@@ -204,6 +204,8 @@ def start_memory_run():
         if not ok:
             return jsonify({"error": resolved_or_err}), 400
         dump_path = resolved_or_err
+        if (_dump_origins().get(dump_path) or {}).get("case_id") in _hidden_cases():
+            return jsonify({"error": "no such memory image on the appliance"}), 404
     else:
         # Pre-flight: dispatching Windows.Memory.Acquisition requires the
         # Velociraptor server to be reachable. The /upload and dump_path
@@ -619,6 +621,10 @@ def adopt_memory_run():
         return jsonify({"error": "No active case to pull into."}), 400
 
     source = _get_run(source_run_id)
+    from flask import session
+    from services import case_access
+    if source and not case_access.run_visible(source, case_access.caller_row(session)):
+        source = None                        # a restricted case's run: need-to-know
     if not source:
         return jsonify({"error": f"No workflow with id {source_run_id}. "
                                  f"Copy it from the Workflows page."}), 404
@@ -728,6 +734,12 @@ def _invert_ts(ts: str) -> str:
     return "".join(chr(0x10FFFF - ord(c)) if ord(c) < 0x10FFFF else c for c in ts)
 
 
+def _hidden_cases() -> set:
+    from flask import session
+    from services import case_access
+    return case_access.hidden_case_ids(case_access.caller_row(session))
+
+
 def _dump_origins() -> dict:
     """Map dump path → the run that produced it, for the listing's labels."""
     origins = {}
@@ -827,9 +839,12 @@ def list_memory_dumps():
         origins = _dump_origins()
     except Exception as e:                   # noqa: BLE001 — never hide the list over it
         print(f"[MEMORY] legacy image move failed: {e}", flush=True)
-    out = raw_store.listing(_DUMPS_DIR)
-    for d in out:
+    hidden = _hidden_cases()
+    out = []
+    for d in raw_store.listing(_DUMPS_DIR):
         d["origin"] = d.get("origin") or origins.get(d["path"])
+        if (d["origin"] or {}).get("case_id") not in hidden:     # a restricted case's image
+            out.append(d)
     total = sum(d["size_bytes"] for d in out)
     return jsonify({"dumps": out, "count": len(out), "total_bytes": total})
 
@@ -926,8 +941,9 @@ def remove_memory_dump(name):
         return jsonify({"error": "A memory run is using this image — wait for it to finish, "
                                  "or stop it, then remove the image."}), 409
     from flask import session
-    _u = session.get("user")
-    who = ((_u.get("username") or _u.get("name")) if isinstance(_u, dict) else _u) \
+    from services import users as _users
+    # caller_name: the signed-in user, or an API token's user (no session then).
+    who = (_users.caller_name(session) if (session.get("user") or _users.request_identity()) else None) \
         or request.headers.get("X-Forwarded-For") or request.remote_addr
     res = raw_store.remove(name, _DUMPS_DIR, by=who)
     if res.get("error"):

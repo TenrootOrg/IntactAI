@@ -72,6 +72,11 @@ POLICY = {
     "users.reset_password": step_up(ADMIN),
     "users.reset_mfa": step_up(ADMIN),
     "users.transfer_superadmin": step_up(SUPERADMIN),
+    # Per-user API tokens: everyone manages their own (routes/api_token_routes.py
+    # applies the rank rule for others'); making one needs the password again.
+    "api_tokens.list_tokens": READONLY,
+    "api_tokens.create_token": step_up(READONLY),
+    "api_tokens.revoke_token": READONLY,
 
     # --- cases and Case Analysis: routes/case_routes.py ----------------------
     # Reading a case, its report and its chat history is READONLY; anything
@@ -106,9 +111,9 @@ POLICY = {
     "case.create_case": OPERATOR,
     "case.update_case": OPERATOR,
     "case.upload_case_file": OPERATOR,
-    # Uploaded evidence: raw files are not for Read-only (the report's own
-    # pictures come with the HTML/PDF download instead).
-    "case.download_case_file": OPERATOR,
+    # Uploaded evidence: Read-only gets only ?inline=1 raster pictures (the
+    # report shows them); the route refuses anything else below Operator.
+    "case.download_case_file": READONLY,
     "case.update_case_file": OPERATOR,
     "case.delete_case_file": OPERATOR,
     "case.set_host_status": OPERATOR,
@@ -149,13 +154,15 @@ POLICY = {
     # 2026-11-25: Operator = Admin minus the Settings page and users). The
     # audit log still records who did it.
     "case.delete_case": OPERATOR,
-    # Their runs are System runs (Settings -> Actions shows progress and the
-    # download; stopping one is there too), so they go with that audience.
-    # shortcut: Operators cannot export a case yet; show those runs on the
-    # Workflows page first if Operators need it.
-    "case.export_case": ADMIN,
-    "case.import_case": ADMIN,
-    "case.start_relevance": ADMIN,
+    # Their runs show on the Workflows page of the case(s) they touch
+    # (storage/workflow_store.py), where Operators follow them and download.
+    "case.export_case": OPERATOR,
+    "case.import_case": OPERATOR,
+    "case.start_relevance": OPERATOR,
+    # Restricted cases (services/case_access.py): the route applies who may
+    # change it (the Super-admin, or an Operator+ who can see the case).
+    "case.get_case_access": OPERATOR,
+    "case.set_case_access": OPERATOR,
     "case.case_log_clear": OPERATOR,
 
     # --- workflows: routes/dashboard_routes.py --------------------------------
@@ -363,6 +370,14 @@ POLICY = {
     "system.get_service_ports": OPERATOR,
     # Tells whoever reads it which public default password still works.
     "security.get_default_passwords": ADMIN,
+    "security.get_audit_forward": ADMIN,
+    # Turning forwarding off is what someone covering their tracks would do.
+    "security.save_audit_forward": step_up(ADMIN),
+    # It connects to any host:port typed in: not a port scanner for a token.
+    "security.test_audit_forward": step_up(ADMIN),
+    "security.list_security_alerts": ADMIN,
+    "security.security_alert_count": ADMIN,
+    "security.ack_security_alert": ADMIN,
     "system.get_system_actions": ADMIN,
     "system.network_get": ADMIN,
     "versions.get_current_versions_route": ADMIN,

@@ -27,11 +27,30 @@ NO_CLIENT_ERROR = ("Choose at least one client, online or offline: this schedule
                    "on the clients you pick.")
 
 
+def _hidden_cases():
+    from flask import session
+    from services import case_access
+    return case_access.hidden_case_ids(case_access.caller_row(session))
+
+
+@scheduler_bp.before_request
+def _restricted_job():
+    """A schedule of a restricted case the caller may not see does not exist for
+    them (every /jobs/<job_id> route)."""
+    job_id = (request.view_args or {}).get('job_id')
+    if job_id:
+        hidden = _hidden_cases()
+        if hidden and (get_scheduled_job(job_id) or {}).get('case_id') in hidden:
+            return jsonify({"error": "Job not found"}), 404
+    return None
+
+
 @scheduler_bp.route('/api/scheduler/jobs', methods=['GET'])
 def get_jobs():
     """List all scheduled jobs."""
     try:
-        jobs = list_scheduled_jobs()
+        hidden = _hidden_cases()
+        jobs = [j for j in list_scheduled_jobs() if j.get('case_id') not in hidden]
         now_utc = datetime.utcnow()
         return jsonify({
             "jobs": jobs,
@@ -60,7 +79,7 @@ def _schedule_case(value):
         if not chosen:
             return None, None                  # in the System workspace, nothing chosen: Default, as before
         return None, "A schedule runs module work: choose an investigation case, not the System workspace."
-    if not store.get_case(cid):
+    if not store.get_case(cid) or cid in _hidden_cases():
         return None, f"No case {cid}"
     from services.workflow_service import closed_case_error
     closed = closed_case_error(cid)

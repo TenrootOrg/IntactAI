@@ -37,7 +37,7 @@ from typing import Optional, Tuple
 import yaml
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from services import access_policy, users
+from services import access_policy, api_tokens, users
 from services.storage.base import STORAGE_BASE
 from services.storage.secret_store import get_secret, set_secret
 
@@ -890,6 +890,11 @@ def evaluate_session(session) -> str:
 def session_user(session) -> Optional[dict]:
     """The signed-in user's row, or None. The ROLE always comes from here (the
     table), never from the cookie, so a demotion applies on the next request."""
+    ident = users.request_identity()
+    if ident:
+        # An API token request: the token's user at the token's capped role.
+        row = users.get(ident["uid"])
+        return dict(row, role=ident["role"]) if row else None
     if evaluate_session(session) != SESSION_OK:
         return None
     return users.get(session.get("uid"))
@@ -956,8 +961,16 @@ def _unseal(token: Optional[str]) -> Optional[str]:
         return None
 
 
+class MfaAlreadyOn(Exception):
+    """Setup while two-step login is on: replacing the authenticator would let
+    a stolen session lock the owner out. Turn it off (password + code) or have
+    an Admin reset it first."""
+
+
 def mfa_begin_setup(row: dict) -> dict:
     from services import mfa
+    if row.get("mfa_enabled"):
+        raise MfaAlreadyOn()
     secret = mfa.new_secret()
     users.set_mfa_pending(row["id"], _seal(secret))
     return {"secret": secret, "otpauth_uri": mfa.otpauth_uri(secret, row["username"]),
@@ -974,14 +987,63 @@ def mfa_confirm_setup(row: dict, code: str) -> Optional[list]:
     step = mfa.verify(secret, code)
     if step is None:
         return None
-    codes, hashes = mfa.new_recovery_codes()
+    codes, hashes = mfa.new_recovery_codes(str(row["id"]))
     users.enable_mfa(row["id"], _seal(secret), step, json.dumps(hashes))
+    _mfa_fail.pop(row["id"], None)      # strikes against the old authenticator end with it
     return codes
 
 
+# Wrong codes per USER (not per address): the per-address lockout is cleared
+# by a correct password, and a password-holder could otherwise keep guessing
+# 6 digits from one or many addresses. 10 wrong codes lock that user's code
+# step for 15 min, doubling; only a correct code clears it.
+_mfa_fail = {}                  # uid -> {"n", "strikes", "until"}
+_mfa_lock = threading.Lock()    # one check at a time: a code / recovery code is used once
+
+
+def mfa_locked_seconds(uid) -> int:
+    e = _mfa_fail.get(uid)
+    left = (e["until"] - time.monotonic()) if e else 0
+    return int(left + 0.999) if left > 0 else 0
+
+
+def _mfa_failed(uid) -> None:
+    e = _mfa_fail.setdefault(uid, {"n": 0, "strikes": 0, "until": 0.0})
+    e["n"] += 1
+    if e["n"] % LOCKOUT_THRESHOLD == 0:
+        e["strikes"] += 1
+        e["until"] = time.monotonic() + lock_duration_minutes(e["strikes"]) * 60
+
+
 def mfa_check(row: dict, code: str = "", recovery_code: str = "") -> Optional[str]:
-    """"totp" or "recovery" when the user's second factor is right, else None.
-    A TOTP step is accepted once; a recovery code is spent."""
+    """"totp" or "recovery" when the user's second factor is right, else None
+    (also None while that user's code step is locked: mfa_locked_seconds).
+    A TOTP step is accepted once; a recovery code is spent -- under one lock,
+    re-reading the row, so two requests cannot both use the same one."""
+    with _mfa_lock:
+        if mfa_locked_seconds(row["id"]):
+            return None
+        users.invalidate()
+        fresh = users.get(row["id"]) or row
+        factor = _mfa_check_locked(fresh, code, recovery_code)
+        if factor:
+            _mfa_fail.pop(row["id"], None)
+        else:
+            _mfa_failed(row["id"])
+        return factor
+
+
+def mfa_code_was_just_used(row: dict, code: str) -> bool:
+    """The code is the one already accepted for this step (typically: step-up
+    right after login, same code still on screen): say "wait for the next"."""
+    from services import mfa
+    secret = _unseal(row.get("mfa_secret"))
+    last = row.get("mfa_last_step")
+    return bool(secret) and last is not None and int(last) >= 0 and \
+        mfa.verify(secret, code, int(last) - 1) == int(last)
+
+
+def _mfa_check_locked(row: dict, code: str, recovery_code: str) -> Optional[str]:
     from services import mfa
     if code:
         secret = _unseal(row.get("mfa_secret"))
@@ -995,7 +1057,7 @@ def mfa_check(row: dict, code: str = "", recovery_code: str = "") -> Optional[st
             hashes = json.loads(row.get("mfa_recovery") or "[]")
         except ValueError:
             hashes = []
-        left = mfa.use_recovery(recovery_code, hashes)
+        left = mfa.use_recovery(recovery_code, hashes, str(row["id"]))
         if left is not None:
             users.mfa_used(row["id"], recovery_json=json.dumps(left))
             return "recovery"
@@ -1097,7 +1159,8 @@ def gate_decision(path: str, method: str, remote_addr: str, session,
     PASSWORD_CHANGE_REQUIRED, FORBIDDEN (the role may not), REAUTH_REQUIRED
     (step-up) or CSRF_REJECTED.
 
-    Pure and side-effect free so it can be tested directly rather than through a
+    Pure and side-effect free (except an API token request: _token_decision
+    sets its identity, stamps last use and audits) so it can be tested directly rather than through a
     live Flask app — app.py's before_request hook is a thin wrapper over this.
     `endpoint` is Flask's request.endpoint ("blueprint.function"), the key of
     services/access_policy.POLICY.
@@ -1109,6 +1172,11 @@ def gate_decision(path: str, method: str, remote_addr: str, session,
     # practice everything here is /api/*, but be explicit rather than assume.
     if not (path or '').startswith('/api/'):
         return None
+    # Before the loopback exemption: a token sent from the box is still that
+    # user's token, never the box's full power.
+    raw = bearer_token(headers)
+    if raw is not None:
+        return _token_decision(path, method, remote_addr, session, endpoint, headers, raw)
     if remote_addr in LOOPBACK_ADDRS:
         return None
     # Before the exemptions: login and setup are state changes too (login CSRF).
@@ -1130,6 +1198,89 @@ def gate_decision(path: str, method: str, remote_addr: str, session,
     if rule.step_up and not recently_authenticated(session):
         return REAUTH_REQUIRED
     return None
+
+
+# --- API tokens (services/api_tokens.py) -------------------------------------
+#
+# Not session states either: 403 TOKEN_REFUSED (tokens never work on this
+# route), 400 TOKEN_CONFLICT (a session cookie AND a token: two identities on
+# one request, so neither is trusted), 401 TOKEN_INVALID / TOKEN_EXPIRED.
+TOKEN_REFUSED = "token_refused"
+TOKEN_CONFLICT = "token_conflict"
+TOKEN_INVALID = api_tokens.INVALID
+TOKEN_EXPIRED = api_tokens.EXPIRED
+SESSION_COOKIE = "intact_session"       # app.py SESSION_COOKIE_NAME
+# Signing in, two-step login, passwords, users and tokens themselves: a leaked
+# token must not be able to mint more access or lock its owner out.
+_TOKEN_NEVER = ("auth.", "users.", "api_tokens.")
+_READ_METHODS = frozenset({"GET", "HEAD"})
+
+
+def bearer_token(headers) -> Optional[str]:
+    """The `Authorization: Bearer intact_...` credential, or None. Other
+    Authorization values are left alone (they were never ours to read)."""
+    value = (headers.get("Authorization") or "") if headers is not None else ""
+    scheme, _, cred = value.strip().partition(" ")
+    cred = cred.strip()
+    return cred if scheme.lower() == "bearer" and cred.startswith(api_tokens.TOKEN_PREFIX) else None
+
+
+def _token_decision(path, method, remote_addr, session, endpoint, headers, raw) -> Optional[str]:
+    """gate_decision() for a token request. On success the token's identity is
+    set for the request (users.request_identity), which caller_has /
+    caller_name / session_user then read. No CSRF check: a token is never
+    sent by a browser on its own, so there is no ambient credential to ride."""
+    if path in EXEMPT_PATHS:
+        # Sign-in and nginx's tool verify are browser-only; health needs nothing.
+        return None if path == '/api/health' else TOKEN_REFUSED
+    if session or (SESSION_COOKIE + "=") in (headers.get("Cookie") or ""):
+        return TOKEN_CONFLICT
+    tok, reason = api_tokens.lookup(raw)
+    if tok is None:
+        claimed = re.match(r"intact_([0-9a-f]{8})_", raw or "")
+        audit("token_denied", type("R", (), {"remote_addr": remote_addr, "headers": headers})(),
+              reason=reason, token=claimed.group(1) if claimed else None, method=method,
+              endpoint=endpoint, path=(path or "")[:300])
+        return reason
+    row = users.get(tok["user_id"])
+    if must_enroll(row):
+        return MFA_ENROLL_REQUIRED
+    rule = access_policy.rule_for(endpoint, method)
+    role = api_tokens.effective_role(tok, row)
+    # Super-admin-only routes (DB import, upgrades, data moves, and every route
+    # the policy does not list) stay browser-only: a leaked script token must
+    # not be root on the appliance.
+    if (rule.step_up or rule.role == users.SUPERADMIN
+            or (endpoint or "").startswith(_TOKEN_NEVER) or path in MFA_ENROLL_PATHS):
+        verdict = TOKEN_REFUSED
+    elif tok["scope"] == api_tokens.READ and (method not in _READ_METHODS
+                                              or rule.role != users.READONLY):
+        verdict = FORBIDDEN
+    elif users.rank(role) < users.rank(rule.role):
+        verdict = FORBIDDEN
+    elif not users.set_request_identity({"uid": row["id"], "user": row["username"], "role": role,
+                                         "token_id": tok["id"], "prefix": tok["prefix"],
+                                         "scope": tok["scope"]}):
+        verdict = TOKEN_REFUSED
+    else:
+        verdict = None
+    _token_audit(tok, row, verdict, method, endpoint, path, remote_addr, headers)
+    return verdict
+
+
+def _token_audit(tok, row, verdict, method, endpoint, path, remote_addr, headers) -> None:
+    """First use, every refusal and every write, under the user and the token
+    prefix. Here rather than app.py's after_request, which keys on the session."""
+    req = type("R", (), {"remote_addr": remote_addr, "headers": headers})()
+    first = verdict is None and api_tokens.mark_used(tok)
+    extra = {"token": tok["prefix"], "scope": tok["scope"], "method": method,
+             "endpoint": endpoint, "path": (path or "")[:300]}
+    if first:
+        audit("token_first_use", req, username_value=row["username"], **extra)
+    if verdict is not None:
+        audit("token_denied", req, username_value=row["username"], reason=verdict, **extra)
+    elif method in _UNSAFE_METHODS:
+        audit("token_action", req, username_value=row["username"], **extra)
 
 
 def tool_allowed(session, tool: str) -> bool:
@@ -1183,6 +1334,11 @@ def _rotate_if_needed() -> None:
 # the chain where it happened (verify_audit_chain). It cannot stop root on the
 # host from rewriting the whole file; an off-box copy is what does that.
 _last_hash: Optional[str] = None
+
+# Called with each audit entry (a dict, after it is written) -- e.g. a syslog
+# forwarder or the security alerts. A sink must be quick and must not raise
+# (errors are swallowed so an outage elsewhere never breaks a login).
+AUDIT_SINKS: list = []
 
 
 def _entry_hash(prev: str, body: dict) -> str:
@@ -1240,7 +1396,9 @@ def audit(event: str, request=None, username_value: str = None, **extra) -> None
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": event,
-        "user": username_value,
+        # Capped: the user name can be whatever a failed sign-in typed, and every
+        # entry is also one syslog datagram (services/audit_forward.py).
+        "user": username_value[:256] if isinstance(username_value, str) else username_value,
     }
     if request is not None:
         try:
@@ -1248,7 +1406,7 @@ def audit(event: str, request=None, username_value: str = None, **extra) -> None
             entry["user_agent"] = (request.headers.get("User-Agent") or "")[:200]
         except Exception:
             pass
-    entry.update(extra)
+    entry.update({k: (v[:2000] if isinstance(v, str) else v) for k, v in extra.items()})
 
     try:
         with _audit_lock:
@@ -1263,6 +1421,11 @@ def audit(event: str, request=None, username_value: str = None, **extra) -> None
             _last_hash = entry["hash"]
     except Exception as exc:
         print(f"[AUTH] Could not write audit log: {exc}", flush=True)
+    for sink in list(AUDIT_SINKS):
+        try:
+            sink(dict(entry))
+        except Exception:                   # noqa: BLE001 -- see AUDIT_SINKS
+            pass
 
 
 def _open_audit_append():

@@ -136,7 +136,23 @@ reading the code installed on the box.
   protects them. **Way in: header replacement (better than the token
   hand-over planned).**
 
-## 7. Phases
+## 7. Release notes to carry
+
+- **Admins and the Super-admin: set up two-step login straight after the
+  upgrade.** Until they do, whoever holds the password first can enrol their
+  own authenticator. The dashboard holds them on the setup screen.
+- **Lost authenticator:** an Admin resets it for the users below them (Users,
+  Reset 2-step). The Super-admin: `sudo scripts/reset-login.sh` on the
+  appliance, then the setup page; this also clears two-step login.
+- **Air-gapped boxes:** codes depend on the appliance's clock. The code
+  screens warn when the browser and appliance clocks differ by more than a
+  minute; point the box at the site's own time server if it has one.
+- **Rollback** turns two-step login off until the next upgrade
+  (docs/UPGRADE_CONTRACT.md, "Dashboard users and rollback").
+- **Portainer** stays the Super-admin's, on its own default login (decided
+  2026-11-26): it controls Docker, i.e. the whole host.
+
+## 8. Phases
 
 0. Done 2026-11-25 (section 6): every tool has a confirmed way in.
 1. **Dashboard users, roles, gate, CSRF/CORS, cookie strip, audit chain,

@@ -38,6 +38,9 @@
                         <button data-needs="users" @click="settingsTab = 'users'" :class="settingsTab === 'users' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
                             Users
                         </button>
+                        <button data-needs="settings" @click="settingsTab = 'security'" :class="settingsTab === 'security' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Security
+                        </button>
                         <button @click="settingsTab = 'logs'; $store.settings.loadSystemLogs()" :class="settingsTab === 'logs' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
                             Logs
                         </button>
@@ -266,6 +269,92 @@
                                 <div class="flex justify-end">
                                     <button type="button" @click="otp = null; copied = false" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">Done</button>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Security Tab — Admins and up (js/components/security-panel.js): audit
+                         forwarding to the customer's own syslog server, and the security alerts.
+                         The Dashboard banner opens this tab with the show-security event. -->
+                    <div x-show="settingsTab === 'security'" data-needs="settings" x-data="securityPanel()" x-transition
+                         @show-security.window="settingsTab = 'security'; load()"
+                         id="security-panel" class="space-y-4">
+                        <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                            <div class="flex items-center justify-between mb-4">
+                                <div>
+                                    <h3 class="text-lg font-semibold text-white">Audit forwarding</h3>
+                                    <p class="text-gray-400 text-sm">Send a copy of every audit log line to a syslog server on your network (RFC 5424, JSON). Nothing goes to the internet.</p>
+                                </div>
+                                <button type="button" @click="load()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">Refresh</button>
+                            </div>
+                            <form @submit.prevent="save()" class="flex flex-wrap items-center gap-3 p-3 bg-gray-900 rounded-lg border border-gray-700">
+                                <label class="flex items-center gap-2 text-sm text-gray-300">
+                                    <input type="checkbox" x-model="cfg.enabled" class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500 cursor-pointer">
+                                    Forward
+                                </label>
+                                <select x-model="cfg.protocol" aria-label="Protocol"
+                                        class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <option value="udp">UDP</option>
+                                    <option value="tcp">TCP</option>
+                                </select>
+                                <input type="text" x-model="cfg.host" placeholder="syslog server (name or IP)" aria-label="Syslog server" autocomplete="off" spellcheck="false"
+                                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                <input type="number" min="1" max="65535" x-model.number="cfg.port" aria-label="Port"
+                                       class="w-24 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                <button type="submit" :disabled="busy"
+                                        class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-1.5 rounded text-sm text-white">Save</button>
+                                <button type="button" @click="test()" :disabled="busy || !(cfg.host || '').trim()"
+                                        class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-1.5 rounded text-sm">Send test message</button>
+                            </form>
+                            <p x-show="msg" class="text-sm mt-2" :class="msgOk ? 'text-green-400' : 'text-red-400'" x-text="msg"></p>
+                            <p class="text-sm mt-2" :class="failing() ? 'text-red-400' : 'text-gray-400'" x-text="statusLine()"></p>
+                        </div>
+
+                        <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                            <div class="flex items-center justify-between mb-4">
+                                <div>
+                                    <h3 class="text-lg font-semibold text-white">Security alerts</h3>
+                                    <p class="text-gray-400 text-sm">Raised from the audit log: repeated failed sign-ins, lockouts, new Admins, two-step login turned off, refused requests. Newest first.</p>
+                                </div>
+                                <label class="flex items-center gap-2 text-sm text-gray-300 whitespace-nowrap">
+                                    <input type="checkbox" x-model="unackedOnly" @change="load()" class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500 cursor-pointer">
+                                    Unacknowledged only
+                                </label>
+                            </div>
+                            <p x-show="err" class="text-sm text-red-400 mb-3" x-text="err"></p>
+                            <p x-show="!alerts.length" class="text-sm text-gray-500">No security alerts.</p>
+                            <div x-show="alerts.length" class="overflow-x-auto">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="text-left text-xs text-gray-400 border-b border-gray-700">
+                                            <th class="py-2 px-2">Severity</th>
+                                            <th class="py-2 px-2">What happened</th>
+                                            <th class="py-2 px-2">User</th>
+                                            <th class="py-2 px-2">Time</th>
+                                            <th class="py-2 px-2"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="a in alerts" :key="a.id">
+                                            <tr class="border-b border-gray-700" :data-alert="a.id">
+                                                <td class="py-2 px-2 uppercase text-xs font-medium" :class="sevClass(a)" x-text="a.severity"></td>
+                                                <td class="py-2 px-2 text-white">
+                                                    <span x-text="a.text"></span>
+                                                    <span x-show="a.detail && a.detail.ip && a.detail.ip !== '-'" class="text-xs text-gray-400" x-text="'· ' + (a.detail && a.detail.ip)"></span>
+                                                </td>
+                                                <td class="py-2 px-2 text-gray-300" x-text="a.user || '-'"></td>
+                                                <td class="py-2 px-2 text-gray-400 whitespace-nowrap" x-text="when(a.ts)"></td>
+                                                <td class="py-2 px-2 text-right whitespace-nowrap">
+                                                    <button x-show="!a.acknowledged_at" type="button" @click="ack(a)" :disabled="busy"
+                                                            class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1 rounded text-xs">Acknowledge</button>
+                                                    <span x-show="a.acknowledged_at" class="text-xs text-gray-500"
+                                                          :title="a.acknowledged_at ? when(a.acknowledged_at) : ''"
+                                                          x-text="'Acknowledged by ' + (a.acknowledged_by || '-')"></span>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
                     </div>

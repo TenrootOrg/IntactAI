@@ -48,6 +48,7 @@ from routes import (
     memory_bp,
     case_bp,
     security_bp,
+    api_tokens_bp,
 )
 
 # Import initialization services
@@ -124,6 +125,17 @@ app.register_blueprint(support_bundle_bp)
 app.register_blueprint(memory_bp)
 app.register_blueprint(case_bp)
 app.register_blueprint(security_bp)
+app.register_blueprint(api_tokens_bp)
+
+# Audit entries out to the customer's syslog server, and the security alerts
+# raised from them (Settings -> Security). Both are audit sinks; install() is
+# idempotent.
+try:
+    from services import audit_forward as _audit_forward, security_alerts as _security_alerts
+    _audit_forward.install()
+    _security_alerts.install()
+except Exception as _afe:
+    print(f"[AUTH] Audit forwarding / alerts not started: {_afe}", flush=True)
 
 
 # =============================================================================
@@ -185,6 +197,12 @@ def _auth_gate():
             'message': 'Your role requires two-step login. Set it up to continue.',
         }), 403
 
+    if reason == auth_service.TOKEN_CONFLICT:
+        return jsonify({'error': reason,
+                        'message': 'Send a session cookie or an API token, not both.'}), 400
+    if reason == auth_service.TOKEN_REFUSED:
+        return jsonify({'error': reason, 'message': 'API tokens cannot be used for this.'}), 403
+
     if reason in (auth_service.FORBIDDEN, auth_service.REAUTH_REQUIRED,
                   auth_service.CSRF_REJECTED):
         messages = {
@@ -192,7 +210,7 @@ def _auth_gate():
             auth_service.REAUTH_REQUIRED: 'Enter your password again to continue.',
             auth_service.CSRF_REJECTED: 'Request refused: it came from another site.',
         }
-        if reason != auth_service.REAUTH_REQUIRED:
+        if reason != auth_service.REAUTH_REQUIRED and not auth_service.bearer_token(request.headers):
             auth_service.audit('denied', request, username_value=session.get('user'),
                                reason=reason, endpoint=request.endpoint,
                                method=request.method)
@@ -206,6 +224,17 @@ def _auth_gate():
         'reason': reason,
         'message': 'Authentication required.',
     }), 401
+
+
+# Restricted cases (services/case_access.py): after the role gate, a case or
+# run the caller is not on the list of answers 404, as if it did not exist --
+# by the case id in the URL, a run id in the URL, or the active case.
+@app.before_request
+def _case_access_gate():
+    from services import case_access
+    reason = case_access.check_request(request, session)
+    if reason:
+        return jsonify({'error': reason}), 404
 
 
 # Velociraptor organization: always a CASE's org -- nothing else picks one. The

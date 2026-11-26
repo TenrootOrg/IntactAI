@@ -746,12 +746,13 @@ class TwoStep(Base):
         SESSION.clear()
         return call(routes.auth_login, {"username": name, "password": password})
 
-    def enroll(self, name):
+    def enroll(self, name, password=GOOD):
         """Set up two-step login the way the screens do; returns (secret, recovery codes)."""
         body, _ = call(routes.auth_mfa_setup)
         secret = body["secret"]
         self.assertTrue(body["otpauth_uri"].startswith("otpauth://totp/Intact.AI:" + name))
-        body, status = call(routes.auth_mfa_confirm, {"code": mfa.code_at(secret, mfa.current_step())})
+        body, status = call(routes.auth_mfa_confirm, {"code": mfa.code_at(secret, mfa.current_step()),
+                                                      "password": password})
         self.assertEqual(status, 200, body)
         return secret, body["recovery_codes"]
 
@@ -767,6 +768,12 @@ class TwoStep(Base):
         self.assertEqual(mfa.verify(secret, "287082", now=59), 1)
         self.assertIsNone(mfa.verify(secret, "287082", now=59 + 90), "outside the window")
         self.assertIsNone(mfa.verify(secret, "287082", last_step=1, now=59), "replay refused")
+
+    def test_recovery_codes_from_the_unsalted_build_still_work_once(self):
+        old = hashlib.sha256(b"intact-recovery:abcd2345xy").hexdigest()
+        left = mfa.use_recovery("ABCD-2345-XY", [old, "other"], "7")
+        self.assertEqual(left, ["other"])
+        self.assertIsNone(mfa.use_recovery("abcd-2345-xy", left, "7"))
 
     def test_admin_must_enroll_before_anything_else(self):
         body, status = self.login("boss", GOOD)
@@ -827,19 +834,63 @@ class TwoStep(Base):
         call(routes.auth_change_password, {"current_password": body["temporary_password"],
                                            "new_password": STRONG_PW, "confirm": STRONG_PW})
         self.assertIsNone(self.gate(), "optional for an Operator")
-        osec, _ = self.enroll("opx")
+        osec, _ = self.enroll("opx", STRONG_PW)
         self.assertEqual(call(routes.auth_mfa_disable, {"password": STRONG_PW, "code": "000000"})[1], 401)
         body, status = call(routes.auth_mfa_disable, {"password": STRONG_PW,
                                                       "code": mfa.code_at(osec, mfa.current_step() + 1)})
         self.assertEqual(status, 200, body)
         self.assertEqual(auth.evaluate_session(SESSION), auth.SESSION_OK, "re-issued")
-        self.enroll("opx")
+        self.enroll("opx", STRONG_PW)
         op = dict(SESSION)
         SESSION.clear(); SESSION.update(boss)
         self.assertEqual(call(lambda: uroutes.reset_mfa("opx"))[1], 200)
         self.assertFalse(users.by_name("opx")["mfa_enabled"])
         self.assertEqual(auth.evaluate_session(op), auth.SESSION_CREDENTIALS_CHANGED, "their sessions end")
         self.assertEqual(call(lambda: uroutes.reset_mfa("boss"))[1], 403, "not your own / above")
+
+    def test_code_guessing_locks_the_user_even_with_the_right_password(self):
+        # Review finding: a correct password reset the per-address count, so a
+        # password-holder could keep guessing codes. Now the count is per user.
+        self.login("boss", GOOD)
+        secret, _ = self.enroll("boss")
+        auth._mfa_fail.clear()
+        # A fresh address per guess: the per-address lockout (which a correct
+        # password no longer clears either) cannot be what stops it here.
+        for i in range(auth.LOCKOUT_THRESHOLD):
+            SESSION.clear()
+            call(routes.auth_login, {"username": "boss", "password": GOOD}, ip=f"10.7.{i}.1")
+            call(routes.auth_mfa, {"code": "000000"}, ip=f"10.7.{i}.1")
+        SESSION.clear()
+        call(routes.auth_login, {"username": "boss", "password": GOOD}, ip="10.7.99.1")
+        body, status = call(routes.auth_mfa, {"code": mfa.code_at(secret, mfa.current_step() + 1)}, ip="10.7.99.1")
+        self.assertEqual((status, body["error"]), (429, "locked"), "even the right code waits out the lock")
+        auth._mfa_fail.clear()
+
+    def test_setup_cannot_replace_an_active_factor_and_confirm_needs_the_password(self):
+        self.login("boss", GOOD)
+        body, _ = call(routes.auth_mfa_setup)
+        bad, status = call(routes.auth_mfa_confirm, {"code": mfa.code_at(body["secret"], mfa.current_step())})
+        self.assertEqual((status, bad["error"]), (401, "invalid_credentials"), "a stolen session alone cannot enrol")
+        self.enroll("boss")
+        body, status = call(routes.auth_mfa_setup)
+        self.assertEqual((status, body["error"]), (409, "mfa_already_on"))
+
+    def test_reauth_takes_a_recovery_code_and_unicode_digits_do_not_crash(self):
+        self.login("boss", GOOD)
+        _, codes = self.enroll("boss")
+        self.assertEqual(call(routes.auth_reauth, {"password": GOOD, "code": "\u00b2" * 6})[1], 401)
+        self.assertIsNone(mfa.verify(mfa.new_secret(), "\u00b2" * 6))
+        self.assertEqual(call(routes.auth_reauth, {"password": GOOD, "recovery_code": codes[1]})[1], 200)
+        auth._mfa_fail.clear()
+
+    def test_reused_code_says_wait_for_the_next(self):
+        self.login("boss", GOOD)
+        secret, _ = self.enroll("boss")
+        used = mfa.code_at(secret, users.by_name("boss")["mfa_last_step"])
+        body, status = call(routes.auth_reauth, {"password": GOOD, "code": used})
+        self.assertEqual(status, 401)
+        self.assertIn("Wait for the next one", body["message"])
+        auth._mfa_fail.clear()
 
     def test_reset_login_recovery_clears_the_superadmins_factor(self):
         self.login("boss", GOOD)

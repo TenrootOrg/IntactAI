@@ -340,6 +340,55 @@ def _velo_org_error(d):
     return None if org in known else f"Velociraptor has no org '{org}'"
 
 
+def _visible_runs(run_ids):
+    """The run ids the caller may see: a run of a restricted case must not be
+    pulled into another case by naming its id (quick case, member_run_ids)."""
+    from services import case_access
+    from services import workflow_service as ws
+    me = case_access.caller_row(session)
+    hidden = case_access.hidden_case_ids(me)
+    if not hidden:
+        return list(run_ids)
+    return [r for r in run_ids if case_access.run_visible(ws.get_automation_run(r) or {}, me, hidden)]
+
+
+# ---- restricted cases (services/case_access.py) -------------------------------
+@case_bp.route("/api/cases/<case_id>/access", methods=["GET"])
+def get_case_access(case_id):
+    """The case's restriction and the users the picker offers (enabled users,
+    name and role label only: GET /api/users is Admin-only)."""
+    from services import case_access, users
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    people = [{"username": u["username"], "role": u["role"], "role_label": users.ROLE_LABELS.get(u["role"], u["role"])}
+              for u in users.list_all() if u["enabled"]]
+    return jsonify({"case_id": case_id, "restricted": d.get("restricted") is True,
+                    "allowed_users": sorted(d.get("allowed_users") or []),
+                    "created_by": d.get("created_by"), "velo_org": store.case_info(d)["velo_org"],
+                    "may_change": case_access.may_change(case_id, case_access.caller_row(session)),
+                    "users": people})
+
+
+@case_bp.route("/api/cases/<case_id>/access", methods=["PUT"])
+def set_case_access(case_id):
+    """Body {restricted: bool, allowed_users: [name, ...]}. The Super-admin, or an
+    Admin/Operator on the case's list (or any of them while it is open)."""
+    from services import auth_service, case_access
+    me = case_access.caller_row(session)
+    if not case_access.may_change(case_id, me):
+        return jsonify({"error": "forbidden", "message": "Only the Super-admin or someone on this "
+                        "case's list may change who sees it."}), 403
+    b = request.get_json(silent=True) or {}
+    res = case_access.set_access(case_id, b.get("restricted") is True, b.get("allowed_users") or [], me)
+    if res.get("error"):
+        return jsonify(res), (404 if res["error"] == "case not found" else 400)
+    if res["changed"]:
+        auth_service.audit("case_access", request, username_value=(me or {}).get("username") or "system",
+                           case_id=case_id, restricted=res["restricted"], allowed_users=res["allowed_users"])
+    return jsonify(res)
+
+
 @case_bp.route("/api/cases", methods=["POST"])
 def create_case():
     d = request.get_json(silent=True) or {}
@@ -356,11 +405,14 @@ def create_case():
     # description. A new case is always Open; its status is changed by editing it.
     info = {k: d[k] for k in ("case_owner", "case_description", "velo_org", "case_mode") if d.get(k)}
     tw = d.get("time_window") or {}
+    from services import case_access
+    me = case_access.caller_row(session)
     rid = store.create_case(
         name, time_window={"start": tw.get("start"), "end": tw.get("end")} if tw else {},
         initial_access=d.get("initial_access_estimate") or d.get("initial_access"),
         min_severity=(d.get("min_severity") or "medium"),
-        member_run_ids=d.get("member_run_ids") or [])
+        member_run_ids=_visible_runs(d.get("member_run_ids") or []),
+        created_by=(me or {}).get("username") or None)
     if info:
         store.update_case_info(rid, info)
     return jsonify({"case_id": rid, "status": "created"})
@@ -369,12 +421,13 @@ def create_case():
 @case_bp.route("/api/cases", methods=["GET"])
 def list_cases():
     from services import workflow_service as ws
-    from services import llm_usage
+    from services import llm_usage, case_access
     spent = llm_usage.costs_by_case()
     runs = ws.get_all_automation_runs() if hasattr(ws, "get_all_automation_runs") else []
+    hidden = case_access.hidden_case_ids(case_access.caller_row(session))
     cases = []
     for r in runs:
-        if r.get("automation_type") != store.CASE_TYPE:
+        if r.get("automation_type") != store.CASE_TYPE or r.get("run_id") in hidden:
             continue
         det = r.get("details") or {}
         cid = r.get("run_id")
@@ -393,6 +446,7 @@ def list_cases():
                       "is_system": is_system, "builtin": is_default or is_system,
                       "members": len(members) or len(det.get("member_run_ids") or []),
                       "created_at": r.get("created_at"), "ai_cost_usd": spent.get(cid, 0.0),
+                      "restricted": det.get("restricted") is True,
                       **store.case_info(det)})
     # Default first, then System, then newest-first among the rest (stable passes)
     cases.sort(key=lambda c: c.get("created_at") or "", reverse=True)
@@ -405,13 +459,18 @@ def attachable_runs():
     """Module runs in the active workspace (the X-Case-Id header scopes this)."""
     from flask import g
     from services import workflow_service as ws
+    from services import case_access
     case_id = getattr(g, "case_id", None)
     if case_id:
         runs = ws.get_automation_runs_by_case(case_id)
     else:
         runs = ws.get_all_automation_runs() if hasattr(ws, "get_all_automation_runs") else []
+    me = case_access.caller_row(session)
+    hidden = case_access.hidden_case_ids(me)
     out = []
     for r in runs:
+        if not case_access.run_visible(r, me, hidden):
+            continue
         if r.get("automation_type") in ("memory", "velociraptor_collection", "timesketch",
                                         "aws_scan", "azure_scan"):
             d = r.get("details") or {}
@@ -676,7 +735,13 @@ def download_case_file(case_id, file_id):
     # raster pictures, by our own type table — never an uploaded .html or .svg,
     # which the browser would run on the appliance's origin.
     mime = _case_files.picture_mime(item["file_name"])
-    if request.args.get("inline") and item["kind"] == "image" and mime:
+    inline_picture = bool(request.args.get("inline") and item["kind"] == "image" and mime)
+    from services import users
+    if not inline_picture and not users.caller_has(session, users.OPERATOR):
+        # Read-only gets the report's own pictures in the page, never the raw
+        # evidence (the policy entry is READONLY only for that).
+        return jsonify({"error": "forbidden", "message": "Your role does not allow this."}), 403
+    if inline_picture:
         resp = send_file(p, mimetype=mime, as_attachment=False)
     else:
         resp = send_file(p, as_attachment=True, download_name=item["file_name"])
@@ -902,8 +967,15 @@ def update_case(case_id):
         import threading
         from config import TIMESKETCH_CONFIG
         from services.timesketch_service import rename_sketch
-        threading.Thread(target=rename_sketch, args=(old_name, new_name, TIMESKETCH_CONFIG),
-                         daemon=True).start()
+        from services import case_access
+
+        def _rename():
+            rename_sketch(old_name, new_name, TIMESKETCH_CONFIG)
+            case_access.touched(case_id)     # a restricted sketch is found by its new name now
+        threading.Thread(target=_rename, daemon=True).start()
+    elif not res.get("error") and "velo_org" in b:
+        from services import case_access
+        case_access.touched(case_id)         # a restricted case's new org is restricted
     return jsonify(res), (400 if res.get("error") else 200)
 
 
@@ -917,6 +989,8 @@ def delete_case(case_id):
     if not res.get("deleted"):
         code = 409 if "cannot be deleted" in (res.get("error") or "") else 400
         return jsonify(res), code
+    from services import case_access
+    case_access.touched(case_id)             # a restricted case's org opens up again
     return jsonify({"case_id": case_id, **res})
 
 
@@ -987,7 +1061,10 @@ def export_case(case_id):
     try:
         run_id = ws.create_automation_run(
             "case_export", f"Export case: {plan['name']}",
+            # started_in: the Workflows page of the case the operator exported
+            # from lists it too (storage.list_workflow_summaries).
             details={"case_id": case_id, "case_name": plan["name"],
+                     "started_in": getattr(flask_g, "case_id", None),
                      "runs_exported": len(plan["member_ids"]),
                      "estimate_bytes": plan["estimate_bytes"]})
     except Exception as e:                                # noqa: BLE001
@@ -1025,7 +1102,8 @@ def start_relevance(case_id):
     try:
         run_id = ws.create_automation_run(
             "decision_relevance", f"Score collected rows (decision model): {d.get('name') or case_id}",
-            details={"case_id": case_id, "case_name": d.get("name")})
+            details={"case_id": case_id, "case_name": d.get("name"),
+                     "started_in": getattr(flask_g, "case_id", None)})
     except Exception as e:                                # noqa: BLE001
         _relevance_lock.release()
         return jsonify({"error": str(e)}), 500
@@ -1050,8 +1128,10 @@ def download_case_bundle(run_id):
     from services import workflow_service as ws
     from services.fusion import case_bundle
 
+    from services import case_access
     run = ws.get_automation_run(run_id)
-    if not run or run.get("automation_type") != "case_export":
+    if not run or run.get("automation_type") != "case_export" \
+            or not case_access.run_visible(run, case_access.caller_row(session)):
         return jsonify({"error": "no such export"}), 404
     det = run.get("details") or {}
     path = det.get("bundle_path")
@@ -1154,10 +1234,12 @@ def quick_case():
     if not name or not rids:
         return jsonify({"error": "name and run_ids are required"}), 400
     tw = d.get("time_window") or {}
+    from services import case_access
     cid = store.create_case(
         name, time_window={"start": tw.get("start"), "end": tw.get("end")} if tw else {},
         initial_access=d.get("initial_access_estimate") or d.get("initial_access"),
-        min_severity=(d.get("min_severity") or "medium"), member_run_ids=rids)
+        min_severity=(d.get("min_severity") or "medium"), member_run_ids=_visible_runs(rids),
+        created_by=(case_access.caller_row(session) or {}).get("username") or None)
     logs = []
     g = store.fuse_case(cid, log=lambda m, l="info": logs.append((l, m)),
                         trigger=store.TRIGGER_CASE_CREATED)

@@ -243,10 +243,36 @@ def transfer_superadmin(from_uid: int, to_uid: int) -> None:
 
 # --- the caller, inside a route ---------------------------------------------
 
+def request_identity() -> Optional[dict]:
+    """The API token's identity for this request ({uid, user, role (already
+    capped by scope), token_id, prefix, scope}), set by auth_service's gate;
+    None for a cookie or loopback request, or outside a request."""
+    try:
+        from flask import g, has_app_context
+        return getattr(g, "intact_token", None) if has_app_context() else None
+    except (ImportError, RuntimeError):
+        return None
+
+
+def set_request_identity(ident: dict) -> bool:
+    """False when it cannot be stored: the gate must then refuse, or the route
+    would see no session and take the request for the box itself."""
+    try:
+        from flask import g
+        g.intact_token = ident
+        return request_identity() is ident
+    except (ImportError, RuntimeError):
+        return False
+
+
 def caller_has(session, role: str) -> bool:
     """For a role check INSIDE a route, where one endpoint serves runs of
     different weight (a case's run vs an upgrade's). A request with no session
-    reached the route through the loopback exemption: the box itself."""
+    reached the route through the loopback exemption: the box itself -- unless
+    it came with an API token, which has no session either."""
+    ident = request_identity()
+    if ident:
+        return rank(ident["role"]) >= rank(role)
     if not session or not session.get("uid"):
         return True
     row = get(session.get("uid"))
@@ -254,6 +280,9 @@ def caller_has(session, role: str) -> bool:
 
 
 def caller_name(session) -> str:
+    ident = request_identity()
+    if ident:
+        return ident["user"]
     return (session or {}).get("user") or "system"
 
 
@@ -264,8 +293,10 @@ def set_mfa_pending(uid: int, secret_token: Optional[str]) -> None:
 
 
 def enable_mfa(uid: int, secret_token: str, step: int, recovery_json: str) -> None:
+    # New generation: a session opened before the factor existed does not
+    # survive it (the route re-issues the caller's own).
     _write("UPDATE users SET mfa_enabled = 1, mfa_secret = ?, mfa_pending = NULL, "
-           "mfa_last_step = ?, mfa_recovery = ? WHERE id = ?",
+           "mfa_last_step = ?, mfa_recovery = ?, generation = generation + 1 WHERE id = ?",
            (secret_token, step, recovery_json, uid), notify=False)
 
 

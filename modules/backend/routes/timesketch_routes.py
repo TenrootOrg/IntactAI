@@ -646,6 +646,15 @@ for s in sketches:
                             'description': parts[2] if len(parts) > 2 else ''
                         })
 
+        # Listed with the API user, which sees every sketch: drop the sketches
+        # of restricted cases the caller is not on (services/case_access.py).
+        from flask import session
+        from services import case_access
+        me = case_access.caller_row(session)
+        if not case_access.sees_all(me):
+            secret = {n for n, allowed in case_access.restricted_sketches().items()
+                      if me["username"] not in allowed}
+            sketches = [s for s in sketches if s["name"] not in secret]
         return jsonify({"sketches": sketches})
 
     except Exception as e:

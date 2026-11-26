@@ -57,7 +57,8 @@ def verify(secret: str, code: str, last_step: int = -1,
     last one accepted for this user) is refused, so a code seen over a
     shoulder cannot be replayed inside its 30 s."""
     code = (code or "").strip().replace(" ", "")
-    if len(code) != DIGITS or not code.isdigit():
+    # isascii: str.isdigit() also accepts e.g. "²", which compare_digest rejects.
+    if len(code) != DIGITS or not (code.isascii() and code.isdigit()):
         return None
     step = current_step(now)
     for s in range(step - VALID_WINDOW, step + VALID_WINDOW + 1):
@@ -81,24 +82,30 @@ def _norm(code: str) -> str:
     return "".join(ch for ch in (code or "").lower() if ch.isalnum())
 
 
-def hash_recovery(code: str) -> str:
-    return hashlib.sha256(("intact-recovery:" + _norm(code)).encode()).hexdigest()
+def hash_recovery(code: str, salt: str) -> str:
+    """HMAC keyed per user (`salt`): a copy of the database alone does not let
+    one table of guesses cover every user's codes."""
+    return hmac.new(("intact-recovery:" + salt).encode(), _norm(code).encode(),
+                    hashlib.sha256).hexdigest()
 
 
-def new_recovery_codes() -> Tuple[List[str], List[str]]:
+def new_recovery_codes(salt: str) -> Tuple[List[str], List[str]]:
     """(codes to show once, their hashes to store). Ten 10-character codes
     (~49 bits each), shown as xxxx-xxxx-xx."""
     codes = []
     for _ in range(RECOVERY_CODES):
         raw = "".join(secrets.choice(_ALPHABET) for _ in range(10))
         codes.append(f"{raw[:4]}-{raw[4:8]}-{raw[8:]}")
-    return codes, [hash_recovery(c) for c in codes]
+    return codes, [hash_recovery(c, salt) for c in codes]
 
 
-def use_recovery(code: str, hashes: List[str]) -> Optional[List[str]]:
+def use_recovery(code: str, hashes: List[str], salt: str) -> Optional[List[str]]:
     """The remaining hashes when `code` matched one (it is spent), else None."""
-    h = hash_recovery(code)
+    h = hash_recovery(code, salt)
+    # The unsalted form 4773a3b2 stored (never released; kept so a dev box's
+    # codes still work until that user sets two-step login up again).
+    old = hashlib.sha256(("intact-recovery:" + _norm(code)).encode()).hexdigest()
     for i, stored in enumerate(hashes):
-        if hmac.compare_digest(stored, h):
+        if hmac.compare_digest(stored, h) or hmac.compare_digest(stored, old):
             return hashes[:i] + hashes[i + 1:]
     return None

@@ -146,8 +146,13 @@ def get_system_actions():
         return jsonify({"actions": [], "error": str(e)}), 200
     # Same shape as /api/dashboard/automations so Settings -> Actions can reuse the
     # Workflows list markup + the shared log modal / per-run download buttons.
+    from flask import session
+    from services import case_access
+    me = case_access.caller_row(session)
+    hidden = case_access.hidden_case_ids(me)
     actions = [_transform_run(r) for r in runs
-               if r.get("automation_type") not in ("case", "fusion_baseline")]
+               if r.get("automation_type") not in ("case", "fusion_baseline")
+               and case_access.run_visible(r, me, hidden)]     # a restricted case's export
     # There used to be a block here that flagged which prepare_package run's
     # tarball was still on disk, so the UI could show a working "Package"
     # download button instead of a dead one. Prepare-package was part of the

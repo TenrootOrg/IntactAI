@@ -105,6 +105,7 @@ def reset_mfa(username):
     if not users.may_manage(actor, target):
         return _refuse('You can only reset users with a role below your own.')
     users.clear_mfa(target['id'])
+    auth._mfa_fail.pop(target['id'], None)      # noqa: SLF001 -- a lock must not outlive the reset
     auth.audit('user_mfa_reset', request, username_value=actor['username'], target=target['username'])
     return jsonify({'success': True})
 

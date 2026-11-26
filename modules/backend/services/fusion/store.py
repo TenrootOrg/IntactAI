@@ -733,7 +733,7 @@ def _activity_window_from_graph(g, *, pad_seconds=120) -> dict | None:
 
 def create_case(name, *, time_window=None, initial_access=None,
                 min_severity="medium", member_run_ids=None, is_default=False,
-                is_system=False) -> str:
+                is_system=False, created_by=None) -> str:
     from datetime import datetime, timezone
     tw = dict(time_window or {})
     # Auto = the operator did not choose a window, so the case may display the
@@ -767,7 +767,10 @@ def create_case(name, *, time_window=None, initial_access=None,
                      # person/company names. Reversible — the operator still sees the real
                      # values. The UI checkbox defaults to match this.
                      "masking": {"enabled": True, "ner": True, "patterns": []},
-                     "fusion_graph": {}, "report_md": "", "chat_messages": []})
+                     "fusion_graph": {}, "report_md": "", "chat_messages": [],
+                     # Kept on a restricted case's list whatever it is set to
+                     # (services/case_access.set_access).
+                     **({"created_by": created_by} if created_by else {})})
 
 
 _DECISION_RENAMED = {f"jev_{k}": f"decision_{k}" for k in

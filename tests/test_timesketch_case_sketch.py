@@ -133,7 +133,8 @@ class CaseNamesTheSketch(unittest.TestCase):
         self.assertIn("d['timeline_ids'].append(tid)", src)
         self.assertIn("case_sketch_name(_job_case(job_meta))", _src("modules/backend/services/scheduler/executor.py"))
         self.assertIn("timeline_ids=det.get(\"timeline_ids\")", _src("modules/backend/services/fusion/store.py"))
-        self.assertIn("target=rename_sketch", _src("modules/backend/routes/case_routes.py"))
+        # The rename follows in a background thread (then a restricted case's grants).
+        self.assertIn("rename_sketch(old_name, new_name, TIMESKETCH_CONFIG)", _src("modules/backend/routes/case_routes.py"))
 
     def test_the_pages_no_longer_ask_for_a_sketch_name(self):
         ts = _src("modules/nginx/html/partials/timesketch.html")

@@ -66,16 +66,21 @@ def get_all_automations():
         offset = max(0, int(request.args.get("offset", 0)))
     except ValueError:
         return jsonify({"error": "limit and offset must be integers"}), 400
-    runs, total = list_workflow_summaries(getattr(g, "case_id", None) or None,
-                                          request.args.get("type") or None, limit, offset)
     from flask import session
-    from services import users
+    from services import users, case_access
     from services.workflow_service import SYSTEM_TYPES
-    if not users.caller_has(session, users.ADMIN):
-        # Same audience as _run_visible_in_active_workspace: no host-level runs.
-        # shortcut: filtered after paging, so a page can come back short and
-        # `total` still counts them; page through the store if that matters.
-        runs = [r for r in runs if r.get("automation_type") not in SYSTEM_TYPES]
+    # Same audience as _run_visible_in_active_workspace: host-level runs for
+    # Admins, a case's export/import/relevance runs for Operators too.
+    if users.caller_has(session, users.ADMIN):
+        excluded = ()
+    elif users.caller_has(session, users.OPERATOR):
+        excluded = tuple(SYSTEM_TYPES - set(case_access.CASE_RUN_TYPES))
+    else:
+        excluded = tuple(SYSTEM_TYPES)
+    runs, total = list_workflow_summaries(
+        getattr(g, "case_id", None) or None, request.args.get("type") or None, limit, offset,
+        exclude_types=excluded, linked_types=case_access.CASE_RUN_TYPES,
+        hidden_case_ids=case_access.hidden_case_ids(case_access.caller_row(session)))
     transformed = []
     for run in runs:
         _reconcile_velociraptor_hunt(run)
@@ -101,8 +106,14 @@ def _run_visible_in_active_workspace(run):
     (which is everyone, since System can no longer be selected), even
     though the run is right there in the list they clicked it from."""
     from flask import g, session
-    from services import users
+    from services import users, case_access
     from services.workflow_service import SYSTEM_TYPES
+    if not case_access.run_visible(run, case_access.caller_row(session)):
+        return False                     # a restricted case's run: need-to-know
+    if run.get("automation_type") in case_access.CASE_RUN_TYPES:
+        # A case's export, import or relevance run: Operator work (the Workflows
+        # page shows its progress and the download).
+        return users.caller_has(session, users.OPERATOR)
     if run.get("automation_type") in SYSTEM_TYPES:
         # Upgrade, purge, support-bundle and settings runs carry host detail:
         # the Settings -> Actions audience (Admin and up), not every role.
@@ -531,11 +542,12 @@ def stop_automation(run_id):
     from flask import session
     from services import users
     from services.workflow_service import SYSTEM_TYPES
-    host_level = SYSTEM_TYPES - {"case_import", "case_export", "decision_relevance"}
+    from services.case_access import CASE_RUN_TYPES
+    host_level = SYSTEM_TYPES - set(CASE_RUN_TYPES)
     if (run.get("automation_type") in host_level
             and not users.caller_has(session, users.SUPERADMIN)):
         # Stopping an upgrade or a purge is host-level, like starting one.
-        # Case export/import and relevance scoring are Admin runs: Admins stop them.
+        # Case export/import and relevance scoring are Operator runs: Operators stop them.
         return jsonify({"error": "forbidden",
                         "message": "Only the Super-admin can stop a system run."}), 403
     # 'uploaded' too: an AWS/Azure offline upload nobody analyses never ends on

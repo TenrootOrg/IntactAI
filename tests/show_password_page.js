@@ -51,6 +51,6 @@ async function page(name, wantIds) {
 
 (async () => {
   await page('setup.html', ['password', 'confirm']);
-  await page('login.html', ['password', 'current', 'newpw', 'confirmpw']);
+  await page('login.html', ['password', 'current', 'newpw', 'confirmpw', 'confirmPassword']);
   console.log('ok');
 })().catch(e => { console.error(e && e.stack || e); process.exit(1); });

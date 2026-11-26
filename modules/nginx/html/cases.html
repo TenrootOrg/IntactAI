@@ -321,9 +321,9 @@
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-<script src="js/active-case.js?v=20"></script>
+<script src="js/active-case.js?v=21"></script>
 <!-- Role-based hiding (data-needs) + the 403 toast / re-auth prompt -->
-<script src="js/access.js?v=2"></script>
+<script src="js/access.js?v=3"></script>
 <!-- set embed + view mode before body renders (no flash) -->
 <script>(function(){var q=new URLSearchParams(location.search);
   if(q.get('embed')==='1')document.documentElement.classList.add('embed');
@@ -368,7 +368,7 @@
     </dialog>
     <p data-needs="write" style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Volatile Memory, cloud…) while this case is active are tagged to it automatically. Open it any time to fuse them.</p>
     <h2 style="display:flex;align-items:center;justify-content:space-between">Cases
-      <button data-needs="settings" class="ghost" style="font-size:11px;padding:4px 10px" onclick="document.getElementById('case-import-file').click()" title="Import a case exported from another Intact appliance — runs as a System action, watch it in Settings → Actions">⬆ Import</button>
+      <button data-needs="write" class="ghost" style="font-size:11px;padding:4px 10px" onclick="document.getElementById('case-import-file').click()" title="Import a case exported from another Intact appliance — watch it on the Workflows page">⬆ Import</button>
     </h2>
     <input id="case-import-file" type="file" accept=".zip" style="display:none" onchange="importWorkspace(event)"/>
     <div id="caselist"></div>
@@ -452,14 +452,21 @@ function activateWorkspace(id, ev){ if(ev) ev.stopPropagation();
 // through the resumable chunked uploader rather than a form POST (nginx caps
 // /api/ bodies at 500 MB, which one collection already exceeds).
 
-// Export hands the job to a System action and takes the operator there. It is a
-// long, multi-GB job with a file at the end — the same shape as a support bundle
-// or a prepared upgrade package, which is exactly where Settings → Actions puts
-// progress, the full log and the download button. Duplicating that inside the
+// Export hands the job to a run and takes the operator to the Workflows page. It
+// is a long, multi-GB job with a file at the end, and the Workflows list already
+// shows progress, the full log and the download button for it (Operators run
+// exports; Settings → Actions is the Admins' page). Duplicating that inside the
 // Cases page meant a second, worse copy of it, and one that lost its state on
 // every list refresh.
 function expBtn(id){
-  return `<button data-needs="settings" class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${id}',event)" title="Export this case as a portable bundle — runs as a System action, download it there when it finishes">Export</button>`;
+  return `<button data-needs="write" class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${id}',event)" title="Export this case as a portable bundle — watch it and download it on the Workflows page">Export</button>`;
+}
+// The Workflows tab lives in the dashboard around this iframe (same origin).
+function gotoWorkflows(){
+  let top=window;
+  try{ if(window.top && window.top!==window && window.top.Alpine) top=window.top; }catch(e){ top=window; }
+  try{ top.Alpine.store('app').switchTab('workflows'); }
+  catch(e){ try{ top.location.hash='workflows'; }catch(_){} }
 }
 
 function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
@@ -467,15 +474,15 @@ function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
   fetch('/api/cases/'+id+'/export',{method:'POST'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
     if(!r.ok){ toast('The export could not be started: '+(d.error||('HTTP '+r.status)), 5000); return; }
-    toast('Export started. Track its progress in Settings ▸ Actions.', 3000);
-    setTimeout(()=>{ try{ window.ActiveCase.gotoSystemWorkflows(); }catch(e){} }, 600);
+    toast('Export started. Track its progress on the Workflows page.', 3000);
+    setTimeout(gotoWorkflows, 600);
   }).catch(e=>toast('The export could not be started: '+e.message, 5000));
 }
 
 // Import works exactly like Export: the button lives here in Case Management,
-// the job runs as a System action, and the operator watches it in Settings →
-// Actions — progress, the full log, and (for export) the download all in one
-// place. The difference is only where the bytes come from: an export reads them
+// and the operator watches the run on the Workflows page (an import is listed
+// in every case: it makes a new one) — progress, the full log, and (for export)
+// the download all in one place. The difference is only where the bytes come from: an export reads them
 // off this appliance, an import sends them from the operator's machine, so the
 // upload itself has to run in the browser.
 //
@@ -497,7 +504,7 @@ function importWorkspace(ev){
   }).upload(f);
   // Same hand-off as Export. Long enough for the upload hook to have opened the
   // run row, so the operator lands on a list that already shows it.
-  setTimeout(()=>{ try{ window.ActiveCase.gotoSystemWorkflows(); }catch(e){} }, 900);
+  setTimeout(gotoWorkflows, 900);
 }
 
 function loadCases(cb){
@@ -505,7 +512,7 @@ function loadCases(cb){
     $('#caselist').innerHTML=cs.map(c=>{const isAct=c.case_id===active;
       const nm=jsa(c.name||'');
       return `<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="rowClick('${c.case_id}')">
-      <div class="casehead"><span class="nm">${isAct?'● ':''}${esc(c.name||c.case_id)}</span>
+      <div class="casehead"><span class="nm">${isAct?'● ':''}${c.restricted?'<span title="Restricted: only the people on its list and the Super-admin see this case">🔒 </span>':''}${esc(c.name||c.case_id)}</span>
         <div class="row" style="gap:6px">
           <button data-needs="write" class="ghost" style="font-size:11px;padding:3px 8px" onclick="event.stopPropagation();cdEdit('${c.case_id}')" title="Status, owner, description, name">${_cdEdit===c.case_id?'close':'edit'}</button>
           ${expBtn(c.case_id)}
@@ -514,6 +521,7 @@ function loadCases(cb){
                        :`<button data-needs="write" class="del" onclick="delWorkspace('${c.case_id}','${nm}',event)">delete</button>`}
         </div></div>
       <div class="meta">${c.members} run(s)</div>${caseMetaHtml(c)}${_cdEdit===c.case_id?caseEditForm(c):''}</div>`;}).join('')||'<i style="color:var(--muted)">no cases yet</i>';
+    if(_cdEdit) drawCaseAccess();                  // the redraw emptied the access box
     if(cb)cb();
   });
 }
@@ -900,7 +908,57 @@ function caseMetaHtml(info, link){
 // Edited in CASE MANAGEMENT, under the case's row (not in the Analysis rail):
 // the form keeps what was typed (_cdDraft) if the list redraws meanwhile.
 let _cdEdit=null, _cdDraft={};
-function cdEdit(id){ _cdEdit=(_cdEdit===id)?null:id; _cdDraft={}; loadCases(); }
+function cdEdit(id){ _cdEdit=(_cdEdit===id)?null:id; _cdDraft={}; _cdAccess=null; loadCases(()=>loadCaseAccess(_cdEdit)); }
+// --- Restricted cases (services/case_access.py) --------------------------------
+// Who sees the case: everyone, or only the people ticked here plus the
+// Super-admin. Saved on its own (PUT /access), not with the details above.
+let _cdAccess=null;                    // GET /api/cases/<id>/access, with the unsaved ticks
+function loadCaseAccess(id){
+  if(!id) return;
+  api('/api/cases/'+encodeURIComponent(id)+'/access').then(a=>{
+    if(_cdEdit!==id || !a || a.error) return;
+    _cdAccess=a; drawCaseAccess();
+  }).catch(()=>{});
+}
+function drawCaseAccess(){
+  const box=document.getElementById('cdf-access'); if(!box) return;
+  box.innerHTML=(_cdAccess && _cdAccess.case_id===_cdEdit) ? caseAccessHtml(_cdAccess)
+    : '<i style="color:var(--muted);font-size:12px">loading who may see this case…</i>';
+}
+function caseAccessHtml(a){                          // pure (tested)
+  const ro=!a.may_change, on=!!a.restricted, picked=new Set(a.allowed_users||[]);
+  const people=(a.users||[]).map(u=>{
+    const boss=u.role==='superadmin', maker=!!a.created_by && u.username===a.created_by;
+    const fixed=boss||maker;                         // always on the list (server keeps them)
+    return `<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin:2px 0;font-weight:400">`
+      +`<input type="checkbox" class="cdf-acc-u" value="${esc(u.username)}" ${fixed||picked.has(u.username)?'checked':''} ${fixed||ro?'disabled':''} onchange="cdAccPick(this)"/>`
+      +`${esc(u.username)} <span style="color:var(--muted)">· ${esc(u.role_label||u.role)}${boss?' · always':''}${maker?' · opened the case':''}</span></label>`;
+  }).join('');
+  const rootOrg=(a.velo_org||'root')==='root';
+  return `<label style="display:flex;gap:6px;align-items:center;font-weight:600">`
+    +`<input type="checkbox" id="cdf-restricted" ${on?'checked':''} ${ro?'disabled':''} onchange="cdAccToggle(this)"/> 🔒 Restricted</label>`
+    +`<div class="cfghint">Only the people ticked below and the Super-admin see this case, its runs, report and files — here, in Velociraptor (the case's org) and in Timesketch (the case's sketch). <b>Also visible to everyone in Kibana and VolWeb</b>: those tools cannot be restricted per case.`
+    +(rootOrg?` This case uses the root Velociraptor org, which every case shares, so Velociraptor cannot restrict it: give the case an org of its own.`:'')+`</div>`
+    +`<div id="cdf-acc-list" style="${on?'':'display:none'};max-height:180px;overflow:auto">${people}</div>`
+    +(ro?`<div class="cfghint">Only the Super-admin or someone on this case's list can change who sees it.</div>`
+        :`<div class="row" style="gap:6px;margin-top:6px"><button onclick="saveCaseAccess('${jsa(a.case_id)}')">Save access</button></div>`);
+}
+function cdAccToggle(el){ if(_cdAccess) _cdAccess.restricted=el.checked;
+  const l=document.getElementById('cdf-acc-list'); if(l) l.style.display=el.checked?'':'none'; }
+function cdAccPick(el){ if(!_cdAccess) return; const s=new Set(_cdAccess.allowed_users||[]);
+  if(el.checked) s.add(el.value); else s.delete(el.value); _cdAccess.allowed_users=[...s]; }
+function saveCaseAccess(id){
+  const a=_cdAccess; if(!a || a.case_id!==id) return;
+  fetch('/api/cases/'+encodeURIComponent(id)+'/access',{method:'PUT',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({restricted:!!a.restricted, allowed_users:a.allowed_users||[]})})
+   .then(r=>r.json().catch(()=>({error:'the server did not answer (HTTP '+r.status+')'})))
+   .then(d=>{
+     if(!d || d.error){ toast('Access not saved: '+((d&&(d.message||d.error))||'unknown error')); return; }
+     Object.assign(_cdAccess, d);
+     toast(d.restricted?'Restricted to '+(d.allowed_users||[]).join(', ')+' (and the Super-admin).':'The case is open to every user again.', 4000);
+     loadCases(); refreshSelector();
+   }).catch(e=>toast('Access not saved: '+e));
+}
 function cdDraft(){ ['cdf-name','cdf-status','cdf-mode','cdf-owner','cdf-org','cdf-aibudget','cdf-desc'].forEach(k=>{ const el=document.getElementById(k); if(el) _cdDraft[k]=el.value; }); }
 function caseEditForm(c){
   const i=c||{}, builtin=!!(i.is_default||i.is_system), d=_cdDraft;
@@ -918,6 +976,7 @@ function caseEditForm(c){
       <div class="cfghint">Empty = no limit.${typeof i.ai_cost_usd==='number'?` Spent so far: ${_usd(i.ai_cost_usd)}.`:''}</div>
       <label>Description <span style="color:var(--muted)">(optional)</span></label><textarea id="cdf-desc" maxlength="2000" style="min-height:48px" placeholder="what this case is about">${esc(val('cdf-desc', typeof i.case_description==='string'?i.case_description:''))}</textarea>
       <div class="row" style="gap:6px;margin-top:6px"><button onclick="saveCaseDetails('${esc(i.case_id||'')}')">Save</button><button class="ghost" onclick="cdEdit('${esc(i.case_id||'')}')">Cancel</button></div>
+      ${builtin?'':`<div id="cdf-access" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--bd)"></div>`}
     </div>`;
 }
 function saveCaseDetails(id){

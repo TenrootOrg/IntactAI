@@ -945,6 +945,10 @@ def import_case_bundle(zip_path, *, run_id=None, name=None, cancel=None) -> dict
             }
             ws.update_run_status(new_case_id, case_doc.get("status") or "completed",
                                  details=new_det)
+            # A restricted case arrives restricted, to the names on its list
+            # (and the Super-admin): seen at once, not after the snapshot ages out.
+            from services import case_access
+            case_access.invalidate()
         except _Cancelled:
             _unwind(created, prog)
             prog.log("Import cancelled — nothing was left behind", "warning")

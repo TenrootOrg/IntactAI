@@ -454,6 +454,9 @@ document.addEventListener('alpine:init', () => {
                 // jev_relevance: the same runs, stored before the 2026-10 rename.
                 decision_relevance: 'bg-indigo-600',
                 jev_relevance: 'bg-indigo-600',
+                // a case's portable bundle (Operators run them from Case Management)
+                case_export: 'bg-indigo-600',
+                case_import: 'bg-indigo-600',
                 // a symbol table / pack added to the memory module's library
                 memory_symbols_upload: 'bg-indigo-600',
             };

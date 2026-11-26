@@ -14,6 +14,14 @@
                     <button data-needs="host" @click="$store.app.switchTab('settings')" class="underline">Settings → General → Data storage</button>.
                 </div>
 
+                <!-- Unacknowledged security alerts, Admins and up (js/components/security-panel.js):
+                     the count is polled every 60 s, only while this browser tab is visible. -->
+                <div x-data="securityBanner()" x-show="allowed && count > 0" x-cloak data-needs="settings"
+                     class="mb-6 rounded-lg px-4 py-3 text-sm border bg-red-900/30 border-red-700 text-red-200" role="status">
+                    <span x-text="text()"></span> — review in
+                    <button type="button" @click="open()" class="underline">Settings → Security</button>.
+                </div>
+
                 <!-- Stats Overview — Total + Online cards hide together when
                      no modules are installed (via online/offline upgrade or
                      install.sh seed). When nothing's installed, surfacing

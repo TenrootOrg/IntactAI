@@ -85,7 +85,7 @@ class Provider(unittest.TestCase):
         self.assertEqual(len(self.calls), 1, "one docker exec per ensure")
         argv, kw = self.calls[0]
         self.assertEqual(argv, ["docker", "exec", "-i", "intact_timesketch_web", "python3", "-",
-                                "ensure", "anna", "user", "intact-team"])
+                                "ensure", "anna", "user", "intact-team", "{}"])
         self.assertNotIn("shell", kw)
         self.assertIn("create_app", kw["input"], "the script goes on stdin")
         self.assertTrue(kw.get("timeout"))
