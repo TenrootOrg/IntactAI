@@ -56,6 +56,7 @@ MAX_ARCHIVE_TOTAL = 400 * 1024 * 1024
 KEEP_OURS = {
     "Windows.Applications.Disk2VHD",                   # ec89164d: no internal share path
     "Server.Monitoring.ScheduleDeleteMonitoringData",  # our retention defaults
+    "Windows.EventLogs.CondensedAccountUsage",         # Aggregate/EventIDRegex: one row per logon shape
 }
 OUR_PREFIXES = ("Custom.", "tenRoot.", "IRIS.")
 

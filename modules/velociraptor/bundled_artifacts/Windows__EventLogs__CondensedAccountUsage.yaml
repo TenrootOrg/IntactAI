@@ -12,6 +12,17 @@ description: |
     
    Inspired from work by Brian Maloney and @0x47617279.  
    Thanks to Mike Cohen (scudette) for its help optimizing the query.  
+
+   Intact.AI changes (this bundled copy):
+     - Aggregate (default Y): one row per host + event + account + logon type
+       + source address/workstation + logon process + auth package, with
+       Count, EventTime (first seen) and LastSeen. A backup job's hundreds of
+       thousands of identical network logons become one row; a first RDP from
+       a new address is still its own row. N = one row per event (LogonId too).
+     - EventIDRegex: logoff (4634/4647) and lock/unlock (4800-4803) are left
+       out by default -- half the volume, no detection value. Add them back
+       for a full session timeline.
+     - LogonProcessName is reported (Case Analysis raises runas logons, "seclogo").
    
 
 author: Thomas DIOT (Qazeer)
@@ -21,6 +32,13 @@ type: CLIENT
 parameters:
    - name: SecurityEvtx
      default: '%SystemRoot%\System32\Winevt\Logs\Security.evtx'
+   - name: Aggregate
+     type: bool
+     default: Y
+     description: One row per account/source/logon type with Count, first and last time (N = one row per event).
+   - name: EventIDRegex
+     default: '^(4624|4625|4648|4672|4778|4779)$'
+     description: Security event IDs to read. Add 4634|4647|4800|4801|4802|4803 for logoff and lock/unlock.
 
 sources:
   - precondition:
@@ -98,8 +116,9 @@ sources:
             `12` = 'CACHED_REMOTE_INTERACTIVE_LOGON',
             `13` = 'CACHED_UNLOCK_LOGON')
       
-      SELECT
+      LET Events = SELECT
         timestamp(epoch=int(int=System.TimeCreated.SystemTime)) AS EventTime,
+        int(int=System.TimeCreated.SystemTime) AS Epoch,
         System.Computer as Computer,
         System.EventID.Value as EventID,
         get(item=LogonDescriptionLookup,
@@ -128,6 +147,9 @@ sources:
         if(condition= EventData.AuthenticationPackageName,
            then= EventData.AuthenticationPackageName,
            else= '-' ) as AuthenticationPackageName,
+        if(condition= EventData.LogonProcessName,
+           then= str(str=EventData.LogonProcessName),
+           else= '-' ) as LogonProcessName,
         if(condition= EventData.IpAddress,
            then= EventData.IpAddress,
            else= if(condition= EventData.ClientAddress,
@@ -144,3 +166,20 @@ sources:
         AND NOT UserName =~ '^(SYSTEM|ANONYMOUS LOGON|LOCAL SERVICE|NETWORK SERVICE)$'
         AND NOT UserName = expand(path='%ComputerName%$')
         AND NOT DomainName =~ '^(NT AUTHORITY|FONT DRIVER HOST|WINDOW MANAGER)$'
+        AND str(str=System.EventID.Value) =~ EventIDRegex
+
+      -- One row per distinct logon shape; the first and last time and how often.
+      LET Grouped = SELECT
+        timestamp(epoch=min(item=Epoch)) AS EventTime,
+        timestamp(epoch=max(item=Epoch)) AS LastSeen,
+        count() AS Count,
+        Computer, EventID, Description, DomainName, UserName,
+        CredentialsUsedFor4648, LogonType, LogonTypeDescription,
+        AuthenticationPackageName, LogonProcessName, IpAddress, ClientName
+        FROM Events
+        GROUP BY Computer, EventID, DomainName, UserName, CredentialsUsedFor4648,
+                 LogonType, AuthenticationPackageName, LogonProcessName, IpAddress, ClientName
+
+      SELECT * FROM if(condition=Aggregate,
+                       then={ SELECT * FROM Grouped ORDER BY EventTime },
+                       else={ SELECT * FROM Events })

@@ -1947,7 +1947,7 @@ function _quietFuseRefresh(info){
   const pend=$('#cf-refusion-pending'); if(pend) pend.style.display=info.refusion_needed?'':'none';
   // Every tab that shows fused data redraws in place (none of them blanks first).
   // Chat, Log and the Configuration rail do not show it and are left alone.
-  if(['report','timeline','risk','identities'].includes(tab) && !operatorIsTyping()) drawTab();
+  if(['report','timeline','risk','identities'].includes(tab)) drawTab();
 }
 function stopReportGenPoll(){
   if(_genPoll){ clearInterval(_genPoll); _genPoll=null; _genPollCase=null; }
@@ -2009,7 +2009,10 @@ function pollReportGen(id){
         // Only the FUSED data changed (a triage re-fuse, new data landing): no
         // toast and no full reload. Reloading the whole case here blinked the
         // screen and said "The report has been updated." when it had not been.
-        if((info.fused_at||'')!==(curInfo.fused_at||'')){ _quietFuseRefresh(info); return; }
+        // Held whole while someone types. Taking the new fused_at into curInfo
+        // but skipping the redraw left a data tab stale for good: the next tick
+        // saw nothing new. Held here, the tick after they stop delivers it.
+        if((info.fused_at||'')!==(curInfo.fused_at||'')){ if(!operatorIsTyping()) _quietFuseRefresh(info); return; }
         // A verdict, identity decision or saved setting changed what is behind,
         // with no fuse: update the notices in place.
         if(!!info.report_dirty!==!!curInfo.report_dirty || !!info.refusion_needed!==!!curInfo.refusion_needed){

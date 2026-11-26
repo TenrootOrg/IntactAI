@@ -2305,7 +2305,8 @@ def _routine_account_spread(g: FusionGraph, params: dict | None = None) -> int:
             continue
         t0 = min((keys.to_utc_dt(a.first_seen) for a in accts if a.first_seen), default=None)
         t1 = max((keys.to_utc_dt(a.last_seen or a.first_seen) for a in accts if a.first_seen), default=None)
-        obs = sum(len(a.evidence or []) for a in accts)
+        # A condensed logon row is one piece of evidence for many logons.
+        obs = sum(max(len(a.evidence or []), int((a.attrs or {}).get("logon_count") or 0)) for a in accts)
         if not t0 or not t1 or (t1 - t0).days < min_span or obs < min_obs:
             continue
         before = f.severity

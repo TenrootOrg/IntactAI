@@ -356,8 +356,10 @@ class FusionGraph:
         _union(cur.sources, e.sources)
         _union(cur.flags, e.flags)
         _c = self._evidence_keys(cur)
+        _had = len(cur.evidence)
         _union_evidence(cur.evidence, e.evidence, _c[2])
         _c[1] = len(cur.evidence)
+        _new_evidence = len(cur.evidence) > _had
         cur.anomaly = max(cur.anomaly, e.anomaly)
         cur.first_seen = _wider(cur.first_seen, e.first_seen, want_min=True)
         cur.last_seen = _wider(cur.last_seen, e.last_seen, want_min=False)
@@ -370,6 +372,13 @@ class FusionGraph:
             if k == "_assets":
                 continue
             if v in (None, "", []):
+                continue
+            if k == "logon_count":
+                # How many logons the merged rows stand for (condensed logon rows
+                # carry a Count): a sum, not a conflicting value -- and only for a
+                # row not seen before, so the same row ingested twice counts once.
+                if _new_evidence:
+                    cur.attrs[k] = int(cur.attrs.get(k) or 0) + int(v)
                 continue
             if k.endswith("_observations") and isinstance(v, list):
                 # Bookkeeping from an earlier merge, not an observed value. Two

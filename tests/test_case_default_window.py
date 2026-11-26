@@ -18,11 +18,17 @@ tests/test_stale_detection.py — so this can't drift from what ships.
 
 import ast
 import os
+import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE = os.path.join(ROOT, "modules/backend/services/fusion/store.py")
+# create_case imports services.velo_org (a case's org is its own, set in root).
+for _p in (os.path.join(ROOT, "tests"), os.path.join(ROOT, "modules/backend")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+import _optional_deps  # noqa: E402,F401
 
 WANTED = ("_case_created_dt", "_default_window", "create_case")
 

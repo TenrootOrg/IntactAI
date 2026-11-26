@@ -49,6 +49,38 @@ class RoutineSpread(unittest.TestCase):
         fs = spread_findings(rows)
         self.assertEqual([f.severity for f in fs.values()], ["medium"])
 
+    def test_condensed_rows_carry_their_count_and_last_time(self):
+        # The artifact's default output (Aggregate=Y): one row per account,
+        # host and source with Count and LastSeen. The same daily routine as
+        # above arrives as two rows, and must still read as one.
+        rows = []
+        for h in ("SRV1", "SRV2"):
+            r = logon("alice.adm", h, 0)
+            r.update(Count=200, LastSeen="2026-03-01T09:00:00Z")
+            rows.append(r)
+        fs = spread_findings(rows)
+        self.assertEqual([f.severity for f in fs.values()], ["low"], [f.summary for f in fs.values()])
+        self.assertIn("400 observations", next(iter(fs.values())).summary)
+
+    def test_a_condensed_rare_spread_stays_as_rated(self):
+        rows = []
+        for h in ("SRV1", "SRV2"):
+            r = logon("bob", h, 0)
+            r.update(Count=1, LastSeen=r["EventTime"])
+            rows.append(r)
+        fs = spread_findings(rows)
+        self.assertEqual([f.severity for f in fs.values()], ["medium"])
+
+    def test_the_same_row_twice_is_counted_once(self):
+        r = logon("carol", "SRV1", 0)
+        r.update(Count=500, LastSeen="2026-06-01T09:00:00Z")
+        # The same run's rows merged twice (one evidence locator): counted once.
+        ents, rels = map_agentic({ART: [r]}, run_id="r1")
+        again, rels2 = map_agentic({ART: [dict(r)]}, run_id="r1")
+        g = correlate.assemble("c", [(ents, rels), (again, rels2)], ["r1"], min_severity="informational")
+        acct = next(e for e in g.entities.values() if e.type == "account" and "carol" in e.label)
+        self.assertEqual(acct.attrs.get("logon_count"), 500)
+
 
 if __name__ == "__main__":
     unittest.main()

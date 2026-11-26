@@ -1174,13 +1174,30 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), user,
                                               local_hosts=(host, r.get("Computer")))
                     if aeid:
-                        lproc = str(F.get(r, *F.LOGON_PROC) or "").lower()
+                        # .strip(): Windows pads LogonProcessName to 8 ("Advapi  ").
+                        lproc = str(F.get(r, *F.LOGON_PROC) or "").strip().lower()
                         # runas/psexec/WinRM logon mechanisms are lateral-movement signals —
                         # a conservative bump, never an auto-finding (protects clean silence).
-                        bump = 5 if any(k in lproc for k in ("seclogon", "psexec", "winrm",
+                        # "seclogo": runas's logon process as 4624 records it (8 chars).
+                        bump = 5 if any(k in lproc for k in ("seclogo", "psexec", "winrm",
                                                              "wsmprovhost", "wmiprvse")) else 0
-                        ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
-                                         loc, anomaly=score_row(r) + bump, first=ts, user=u, domain=d, artifact=artifact))
+                        # CondensedAccountUsage's default output is one row per
+                        # account/source/logon type with Count and LastSeen (a
+                        # backup job's 250,000 logons, one row): carry both, or
+                        # a long routine reads as one brief visit.
+                        try:
+                            n_logons = max(1, int(r.get("Count") or 1))
+                        except (TypeError, ValueError):
+                            n_logons = 1
+                        # Raw, like `first`: the merge compares through to_utc_dt (_wider);
+                        # comparing norm_ts with a raw "...Z" string here was wrong with an offset.
+                        last = r.get("LastSeen") or None
+                        acct = _ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
+                                    loc, anomaly=score_row(r) + bump, first=ts, user=u, domain=d,
+                                    artifact=artifact, logon_count=n_logons)
+                        if last:
+                            acct.last_seen = last
+                        ents.append(acct)
                         rels.append(Relationship(
                             aeid, asset, "authenticated", sources=[MODULE], ts=ts,
                             attrs={"logon_type": F.get(r, "LogonType", "LogonTypeDescription", default=None),
