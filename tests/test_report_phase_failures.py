@@ -90,11 +90,17 @@ class PhaseFailures(unittest.TestCase):
         self.assertIn("_Narrative by live LLM", md)
 
     def test_a_rate_limit_is_not_retried(self):
-        m = Model(lambda n, u: (_ for _ in ()).throw(Exception("429 You've hit your usage limit")))
-        _run(m)
-        phases = m.calls
-        m2 = Model(lambda n, u: (_ for _ in ()).throw(Exception("429 You've hit your usage limit")))
-        _run(m2, retries=3)
+        # One phase at a time: a rate limit also stops the phases not yet sent, and
+        # with up to 6 in flight how many were sent first depended on thread timing
+        # (flaked under load, 2026-11-26) -- not on retries, which is the question.
+        import concurrent.futures as cf
+        real = cf.ThreadPoolExecutor
+        with mock.patch.object(cf, "ThreadPoolExecutor", lambda *a, **k: real(max_workers=1)):
+            m = Model(lambda n, u: (_ for _ in ()).throw(Exception("429 You've hit your usage limit")))
+            _run(m)
+            phases = m.calls
+            m2 = Model(lambda n, u: (_ for _ in ()).throw(Exception("429 You've hit your usage limit")))
+            _run(m2, retries=3)
         self.assertEqual(phases, m2.calls, "a rate limit must not be retried")
 
     def test_a_rejected_key_stops_the_phases_not_yet_sent(self):
