@@ -743,7 +743,9 @@ class ClosedGets(unittest.TestCase):
                  rule("/api/cases", "case.list_cases"),
                  rule("/api/cases/<case_id>/files/<file_id>", "case.download_case_file"),
                  rule("/api/security/alerts/<int:alert_id>/ack", "security.ack_security_alert", ("POST",)),
-                 rule("/static/<path:f>", "static")]
+                 rule("/static/<path:f>", "static"),
+                 rule("/api/auth/status", "auth.auth_status"),
+                 rule("/api/x/<string(length=2):c>/y", "nosuch.endpoint")]
         _flask.current_app = types.SimpleNamespace(url_map=types.SimpleNamespace(iter_rules=lambda: rules))
         routes._GET_RULES.clear()
         try:
@@ -759,6 +761,8 @@ class ClosedGets(unittest.TestCase):
         self.assertFalse(hit(ro["closed"] + ro["open"], "/api/security/alerts/1/ack"), "GET routes only")
         self.assertFalse(hit(ro["closed"] + ro["open"], "/static/x.js"), "/api only")
         self.assertTrue(hit(adm["closed"], "/api/system/data-location"), "Super-admin only")
+        self.assertTrue(hit(ro["open"], "/api/auth/status"), "the gate's exempt paths are open")
+        self.assertTrue(hit(ro["closed"], "/api/x/ab/y"), "a converter with arguments is a segment too")
 
 
 class TwoStep(Base):

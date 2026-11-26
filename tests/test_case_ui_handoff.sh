@@ -19,13 +19,17 @@ echo "=== both entry points live in Case Management ==="
 grep -q "onclick=\"exportWorkspace(" $CASES && ok "Export button on the case row" || bad "no Export button"
 grep -q "onchange=\"importWorkspace(event)\"" $CASES && ok "Import button in the Cases header" || bad "no Import button"
 
-echo "=== both hand off to Settings -> Actions ==="
+echo "=== both hand off to the Workflows page ==="
+# Operators export and import too (no Settings page): the run is followed on
+# the Workflows page of the case (storage/workflow_store.py lists it there).
 for fn in exportWorkspace importWorkspace; do
   body=$(awk "/^function $fn\(/,/^}/" $CASES)
-  echo "$body" | grep -q "gotoSystemWorkflows" \
-    && ok "$fn hands off to Settings -> Actions" \
-    || bad "$fn does not hand off to Settings -> Actions"
+  echo "$body" | grep -q "gotoWorkflows" \
+    && ok "$fn hands off to the Workflows page" \
+    || bad "$fn does not hand off to the Workflows page"
 done
+awk '/^function gotoWorkflows\(/,/^}/' $CASES | grep -q "window.top" \
+  && ok "gotoWorkflows walks up to the top window" || bad "gotoWorkflows would switch a tab nobody can see"
 
 echo "=== neither grows its own progress UI ==="
 # The whole point of the hand-off: the run row is the one place progress lives.

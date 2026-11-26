@@ -58,10 +58,14 @@ def _get_rules(role):
         for rule in current_app.url_map.iter_rules():
             if not rule.rule.startswith('/api/') or 'GET' not in (rule.methods or ()):
                 continue
-            src = '^' + re.sub(r'<(?:(\w+)(?:\([^)]*\))?:)?\w+>',
-                               lambda m: '.+' if m.group(1) == 'path' else '[^/]+',
-                               re.escape(rule.rule).replace('\\<', '<').replace('\\>', '>')) + '$'
-            need = auth.access_policy.rule_for(rule.endpoint, 'GET').role
+            # Static parts escaped, each <converter(args):name> a segment (path: any).
+            src = '^' + ''.join(
+                ('.+' if part[1:].startswith('path') else '[^/]+') if i % 2 else re.escape(part)
+                for i, part in enumerate(re.split(r'(<[^>]+>)', rule.rule))) + '$'
+            # The gate's exempt paths (status, health, verify...) are not in
+            # POLICY, which would read them as Super-admin only: they are open.
+            need = users.READONLY if rule.rule in auth.EXEMPT_PATHS else \
+                auth.access_policy.rule_for(rule.endpoint, 'GET').role
             out["closed" if users.rank(need) > rank else "open"].append(src)
         _GET_RULES[role] = out
     return _GET_RULES[role]
