@@ -302,6 +302,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_exclude_hosts", lambda: _exclude_hosts(g, excluded_hosts))
     _guarded(_errs, "_infer_host_roles", lambda: _infer_host_roles(g))
     _guarded(_errs, "_bridge_hashes", lambda: _bridge_hashes(g))
+    _guarded(_errs, "_join_bare_accounts", lambda: _join_bare_accounts(g))
     _guarded(_errs, "_prune_external_only", lambda: _prune_external_only(g))
     _guarded(_errs, "_rollup_severity", lambda: _rollup_severity(g))
     _guarded(_errs, "_mark_previous_names", lambda: _mark_previous_names(g))                    # before findings are derived
@@ -957,6 +958,88 @@ def _bridge_hashes(g: FusionGraph) -> None:
     seen: dict = {}
     fresh: list = []
     for r in g.relationships:
+        k = r.key()
+        if k in seen:
+            cur = fresh[seen[k]]
+            for s in r.sources:
+                if s not in cur.sources:
+                    cur.sources.append(s)
+        else:
+            seen[k] = len(fresh)
+            fresh.append(r)
+    g.relationships = fresh
+    g.rebuild_indexes()
+
+
+def _join_bare_accounts(g: FusionGraph) -> None:
+    """A log's bare user name (mappers/external.py: account:bare:<name>) joins the
+    case's account with that short name when there is exactly ONE -- `kobi` in a
+    VPN log is CORP\\kobi when the case knows no other kobi. Two candidates is a
+    guess and none is a stranger: the placeholder goes (the rows stay searchable
+    in chat), as before. Same remap as _bridge_hashes."""
+    bare = [e for e in g.by_type("account") if e.id.startswith("account:bare:")]
+    if not bare:
+        return
+    by_name: dict[str, list] = {}
+    for e in g.by_type("account"):
+        if e.id.startswith("account:bare:"):
+            continue
+        short = str((e.attrs or {}).get("user") or e.id.rsplit(":", 1)[-1]).rsplit("\\", 1)[-1].strip().lower()
+        if short:
+            by_name.setdefault(short, []).append(e)
+
+    def only_external(e):
+        return bool(e.sources) and set(e.sources) == {"external"}
+
+    def pick(b):
+        cands = by_name.get(b.id[len("account:bare:"):], [])
+        # Tiers, first with exactly one candidate wins:
+        #   1. a domain/cloud account another source saw. A host's user listing
+        #      gives every domain user a local twin (Sys.AllUsers has no domain
+        #      column), so local accounts must not make it look ambiguous;
+        #   2. a LOCAL account, only when the log row names one of its hosts --
+        #      a local kobi on SRV1 is not the kobi of an alert on SRV9, and
+        #      joining them made a false "used across 2 hosts";
+        #   3. an account only the logs named (pruned with it unless alert-tied).
+        glob = [c for c in cands if not c.id.startswith("account:asset:") and not only_external(c)]
+        if len(glob) == 1:
+            return glob[0].id
+        if glob:
+            return None
+        mine = set(_assets_of(b))
+        local = [c for c in cands if c.id.startswith("account:asset:") and not only_external(c)
+                 and mine and mine <= set(_assets_of(c))]
+        if len(local) == 1:
+            return local[0].id
+        if local:
+            return None
+        ext = [c for c in cands if only_external(c) and not c.id.startswith("account:asset:")]
+        return ext[0].id if len(ext) == 1 else None
+
+    remap = {}
+    for e in bare:
+        hit = pick(e)
+        if hit:
+            remap[e.id] = hit
+    drop = {e.id for e in bare if e.id not in remap}
+    for i in drop:
+        g.entities.pop(i, None)
+    for old, new in remap.items():
+        e = g.entities.pop(old)
+        e.id = new
+        e.attrs.pop("bare_name", None)
+        # Two counts of log rows for one account: a sum, not a conflict.
+        rows = e.attrs.pop("external_rows", None)
+        if rows:
+            tgt = g.entities[new].attrs
+            tgt["external_rows"] = int(tgt.get("external_rows") or 0) + int(rows)
+        g.upsert(e)                                 # merges sources/flags/_assets/evidence
+    seen: dict = {}
+    fresh: list = []
+    for r in g.relationships:
+        r.src, r.dst = remap.get(r.src, r.src), remap.get(r.dst, r.dst)
+        if r.src in drop or r.dst in drop:
+            continue
         k = r.key()
         if k in seen:
             cur = fresh[seen[k]]

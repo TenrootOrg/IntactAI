@@ -164,6 +164,12 @@ archive-staging re-characterised 2026-10-11. See memory [[attack-sim-campaign-st
 
 ## External data: a bare username in a log never reaches Identities
 
+**FIXED 2026-11-26** (correlate._join_bare_accounts, mappers/external.py): a bare
+name joins the case's account when exactly ONE account has that short name;
+two candidates (ambiguous), none, or a name every system has (admin, root,
+guest...) join nothing, as before. Tests: tests/test_external_bare_accounts.py.
+The text below is the original report.
+
 **Symptom**
 A log added under Case Analysis → External data links an account to the case
 only when the account carries its domain (`CORP\kobi`, `kobi@corp.com`). A bare

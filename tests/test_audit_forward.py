@@ -135,6 +135,18 @@ class FormatTest(Base):
         self.assertTrue(re.match(r"^\d{4}-\d\d-\d\dT", m.group(2)))
         line.encode("ascii")                                    # MSG stays ASCII: no BOM needed
 
+    def test_hostname_is_the_appliance_as_configured(self):
+        # The box's configured address/name, not the container's random hostname;
+        # an unconfigured box ("CHANGE-ME") falls back to the container's.
+        from unittest import mock
+        for domain, want in (("intact.corp.local", "intact.corp.local"), ("10.0.0.7", "10.0.0.7"),
+                             ("CHANGE-ME", fwd.socket.gethostname()), ("", fwd.socket.gethostname())):
+            with self.subTest(domain), mock.patch("config.load_main_config", lambda d=domain: {"domain": d}):
+                fwd._host_cache.update(at=0.0, value=None)
+                line = fwd.format_message({"event": "x"}, "x", 6, 10).decode()
+                self.assertEqual(LINE.match(line).group(3), want)
+        fwd._host_cache.update(at=0.0, value=None)
+
     def test_tcp_framing(self):
         self.assertEqual(fwd.frame(b"<86>1 x", "tcp"), b"7 <86>1 x")
         self.assertEqual(fwd.frame(b"<86>1 x", "udp"), b"<86>1 x")

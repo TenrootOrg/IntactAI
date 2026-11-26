@@ -160,9 +160,26 @@ def status():
 
 # --- message format --------------------------------------------------------
 
+_host_cache = {"at": 0.0, "value": None}
+
+
 def _hostname():
-    # RFC 5424 HOSTNAME: printable ASCII, no spaces, at most 255.
-    return re.sub(r"[^!-~]", "_", socket.gethostname() or "-")[:255] or "-"
+    """RFC 5424 HOSTNAME: the appliance as its operators know it -- config.yaml's
+    `domain` (its address or DNS name) -- not the backend container's random
+    hostname, which no SOC can map back to this box. Re-read every 5 minutes."""
+    now = time.monotonic()
+    if _host_cache["value"] is None or now - _host_cache["at"] > 300:
+        name = ""
+        try:
+            from config import load_main_config
+            name = str((load_main_config() or {}).get("domain") or "").strip()
+        except Exception:                       # noqa: BLE001 -- no config: the container's name
+            name = ""
+        if not name or name.upper() == "CHANGE-ME":
+            name = socket.gethostname() or "-"
+        _host_cache.update(at=now, value=name)
+    # printable ASCII, no spaces, at most 255
+    return re.sub(r"[^!-~]", "_", _host_cache["value"])[:255] or "-"
 
 
 def format_message(body, msgid, severity, facility, ts=None):

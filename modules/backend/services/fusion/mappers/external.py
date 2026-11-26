@@ -32,6 +32,16 @@ def _hostish(h) -> bool:
     return bool(s) and len(s) <= 255 and not re.fullmatch(r"[\d.:]+", s)   # an IP is not a host name
 
 
+# Names on every system (and in every domain): a log's bare "admin" says nothing
+# about which one, so these never join an account of the case.
+_SHARED_NAMES = frozenset({"administrator", "admin", "guest", "user", "root", "system", "nobody",
+                           "anonymous", "test", "support", "default", "service", "ubuntu",
+                           "ec2-user", "postgres", "oracle", "www-data", "pi", "-", "n/a",
+                           "unknown", "none", "null", "(null)", "localhost", "local service",
+                           "network service", "local system", "localsystem"})
+_BARE = "account:bare:"
+
+
 def map_external(collected: dict, *, run_id: str, data_type: str, label: str) -> tuple[list, list]:
     from ..external_logs import DATA_TYPES, artifact_name
     art = artifact_name(data_type)
@@ -85,9 +95,17 @@ def map_external(collected: dict, *, run_id: str, data_type: str, label: str) ->
                     joins.append(iid)
             for u in [n.get("user")] + list(n.get("users") or []):
                 aid = _account_key(u) if u else None
-                if aid and aid.startswith("account:domain:"):      # a bare name joins nothing
+                if aid and aid.startswith("account:domain:"):
                     add(aid, "account", aid.split("\\")[-1], {}, ts, loc, assets)
                     joins.append(aid)
+                elif aid and aid.startswith("account:cloud:"):
+                    # A bare name (Linux auth, VPN, firewall logs): a placeholder that
+                    # correlate._join_bare_accounts folds into the case's ONE account
+                    # with that name, or drops (ambiguous / unknown).
+                    name = aid[len("account:cloud:"):]
+                    if 2 <= len(name) <= 64 and name not in _SHARED_NAMES and "@" not in name:
+                        add(_BARE + name, "account", name, {"bare_name": name}, ts, loc, assets)
+                        joins.append(_BARE + name)
             sev = n.get("severity")
             if sev in ALERT_LEVELS:
                 rule = n.get("rule") or n.get("action") or "alert"
